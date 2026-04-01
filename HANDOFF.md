@@ -1,7 +1,7 @@
 # iaGO-OS — Handoff
 
 > **Updated:** 2026-04-01
-> **Status:** Sprint 4 (Workflow Engine) Phase 4b complete. Phase 5 next.
+> **Status:** Sprint 4 (Workflow Engine) COMPLETE. Sprint 5 (Implementation) next.
 > **Branch:** `master` (no `main` branch yet — create remote + push when ready)
 
 ---
@@ -12,7 +12,7 @@ Four sprints completed or in progress:
 1. **Research sprint** — COMPLETE. Analyzed 6 open-source Claude Code configuration repos
 2. **Hook architecture sprint** — COMPLETE. 8 decisions across 5 phases, compiled into canonical reference
 3. **Skills & Agents sprint** — COMPLETE. 8 agents, 34 skills, ~1,580 lines across 42 files
-4. **Workflow Engine sprint** — IN PROGRESS. Phases 1-4b complete, Phase 5 (templates + assembly) next
+4. **Workflow Engine sprint** — COMPLETE. Canonical reference: `DECISION-workflow.md`
 
 Nothing is implemented yet. The repo contains research and decision documents across 4 sprints.
 
@@ -50,12 +50,16 @@ iago-os/
     workflow-synthesis.md                #   Workflow, state, config, execution patterns
     DECISION-workflow-foundation.md      #   Phases, state dir, config.json
     DECISION-execution.md                #   Plan format, dispatch, quick/fast modes
-    DECISION-discipline.md               #   Discipline placement, CLAUDE.md budget, rules files
+    DECISION-discipline.md               #   Discipline placement, CLAUDE.md budget, pause/resume
+    DECISION-workflow.md                 #   CANONICAL: compiled reference + templates + validation
 ```
 
 ## Git History
 
 ```
+(latest) research: workflow engine and discipline decisions (Sprint 4 assembly)
+ab380fe research: complete Sprint 4 Phase 4b — pause/resume decision
+36154d3 research: complete Sprint 4 Phase 4a — discipline placement & CLAUDE.md budget
 77a5851 research: complete Sprint 4 Phase 3 — execution model decisions
 a2ffc61 research: complete Sprint 4 Phases 1-2 — workflow extraction + foundation decisions
 0ef5d32 research: complete Sprint 3 Phase 5 — skills & agents assembly
@@ -93,20 +97,24 @@ d8697df research: analyze ECC, Ruflo, GSD, Paperclip, The-Architect and Superpow
 
 ## What's NOT Done
 
-### Next: Sprint 4 Phase 5 — Templates + Assembly
+### Next: Sprint 5 — Implementation
 
-STATE.md template, ROADMAP.md template, PROJECT.md template, plan/summary/review artifact templates. Workflow assembly doc tying everything together.
+Build everything defined in Sprints 2-4. Canonical build order: `DECISION-workflow.md` §13.
 
-### Then: Sprint 5 — Implementation
+~65 files, ~3,080 lines total. 12-phase build:
+1. `.iago/` scaffold + `.gitignore`
+2. Hook utilities (3 lib files)
+3. Standalone hooks (8 files, ~770 lines)
+4. Complex hook: `context-persistence.mjs` (~280 lines)
+5. `settings.json` wiring (12 hook entries)
+6. `CLAUDE.md` (~90 lines)
+7-8. Rules files (8 files, ~250 lines)
+9. Agent definitions (8 files, ~460 lines)
+10. Core workflow skills (8 `/iago:*` skills)
+11. Core feature skills (6 skills)
+12. Supplementary skills (22 skills)
 
-Build everything defined in Sprints 2-4:
-- 12 hook files (~1,120 lines) — build order in DECISION-hooks.md §11
-- 42 skill/agent/rules files (~1,580 lines) — build order in DECISION-skills-agents.md §4
-- CLAUDE.md (~90 lines) — budget in DECISION-discipline.md
-- 3 new rules files (~75 lines) — specs in DECISION-discipline.md
-- Workflow skill files (`/iago:init`, `/iago:discuss`, `/iago:plan`, `/iago:execute`, `/iago:verify`, `/iago:fast`, `/iago:quick`)
-- settings.json wiring
-- `.iago/` directory + .gitignore setup
+Phases 1-5 (hooks) and 6-8 (CLAUDE.md + rules) can run in parallel.
 
 ---
 

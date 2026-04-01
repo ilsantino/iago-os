@@ -41,7 +41,7 @@ Define the higher-level features that sit on top of the hook system.
 
 Output: 8 agents, 34 skills (6 core + 6 content/business + 6 experimental + 9 industry + 4 behavioral rules), ~1,580 lines across 42 files. ~200 lines always-loaded, ~1,380 on-demand.
 
-## Sprint 4: Workflow Engine — IN PROGRESS
+## Sprint 4: Workflow Engine — COMPLETE
 
 Design the workflow orchestration that ties hooks, agents, and skills into a lifecycle.
 
@@ -52,7 +52,7 @@ Design the workflow orchestration that ties hooks, agents, and skills into a lif
 | 3 | Execution model (plan format, dispatch, quick/fast modes) | `DECISION-execution.md` | Done |
 | 4a | Discipline placement, CLAUDE.md budget, rules files spec | `DECISION-discipline.md` | Done |
 | 4b | Pause/resume decision | `DECISION-discipline.md` (appended) | Done |
-| 5 | STATE.md template + ROADMAP.md template + artifact templates + workflow assembly | — | Not started |
+| 5 | Templates + assembly + cross-reference validation | `DECISION-workflow.md` | Done |
 
 Phase 1 output: 10-section synthesis covering workflow phases (GSD, Superpowers, The Architect), state directories, config patterns, plan formats, execution models, quick/fast modes, pause/resume, discipline rules, config hierarchy, compatibility with existing hooks and agents.
 
@@ -64,6 +64,22 @@ Phase 4a output: 24 discipline patterns placed across 5 layers (CLAUDE.md, rules
 
 Phase 4b output: Adopt explicit pause, automatic resume. `/iago:pause` skill (~30 lines) writes HANDOFF.json to `.iago/state/`. No `/iago:resume` — SessionStart hook handles it (already spec'd in DECISION-hooks.md). Skip `.continue-here.md` (redundant). HANDOFF.json: 15-field schema with workflow position (phase/plan/task), completed/remaining tasks with commits, blockers, next action. Stale handoff warning at 7 days.
 
+Phase 5 output: Canonical compiled reference `DECISION-workflow.md` with 14 sections. 7 artifact templates (PROJECT.md, ROADMAP.md, STATE.md, context, plan, summary, review). 11-point cross-reference validation — all pass. Sprint 5 build order: 12 phases, hooks and CLAUDE.md/rules parallelizable. Total system: ~65 files, ~3,080 lines. Always-loaded: ~220 lines. On-demand: ~2,860 lines.
+
 ## Sprint 5: Implementation — NOT STARTED
 
-Build everything defined in Sprints 2-4.
+Build everything defined in Sprints 2-4. Canonical reference: `DECISION-workflow.md` (§13 build order).
+
+12-phase build:
+1. `.iago/` scaffold
+2. Hook utilities (3 lib files)
+3. Standalone hooks (8)
+4. Complex hook (context-persistence)
+5. settings.json wiring
+6. CLAUDE.md
+7. Always-on rules (4)
+8. Path-scoped rules (4)
+9. Agent definitions (8)
+10. Core workflow skills (8)
+11. Core feature skills (6)
+12. Supplementary skills (22)
