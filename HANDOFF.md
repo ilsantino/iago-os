@@ -1,18 +1,19 @@
 # iaGO-OS — Handoff
 
 > **Updated:** 2026-03-31
-> **Status:** Hook architecture decisions complete. Implementation next.
+> **Status:** Sprint 3 (Skills & Agents) Phase 1 complete. Phase 2 next.
 > **Branch:** `master` (no `main` branch yet — create remote + push when ready)
 
 ---
 
 ## Where We Are
 
-Two sprints completed:
-1. **Research sprint** — Analyzed 6 open-source Claude Code configuration repos
-2. **Hook architecture sprint** — Made 8 decisions across 5 phases, compiled into canonical reference
+Three sprints in progress:
+1. **Research sprint** — COMPLETE. Analyzed 6 open-source Claude Code configuration repos
+2. **Hook architecture sprint** — COMPLETE. 8 decisions across 5 phases, compiled into canonical reference
+3. **Skills & Agents sprint** — IN PROGRESS. Phase 1 (pattern extraction) complete, Phase 2 next
 
-Everything is decided. Nothing is implemented yet. The repo contains only research and decision documents.
+Nothing is implemented yet. The repo contains research, decision documents, and skills/agents synthesis.
 
 ## Repository Structure
 
@@ -23,21 +24,23 @@ iago-os/
   .gitignore                             # Standard
   .claude/
     settings.local.json                  # Local permissions (legacy from research cloning)
-  research/                              # Sprint 1: raw analysis files
-    ecc-analysis.md                      #   Everything Claude Code
-    ruflo-analysis.md                    #   Ruflo
-    gsd-analysis.md                      #   Get Shit Done
-    paperclip-analysis.md                #   Paperclip
-    the-architect.md                     #   The Architect
-    superpowers.md                       #   Superpowers
-    hooks-synthesis.md                   #   Extracted hook/dispatcher/persistence patterns
-    SPRINT-STATUS.md                     #   Sprint 1 tracker
-  .iago/
-    research/                            # Sprint 2: architecture decisions
-      DECISION-foundation.md             #   Phase 2: hook location, dispatcher, statusline
-      DECISION-core.md                   #   Phase 3: persistence, compaction, cost tracking
-      DECISION-guards.md                 #   Phase 4: post-edit pipeline, safety guard
-      DECISION-hooks.md                  #   Phase 5: CANONICAL reference (compiled from all above)
+  research/
+    SPRINT-STATUS.md                     #   Sprint tracker (all sprints)
+    sprint-1-research/                   #   Sprint 1: raw analysis files
+      ecc-analysis.md                    #     Everything Claude Code
+      ruflo-analysis.md                  #     Ruflo
+      gsd-analysis.md                    #     Get Shit Done
+      paperclip-analysis.md              #     Paperclip
+      the-architect.md                   #     The Architect
+      superpowers.md                     #     Superpowers
+    sprint-2-hook-arch-decisions/        #   Sprint 2: architecture decisions
+      hooks-synthesis.md                 #     Extracted hook/dispatcher/persistence patterns
+      DECISION-foundation.md             #     Phase 2: hook location, dispatcher, statusline
+      DECISION-core.md                   #     Phase 3: persistence, compaction, cost tracking
+      DECISION-guards.md                 #     Phase 4: post-edit pipeline, safety guard
+      DECISION-hooks.md                  #     Phase 5: CANONICAL reference (compiled from all)
+    sprint-3-skills-agents/              #   Sprint 3: skills & agents
+      skills-agents-synthesis.md         #     Phase 1: pattern extraction from all repos
 ```
 
 ## Git History
@@ -51,7 +54,7 @@ d8697df research: analyze ECC, Ruflo, GSD, Paperclip, The-Architect and Superpow
 
 ## What's Decided (Summary)
 
-Read `.iago/research/DECISION-hooks.md` for the full canonical reference. Key points:
+Read `research/sprint-2-hook-arch-decisions/DECISION-hooks.md` for the full canonical reference. Key points:
 
 - **12 files** to implement: 3 shared utilities + 9 hooks
 - **~1,120 lines** total estimated
@@ -65,11 +68,22 @@ Read `.iago/research/DECISION-hooks.md` for the full canonical reference. Key po
 - **Commit quality:** Conventional commits, 72-char limit, staged secret scan
 - **Statusline:** git branch, context %, client slug, session duration → bridge file
 
+## What's Done (Sprint 3)
+
+### Phase 1: Extract Skill & Agent Patterns — COMPLETE
+
+Output: `research/sprint-3-skills-agents/skills-agents-synthesis.md`
+- 72 skills inventoried across 4 repos (ECC, Ruflo, GSD, Superpowers), grouped by functional area
+- 29 agents cataloged with model, tools, roles, behavioral rules, format details
+- Agent format comparison (ECC vs Ruflo vs GSD vs Superpowers)
+- Behavioral patterns extracted: escalation protocol, analysis paralysis guard, plan-checker, two-stage review, CSO
+- 12 skills identified as redundant with hook coverage
+- Stack filter applied (wrong-language, wrong-framework, enterprise-scale patterns flagged)
+- **Key direction:** Superpowers as skill/agent foundation, cherry-pick GSD analysis paralysis guard + plan verification
+
 ## What's NOT Done
 
-### Next: iaGO-OS Skills & Agents
-
-The hook architecture is decided but the higher-level features are not:
+### Next: Sprint 3 Phase 2+
 
 1. **Slash commands** — `/iago:pause`, `/iago:client <slug>`, `/iago:costs`, `/iago:resume`
    - These are Claude Code skills (markdown + YAML frontmatter in `.claude/commands/`)
