@@ -75,14 +75,12 @@ Build everything defined in Sprints 2-4. Canonical reference: `DECISION-workflow
 | Pre-1 | Paperclip integration decision | Done — DEFER (DECISION-paperclip.md) |
 | Pre-2 | CLAUDE.md specification | Done — DECISION-claude-md.md |
 | Pre-2b | CLAUDE.md file created | Done — .iago/CLAUDE.md (105 lines) |
-| 1 | `.iago/` scaffold | Not started |
-| 2 | Hook utilities (3 lib files) | Not started |
-| 3 | Standalone hooks (8) | Not started |
-| 4 | Complex hook (context-persistence) | Not started |
-| 5 | settings.json wiring | Not started |
-| 7 | Always-on rules (4) | Not started |
-| 8 | Path-scoped rules (4) | Not started |
-| 9 | Agent definitions (8) | Not started |
-| 10 | Core workflow skills (8) | Not started |
-| 11 | Core feature skills (6) | Not started |
-| 12 | Supplementary skills (22) | Not started |
+| Pre-3 | Build order + file manifest | Done — BUILD-ORDER.md (67 files, 8 phases) |
+| 1A | Scaffold + hook utilities (4 files) | Not started |
+| 1B | Hook suite + settings.json (10 files) | Not started |
+| 2A | Rules files (8 files) | Not started |
+| 2B | Agent definitions (8 files) | Not started |
+| 3A | Workflow skills — /iago:* (8 files) | Not started |
+| 3B | Core feature skills (6 files) | Not started |
+| 4A | Content/business + experimental skills (13 files) | Not started |
+| 4B | Industry skills (9 files) | Not started |
