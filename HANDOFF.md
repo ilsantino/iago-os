@@ -1,7 +1,7 @@
 # iaGO-OS — Handoff
 
 > **Updated:** 2026-04-01
-> **Status:** Sprint 4 (Workflow Engine) COMPLETE. Sprint 5 (Implementation) next.
+> **Status:** Sprint 5 (Implementation) IN PROGRESS. CLAUDE.md written. Hooks next.
 > **Branch:** `master` (no `main` branch yet — create remote + push when ready)
 
 ---
@@ -97,7 +97,13 @@ d8697df research: analyze ECC, Ruflo, GSD, Paperclip, The-Architect and Superpow
 
 ## What's NOT Done
 
-### Next: Sprint 5 — Implementation
+### Done So Far (Sprint 5)
+
+- **DECISION-paperclip.md** — Paperclip integration DEFERRED. Zero impact on build.
+- **DECISION-claude-md.md** — CLAUDE.md spec (105 lines, 13 sections, structurally final)
+- **CLAUDE.md** — Written to `.iago/CLAUDE.md`. 105 lines, under 200 budget.
+
+### Next: Sprint 5 — Implementation continues
 
 Build everything defined in Sprints 2-4. Canonical build order: `DECISION-workflow.md` §13.
 

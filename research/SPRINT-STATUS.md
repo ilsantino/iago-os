@@ -66,20 +66,23 @@ Phase 4b output: Adopt explicit pause, automatic resume. `/iago:pause` skill (~3
 
 Phase 5 output: Canonical compiled reference `DECISION-workflow.md` with 14 sections. 7 artifact templates (PROJECT.md, ROADMAP.md, STATE.md, context, plan, summary, review). 11-point cross-reference validation — all pass. Sprint 5 build order: 12 phases, hooks and CLAUDE.md/rules parallelizable. Total system: ~65 files, ~3,080 lines. Always-loaded: ~220 lines. On-demand: ~2,860 lines.
 
-## Sprint 5: Implementation — NOT STARTED
+## Sprint 5: Implementation — IN PROGRESS
 
 Build everything defined in Sprints 2-4. Canonical reference: `DECISION-workflow.md` (§13 build order).
 
-12-phase build:
-1. `.iago/` scaffold
-2. Hook utilities (3 lib files)
-3. Standalone hooks (8)
-4. Complex hook (context-persistence)
-5. settings.json wiring
-6. CLAUDE.md
-7. Always-on rules (4)
-8. Path-scoped rules (4)
-9. Agent definitions (8)
-10. Core workflow skills (8)
-11. Core feature skills (6)
-12. Supplementary skills (22)
+| Phase | What | Status |
+|-------|------|--------|
+| Pre-1 | Paperclip integration decision | Done — DEFER (DECISION-paperclip.md) |
+| Pre-2 | CLAUDE.md specification | Done — DECISION-claude-md.md |
+| Pre-2b | CLAUDE.md file created | Done — .iago/CLAUDE.md (105 lines) |
+| 1 | `.iago/` scaffold | Not started |
+| 2 | Hook utilities (3 lib files) | Not started |
+| 3 | Standalone hooks (8) | Not started |
+| 4 | Complex hook (context-persistence) | Not started |
+| 5 | settings.json wiring | Not started |
+| 7 | Always-on rules (4) | Not started |
+| 8 | Path-scoped rules (4) | Not started |
+| 9 | Agent definitions (8) | Not started |
+| 10 | Core workflow skills (8) | Not started |
+| 11 | Core feature skills (6) | Not started |
+| 12 | Supplementary skills (22) | Not started |
