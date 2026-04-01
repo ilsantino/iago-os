@@ -27,20 +27,36 @@ Analyzed 6 open-source Claude Code configuration repos. All findings in `researc
 
 Output: 12 files to implement, ~1,120 lines, 12 settings.json entries.
 
-## Sprint 3: Skills & Agents — IN PROGRESS
+## Sprint 3: Skills & Agents — COMPLETE
 
 Define the higher-level features that sit on top of the hook system.
 
 | Phase | Topic | Document | Status |
 |-------|-------|----------|--------|
 | 1 | Extract skill & agent patterns | `skills-agents-synthesis.md` | Done |
-| 2 | CLAUDE.md generation (verification discipline, review, task granularity) | — | Not started |
-| 3 | Agent definitions (YAML frontmatter, role catalog) | — | Not started |
-| 4 | Project kickoff (The Architect blueprint → CLAUDE.md + agent configs) | — | Not started |
-| 5 | Implementation planning (build order, testing strategy, rollout) | — | Not started |
+| 2 | Convention & format decisions (CSO, agent template, escalation, paralysis guard) | `DECISION-conventions.md` | Done |
+| 3 | Community skills catalog (34 skills, overlap resolutions, CLAUDE.md absorptions) | `DECISION-skills.md` | Done |
+| 4 | Agent definitions (8 agents, tool restrictions, model assignments) | `DECISION-agents.md` | Done |
+| 5 | Assembly (dispatch map, meta-instruction, build order, validation) | `DECISION-skills-agents.md` | Done |
 
-Phase 1 output: 72 skills inventoried across 4 repos, 29 agents cataloged, 12 skills marked redundant with hooks, format comparison, behavioral patterns extracted. Key decision: Superpowers as skill/agent foundation, cherry-pick GSD analysis paralysis guard + plan verification.
+Output: 8 agents, 34 skills (6 core + 6 content/business + 6 experimental + 9 industry + 4 behavioral rules), ~1,580 lines across 42 files. ~200 lines always-loaded, ~1,380 on-demand.
 
-## Sprint 4: Implementation — NOT STARTED
+## Sprint 4: Workflow Engine — IN PROGRESS
 
-Build everything defined in Sprints 2-3.
+Design the workflow orchestration that ties hooks, agents, and skills into a lifecycle.
+
+| Phase | Topic | Document | Status |
+|-------|-------|----------|--------|
+| 1 | Extract workflow, state, config, execution patterns from research | `workflow-synthesis.md` | Done |
+| 2 | Foundation decisions (phases, state directory, config.json) | `DECISION-workflow-foundation.md` | Done |
+| 3 | Skill definitions for each workflow phase | — | Not started |
+| 4 | STATE.md template + ROADMAP.md template + plan format spec | — | Not started |
+| 5 | Quick/fast mode definitions + pause/resume skill | — | Not started |
+
+Phase 1 output: 10-section synthesis covering workflow phases (GSD, Superpowers, The Architect), state directories, config patterns, plan formats, execution models, quick/fast modes, pause/resume, discipline rules, config hierarchy, compatibility with existing hooks and agents.
+
+Phase 2 output: 5 workflow phases (init → discuss → plan → execute → verify), `.iago/` directory with 6 tracked subdirectories + gitignored state/, 9-field config.json with explicit defaults. Key decisions: no separate UI/ship/transition/architecture phases; discuss is per-phase clarification not one-time; verify includes shipping (PR creation).
+
+## Sprint 5: Implementation — NOT STARTED
+
+Build everything defined in Sprints 2-4.
