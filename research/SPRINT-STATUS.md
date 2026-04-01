@@ -49,13 +49,15 @@ Design the workflow orchestration that ties hooks, agents, and skills into a lif
 |-------|-------|----------|--------|
 | 1 | Extract workflow, state, config, execution patterns from research | `workflow-synthesis.md` | Done |
 | 2 | Foundation decisions (phases, state directory, config.json) | `DECISION-workflow-foundation.md` | Done |
-| 3 | Skill definitions for each workflow phase | — | Not started |
-| 4 | STATE.md template + ROADMAP.md template + plan format spec | — | Not started |
-| 5 | Quick/fast mode definitions + pause/resume skill | — | Not started |
+| 3 | Execution model (plan format, dispatch, quick/fast modes) | `DECISION-execution.md` | Done |
+| 4 | STATE.md template + ROADMAP.md template + artifact templates | — | Not started |
+| 5 | Pause/resume skill + workflow assembly | — | Not started |
 
 Phase 1 output: 10-section synthesis covering workflow phases (GSD, Superpowers, The Architect), state directories, config patterns, plan formats, execution models, quick/fast modes, pause/resume, discipline rules, config hierarchy, compatibility with existing hooks and agents.
 
 Phase 2 output: 5 workflow phases (init → discuss → plan → execute → verify), `.iago/` directory with 6 tracked subdirectories + gitignored state/, 9-field config.json with explicit defaults. Key decisions: no separate UI/ship/transition/architecture phases; discuss is per-phase clarification not one-time; verify includes shipping (PR creation).
+
+Phase 3 output: Plan file template with YAML frontmatter + task fields (files/action/verify/expected). Per-plan dispatch with wave metadata (parallel deferred). Context payload matrix for all 8 agents. Two bypass tiers: /iago:fast (inline, <=3 files) and /iago:quick (lightweight plan + implementer). No plan-checker agent — self-review absorbed into /iago:plan skill.
 
 ## Sprint 5: Implementation — NOT STARTED
 
