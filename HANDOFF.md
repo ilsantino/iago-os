@@ -1,19 +1,20 @@
 # iaGO-OS — Handoff
 
-> **Updated:** 2026-03-31
-> **Status:** Sprint 3 (Skills & Agents) Phase 1 complete. Phase 2 next.
+> **Updated:** 2026-04-01
+> **Status:** Sprint 4 (Workflow Engine) Phase 4a complete. Phase 4b next.
 > **Branch:** `master` (no `main` branch yet — create remote + push when ready)
 
 ---
 
 ## Where We Are
 
-Three sprints in progress:
+Four sprints completed or in progress:
 1. **Research sprint** — COMPLETE. Analyzed 6 open-source Claude Code configuration repos
 2. **Hook architecture sprint** — COMPLETE. 8 decisions across 5 phases, compiled into canonical reference
-3. **Skills & Agents sprint** — IN PROGRESS. Phase 1 (pattern extraction) complete, Phase 2 next
+3. **Skills & Agents sprint** — COMPLETE. 8 agents, 34 skills, ~1,580 lines across 42 files
+4. **Workflow Engine sprint** — IN PROGRESS. Phases 1-3 + 4a complete, Phase 4b next
 
-Nothing is implemented yet. The repo contains research, decision documents, and skills/agents synthesis.
+Nothing is implemented yet. The repo contains research and decision documents across 4 sprints.
 
 ## Repository Structure
 
@@ -25,27 +26,39 @@ iago-os/
   .claude/
     settings.local.json                  # Local permissions (legacy from research cloning)
   research/
-    SPRINT-STATUS.md                     #   Sprint tracker (all sprints)
-    sprint-1-research/                   #   Sprint 1: raw analysis files
-      ecc-analysis.md                    #     Everything Claude Code
-      ruflo-analysis.md                  #     Ruflo
-      gsd-analysis.md                    #     Get Shit Done
-      paperclip-analysis.md              #     Paperclip
-      the-architect.md                   #     The Architect
-      superpowers.md                     #     Superpowers
-    sprint-2-hook-arch-decisions/        #   Sprint 2: architecture decisions
-      hooks-synthesis.md                 #     Extracted hook/dispatcher/persistence patterns
-      DECISION-foundation.md             #     Phase 2: hook location, dispatcher, statusline
-      DECISION-core.md                   #     Phase 3: persistence, compaction, cost tracking
-      DECISION-guards.md                 #     Phase 4: post-edit pipeline, safety guard
-      DECISION-hooks.md                  #     Phase 5: CANONICAL reference (compiled from all)
-    sprint-3-skills-agents/              #   Sprint 3: skills & agents
-      skills-agents-synthesis.md         #     Phase 1: pattern extraction from all repos
+    SPRINT-STATUS.md                     # Sprint tracker (all sprints)
+    # Sprint 1: Research
+    ecc-analysis.md                      #   Everything Claude Code
+    ruflo-analysis.md                    #   Ruflo
+    gsd-analysis.md                      #   Get Shit Done
+    paperclip-analysis.md                #   Paperclip
+    the-architect.md                     #   The Architect
+    superpowers.md                       #   Superpowers
+    # Sprint 2: Hook Architecture
+    hooks-synthesis.md                   #   Extracted hook/dispatcher/persistence patterns
+    DECISION-foundation.md               #   Hook location, dispatcher, statusline
+    DECISION-core.md                     #   Persistence, compaction, cost tracking
+    DECISION-guards.md                   #   Post-edit pipeline, safety guard
+    DECISION-hooks.md                    #   CANONICAL hook reference (compiled from all)
+    # Sprint 3: Skills & Agents
+    skills-agents-synthesis.md           #   Pattern extraction from all repos
+    DECISION-conventions.md              #   CSO, agent template, escalation, paralysis guard
+    DECISION-skills.md                   #   34 skills, overlap resolutions, CLAUDE.md absorptions
+    DECISION-agents.md                   #   8 agents, tool restrictions, model assignments
+    DECISION-skills-agents.md            #   Assembly: dispatch map, meta-instruction, build order
+    # Sprint 4: Workflow Engine
+    workflow-synthesis.md                #   Workflow, state, config, execution patterns
+    DECISION-workflow-foundation.md      #   Phases, state dir, config.json
+    DECISION-execution.md                #   Plan format, dispatch, quick/fast modes
+    DECISION-discipline.md               #   Discipline placement, CLAUDE.md budget, rules files
 ```
 
 ## Git History
 
 ```
+77a5851 research: complete Sprint 4 Phase 3 — execution model decisions
+a2ffc61 research: complete Sprint 4 Phases 1-2 — workflow extraction + foundation decisions
+0ef5d32 research: complete Sprint 3 Phase 5 — skills & agents assembly
 c438881 research: complete hook architecture decisions
 d8697df research: analyze ECC, Ruflo, GSD, Paperclip, The-Architect and Superpowers
 ```
@@ -54,69 +67,55 @@ d8697df research: analyze ECC, Ruflo, GSD, Paperclip, The-Architect and Superpow
 
 ## What's Decided (Summary)
 
-Read `research/sprint-2-hook-arch-decisions/DECISION-hooks.md` for the full canonical reference. Key points:
+### Sprint 2: Hooks (`DECISION-hooks.md`)
+- **12 files** to implement: 3 shared utilities + 9 hooks, ~1,120 lines
+- Hook location: `.iago/hooks/` (tracked), `.iago/state/` (gitignored)
+- No dispatcher — direct `.claude/settings.json` registration
+- Safety: 13 destructive patterns, 17 secret regexes, 4 injection patterns
+- Post-edit: Biome → typecheck → console-warn pipeline
+- Context: statusline bridge file, 80%/90% warnings, session persistence trio
 
-- **12 files** to implement: 3 shared utilities + 9 hooks
-- **~1,120 lines** total estimated
-- **Hook location:** `.iago/hooks/` (tracked), `.iago/state/` (gitignored runtime)
-- **No dispatcher** — each hook is standalone `.mjs`, registered directly in `.claude/settings.json`
-- **Context persistence:** SessionStart/PreCompact/Stop trio, real token tracking from transcript JSONL
-- **Compaction:** Token-percentage from statusline bridge file, warnings at 80%/90%
-- **Cost tracking:** Per-session utilization JSONL, client-tagged, integrated into Stop hook
-- **Post-edit:** Biome format → typecheck → console-warn (in order)
-- **Safety:** 13 destructive command patterns, 17 secret regexes, 4 injection patterns
-- **Commit quality:** Conventional commits, 72-char limit, staged secret scan
-- **Statusline:** git branch, context %, client slug, session duration → bridge file
+### Sprint 3: Skills & Agents (`DECISION-skills-agents.md`)
+- **42 files**: 4 CLAUDE.md sections + 5 rules + 8 agents + 28 skills, ~1,580 lines
+- 8 agents (all Sonnet), orchestrator on Opus
+- Escalation protocol: DONE/DONE_WITH_CONCERNS/NEEDS_CONTEXT/BLOCKED
+- CSO descriptions, paralysis guard (7 reads), 3-fix escalation
 
-## What's Done (Sprint 3)
-
-### Phase 1: Extract Skill & Agent Patterns — COMPLETE
-
-Output: `research/sprint-3-skills-agents/skills-agents-synthesis.md`
-- 72 skills inventoried across 4 repos (ECC, Ruflo, GSD, Superpowers), grouped by functional area
-- 29 agents cataloged with model, tools, roles, behavioral rules, format details
-- Agent format comparison (ECC vs Ruflo vs GSD vs Superpowers)
-- Behavioral patterns extracted: escalation protocol, analysis paralysis guard, plan-checker, two-stage review, CSO
-- 12 skills identified as redundant with hook coverage
-- Stack filter applied (wrong-language, wrong-framework, enterprise-scale patterns flagged)
-- **Key direction:** Superpowers as skill/agent foundation, cherry-pick GSD analysis paralysis guard + plan verification
+### Sprint 4: Workflow Engine
+- **5 phases**: init → discuss → plan → execute → verify
+- State dir: `.iago/` with plans/, context/, summaries/, reviews/
+- Plan format: YAML frontmatter + tasks with files/action/verify/expected
+- Quick modes: `/iago:fast` (trivial), `/iago:quick` (1-3 tasks)
+- **Discipline**: 24 patterns placed across 5 layers, CLAUDE.md ~90 lines (under 200 budget)
+- **Rules files**: 8 total (4 always-on ~130 lines + 4 path-scoped ~120 lines)
+- Config hierarchy: Hooks > Rules > CLAUDE.md > Skills > Agent prompts
 
 ## What's NOT Done
 
-### Next: Sprint 3 Phase 2+
+### Next: Sprint 4 Phase 4b — Templates
 
-1. **Slash commands** — `/iago:pause`, `/iago:client <slug>`, `/iago:costs`, `/iago:resume`
-   - These are Claude Code skills (markdown + YAML frontmatter in `.claude/commands/`)
-   - `/iago:pause` writes HANDOFF.json from current session state
-   - `/iago:client` sets `.iago/state/active-client.json`
-   - `/iago:costs` queries costs.jsonl and summarizes
+STATE.md template, ROADMAP.md template, PROJECT.md template, plan/summary/review artifact templates.
 
-2. **CLAUDE.md generation** — What instructions does iaGO inject into project-level CLAUDE.md?
-   - Verification-before-completion discipline (from Superpowers)
-   - Two-stage review (spec compliance then quality)
-   - Task granularity rules (2-5 min steps, exact file paths)
-   - Rationalization prevention
-   - How does this relate to The Architect's blueprint template?
+### Then: Sprint 4 Phase 5 — Pause/Resume + Assembly
 
-3. **Agent definitions** — YAML frontmatter format for specialized agents
-   - ECC's agent pattern (markdown + YAML frontmatter)
-   - What agents does a consultancy need? (reviewer, planner, implementer, researcher?)
-   - How do agents interact with the hook system?
+`/iago:pause` and `/iago:resume` skill specs. Workflow assembly doc tying everything together.
 
-4. **Project kickoff** — The Architect's blueprint pattern
-   - Discovery → Deep Dive → Architecture → Generate workflow
-   - Outputs CLAUDE.md + agent configs for the target project
-   - How does this integrate with per-client isolation?
+### Then: Sprint 5 — Implementation
 
-5. **Implementation** — Build the 12 hook files from DECISION-hooks.md
-   - Build order defined: lib/ utilities → standalone hooks → complex hooks
-   - settings.json wiring
-   - .iago/state/ directory + .gitignore setup
+Build everything defined in Sprints 2-4:
+- 12 hook files (~1,120 lines) — build order in DECISION-hooks.md §11
+- 42 skill/agent/rules files (~1,580 lines) — build order in DECISION-skills-agents.md §4
+- CLAUDE.md (~90 lines) — budget in DECISION-discipline.md
+- 3 new rules files (~75 lines) — specs in DECISION-discipline.md
+- Workflow skill files (`/iago:init`, `/iago:discuss`, `/iago:plan`, `/iago:execute`, `/iago:verify`, `/iago:fast`, `/iago:quick`)
+- settings.json wiring
+- `.iago/` directory + .gitignore setup
 
 ---
 
 ## Key Design Decisions (Quick Reference)
 
+### Sprint 2: Hooks
 | # | Decision | Verdict |
 |---|----------|---------|
 | 1 | Dispatcher | Skip — direct registration, no profiles |
@@ -127,6 +126,18 @@ Output: `research/sprint-3-skills-agents/skills-agents-synthesis.md`
 | 6 | Compaction | Token-percentage only, 65/80/90 thresholds, bridge file |
 | 7 | Hook location | `.iago/hooks/` tracked, `.iago/state/` gitignored |
 | 8 | Statusline | 4 fields, bridge file to context monitor |
+
+### Sprint 4: Workflow Engine
+| # | Decision | Verdict |
+|---|----------|---------|
+| 1 | Phase structure | 5 phases (init→discuss→plan→execute→verify) + fast/quick bypass |
+| 2 | State directory | `.iago/` with 6 tracked subdirs + gitignored state/ |
+| 3 | config.json | 9 fields, explicit defaults, project.name only required field |
+| 4 | Plan format | YAML frontmatter + task fields, max 8 tasks/plan, no placeholders |
+| 5 | Subagent execution | Per-plan dispatch, sequential waves, deferred parallelism |
+| 6 | CLAUDE.md budget | ~90 lines across 11 sections, under 200 limit |
+| 7 | Quick/fast modes | Fast (inline ≤3 files) + Quick (lightweight plan, 1-3 tasks) |
+| 9 | Discipline placement | 24 patterns across 5 layers, 21 already placed, 3 new CLAUDE.md lines |
 
 ## Team Context
 
