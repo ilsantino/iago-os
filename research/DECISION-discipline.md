@@ -377,5 +377,133 @@ This document (DECISION-discipline)
   ├── 3 new CLAUDE.md lines ────────────► Execution Discipline + Workflow sections
   ├── 3 new rules files ────────────────► git-workflow.md, react-vite.md, aws-amplify.md
   ├── CLAUDE.md line budget ────────────► Next: actual CLAUDE.md file creation (Sprint 5)
-  └── Config hierarchy ─────────────────► Governs all future "where does X go?" decisions
+  ├── Config hierarchy ─────────────────► Governs all future "where does X go?" decisions
+  └── Pause/resume (Decision 8) ────────► /iago:pause skill spec, HANDOFF.json schema
 ```
+
+---
+
+## Decision 8: Pause/Resume
+
+**Verdict:** Adopt — explicit pause skill, automatic resume via hook.
+
+**Reasoning:** Our hooks already handle the common case (session ends, next session picks up broad context via snapshot). But the hooks capture *session-level* state — "what files were touched, what was the last task" — not *workflow-level* state — "which plan, which task, what's done, what's left." For a consultancy switching between client projects mid-execution, the workflow position is what matters. You need to know "I was on Plan 01-auth-02, Task 3, tasks 1-2 are committed, tasks 3-4 remain" — not just "files_modified: [src/auth.ts]."
+
+The durable artifacts (plans/, summaries/, STATE.md) partially cover this — you can reconstruct position by checking which summaries exist. But that requires reading multiple files and inferring state. A single HANDOFF.json is faster and unambiguous, especially after days away from a project.
+
+### Trigger: Explicit command only (`/iago:pause`)
+
+Not automatic on session end. Rationale:
+- Most sessions end naturally (task done, user leaves, context exhausted). Generating a HANDOFF.json on every Stop event creates noise — 90% of handoffs would be stale by next session.
+- The Stop hook already writes a session snapshot to `state/sessions/`. That covers the "unexpected end" case.
+- Pause is intentional: "I'm stopping mid-work on this client and need to resume exactly here later." That intent cannot be inferred — the user must express it.
+
+### Resume: Automatic via SessionStart hook
+
+No `/iago:resume` command. The SessionStart hook (DECISION-hooks.md §2) already:
+1. Checks for `state/HANDOFF.json`
+2. If present: loads it, injects via `hookSpecificOutput`, deletes after load
+3. If absent: falls back to most recent session snapshot
+
+This is the right design — resume is passive. When you `cd` into a project and start Claude, you get the handoff injected automatically. No extra command. The injected context tells you where you were; you decide whether to continue or pivot.
+
+### HANDOFF.json Schema
+
+```json
+{
+  "paused_at": "2026-04-01T15:30:00Z",
+  "session_id": "abc123",
+  "client": "acme",
+  "project": "widget-redesign",
+  "git_branch": "feat/01-auth",
+  "workflow_position": {
+    "phase": "01-auth",
+    "plan": "01-auth-02",
+    "task": 3
+  },
+  "current_task": "Task 3: Registration endpoint — POST /api/auth/register",
+  "completed_tasks": [
+    { "task": 1, "description": "JWT utility module", "commit": "abc1234" },
+    { "task": 2, "description": "Password utility module", "commit": "def5678" }
+  ],
+  "remaining_tasks": [
+    { "task": 3, "description": "Registration endpoint" },
+    { "task": 4, "description": "Login endpoint" }
+  ],
+  "blockers": [],
+  "key_decisions": ["JWT over session cookies", "bcrypt for hashing"],
+  "uncommitted_files": ["src/routes/auth/register.ts"],
+  "next_action": "Continue implementing POST /api/auth/register — validation done, need DB insert and response"
+}
+```
+
+**Field reference:**
+
+| Field | Type | Source | Purpose |
+|-------|------|--------|---------|
+| `paused_at` | ISO datetime | System clock | When pause was invoked |
+| `session_id` | string | Session context | Links to session snapshot in `state/sessions/` |
+| `client` | string | `state/active-client.json` | Client context for cost attribution |
+| `project` | string | `config.json → project.name` | Project identifier |
+| `git_branch` | string | `git branch --show-current` | Current working branch |
+| `workflow_position.phase` | string | `STATE.md` | Active ROADMAP phase (`{NN}-{slug}`) |
+| `workflow_position.plan` | string | `STATE.md` | Active plan (`{NN}-{slug}-{PP}`) |
+| `workflow_position.task` | integer | Conversation context | Current task number within plan |
+| `current_task` | string | Conversation context | Human-readable description of in-progress task |
+| `completed_tasks` | array | Plan file + git log | Tasks done, with commit hashes for traceability |
+| `remaining_tasks` | array | Plan file | Tasks not yet started or in progress |
+| `blockers` | string[] | Conversation context | Active blockers preventing progress |
+| `key_decisions` | string[] | Conversation context | Decisions made this session worth preserving |
+| `uncommitted_files` | string[] | `git status` | Files with unsaved changes |
+| `next_action` | string | Conversation context | Exact next step — specific enough to resume without context |
+
+**`workflow_position` is nullable.** If pause is invoked outside the full workflow (during a `/iago:quick` task or ad-hoc work), `workflow_position` is `null`. The `current_task` and `next_action` fields still capture what's happening.
+
+### .continue-here.md: Skip
+
+Redundant. HANDOFF.json is 15 fields of readable JSON, not a 500-field enterprise config. Anyone who wants the human-readable version can `cat .iago/state/HANDOFF.json` — the field names are self-documenting. Maintaining two representations of the same state is a consistency bug waiting to happen.
+
+GSD uses `.continue-here.md` because its HANDOFF.json is more mechanical (task numbers, not descriptions). Our HANDOFF.json includes `current_task`, `next_action`, and task descriptions — it's already human-readable.
+
+### Cleanup
+
+SessionStart hook reads and deletes HANDOFF.json after injection. Same behavior already specified in DECISION-hooks.md §2. No change needed to the hook spec.
+
+If HANDOFF.json is stale (>7 days old based on `paused_at`), the SessionStart hook should log a warning: "Handoff is {N} days old — project state may have changed. Check STATE.md and git log." It still loads the handoff; the warning is informational.
+
+### Relationship to Session Hooks
+
+| Layer | Trigger | Captures | Precision | Lifecycle |
+|-------|---------|----------|-----------|-----------|
+| **Session snapshot** (context-persistence.mjs) | Automatic: PreCompact + Stop | Broad session context: files, tools, decisions, tokens, current task | Low — "what was I doing?" | Written every compaction + session end. Kept last 10. Always available. |
+| **HANDOFF.json** (/iago:pause) | Manual: user invokes pause | Precise workflow position: phase, plan, task, completed vs remaining, blockers, next action | High — "continue exactly here" | Written once on pause. Deleted on next SessionStart. Only present when explicitly created. |
+
+They complement, never conflict:
+- Session snapshots are the **safety net** — always there, capture everything at low fidelity.
+- HANDOFF.json is the **precision tool** — only when you need it, captures workflow position at high fidelity.
+- Recovery hierarchy (already in DECISION-hooks.md): HANDOFF.json > session snapshot > interrupted session detection.
+
+**No duplication between layers.** The Stop hook does NOT write HANDOFF.json. The pause skill does NOT write a session snapshot. They are separate concerns: Stop captures "session ended" (automatic bookkeeping); pause captures "user intentionally bookmarked this position" (deliberate act).
+
+### /iago:pause Skill Spec
+
+**Location:** `.claude/skills/iago-pause/SKILL.md`
+
+**Steps:**
+1. Read `STATE.md` for current phase and plan position
+2. Read active plan file (if mid-execution) for task progress
+3. Read `config.json` for project/client fields
+4. Run `git status` for uncommitted files and current branch
+5. Construct HANDOFF.json from gathered state + conversation context
+6. Write to `.iago/state/HANDOFF.json`
+7. Output confirmation: "Paused at {current_task}. Next session will resume from: {next_action}"
+
+**What the skill CANNOT automate:** `current_task`, `key_decisions`, `next_action`, `blockers`. These require conversation context that only the orchestrator (main session) has. The skill reads them from the active conversation, not from files. This is why pause must be a skill (prompt-level access to conversation state), not a hook (external process, no conversation access).
+
+**Lines estimate:** ~30
+
+### /iago:resume: Not Needed
+
+Resume is handled entirely by the SessionStart hook. No explicit resume command exists. When you start a new session in a project with a HANDOFF.json, the hook injects the context. You're resumed.
+
+If you want to see the handoff state without starting a session, read the file directly: `cat .iago/state/HANDOFF.json`.

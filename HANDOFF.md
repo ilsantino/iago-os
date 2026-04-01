@@ -1,7 +1,7 @@
 # iaGO-OS — Handoff
 
 > **Updated:** 2026-04-01
-> **Status:** Sprint 4 (Workflow Engine) Phase 4a complete. Phase 4b next.
+> **Status:** Sprint 4 (Workflow Engine) Phase 4b complete. Phase 5 next.
 > **Branch:** `master` (no `main` branch yet — create remote + push when ready)
 
 ---
@@ -12,7 +12,7 @@ Four sprints completed or in progress:
 1. **Research sprint** — COMPLETE. Analyzed 6 open-source Claude Code configuration repos
 2. **Hook architecture sprint** — COMPLETE. 8 decisions across 5 phases, compiled into canonical reference
 3. **Skills & Agents sprint** — COMPLETE. 8 agents, 34 skills, ~1,580 lines across 42 files
-4. **Workflow Engine sprint** — IN PROGRESS. Phases 1-3 + 4a complete, Phase 4b next
+4. **Workflow Engine sprint** — IN PROGRESS. Phases 1-4b complete, Phase 5 (templates + assembly) next
 
 Nothing is implemented yet. The repo contains research and decision documents across 4 sprints.
 
@@ -89,16 +89,13 @@ d8697df research: analyze ECC, Ruflo, GSD, Paperclip, The-Architect and Superpow
 - **Discipline**: 24 patterns placed across 5 layers, CLAUDE.md ~90 lines (under 200 budget)
 - **Rules files**: 8 total (4 always-on ~130 lines + 4 path-scoped ~120 lines)
 - Config hierarchy: Hooks > Rules > CLAUDE.md > Skills > Agent prompts
+- **Pause/resume**: explicit `/iago:pause` skill → HANDOFF.json; auto-resume via SessionStart hook
 
 ## What's NOT Done
 
-### Next: Sprint 4 Phase 4b — Templates
+### Next: Sprint 4 Phase 5 — Templates + Assembly
 
-STATE.md template, ROADMAP.md template, PROJECT.md template, plan/summary/review artifact templates.
-
-### Then: Sprint 4 Phase 5 — Pause/Resume + Assembly
-
-`/iago:pause` and `/iago:resume` skill specs. Workflow assembly doc tying everything together.
+STATE.md template, ROADMAP.md template, PROJECT.md template, plan/summary/review artifact templates. Workflow assembly doc tying everything together.
 
 ### Then: Sprint 5 — Implementation
 

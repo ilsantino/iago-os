@@ -51,8 +51,8 @@ Design the workflow orchestration that ties hooks, agents, and skills into a lif
 | 2 | Foundation decisions (phases, state directory, config.json) | `DECISION-workflow-foundation.md` | Done |
 | 3 | Execution model (plan format, dispatch, quick/fast modes) | `DECISION-execution.md` | Done |
 | 4a | Discipline placement, CLAUDE.md budget, rules files spec | `DECISION-discipline.md` | Done |
-| 4b | STATE.md template + ROADMAP.md template + artifact templates | — | Not started |
-| 5 | Pause/resume skill + workflow assembly | — | Not started |
+| 4b | Pause/resume decision | `DECISION-discipline.md` (appended) | Done |
+| 5 | STATE.md template + ROADMAP.md template + artifact templates + workflow assembly | — | Not started |
 
 Phase 1 output: 10-section synthesis covering workflow phases (GSD, Superpowers, The Architect), state directories, config patterns, plan formats, execution models, quick/fast modes, pause/resume, discipline rules, config hierarchy, compatibility with existing hooks and agents.
 
@@ -61,6 +61,8 @@ Phase 2 output: 5 workflow phases (init → discuss → plan → execute → ver
 Phase 3 output: Plan file template with YAML frontmatter + task fields (files/action/verify/expected). Per-plan dispatch with wave metadata (parallel deferred). Context payload matrix for all 8 agents. Two bypass tiers: /iago:fast (inline, <=3 files) and /iago:quick (lightweight plan + implementer). No plan-checker agent — self-review absorbed into /iago:plan skill.
 
 Phase 4a output: 24 discipline patterns placed across 5 layers (CLAUDE.md, rules/, skills, agent prompts, hooks). 21 already covered by prior decisions, 3 new 1-line CLAUDE.md additions (scope creep, deviation rules, STATE.md digest). CLAUDE.md budget: ~90 lines across 11 sections (under 200 limit, ~110 lines headroom). 8 rules files total: 4 always-on (~130 lines) + 4 path-scoped (~120 lines). 3 new rules files: git-workflow.md, react-vite.md, aws-amplify.md. Config hierarchy defined (Hooks > Rules > CLAUDE.md > Skills > Agent prompts).
+
+Phase 4b output: Adopt explicit pause, automatic resume. `/iago:pause` skill (~30 lines) writes HANDOFF.json to `.iago/state/`. No `/iago:resume` — SessionStart hook handles it (already spec'd in DECISION-hooks.md). Skip `.continue-here.md` (redundant). HANDOFF.json: 15-field schema with workflow position (phase/plan/task), completed/remaining tasks with commits, blockers, next action. Stale handoff warning at 7 days.
 
 ## Sprint 5: Implementation — NOT STARTED
 
