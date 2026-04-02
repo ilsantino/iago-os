@@ -1,2 +1,15 @@
-.iago/tmp/
+# iaGO-OS runtime state (session-specific, machine-specific)
+.iago/state/
+
+# Claude Code local settings (per-developer)
 .claude/settings.local.json
+
+# Local CLAUDE.md overrides (per-developer)
+CLAUDE.local.md
+
+# OS artifacts
+.DS_Store
+Thumbs.db
+
+# Node
+node_modules/

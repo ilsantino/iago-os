@@ -114,6 +114,7 @@ Full analysis files in `research/`. Design decisions in `.iago/research/`.
 
 ## Status
 
-Research and design decisions complete. Implementation pending.
+v0.1.0 build in progress. Research and design decisions complete (Sprints 1-4).
+Implementation: CLAUDE.md built, directory scaffold created, hooks/rules/agents/skills pending.
 
-See `HANDOFF.md` for the full handoff document and `.iago/research/DECISION-*.md` for all architectural decisions.
+See `HANDOFF.md` for current state and `research/CHERRY-PICK-PLAN.md` for the complete build plan.

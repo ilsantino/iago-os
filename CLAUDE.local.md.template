@@ -1,0 +1,32 @@
+# Local Overrides
+
+> Copy this file to `CLAUDE.local.md` and customize. It is gitignored.
+> Content here supplements CLAUDE.md — it does not replace it.
+
+## Developer
+
+- **Name:** {your name}
+- **Machine:** {OS, RAM, key constraints}
+- **Editor:** {VS Code / JetBrains / other}
+
+## Local Paths
+
+- **Node:** {path to node if non-standard}
+- **Biome:** {path to biome if non-standard}
+
+## Preferences
+
+- {Any personal conventions or preferences that differ from CLAUDE.md}
+- {e.g., "I prefer verbose test output" or "Skip typecheck hook — my project doesn't use TS"}
+
+## Active Client
+
+- **Client:** {current client slug, or "internal"}
+- **Project:** {current project name}
+
+## Disabled Hooks
+
+Set `IAGO_DISABLED_HOOKS` env var to disable specific hooks:
+```
+export IAGO_DISABLED_HOOKS=post-edit-typecheck,post-edit-console-warn
+```
