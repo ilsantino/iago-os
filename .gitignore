@@ -4,8 +4,12 @@
 # Claude Code local settings (per-developer)
 .claude/settings.local.json
 
-# Local CLAUDE.md overrides (per-developer)
-CLAUDE.local.md
+# Local overrides (per-developer)
+*.local.md
+
+# Environment variables
+.env
+.env.*
 
 # OS artifacts
 .DS_Store
