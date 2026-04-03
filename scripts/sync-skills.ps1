@@ -3,8 +3,10 @@
 #        .\scripts\sync-skills.ps1 -Target ..\acme-dashboard -DryRun
 
 param(
-    [Parameter(Mandatory=$true)]
+    [Parameter(Mandatory=$false)]
     [string]$Target,
+
+    [switch]$Global,
 
     [switch]$DryRun
 )
@@ -15,16 +17,23 @@ $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $IagoRoot = Split-Path -Parent $ScriptDir
 
 # --- Validate ---
-if (-not (Test-Path $Target)) {
+if ($Global) {
+    $Target = Join-Path $HOME ".claude"
+    New-Item -Path $Target -ItemType Directory -Force | Out-Null
+} elseif (-not $Target) {
+    Write-Error "Either -Target or -Global is required"
+    exit 1
+} elseif (-not (Test-Path $Target)) {
     Write-Error "Target does not exist: $Target"
     exit 1
+} else {
+    $Target = Resolve-Path $Target
 }
-
-$Target = Resolve-Path $Target
 
 Write-Host "=== iaGO Sync Skills ===" -ForegroundColor Cyan
 Write-Host "  Source: $IagoRoot"
 Write-Host "  Target: $Target"
+if ($Global) { Write-Host "  Mode:   GLOBAL (no hooks)" -ForegroundColor Magenta }
 if ($DryRun) { Write-Host "  Mode:   DRY RUN" -ForegroundColor Yellow }
 Write-Host ""
 
@@ -84,28 +93,37 @@ Write-Host "Syncing..." -ForegroundColor Yellow
 
 # Sync .claude/ directories
 $claudeSrc = Join-Path $IagoRoot ".claude"
-$claudeDst = Join-Path $Target ".claude"
+if ($Global) {
+    # Global mode: target IS ~/.claude/, so sync directly into it
+    $claudeDst = $Target
+} else {
+    $claudeDst = Join-Path $Target ".claude"
+}
 Sync-Directory -Name "skills" -SrcBase $claudeSrc -DstBase $claudeDst
 Sync-Directory -Name "agents" -SrcBase $claudeSrc -DstBase $claudeDst
 Sync-Directory -Name "rules" -SrcBase $claudeSrc -DstBase $claudeDst
 
-# Sync hooks
-$hooksSrc = Join-Path $IagoRoot ".iago" "hooks"
-$hooksDst = Join-Path $Target ".iago" "hooks"
-if (Test-Path $hooksSrc) {
-    $srcCount = (Get-ChildItem -Path $hooksSrc -Recurse -File).Count
-    $dstCount = 0
-    if (Test-Path $hooksDst) {
-        $dstCount = (Get-ChildItem -Path $hooksDst -Recurse -File).Count
-    }
-    Write-Host "  hooks: $srcCount source files, $dstCount in target"
+# Sync hooks (skip in global mode)
+if (-not $Global) {
+    $hooksSrc = Join-Path $IagoRoot ".iago" "hooks"
+    $hooksDst = Join-Path $Target ".iago" "hooks"
+    if (Test-Path $hooksSrc) {
+        $srcCount = (Get-ChildItem -Path $hooksSrc -Recurse -File).Count
+        $dstCount = 0
+        if (Test-Path $hooksDst) {
+            $dstCount = (Get-ChildItem -Path $hooksDst -Recurse -File).Count
+        }
+        Write-Host "  hooks: $srcCount source files, $dstCount in target"
 
-    if (-not $DryRun) {
-        New-Item -Path $hooksDst -ItemType Directory -Force | Out-Null
-        Copy-Item -Path (Join-Path $hooksSrc "*") -Destination $hooksDst -Recurse -Force
-        $newCount = (Get-ChildItem -Path $hooksDst -Recurse -File).Count
-        Write-Host "    Synced: $newCount files in target" -ForegroundColor Green
+        if (-not $DryRun) {
+            New-Item -Path $hooksDst -ItemType Directory -Force | Out-Null
+            Copy-Item -Path (Join-Path $hooksSrc "*") -Destination $hooksDst -Recurse -Force
+            $newCount = (Get-ChildItem -Path $hooksDst -Recurse -File).Count
+            Write-Host "    Synced: $newCount files in target" -ForegroundColor Green
+        }
     }
+} else {
+    Write-Host "  hooks: skipped (--global mode -- hooks require .iago/hooks/ in project)"
 }
 
 Write-Host ""

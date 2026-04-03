@@ -54,6 +54,16 @@
         ]
       },
       {
+        "matcher": "Skill|Agent",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$CLAUDE_PROJECT_DIR/.iago/hooks/usage-tracker.mjs\" post-tool-use",
+            "timeout": 3000
+          }
+        ]
+      },
+      {
         "matcher": "Edit",
         "hooks": [
           {
@@ -92,6 +102,11 @@
             "type": "command",
             "command": "node \"$CLAUDE_PROJECT_DIR/.iago/hooks/context-persistence.mjs\" stop",
             "timeout": 10000
+          },
+          {
+            "type": "command",
+            "command": "node \"$CLAUDE_PROJECT_DIR/.iago/hooks/usage-tracker.mjs\" stop",
+            "timeout": 5000
           }
         ]
       }

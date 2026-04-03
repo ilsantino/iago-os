@@ -1,7 +1,7 @@
 # iaGO-OS — Handoff
 
 > **Updated:** 2026-04-03
-> **Status:** Phase 4 COMPLETE. Phase 5 next (usage tracking + validate + docs + v0.1.0).
+> **Status:** Phase 5 COMPLETE. v0.1.0 ready to tag and push.
 > **Branch:** `master`
 
 ---
@@ -23,16 +23,16 @@
 | 3D | Industry skills (9) | DONE | `e081d93` |
 | 4A | Templates (client + internal) | DONE | `77434da` |
 | 4B | Scripts (new-client + sync-skills) | DONE | `a0a548e` |
-| 5A | Usage tracking hook + aggregation script | PENDING |
-| 5B | Validate (global install, e2e, dry run) | PENDING |
-| 5C | Docs (README, SETUP, ARCHITECTURE, SKILLS) | PENDING |
+| 5A | Usage tracking hook + aggregation script | DONE |
+| 5B | Validate (global install, e2e, dry run) | DONE |
+| 5C | Docs (README, SETUP, ARCHITECTURE, SKILLS) | DONE |
 | 5D | Release v0.1.0 (tag + push) | PENDING |
 
 ---
 
 ## What Exists Now
 
-**Skills (35 with SKILL.md):**
+**Skills (41 with SKILL.md):**
 - Workflow (13): iago-init, iago-discuss, iago-plan, iago-execute, iago-verify, iago-quick, iago-fast, iago-pause, iago-scaffold, iago-proposal, iago-onboard, iago-n8n, iago-agents
 - Core (6): brainstorming, writing-plans, subagent-driven-development, code-review, deep-research, prompt-optimizer
 - Content (7): article-writing, content-engine, investor-materials, investor-outreach, market-research, visa-doc-translate, frontend-slides

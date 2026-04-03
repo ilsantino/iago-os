@@ -1,29 +1,35 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# iaGO-OS — Sync skills, agents, and rules to a client project
+# iaGO-OS — Sync skills, agents, and rules to a client project (or globally)
 # Usage: ./scripts/sync-skills.sh --target ../acme-dashboard
 #        ./scripts/sync-skills.sh --target ../acme-dashboard --dry-run
+#        ./scripts/sync-skills.sh --global
+#        ./scripts/sync-skills.sh --global --dry-run
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 IAGO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 # --- Defaults ---
 TARGET_PATH=""
+GLOBAL=false
 DRY_RUN=false
 
 # --- Parse args ---
 while [[ $# -gt 0 ]]; do
   case $1 in
     --target)    TARGET_PATH="$2"; shift 2 ;;
+    --global)    GLOBAL=true; shift ;;
     --dry-run)   DRY_RUN=true; shift ;;
     --help|-h)
       echo "Usage: sync-skills.sh --target <project-path> [--dry-run]"
+      echo "       sync-skills.sh --global [--dry-run]"
       echo ""
-      echo "Syncs skills, agents, and rules from iaGO-OS to a client project."
+      echo "Syncs skills, agents, and rules from iaGO-OS to a client project or ~/.claude/."
       echo ""
       echo "Options:"
       echo "  --target    Path to client project"
+      echo "  --global    Sync to ~/.claude/ (skills, agents, rules only — no hooks)"
       echo "  --dry-run   Show what would change without copying"
       echo "  --help      Show this help"
       exit 0
@@ -33,14 +39,21 @@ while [[ $# -gt 0 ]]; do
 done
 
 # --- Validate ---
-if [[ -z "$TARGET_PATH" ]]; then echo "Error: --target is required"; exit 1; fi
-if [[ ! -d "$TARGET_PATH" ]]; then echo "Error: Target does not exist: $TARGET_PATH"; exit 1; fi
-
-TARGET_PATH="$(cd "$TARGET_PATH" && pwd)"
+if $GLOBAL; then
+  TARGET_PATH="$HOME/.claude"
+  mkdir -p "$TARGET_PATH"
+elif [[ -z "$TARGET_PATH" ]]; then
+  echo "Error: --target or --global is required"; exit 1
+elif [[ ! -d "$TARGET_PATH" ]]; then
+  echo "Error: Target does not exist: $TARGET_PATH"; exit 1
+else
+  TARGET_PATH="$(cd "$TARGET_PATH" && pwd)"
+fi
 
 echo "=== iaGO Sync Skills ==="
 echo "  Source: $IAGO_ROOT"
 echo "  Target: $TARGET_PATH"
+if $GLOBAL; then echo "  Mode:   GLOBAL (no hooks)"; fi
 if $DRY_RUN; then echo "  Mode:   DRY RUN"; fi
 echo ""
 
@@ -48,7 +61,12 @@ echo ""
 sync_dir() {
   local name="$1"
   local src="$IAGO_ROOT/.claude/$name"
-  local dst="$TARGET_PATH/.claude/$name"
+  local dst
+  if $GLOBAL; then
+    dst="$TARGET_PATH/$name"
+  else
+    dst="$TARGET_PATH/.claude/$name"
+  fi
 
   if [[ ! -d "$src" ]]; then
     echo "  Skip: $name (source not found)"
@@ -123,7 +141,11 @@ echo "Syncing..."
 sync_dir "skills"
 sync_dir "agents"
 sync_dir "rules"
-sync_hooks
+if ! $GLOBAL; then
+  sync_hooks
+else
+  echo "  hooks: skipped (--global mode — hooks require .iago/hooks/ in project)"
+fi
 
 echo ""
 echo "=== Done ==="
