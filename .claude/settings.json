@@ -1,16 +1,5 @@
 {
   "hooks": {
-    "Statusline": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node \"$CLAUDE_PROJECT_DIR/.iago/hooks/statusline.mjs\"",
-            "timeout": 2000
-          }
-        ]
-      }
-    ],
     "SessionStart": [
       {
         "hooks": [

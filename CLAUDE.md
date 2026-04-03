@@ -7,7 +7,7 @@ Stack is fixed — do not suggest alternatives unless explicitly asked.
 ## Tech Stack
 
 - **Frontend:** React 19 + Vite + TypeScript (strict) + TailwindCSS 4 + ShadCN/UI
-- **Backend:** AWS Amplify Gen 2 + Lambda (Node.js 20) + API Gateway + DynamoDB + Cognito
+- **Backend:** AWS Amplify Gen 2 + Lambda (Node.js 20) + API Gateway + DynamoDB + Cognito + SES
 - **Agents:** Claude SDK (Anthropic) + LangGraph + n8n
 - **Testing:** Vitest (unit/integration), Playwright (E2E)
 - **Tooling:** Biome (formatter + linter) — never Prettier, ESLint, or gofmt
@@ -24,6 +24,7 @@ Stack is fixed — do not suggest alternatives unless explicitly asked.
 - File naming: kebab-case files, PascalCase components, camelCase utilities
 - Barrel files (`index.ts`) only at public API boundaries
 - Imports: external deps first, then internal with `@/` aliases
+- ShadCN/UI + TailwindCSS 4: always verify setup against official ShadCN docs — Vite setup differs from Next.js
 
 ## Architecture
 
