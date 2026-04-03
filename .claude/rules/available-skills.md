@@ -50,6 +50,11 @@ description: >-
 - `/iago:fast` — Inline trivial tasks (<=3 files), atomic commit, STATE.md log
 - `/iago:quick` — Lightweight plan -> implementer -> reviewer
 - `/iago:pause` — Write HANDOFF.json to state/
+- `/iago:scaffold` — Scaffold new client project from iaGO template (React 19 + Vite + AWS)
+- `/iago:proposal` — Generate client proposal (scope, timeline, cost, tech approach)
+- `/iago:onboard` — Scan existing codebase, produce architecture map, populate PROJECT.md
+- `/iago:n8n` — Design n8n automation workflows (webhooks, Lambda, DynamoDB events)
+- `/iago:agents` — Design multi-agent architectures (Claude SDK + LangGraph)
 
 ### Built-in (Claude Code native)
 - `/simplify` — Review changed code for reuse, quality, and efficiency, then fix issues found

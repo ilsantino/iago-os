@@ -93,6 +93,7 @@ Detailed rules in `.claude/rules/`:
 
 Core: `/brainstorming`, `/writing-plans`, `/subagent-driven-development`, `/code-review`, `/deep-research`, `/prompt-optimizer`.
 Workflow: `/iago:init`, `/iago:discuss`, `/iago:plan`, `/iago:execute`, `/iago:verify`, `/iago:fast`, `/iago:quick`, `/iago:pause`.
+Proprietary: `/iago:scaffold`, `/iago:proposal`, `/iago:onboard`, `/iago:n8n`, `/iago:agents`.
 See `.claude/rules/available-skills.md` for the complete catalog including content, experimental, and industry skills.
 
 ## Agents

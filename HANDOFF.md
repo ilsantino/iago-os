@@ -17,25 +17,22 @@
 | 2A | Templates + iago-init + iago-discuss | DONE | `2358704` |
 | 2B | 11 agents + iago-plan + iago-execute | DONE | `6a73414` + `f25e51d` |
 | 2C | iago-verify + iago-quick + WORKFLOW.md | DONE | `f7e92a8` |
-| 3A | Remaining workflow + proprietary skills (7) | PENDING |
+| 3A | Remaining workflow + proprietary skills (7) | DONE |
 | 3B | Core feature skills (6) | PENDING |
 | 3C | Content/Business + Experimental skills (13) | PENDING |
 | 3D | Industry skills (9) | PENDING |
 
 ### What Exists Now
 
-**Skills with SKILL.md (6 built):**
-iago-init, iago-discuss, iago-plan, iago-execute, iago-verify, iago-quick
+**Skills with SKILL.md (13 built):**
+iago-init, iago-discuss, iago-plan, iago-execute, iago-verify, iago-quick,
+iago-fast, iago-pause, iago-scaffold, iago-proposal, iago-onboard, iago-n8n, iago-agents
 
-**Skills as empty directories (30 remaining):**
-- Workflow: iago-fast, iago-pause
+**Skills as empty directories (23 remaining):**
 - Core: brainstorming, writing-plans, subagent-driven-development, code-review, deep-research, prompt-optimizer
 - Content/Business: article-writing, content-engine, investor-materials, investor-outreach, market-research, visa-doc-translate, frontend-slides
 - Experimental: autonomous-loops, continuous-agent-loop, enterprise-agent-ops, agent-payment-x402, liquid-glass-design, santa-method
 - Industry: healthcare-phi-compliance, carrier-relationship-management, customs, energy, logistics, inventory, production-scheduling, quality-nonconformance, returns-reverse-logistics
-
-**Proprietary skills (5 — directories DON'T exist yet, specs NOT in research):**
-iago-scaffold, iago-proposal, iago-onboard, iago-n8n, iago-agents
 
 **Agents (11 built, all enhanced with stack intelligence):**
 implementer, code-reviewer, spec-reviewer, code-quality-reviewer, researcher, tdd-guide, build-error-resolver, e2e-runner, content-writer, infra-runner, data-modeler
