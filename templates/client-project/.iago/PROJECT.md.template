@@ -1,0 +1,35 @@
+# {{PROJECT_NAME}}
+
+## Vision
+
+{1-2 sentences: what this project does and why it exists.}
+
+## Client
+
+{{CLIENT_ID}} — {engagement type: PoC, MVP, production, internal}
+
+## Constraints
+
+- **Timeline:** {deadline or "no fixed deadline"}
+- **Budget:** {budget constraint or "Claude Max flat-rate"}
+- **Compliance:** {HIPAA, SOC2, GDPR, or "none"}
+- **Team:** {who is working on this, availability}
+
+## Stack
+
+| Layer | Technology |
+|-------|-----------|
+| Frontend | React 19 + Vite + TypeScript strict + TailwindCSS 4 + ShadCN/UI |
+| Backend | AWS Amplify Gen 2 + Lambda + API Gateway + DynamoDB + Cognito + SES |
+| Testing | Vitest (unit/integration) + Playwright (E2E) |
+| Tooling | Biome (format + lint) |
+
+{Override rows only if project deviates from the standard stack.}
+
+## Architecture Decisions
+
+| # | Decision | Verdict | Date |
+|---|----------|---------|------|
+
+{Add rows as decisions are made during discuss and plan phases.
+When STATE.md overflows its 5-decision limit, archive older decisions here.}

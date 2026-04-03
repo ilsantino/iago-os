@@ -105,3 +105,4 @@ All on Sonnet. Hub-and-spoke: only the orchestrator (this session) dispatches ag
 - **Opus:** Orchestrator (main session) — planning, architecture, multi-file reasoning
 - **Sonnet:** All subagents — implementation, review, research, debugging, testing
 - **Haiku:** Reserve for mechanical tasks (formatting, simple lookups) when needed
+- **Codex (GPT-5.4):** Cross-model review (`/codex:review`, `/codex:adversarial-review`) and rescue delegation (`/codex:rescue`)

@@ -51,6 +51,29 @@ description: >-
 - `/iago:quick` — Lightweight plan -> implementer -> reviewer
 - `/iago:pause` — Write HANDOFF.json to state/
 
+### Built-in (Claude Code native)
+- `/simplify` — Review changed code for reuse, quality, and efficiency, then fix issues found
+- `/loop` — Run a prompt or command on a recurring interval (e.g., `/loop 5m /codex:status`)
+- `/schedule` — Create, update, or run cron-scheduled remote agents (triggers)
+- `/claude-api` — Guidance for building with Claude API, Anthropic SDK, or Agent SDK
+
+### MCP Servers (active)
+- `context7` — Fetch current library/framework docs (React, Tailwind, ShadCN, AWS SDK, etc.) — prefer over web search for API syntax and setup
+
+### Marketplace Plugins (not installed — evaluate when needed)
+- `typescript-lsp` — Real-time TS diagnostics via language server (may replace post-edit-typecheck hook)
+- `playwright` — Playwright integration (may complement e2e-runner agent)
+- `github` — PR/issue management directly from Claude Code
+
+### Codex (cross-model, plugin-managed)
+- `/codex:review` — GPT-5.4 read-only code review against git changes
+- `/codex:adversarial-review` — Challenge review targeting auth, data loss, race conditions, rollback safety
+- `/codex:rescue` — Delegate debugging or implementation to Codex in background (`--write` for fixes)
+- `/codex:status` — Show active and recent Codex background jobs
+- `/codex:result` — Retrieve output from a finished Codex job
+- `/codex:cancel` — Cancel an active background Codex job
+- `/codex:setup` — Check Codex CLI readiness and manage review gate
+
 ### Available Agents
 - `implementer` — Execute a single task from a plan
 - `code-reviewer` — Single-pass review with severity findings

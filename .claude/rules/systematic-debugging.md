@@ -39,7 +39,7 @@ description: >-
 | 1st fix | Apply hypothesis-driven fix, run tests |
 | 2nd fix | Re-isolate — original hypothesis was wrong, form a new one |
 | 3rd fix | Last attempt with a fundamentally different approach |
-| After 3 | **STOP.** Report: what you tried, what failed, what you suspect. Escalate to orchestrator or user. No 4th attempt without new information. |
+| After 3 | **STOP.** Report: what you tried, what failed, what you suspect. Escalate to orchestrator or user. No 4th attempt without new information. Consider `/codex:rescue` for a cross-model second opinion. |
 
 ## Anti-Patterns
 

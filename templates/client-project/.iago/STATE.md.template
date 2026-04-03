@@ -1,0 +1,23 @@
+# State — {{PROJECT_NAME}}
+
+> **Phase:** 00-init | **Status:** idle
+> **Plan:** — | **Updated:** {{CREATED_DATE}}
+
+## Recent Decisions
+
+| Date | Decision | Phase |
+|------|----------|-------|
+
+{Keep 3-5 most recent. When a 6th is added, move the oldest to PROJECT.md.}
+
+## Blockers
+
+| Blocker | Since | Owner |
+|---------|-------|-------|
+
+## Quick Tasks
+
+| Date | Mode | Description | Commit |
+|------|------|-------------|--------|
+
+Project initialized. Run `/iago:init` to begin.
