@@ -1,7 +1,7 @@
 # iaGO-OS — Handoff
 
 > **Updated:** 2026-04-03
-> **Status:** Phase 2 COMPLETE. Phase 3 (skills build-out) next.
+> **Status:** Phase 4 COMPLETE. Templates + scaffolding scripts shipped.
 > **Branch:** `master`
 
 ---
@@ -21,6 +21,8 @@
 | 3B | Core feature skills (6) | DONE |
 | 3C | Content/Business + Experimental skills (13) | DONE |
 | 3D | Industry skills (9) | DONE |
+| 4A | Templates (client + internal) | DONE |
+| 4B | Scripts (new-client + sync-skills) | DONE |
 
 ### What Exists Now
 
@@ -32,7 +34,14 @@ Content: article-writing, content-engine, investor-materials, investor-outreach,
 Experimental: autonomous-loops, continuous-agent-loop, enterprise-agent-ops, agent-payment-x402, liquid-glass-design, santa-method
 
 **All 35 skills built. No empty directories remaining.**
-Industry: healthcare-phi-compliance, carrier-relationship-management, customs, energy, logistics, inventory, production-scheduling, quality-nonconformance, returns-reverse-logistics
+
+**Templates (2 sets):**
+- templates/client-project/ — 8 files (CLAUDE.md.template + 6 .iago/ + 1 .claude/)
+- templates/internal-project/ — 8 files (mirrors client, Opus default, IP clause)
+
+**Scripts (4 files):**
+- scripts/new-client.sh + .ps1 — scaffold new project from template
+- scripts/sync-skills.sh + .ps1 — sync skills/agents/rules/hooks to client project
 
 **Agents (11 built, all enhanced with stack intelligence):**
 implementer, code-reviewer, spec-reviewer, code-quality-reviewer, researcher, tdd-guide, build-error-resolver, e2e-runner, content-writer, infra-runner, data-modeler
