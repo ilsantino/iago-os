@@ -97,7 +97,7 @@ See `.claude/rules/available-skills.md` for the complete catalog including conte
 
 ## Agents
 
-8 agents in `.claude/agents/`: implementer, code-reviewer, spec-reviewer, code-quality-reviewer, researcher, tdd-guide, build-error-resolver, e2e-runner.
+11 agents in `.claude/agents/`: implementer, code-reviewer, spec-reviewer, code-quality-reviewer, researcher, tdd-guide, build-error-resolver, e2e-runner, content-writer, infra-runner, data-modeler.
 All on Sonnet. Hub-and-spoke: only the orchestrator (this session) dispatches agents — agents never spawn other agents.
 
 ## Model Routing

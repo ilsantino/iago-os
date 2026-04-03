@@ -74,15 +74,18 @@ description: >-
 - `/codex:cancel` — Cancel an active background Codex job
 - `/codex:setup` — Check Codex CLI readiness and manage review gate
 
-### Available Agents
-- `implementer` — Execute a single task from a plan
-- `code-reviewer` — Single-pass review with severity findings
-- `spec-reviewer` — Spec compliance (Stage 1 of full review)
-- `code-quality-reviewer` — Quality review (Stage 2 of full review)
-- `researcher` — Deep research across codebase and web
-- `tdd-guide` — Enforce RED-GREEN-REFACTOR discipline
-- `build-error-resolver` — Diagnose and fix build/typecheck/lint errors
-- `e2e-runner` — Write and run Playwright E2E tests
+### Available Agents (11 — all Sonnet, hub-and-spoke)
+- `implementer` — Execute tasks from plans (React 19, DynamoDB, Amplify patterns built-in)
+- `code-reviewer` — Single-pass review with OWASP + AWS security checklist
+- `spec-reviewer` — Spec compliance with stack-specific validation (Stage 1)
+- `code-quality-reviewer` — Quality review with React/DynamoDB/Lambda checks (Stage 2)
+- `researcher` — Deep research via codebase, context7, and web sources
+- `tdd-guide` — RED-GREEN-REFACTOR with Vitest + React Testing Library patterns
+- `build-error-resolver` — 4-phase debugging with common Vite/TS/Amplify error patterns
+- `e2e-runner` — Playwright E2E with Cognito auth, ShadCN selectors, Suspense patterns
+- `content-writer` — Articles, investor materials, market research, outreach, presentations
+- `infra-runner` — AWS CLI, Amplify, CDK, DynamoDB, Lambda, Cognito, SES operations
+- `data-modeler` — DynamoDB single-table design, access patterns, GSI strategy
 
 ### Behavioral Rules (always active)
 - Verification: never claim done without evidence (CLAUDE.md)

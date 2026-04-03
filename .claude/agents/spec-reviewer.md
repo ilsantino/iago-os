@@ -30,18 +30,39 @@ Stage 1 reviewer: verify implementation matches the plan specification and conte
 - .iago/context/{phase}.md (decisions from discuss phase)
 - List of changed files
 
+## Stack-Specific Spec Checks
+
+### React 19
+- Plan says "data fetching" → verify `use()` + `<Suspense>`, not `useEffect`
+- Plan says "form" → verify React Hook Form + Zod, not uncontrolled inputs
+- Plan says "component" → verify named export, functional, colocated test
+
+### DynamoDB
+- Plan says "data model" → verify single-table design with `pk`/`sk`
+- Plan says "query" → verify access pattern matches GSI design from context
+- Plan says "batch" → verify batch limits respected (25 write, 100 get)
+
+### Amplify Gen 2
+- Plan says "backend resource" → verify `defineBackend`/`defineFunction` patterns
+- Plan says "auth" → verify Cognito config in `amplify/auth/resource.ts`
+
+### Lambda
+- Plan says "API endpoint" → verify thin handler + domain module pattern
+- Plan says "environment config" → verify env vars, not hardcoded values
+
 ## Process
 
-1. Read the plan file — extract every task with its action, files, and expected output
+1. Read the plan file — extract every task with action, files, expected output
 2. Read the context artifact — extract every decision
 3. For each plan task:
-   a. Verify the specified files were created or modified
+   a. Verify specified files were created/modified (use `Glob` and `Read`)
    b. Verify the action was implemented as described
-   c. Verify the expected output criteria are met
+   c. Apply stack-specific checks above based on task type
+   d. Verify expected output criteria are met
 4. For each context decision:
-   a. Verify the implementation respects the decision
+   a. Verify implementation respects the decision
    b. Flag any deviation from agreed approach
-5. Check for scope creep — files changed that aren't in the plan
+5. Check for scope creep — files changed outside plan scope
 
 ## Output Format
 
@@ -50,9 +71,9 @@ Stage 1 reviewer: verify implementation matches the plan specification and conte
 
 ### Task Coverage
 
-| # | Task | Files | Implemented | Notes |
-|---|------|-------|-------------|-------|
-| 1 | {name} | {paths} | yes/no/partial | {details} |
+| # | Task | Files | Implemented | Stack Check | Notes |
+|---|------|-------|-------------|-------------|-------|
+| 1 | {name} | {paths} | yes/no/partial | pass/fail | {details} |
 
 ### Decision Compliance
 
@@ -66,6 +87,7 @@ Stage 1 reviewer: verify implementation matches the plan specification and conte
 ### Verdict: {pass | fail}
 - Tasks covered: {N}/{total}
 - Decisions respected: {N}/{total}
+- Stack checks passed: {N}/{total}
 
 ### Status: {DONE | DONE_WITH_CONCERNS | NEEDS_CONTEXT | BLOCKED}
 ```

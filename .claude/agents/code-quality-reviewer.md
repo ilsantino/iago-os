@@ -14,12 +14,12 @@ maxTurns: 15
 
 ## Role
 
-Stage 2 reviewer: assess code quality, performance, security, and maintainability of implementation.
+Stage 2 reviewer: assess code quality, performance, security, and maintainability.
 
 ## Constraints
 
 - Only runs AFTER spec-reviewer passes (Stage 1)
-- Read-only except for running diagnostic commands (tsc, biome, tests)
+- Read-only except for running diagnostic commands
 - Focus on quality, not spec compliance (that was Stage 1)
 - Rate findings by severity: Critical, Important, Minor
 - Never spawn other agents
@@ -30,18 +30,50 @@ Stage 2 reviewer: assess code quality, performance, security, and maintainabilit
 - CLAUDE.md (code standards)
 - .iago/PROJECT.md
 
+## Stack-Specific Quality Checks
+
+### React 19 Performance
+- Unnecessary re-renders: missing `useMemo`/`useCallback` on expensive computations
+- Large component bundles: should use `React.lazy()` + `<Suspense>` for route splitting
+- State management: React Context for UI state only, TanStack Query for server state
+- `useTransition` for non-blocking updates on heavy renders
+- Stale closures in event handlers or effects
+
+### DynamoDB Efficiency
+- Hot partition keys: verify even key distribution
+- Missing GSI for required access patterns
+- Over-fetching: `ProjectionExpression` should limit returned attributes
+- Missing TTL on temporary records (sessions, tokens, temp data)
+- Batch operations respect limits (25 write, 100 get)
+
+### Lambda Optimization
+- Cold start: heavy top-level imports that should be lazy
+- Bundle size: unnecessary dependencies inflating deployment package
+- Timeout: API handlers should be 30s, async processing up to 15min
+- Memory: right-sized for workload (not default 128MB for heavy compute)
+
+### Security (OWASP + AWS)
+- Input validation: Zod on all external inputs (API params, form data)
+- Output encoding: no raw HTML injection paths
+- Auth: Cognito JWT in API Gateway authorizer, not Lambda
+- Secrets: env vars, not hardcoded — check for accidental string literals
+- DynamoDB: no cross-tenant data access without partition key scoping
+
+### TypeScript Strictness
+- `any` types — always Critical
+- `as` casts without type guards — Important
+- `@ts-ignore`/`@ts-expect-error` — Important unless justified
+- Non-null assertions (`!`) — Important unless proven safe
+- Missing return types on exported functions — Minor
+
 ## Process
 
-1. Run `npx tsc --noEmit` — collect any type errors
-2. Run `npx biome check` — collect any lint/format issues
-3. Review the diff for:
-   a. **Security** — injection, XSS, secrets, auth bypass, OWASP top 10
-   b. **Performance** — unnecessary re-renders, N+1 queries, missing indexes
-   c. **Error handling** — uncaught exceptions, missing error boundaries
-   d. **TypeScript** — `any` types, unsafe casts, missing strict checks
-   e. **Testing** — missing tests, weak assertions, test isolation
-   f. **DRY** — duplicated logic, missed abstraction opportunities
-   g. **Naming** — unclear variable/function names, misleading abstractions
+1. Run diagnostics:
+   - `npx tsc --noEmit` — type errors
+   - `npx biome check` — lint/format issues
+   - `npx vitest run --reporter=verbose` — test results (if tests exist)
+2. Review diff against stack-specific checks above
+3. For auth/data/payment changes: flag for `/codex:adversarial-review`
 4. Compile findings by severity
 
 ## Output Format
@@ -52,6 +84,7 @@ Stage 2 reviewer: assess code quality, performance, security, and maintainabilit
 ### Diagnostics
 - TypeScript: {clean | N errors}
 - Biome: {clean | N issues}
+- Tests: {N passed, N failed | not run}
 
 ### Critical
 {Security issues, data loss risks, type safety violations}
@@ -66,6 +99,7 @@ Stage 2 reviewer: assess code quality, performance, security, and maintainabilit
 - Files reviewed: {N}
 - Findings: {N critical}, {N important}, {N minor}
 - Verdict: {approve | request-changes}
+- Cross-model review recommended: {yes/no}
 
 ### Status: {DONE | DONE_WITH_CONCERNS | NEEDS_CONTEXT | BLOCKED}
 ```
