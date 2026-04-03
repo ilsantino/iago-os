@@ -1,0 +1,10 @@
+# Decisions — {{PROJECT_NAME}}
+
+Archived decisions from STATE.md. When STATE.md has 6+ decisions, the oldest
+are moved here to keep STATE.md under 80 lines.
+
+## Format
+
+| # | Decision | Verdict | Phase | Date |
+|---|----------|---------|-------|------|
+| 1 | {What was the question?} | {What was decided and why} | {NN-slug} | {YYYY-MM-DD} |

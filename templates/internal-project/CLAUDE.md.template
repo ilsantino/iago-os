@@ -1,0 +1,84 @@
+# {{PROJECT_NAME}}
+
+iaGO internal project. All code produced is proprietary to iaGO.
+Stack is fixed — do not suggest alternatives unless explicitly asked.
+
+## Proprietary IP
+
+All code, designs, prompts, agent architectures, and documentation produced in
+this project are proprietary to iaGO. Do not:
+- Reference client-specific implementations from other projects
+- Suggest open-sourcing any component without explicit approval
+- Include third-party code without license verification
+
+## Tech Stack
+
+- **Frontend:** React 19 + Vite + TypeScript (strict) + TailwindCSS 4 + ShadCN/UI
+- **Backend:** AWS Amplify Gen 2 + Lambda (Node.js 20) + API Gateway + DynamoDB + Cognito + SES
+- **Agents:** Claude SDK (Anthropic) + LangGraph + n8n
+- **Testing:** Vitest (unit/integration), Playwright (E2E)
+- **Tooling:** Biome (formatter + linter) — never Prettier, ESLint, or gofmt
+- **Infra:** AWS CDK, GitHub Actions CI/CD
+
+## Code Standards
+
+- TypeScript strict — no `any`, no `as` casts (except type guards), no `@ts-ignore`
+- Named exports only — no default exports
+- Functional components only — no class components
+- `use()` + `<Suspense>` for data fetching — no useEffect for data loading
+- Error boundaries for component-level error handling
+- Colocation: component + test + styles in same directory
+- File naming: kebab-case files, PascalCase components, camelCase utilities
+- Barrel files (`index.ts`) only at public API boundaries
+- Imports: external deps first, then internal with `@/` aliases
+- ShadCN/UI + TailwindCSS 4: always verify setup against official ShadCN docs
+
+## Architecture
+
+- DynamoDB single-table design — access patterns drive schema
+- Lambda: thin handler wrappers calling domain logic modules
+- Cognito JWT validation in API Gateway authorizer, not in Lambda handlers
+- Amplify Gen 2: `defineBackend`, `defineAuth`, `defineData`, `defineFunction`
+- TanStack Query for server state, React Context for UI state only
+- Feature folders: `src/features/{name}/` with components, hooks, api, types
+- No ORMs — DynamoDB DocumentClient with typed helpers
+- Form handling: React Hook Form + Zod validation
+
+## Workflow
+
+Phases: init → discuss → plan → execute → verify. See `/iago:*` skills.
+Quick modes: `/iago:fast` (trivial, ≤3 files) | `/iago:quick` (1-3 tasks, composable flags).
+Artifacts: `.iago/plans/`, `.iago/context/`, `.iago/summaries/`, `.iago/reviews/`.
+STATE.md is a digest — keep under 80 lines. Overflow decisions to PROJECT.md.
+Pause: `/iago:pause`. Resume is automatic on next session start.
+
+## Verification
+
+Never claim a task is complete without running a verification command.
+"Tests pass" means you ran them and saw green. "Build succeeds" means exit 0.
+Do not assert outcomes — demonstrate them.
+
+## Search First
+
+Before creating any new file, search the codebase for existing implementations.
+Duplication is a bug.
+
+## Agent Escalation Protocol
+
+Every subagent MUST end with exactly one status:
+- **DONE** — requirements verified with evidence
+- **DONE_WITH_CONCERNS** — requirements met, minor issues listed
+- **NEEDS_CONTEXT** — state exactly what information is missing
+- **BLOCKED** — state the external blocker; do not retry without resolving it
+
+## Execution Discipline
+
+7+ consecutive Read/Grep/Glob without Edit/Write/Bash: STOP and ask.
+3 failed fix attempts on the same issue: STOP and escalate.
+Implement only what the plan specifies. New ideas go to deferred.
+
+## Project Context
+
+- See `.iago/PROJECT.md` for vision, constraints, and architecture decisions
+- See `.iago/ROADMAP.md` for phase breakdown and progress
+- See `.iago/STATE.md` for current phase, blockers, and recent decisions

@@ -1,0 +1,13 @@
+# Roadmap — {{PROJECT_NAME}}
+
+## Phases
+
+| # | Phase | Goal | Success Criteria | Status | Started | Completed |
+|---|-------|------|-----------------|--------|---------|-----------|
+
+{Populate during `/iago:init`. One row per phase, all start as `pending`.}
+
+## Dependencies
+
+{Phase dependencies — which phases must complete before others can start.
+Example: Phase 02 depends on Phase 01 (auth must exist before dashboard).}

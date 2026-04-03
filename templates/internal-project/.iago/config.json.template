@@ -1,0 +1,29 @@
+{
+  "project": {
+    "name": "{{PROJECT_NAME}}",
+    "client": "iago-internal",
+    "type": "internal"
+  },
+  "workflow": {
+    "skip_discuss": false,
+    "auto_verify": true,
+    "auto_advance": false
+  },
+  "planning": {
+    "max_tasks_per_plan": 8,
+    "context_budget_pct": 40
+  },
+  "review": {
+    "mode": "single"
+  },
+  "meta": {
+    "tech_stack": "{{TECH_STACK}}",
+    "created_date": "{{CREATED_DATE}}",
+    "model_routing": {
+      "orchestrator": "opus",
+      "subagents": "opus",
+      "mechanical": "sonnet",
+      "cross_model": "codex"
+    }
+  }
+}
