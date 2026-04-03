@@ -18,18 +18,18 @@
 | 2B | 11 agents + iago-plan + iago-execute | DONE | `6a73414` + `f25e51d` |
 | 2C | iago-verify + iago-quick + WORKFLOW.md | DONE | `f7e92a8` |
 | 3A | Remaining workflow + proprietary skills (7) | DONE |
-| 3B | Core feature skills (6) | PENDING |
+| 3B | Core feature skills (6) | DONE |
 | 3C | Content/Business + Experimental skills (13) | PENDING |
 | 3D | Industry skills (9) | PENDING |
 
 ### What Exists Now
 
-**Skills with SKILL.md (13 built):**
+**Skills with SKILL.md (19 built):**
 iago-init, iago-discuss, iago-plan, iago-execute, iago-verify, iago-quick,
-iago-fast, iago-pause, iago-scaffold, iago-proposal, iago-onboard, iago-n8n, iago-agents
+iago-fast, iago-pause, iago-scaffold, iago-proposal, iago-onboard, iago-n8n, iago-agents,
+brainstorming, writing-plans, subagent-driven-development, code-review, deep-research, prompt-optimizer
 
-**Skills as empty directories (23 remaining):**
-- Core: brainstorming, writing-plans, subagent-driven-development, code-review, deep-research, prompt-optimizer
+**Skills as empty directories (17 remaining):**
 - Content/Business: article-writing, content-engine, investor-materials, investor-outreach, market-research, visa-doc-translate, frontend-slides
 - Experimental: autonomous-loops, continuous-agent-loop, enterprise-agent-ops, agent-payment-x402, liquid-glass-design, santa-method
 - Industry: healthcare-phi-compliance, carrier-relationship-management, customs, energy, logistics, inventory, production-scheduling, quality-nonconformance, returns-reverse-logistics
