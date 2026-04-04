@@ -4,17 +4,26 @@ First-time setup for iaGO-OS. Covers both Windows and macOS.
 
 ## Prerequisites
 
-| Tool | Version | Check |
-|------|---------|-------|
-| Node.js | 20+ | `node --version` |
-| Claude Code | Latest | `claude --version` |
-| Git | 2.30+ | `git --version` |
-| Biome | 1.x | `npx biome --version` |
+| Tool | Version | Install | Check |
+|------|---------|---------|-------|
+| Node.js | 20+ | [nodejs.org](https://nodejs.org/) | `node --version` |
+| Git | 2.30+ | [git-scm.com](https://git-scm.com/) | `git --version` |
+| Claude Code | Latest | `npm install -g @anthropic-ai/claude-code` | `claude --version` |
+| AWS CLI | 2.x | [AWS install guide](https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html) | `aws --version` |
+| GitHub CLI | 2.x | [cli.github.com](https://cli.github.com/) | `gh --version` |
+| Biome | 1.x | Installed per-project via npm | `npx biome --version` |
 
-Claude Code must be authenticated. If you haven't done this yet:
+### Authenticate everything
 
 ```bash
-claude   # Opens Claude Code, prompts for login on first run
+# Claude Code (prompts for login on first run)
+claude
+
+# AWS CLI (needs Access Key ID, Secret Access Key, region)
+aws configure
+
+# GitHub CLI (follow the browser prompts)
+gh auth login
 ```
 
 ## Clone iaGO-OS

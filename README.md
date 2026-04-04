@@ -61,6 +61,41 @@ For quick one-off tasks that don't need the full workflow:
 > /iago:fast     # Trivial fix (3 files or fewer), no planning needed
 ```
 
+## Prerequisites
+
+You need these installed before using iaGO-OS. Every tool listed here is used by the stack — skip one and something will break.
+
+| Tool | Min Version | Install | Verify |
+|------|-------------|---------|--------|
+| **Node.js** | 20+ | [nodejs.org](https://nodejs.org/) | `node --version` |
+| **Git** | 2.30+ | [git-scm.com](https://git-scm.com/) | `git --version` |
+| **Claude Code** | Latest | `npm install -g @anthropic-ai/claude-code` | `claude --version` |
+| **AWS CLI** | 2.x | [AWS CLI install guide](https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html) | `aws --version` |
+| **GitHub CLI** | 2.x | [cli.github.com](https://cli.github.com/) | `gh --version` |
+
+### Why each one matters
+
+- **Node.js 20+** — Runtime for hooks, state engine, Lambda functions, and all build tooling (Vite, Biome, Vitest)
+- **Git** — Version control, branching workflow, conventional commits enforced by hooks
+- **Claude Code** — The AI coding agent that iaGO-OS configures. Everything runs inside Claude Code sessions
+- **AWS CLI** — Required for Amplify Gen 2 deployments, Lambda management, DynamoDB operations, and all infra-runner agent tasks
+- **GitHub CLI (`gh`)** — Used by `/iago:verify` to open PRs, and by hooks for GitHub integration
+
+### Optional (but recommended)
+
+| Tool | What for | Install | Verify |
+|------|----------|---------|--------|
+| **Codex CLI** | Cross-model review with GPT-5.4 (`/codex:*` skills) | `npm install -g @openai/codex` | `codex --version` |
+| **Playwright** | E2E testing (installed per-project via npm) | `npx playwright install` | `npx playwright --version` |
+
+### First-time setup
+
+After installing the prerequisites:
+
+1. **Authenticate Claude Code:** `claude` (prompts for login on first run)
+2. **Authenticate AWS:** `aws configure` (needs Access Key ID, Secret Key, region)
+3. **Authenticate GitHub:** `gh auth login` (follow the prompts)
+
 ## Quick Start
 
 ```bash
@@ -156,21 +191,59 @@ Full reference with triggers, arguments, and examples: [docs/SKILLS.md](docs/SKI
 
 iaGO-OS uses a hub-and-spoke model. Your main Claude Code session is the **orchestrator** (Opus) — it plans, reasons, and dispatches work. The 11 **agents** (all Sonnet) are specialized workers that execute a single task and report back. Agents never spawn other agents, and they never talk to each other. All coordination flows through the orchestrator.
 
-```
-                          ┌──────────────┐
-                          │  Orchestrator │  ← You talk to this (Opus)
-                          │  (main session)│
-                          └──────┬───────┘
-                                 │ dispatches
-          ┌──────────┬───────────┼───────────┬──────────┐
-          ▼          ▼           ▼           ▼          ▼
-    implementer  researcher  code-reviewer  ...    infra-runner
-      (Sonnet)    (Sonnet)     (Sonnet)             (Sonnet)
-          │          │           │                      │
-          └──────────┴───────────┴──────────────────────┘
-                            │ reports back
-                    DONE | DONE_WITH_CONCERNS
-                    NEEDS_CONTEXT | BLOCKED
+```mermaid
+flowchart TD
+    You([You]) -->|talk to| Orch
+
+    subgraph Orchestrator
+        Orch[Main Session — Opus]
+    end
+
+    Orch -->|dispatches| Impl[implementer]
+    Orch -->|dispatches| Rev[code-reviewer]
+    Orch -->|dispatches| Spec[spec-reviewer]
+    Orch -->|dispatches| Qual[code-quality-reviewer]
+    Orch -->|dispatches| Res[researcher]
+    Orch -->|dispatches| TDD[tdd-guide]
+    Orch -->|dispatches| BER[build-error-resolver]
+    Orch -->|dispatches| E2E[e2e-runner]
+    Orch -->|dispatches| CW[content-writer]
+    Orch -->|dispatches| IR[infra-runner]
+    Orch -->|dispatches| DM[data-modeler]
+
+    Impl -->|status| Orch
+    Rev -->|status| Orch
+    Spec -->|status| Orch
+    Qual -->|status| Orch
+    Res -->|status| Orch
+    TDD -->|status| Orch
+    BER -->|status| Orch
+    E2E -->|status| Orch
+    CW -->|status| Orch
+    IR -->|status| Orch
+    DM -->|status| Orch
+
+    subgraph Agents [All Sonnet]
+        Impl
+        Rev
+        Spec
+        Qual
+        Res
+        TDD
+        BER
+        E2E
+        CW
+        IR
+        DM
+    end
+
+    subgraph Status Codes
+        direction LR
+        S1[DONE]
+        S2[DONE_WITH_CONCERNS]
+        S3[NEEDS_CONTEXT]
+        S4[BLOCKED]
+    end
 ```
 
 Every agent ends its response with exactly one of four statuses — no ambiguity about whether work is finished.
@@ -201,10 +274,28 @@ Code review has two modes depending on the config (`review.mode` in `.iago/confi
 
 **Single-pass** (default for `/iago:quick`): The `code-reviewer` agent does one pass — correctness, security, standards.
 
-**Full** (default for `/iago:execute`): Two-stage pipeline:
+**Full** (default for `/iago:execute`): Three-stage pipeline:
+
+```mermaid
+flowchart LR
+    Impl[implementer completes task] --> S1
+
+    S1[Stage 1: spec-reviewer] -->|pass| S2[Stage 2: code-quality-reviewer]
+    S1 -->|critical findings| Fix1[implementer fixes]
+    Fix1 --> S1
+
+    S2 -->|pass| S3{Auth/data/payment changes?}
+    S2 -->|critical findings| Fix2[implementer fixes]
+    Fix2 --> S2
+
+    S3 -->|yes| Codex[Stage 3: codex adversarial-review]
+    S3 -->|no| Done[Approved]
+    Codex --> Done
+```
+
 1. **Stage 1 — Spec review:** `spec-reviewer` checks if the implementation matches the plan
 2. **Stage 2 — Quality review:** `code-quality-reviewer` checks performance, security, maintainability
-3. **Stage 3 (optional) — Cross-model:** `/codex:adversarial-review` sends the diff to GPT-5.4 for a second opinion on auth, data loss, and race conditions
+3. **Stage 3 — Cross-model (auto for auth/data/payment):** `/codex:adversarial-review` sends the diff to GPT-5.4 for a second opinion
 
 If any stage returns Critical findings, the orchestrator routes back to the implementer for fixes before proceeding.
 
