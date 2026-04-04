@@ -150,23 +150,79 @@ Skills are reusable workflows you invoke with `/skill-name` inside Claude Code. 
 
 Full reference with triggers, arguments, and examples: [docs/SKILLS.md](docs/SKILLS.md)
 
-## Agents (11)
+## Agent Architecture
 
-Agents are specialized workers dispatched by skills. All run on Sonnet. Your main Claude Code session (the orchestrator, on Opus) dispatches them — agents never spawn other agents.
+### Hub-and-Spoke
 
-| Agent | Role |
-|-------|------|
-| `implementer` | Execute tasks from plans (React 19, DynamoDB, Amplify) |
-| `code-reviewer` | Single-pass review with OWASP + AWS security checklist |
-| `spec-reviewer` | Spec compliance with stack-specific validation |
-| `code-quality-reviewer` | Quality review with React/DynamoDB/Lambda checks |
-| `researcher` | Deep research via codebase, context7, and web |
-| `tdd-guide` | RED-GREEN-REFACTOR with Vitest + React Testing Library |
-| `build-error-resolver` | 4-phase debugging for Vite/TS/Amplify errors |
-| `e2e-runner` | Playwright E2E with Cognito auth and ShadCN selectors |
-| `content-writer` | Articles, investor materials, market research |
-| `infra-runner` | AWS CLI, Amplify, CDK, DynamoDB, Lambda operations |
-| `data-modeler` | DynamoDB single-table design and access patterns |
+iaGO-OS uses a hub-and-spoke model. Your main Claude Code session is the **orchestrator** (Opus) — it plans, reasons, and dispatches work. The 11 **agents** (all Sonnet) are specialized workers that execute a single task and report back. Agents never spawn other agents, and they never talk to each other. All coordination flows through the orchestrator.
+
+```
+                          ┌──────────────┐
+                          │  Orchestrator │  ← You talk to this (Opus)
+                          │  (main session)│
+                          └──────┬───────┘
+                                 │ dispatches
+          ┌──────────┬───────────┼───────────┬──────────┐
+          ▼          ▼           ▼           ▼          ▼
+    implementer  researcher  code-reviewer  ...    infra-runner
+      (Sonnet)    (Sonnet)     (Sonnet)             (Sonnet)
+          │          │           │                      │
+          └──────────┴───────────┴──────────────────────┘
+                            │ reports back
+                    DONE | DONE_WITH_CONCERNS
+                    NEEDS_CONTEXT | BLOCKED
+```
+
+Every agent ends its response with exactly one of four statuses — no ambiguity about whether work is finished.
+
+### Tool Sandboxing
+
+Each agent gets only the tools it needs. This prevents accidents and keeps agents focused:
+
+| Agent | Can read | Can write | Can run commands |
+|-------|----------|-----------|-----------------|
+| `implementer` | Yes | Yes | Yes |
+| `code-reviewer` | Yes | No | Yes (diagnostics only) |
+| `spec-reviewer` | Yes | No | No |
+| `code-quality-reviewer` | Yes | No | Yes (diagnostics only) |
+| `researcher` | Yes | No | Yes + WebSearch + WebFetch |
+| `tdd-guide` | Yes | Yes | Yes |
+| `build-error-resolver` | Yes | Yes | Yes |
+| `e2e-runner` | Yes | Yes | Yes |
+| `content-writer` | Yes | Yes | Yes |
+| `infra-runner` | Yes | No | Yes (AWS CLI, CDK) |
+| `data-modeler` | Yes | No | No |
+
+Reviewers can't edit files. The data-modeler can't run commands. The implementer can do everything. This is by design.
+
+### Review Pipeline
+
+Code review has two modes depending on the config (`review.mode` in `.iago/config.json`):
+
+**Single-pass** (default for `/iago:quick`): The `code-reviewer` agent does one pass — correctness, security, standards.
+
+**Full** (default for `/iago:execute`): Two-stage pipeline:
+1. **Stage 1 — Spec review:** `spec-reviewer` checks if the implementation matches the plan
+2. **Stage 2 — Quality review:** `code-quality-reviewer` checks performance, security, maintainability
+3. **Stage 3 (optional) — Cross-model:** `/codex:adversarial-review` sends the diff to GPT-5.4 for a second opinion on auth, data loss, and race conditions
+
+If any stage returns Critical findings, the orchestrator routes back to the implementer for fixes before proceeding.
+
+### Agent Catalog
+
+| Agent | Role | When dispatched |
+|-------|------|-----------------|
+| `implementer` | Execute tasks from plans (React 19, DynamoDB, Amplify) | `/iago:execute`, `/subagent-driven-development` |
+| `code-reviewer` | Single-pass review with OWASP + AWS security checklist | `/code-review`, `/iago:quick` |
+| `spec-reviewer` | Spec compliance — does the code match the plan? | `/iago:execute` (full review mode) |
+| `code-quality-reviewer` | Quality, performance, security, maintainability | `/iago:execute` (full review mode, after spec passes) |
+| `researcher` | Deep research via codebase, context7, and web | `/deep-research`, `/iago:onboard --deep` |
+| `tdd-guide` | RED-GREEN-REFACTOR with Vitest + React Testing Library | When enforcing TDD discipline on a task |
+| `build-error-resolver` | 4-phase debugging for Vite/TS/Amplify errors | Build failures during execution |
+| `e2e-runner` | Playwright E2E with Cognito auth and ShadCN selectors | After implementation, when E2E tests are needed |
+| `content-writer` | Articles, investor materials, outreach, presentations | `/article-writing`, `/content-engine`, `/investor-*` |
+| `infra-runner` | AWS CLI, Amplify, CDK, DynamoDB, Lambda, SES ops | Infrastructure tasks, deployments |
+| `data-modeler` | DynamoDB single-table design and access patterns | Schema design, GSI strategy |
 
 ## Hooks (10)
 
@@ -184,6 +240,59 @@ Hooks are automatic behaviors that fire during Claude Code sessions. You don't i
 | `post-edit-typecheck` | After edit | Runs `tsc --noEmit` on edited TS files |
 | `post-edit-console-warn` | After edit | Warns about `console.log` in production code |
 | `statusline` | Continuous | Shows branch, context %, client, duration |
+
+## Ecosystem Integrations
+
+iaGO-OS builds on top of Claude Code's native capabilities and third-party plugins. These aren't custom — they ship with Claude Code or are installed separately — but they're wired into the workflow.
+
+### Claude Code Native Skills
+
+These come built into Claude Code. No installation needed.
+
+| Skill | When to use |
+|-------|-------------|
+| `/simplify` | After implementation — reviews changed code for reuse and quality, then fixes issues |
+| `/loop` | Recurring checks — e.g., `/loop 5m /codex:status` to poll a background job |
+| `/schedule` | Cron-scheduled remote agents — automated tasks that run on a schedule |
+| `/claude-api` | When building apps with the Claude API, Anthropic SDK, or Agent SDK |
+
+### Codex Plugin (Cross-Model)
+
+Uses GPT-5.4 via the Codex CLI for a second opinion from a different model family. Useful for catching blind spots that a single-model review might miss.
+
+| Skill | When to use |
+|-------|-------------|
+| `/codex:review` | Read-only code review against git changes — GPT-5.4 perspective |
+| `/codex:adversarial-review` | Targeted review for auth, data loss, race conditions, rollback safety |
+| `/codex:rescue` | Delegate debugging or implementation to Codex in background |
+| `/codex:status` | Check active and recent Codex background jobs |
+| `/codex:result` | Retrieve output from a finished Codex job |
+| `/codex:cancel` | Cancel an active background job |
+| `/codex:setup` | Check Codex CLI readiness and manage the review gate |
+
+Requires the Codex CLI installed separately. See `/codex:setup` to verify.
+
+### MCP Servers
+
+[Model Context Protocol](https://modelcontextprotocol.io) servers give Claude access to external data sources during sessions.
+
+| Server | What it provides | When to use |
+|--------|-----------------|-------------|
+| `context7` | Live library/framework documentation | Always prefer over web search for API syntax, setup, version migration (React, Tailwind, ShadCN, AWS SDK, etc.) |
+| `obsidian` | Read/write access to an Obsidian vault | Knowledge base operations — notes, tags, frontmatter |
+
+Configured in `.claude/settings.json` under `mcpServers`.
+
+### Model Routing
+
+Not all work needs the same model. iaGO-OS routes tasks by complexity:
+
+| Model | Role | Used by |
+|-------|------|---------|
+| **Opus** | Orchestrator — planning, architecture, multi-file reasoning | Your main Claude Code session |
+| **Sonnet** | Worker — implementation, review, research, debugging | All 11 agents |
+| **Haiku** | Mechanical — formatting, simple lookups | Reserved for lightweight tasks |
+| **Codex (GPT-5.4)** | Cross-model — adversarial review, rescue delegation | `/codex:*` skills |
 
 ## Folder Structure
 
