@@ -94,7 +94,7 @@ Populate `.iago/STATE.md`:
 - Must be under 80 lines
 
 The `.iago/learnings/` directory accumulates review patterns during execution
-(via code-reviewer agent) and feeds them back into future agent dispatches.
+(via review profiles) and feeds them back into future agent dispatches.
 
 ### 7. Write active-client.json
 

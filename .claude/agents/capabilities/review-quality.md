@@ -14,14 +14,6 @@ Assess code quality across performance, security, maintainability, and stack con
 - DynamoDB: flag N+1 query patterns, missing `ProjectionExpression` on large items, hot partition keys, missing GSI for required access patterns
 - Lambda: flag heavy top-level imports (cold start impact), bundle size issues, timeout mismatches (API handlers 30s, async up to 15min)
 
-## Security (OWASP + AWS)
-
-- Hardcoded secrets or ARNs — always Critical
-- Cognito JWT validation must be in API Gateway authorizer, not Lambda handler
-- Zod validation on all external inputs (API params, form data, env vars)
-- DynamoDB: cross-tenant data access without partition key scoping
-- CORS configuration present and correctly scoped
-
 ## TypeScript Strictness
 
 - `any` types — Critical

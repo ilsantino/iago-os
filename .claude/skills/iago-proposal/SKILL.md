@@ -9,8 +9,8 @@ description: >-
 ## Purpose
 
 Generate a structured client proposal document covering scope, timeline, cost
-estimate, technical approach, and deliverables. Dispatches the `content-writer`
-agent for prose quality.
+estimate, technical approach, and deliverables. Dispatches the `content`
+profile for prose quality.
 
 ## Arguments
 
@@ -79,9 +79,9 @@ Build the proposal skeleton:
 {Clear call to action}
 ```
 
-### 3. Dispatch content-writer
+### 3. Dispatch content profile
 
-Dispatch `content-writer` agent with:
+Dispatch `content` profile with:
 - The proposal skeleton
 - Client context and requirements
 - Engagement type and constraints
@@ -89,7 +89,7 @@ Dispatch `content-writer` agent with:
 
 ### 4. Review output
 
-Review the content-writer's output for:
+Review the content profile's output for:
 - Technical accuracy (stack references match CLAUDE.md)
 - Realistic timeline estimates
 - Cost alignment with budget constraints
@@ -122,4 +122,4 @@ Display:
 - Does not commit proposals to git automatically — user decides when to commit
 - Does not send proposals to clients — local document only
 - Cost estimates are rough order-of-magnitude — always label as estimates
-- If content-writer returns BLOCKED, write the proposal inline without agent dispatch
+- If content profile returns BLOCKED, write the proposal inline without agent dispatch

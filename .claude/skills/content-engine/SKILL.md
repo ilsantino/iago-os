@@ -36,9 +36,9 @@ From the source, identify:
 - **Supporting points:** 2-3 points that reinforce the primary message
 - **Call to action:** What the reader should do next
 
-### 3. Dispatch content-writer
+### 3. Dispatch content profile
 
-Dispatch `content-writer` agent with:
+Dispatch `content` profile with:
 - The source content and extracted messages
 - Target formats and platforms
 - Instruction: adapt voice per channel (professional for LinkedIn, concise for Twitter/X, conversational for newsletter)
@@ -73,5 +73,5 @@ Write all formats to `docs/content/{slug}/`:
 - Does not publish to any platform — local files only
 - Does not create images or graphics — text content only
 - Does not create investor materials — use `/investor-materials`
-- If content-writer returns BLOCKED, generate formats inline
+- If content profile returns BLOCKED, generate formats inline
 - Each format must stand alone — no "see the full article" dependencies

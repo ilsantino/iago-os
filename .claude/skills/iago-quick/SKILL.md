@@ -9,8 +9,8 @@ description: >-
 ## Purpose
 
 Lightweight one-shot execution path for standalone tasks that don't warrant the
-full workflow. Produces a plan, dispatches `implementer` and `code-reviewer`,
-and optionally verifies — all in one pass.
+full workflow. Produces a plan, dispatches a matching profile (fullstack/frontend/backend)
+and `review-single`, and optionally verifies — all in one pass.
 
 ## When to Use
 
@@ -31,7 +31,7 @@ If ≤3 file edits and trivially obvious, use `/iago:fast` instead.
 
 Optional flags (composable):
 - `--discuss` — run a brief discuss step before planning
-- `--research` — dispatch `researcher` agent before planning
+- `--research` — dispatch `research` profile before planning
 - `--verify` — run verification after execution
 
 ## Preconditions
@@ -51,7 +51,7 @@ If `--discuss` is set:
 ### 2. Optional research (`--research` flag)
 
 If `--research` is set:
-- Dispatch `researcher` agent with: the task description, CLAUDE.md, PROJECT.md
+- Dispatch `research` profile with: the task description, CLAUDE.md, PROJECT.md
 - Use findings to inform the plan
 
 ### 3. Create lightweight plan
@@ -90,21 +90,22 @@ created: {YYYY-MM-DD}
 **No self-review loop** — quick plans are simple enough to get right in one pass.
 **Max 3 tasks** — if you need more, redirect to full workflow.
 
-### 4. Dispatch implementer
+### 4. Dispatch matching profile
 
-Dispatch `implementer` agent with:
+Select profile based on file paths in the plan (fullstack/frontend/backend) and dispatch with:
 - The quick plan file
 - CLAUDE.md
 - rules/tdd.md
 - rules/systematic-debugging.md
 - .iago/PROJECT.md (if exists)
+- .iago/learnings/ (patterns + conventions)
 
 Wait for response.
 
-### 5. Dispatch code-reviewer
+### 5. Dispatch review-single
 
-Dispatch `code-reviewer` agent with:
-- Git diff from implementer's commits
+Dispatch `review-single` profile with:
+- Git diff from implementation
 - CLAUDE.md
 - The quick plan file
 
@@ -173,4 +174,4 @@ Display:
 - No wave grouping — single plan only
 - No plan-checker self-review loop
 - Max 3 tasks — redirect to full workflow if more needed
-- If implementer returns BLOCKED, escalate to user immediately (no retry logic)
+- If profile returns BLOCKED, escalate to user immediately (no retry logic)

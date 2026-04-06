@@ -1,7 +1,7 @@
 # iaGO-OS — Handoff
 
 > **Updated:** 2026-04-06
-> **Status:** Agent Architecture v2 COMPLETE. All plans executed and pushed.
+> **Status:** v0.1.0 RELEASED. All phases complete. Ready for first client validation.
 > **Branch:** `main`
 
 ---
@@ -24,14 +24,24 @@
 | 4A | Templates (client + internal) | DONE | `77434da` |
 | 4B | Scripts (new-client + sync-skills) | DONE | `a0a548e` |
 | 5A-C | Usage tracking, validation, docs | DONE | `f2c1e4b` |
-| 5D | Release v0.1.0 (tag + push) | PENDING |
+| 5D | Release v0.1.0 (tag + push) | DONE | `v0.1.0` |
 | 6 | Agent Architecture v2 | DONE | `75e9871` |
+| 7 | Redundancy cleanup + docs update | DONE | (this commit) |
 
 ---
 
-## What Just Happened (Session 2026-04-04 → 04-06)
+## What Just Happened (Session 2026-04-06)
 
-### Agent Architecture v2 — Capability-Based Dispatch
+### v0.1.0 Release — Final Cleanup
+
+Full redundancy audit and documentation update:
+- **6 skill files** updated: stale agent names (content-writer, implementer, code-reviewer) → profile names (content, fullstack/frontend/backend, review-single)
+- **2 agent files** fixed: removed duplicated security checks from review-quality.md, clarified review-full.md phrasing
+- **3 doc files** updated: SKILLS.md, WORKFLOW.md, SETUP.md — all old agent references replaced with profile-based dispatch
+- **HANDOFF.md** updated: all phases marked DONE
+- Tagged v0.1.0 and pushed to GitHub
+
+### Agent Architecture v2 — Capability-Based Dispatch (Previous Session)
 
 Redesigned the entire agent system from role-based to capability-based.
 
@@ -88,9 +98,8 @@ Redesigned the entire agent system from role-based to capability-based.
 ## What's Next
 
 ### Immediate
-1. **Tag v0.1.0** — Phase 5D is still pending. Tag and push.
-2. **First real client project** — Use the new capability-based system on MUNET or another client. This is the real validation.
-3. **Sync skills to global** — `./scripts/sync-skills.sh --global` to propagate the new agent architecture.
+1. **First real client project** — Use the capability-based system on MUNET or another client. This is the real validation.
+2. **Sync skills to global** — `./scripts/sync-skills.sh --global` to propagate the v0.1.0 architecture.
 
 ### Watch For
 - Profile matching accuracy — do the file path heuristics pick the right profile?

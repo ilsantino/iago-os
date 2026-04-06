@@ -43,9 +43,9 @@ Gather key points:
 ## Conclusion (restate insight, call to action)
 ```
 
-### 3. Dispatch content-writer
+### 3. Dispatch content profile
 
-Dispatch `content-writer` agent with:
+Dispatch `content` profile with:
 - The outline
 - Tone and audience parameters
 - Length target
@@ -74,4 +74,4 @@ Write to `docs/content/{slug}.md`. Create directory if needed.
 
 - Does not publish or distribute — produces the document only
 - Does not create social media posts — use `/content-engine` for multi-format
-- If content-writer returns BLOCKED, write inline
+- If content profile returns BLOCKED, write inline

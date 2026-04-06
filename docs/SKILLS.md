@@ -16,7 +16,7 @@ Skills that implement the iaGO delivery workflow: init, discuss, plan, execute, 
 
 **Precondition:** `.iago/PROJECT.md` must NOT already exist.
 
-**Agents:** `researcher` (optional, for scanning existing codebases).
+**Profiles:** `research` (optional, for scanning existing codebases).
 
 **Example:**
 ```
@@ -54,9 +54,9 @@ Skills that implement the iaGO delivery workflow: init, discuss, plan, execute, 
 
 **Precondition:** Phase must be discussed (context artifact exists or `--skip-discuss` flag).
 
-**Arguments:** `--research` dispatches the `researcher` agent first.
+**Arguments:** `--research` dispatches the `research` profile first.
 
-**Agents:** `researcher` (optional).
+**Profiles:** `research` (optional).
 
 **Example:**
 ```
@@ -68,18 +68,18 @@ Skills that implement the iaGO delivery workflow: init, discuss, plan, execute, 
 
 ### `/iago:execute`
 
-**Purpose:** Execute all plans for a phase. Dispatches one `implementer` agent per plan, then runs review agents after each plan completes.
+**Purpose:** Execute all plans for a phase. Dispatches a matching profile per plan, then runs review after each plan completes.
 
 **Trigger:** Executing implementation plans for a ROADMAP phase.
 
 **Precondition:** Plans must exist for the phase.
 
-**Agents:** `implementer`, `code-reviewer`, `spec-reviewer`, `code-quality-reviewer`, `tdd-guide`, `build-error-resolver`.
+**Profiles:** Matching profile per plan (fullstack/frontend/backend based on file paths), `review-single` or `review-full` after each plan, `debug` ad-hoc.
 
 **Example:**
 ```
 > /iago:execute phase 1
-# Dispatches implementer for plan 1 → reviews → implementer for plan 2 → reviews → ...
+# Dispatches matching profile for plan 1 → review → matching profile for plan 2 → review → ...
 ```
 
 ---
@@ -111,12 +111,12 @@ Skills that implement the iaGO delivery workflow: init, discuss, plan, execute, 
 
 **Arguments:** `--research` dispatches researcher first. `--full-review` adds spec + quality review.
 
-**Agents:** `implementer`, `code-reviewer`, `researcher` (optional).
+**Profiles:** Matching profile (fullstack/frontend/backend), `review-single`, `research` (optional).
 
 **Example:**
 ```
 > /iago:quick Add a loading spinner to the dashboard page
-# Plans 1-3 tasks → dispatches implementer → reviews → done
+# Plans 1-3 tasks → dispatches matching profile → review → done
 ```
 
 ---
@@ -176,7 +176,7 @@ Skills that implement the iaGO delivery workflow: init, discuss, plan, execute, 
 
 **Trigger:** Generating a client proposal.
 
-**Agents:** `content-writer`.
+**Profiles:** `content`.
 
 **Example:**
 ```
@@ -194,7 +194,7 @@ Skills that implement the iaGO delivery workflow: init, discuss, plan, execute, 
 
 **Precondition:** Codebase must exist. `.iago/PROJECT.md` should not exist yet.
 
-**Agents:** `researcher`.
+**Profiles:** `research`.
 
 **Example:**
 ```
@@ -279,18 +279,18 @@ General-purpose skills for design, planning, implementation, review, and researc
 
 ### `/subagent-driven-development`
 
-**Purpose:** Execute an implementation plan by dispatching a fresh `implementer` agent per task. No cross-task state leakage.
+**Purpose:** Execute an implementation plan by dispatching a fresh matching profile per task. No cross-task state leakage.
 
 **Trigger:** Executing a multi-task implementation plan.
 
-**Arguments:** `--full-review` adds spec-reviewer + code-quality-reviewer.
+**Arguments:** `--full-review` uses `review-full` (two-stage gated review).
 
-**Agents:** `implementer`, `code-reviewer`, `spec-reviewer` (optional), `code-quality-reviewer` (optional).
+**Profiles:** Matching profile per task (fullstack/frontend/backend), `review-single` or `review-full`.
 
 **Example:**
 ```
 > /subagent-driven-development for .iago/plans/phase-1-plan-01.md
-# Task 1 → implementer → review → Task 2 → implementer → review → ...
+# Task 1 → matching profile → review → Task 2 → matching profile → review → ...
 ```
 
 ---
@@ -301,9 +301,9 @@ General-purpose skills for design, planning, implementation, review, and researc
 
 **Trigger:** Implementation complete, needs review before merge.
 
-**Arguments:** `--full` adds spec-reviewer + code-quality-reviewer (two-stage review).
+**Arguments:** `--full` uses `review-full` profile (two-stage gated review).
 
-**Agents:** `code-reviewer`, `spec-reviewer` (optional), `code-quality-reviewer` (optional).
+**Profiles:** `review-single` (default) or `review-full` (with `--full` flag).
 
 **Example:**
 ```
@@ -321,7 +321,7 @@ General-purpose skills for design, planning, implementation, review, and researc
 
 **Output:** Research document written to `docs/research/`.
 
-**Agents:** `researcher`.
+**Profiles:** `research`.
 
 **Example:**
 ```
@@ -359,7 +359,7 @@ Skills for producing written content — articles, investor materials, presentat
 
 **Trigger:** Writing blog posts, articles, or long-form content.
 
-**Agents:** `content-writer`.
+**Profiles:** `content`.
 
 ---
 
@@ -369,7 +369,7 @@ Skills for producing written content — articles, investor materials, presentat
 
 **Trigger:** Producing multi-format content from a single source.
 
-**Agents:** `content-writer`.
+**Profiles:** `content`.
 
 ---
 
@@ -379,7 +379,7 @@ Skills for producing written content — articles, investor materials, presentat
 
 **Trigger:** Creating pitch decks, one-pagers, or investor-facing documents.
 
-**Agents:** `content-writer`.
+**Profiles:** `content`.
 
 ---
 

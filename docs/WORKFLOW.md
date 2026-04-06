@@ -24,7 +24,7 @@ Discuss → plan → execute → verify repeats per ROADMAP phase.
 | **What Claude does** | Scaffold directories, ask 3-5 discovery questions, write foundation artifacts |
 | **State written** | Phase: `00-init`, Status: `idle` |
 | **Output** | `PROJECT.md`, `ROADMAP.md`, `STATE.md`, `config.json`, `active-client.json` |
-| **Agents** | `researcher` (optional, for existing codebase scan) |
+| **Profiles** | `research` (optional, for existing codebase scan) |
 
 ### 1. Discuss (`/iago:discuss {phase-slug}`)
 
@@ -46,7 +46,7 @@ Discuss → plan → execute → verify repeats per ROADMAP phase.
 | **What Claude does** | Decompose phase into plans with 2-8 tasks each, self-review, assign waves |
 | **State written** | Phase: `{NN}-{slug}`, Status: `planning` |
 | **Output** | `.iago/plans/{NN}-{slug}-{PP}.md` (one or more) |
-| **Agents** | `researcher` (optional, via `--research` flag) |
+| **Profiles** | `research` (optional, via `--research` flag) |
 
 ### 3. Execute (`/iago:execute {phase-slug}`)
 
@@ -57,7 +57,7 @@ Discuss → plan → execute → verify repeats per ROADMAP phase.
 | **What Claude does** | Wave analysis, dispatch agents per plan, collect results, write summaries |
 | **State written** | Phase: `{NN}-{slug}`, Status: `executing` → `executed` |
 | **Output** | `.iago/summaries/{NN}-{slug}-{PP}.md` per plan, git commits |
-| **Agents** | `implementer` (per plan), `code-reviewer` or `spec-reviewer` + `code-quality-reviewer`, ad-hoc: `tdd-guide`, `build-error-resolver` |
+| **Profiles** | Matching profile per plan (fullstack/frontend/backend), `review-single` or `review-full`, ad-hoc: `debug` |
 
 ### 4. Verify (`/iago:verify {phase-slug}`)
 
@@ -88,7 +88,7 @@ If >3 files or uncertain scope → redirect to `/iago:quick`.
 For standalone tasks: 1-3 tasks, clear scope, not part of a ROADMAP phase.
 
 ```
-[--discuss] → Lightweight plan → implementer → code-reviewer → [--verify] → STATE.md log
+[--discuss] → Lightweight plan → matching profile → review-single → [--verify] → STATE.md log
 ```
 
 Composable flags: `--discuss`, `--research`, `--verify`.
@@ -106,22 +106,21 @@ Plan naming: `quick-{YYMMDD}-{slug}.md`.
 | Unclear scope, needs exploration | Full workflow (start with `/iago:discuss`) |
 | Client project kickoff | `/iago:init` → full workflow |
 
-## Agent Dispatch Map
+## Profile Dispatch Map
 
-| Skill | Agent(s) Dispatched | When |
-|-------|-------------------|------|
-| `/iago:init` | `researcher` | Optional — existing codebase scan |
+| Skill | Profile(s) Dispatched | When |
+|-------|----------------------|------|
+| `/iago:init` | `research` | Optional — existing codebase scan |
 | `/iago:discuss` | (none) | Orchestrator-direct |
-| `/iago:plan` | `researcher` | Optional — `--research` flag |
-| `/iago:execute` | `implementer` | Per plan (one agent per plan) |
-| `/iago:execute` | `code-reviewer` | After each plan (`review.mode: "single"`) |
-| `/iago:execute` | `spec-reviewer` → `code-quality-reviewer` | After each plan (`review.mode: "full"`) |
-| `/iago:execute` | `tdd-guide` | Ad-hoc, when task needs TDD |
-| `/iago:execute` | `build-error-resolver` | Ad-hoc, when build fails |
+| `/iago:plan` | `research` | Optional — `--research` flag |
+| `/iago:execute` | matching profile (fullstack/frontend/backend) | Per plan — selected by file paths |
+| `/iago:execute` | `review-single` | After each plan (`review.mode: "single"`) |
+| `/iago:execute` | `review-full` | After each plan (`review.mode: "full"`) |
+| `/iago:execute` | `debug` | Ad-hoc, when build/typecheck/lint fails |
 | `/iago:verify` | (none) | Orchestrator-direct |
-| `/iago:quick` | `researcher` | Optional — `--research` flag |
-| `/iago:quick` | `implementer` | Per plan |
-| `/iago:quick` | `code-reviewer` | After implementation |
+| `/iago:quick` | `research` | Optional — `--research` flag |
+| `/iago:quick` | matching profile | Per plan |
+| `/iago:quick` | `review-single` | After implementation |
 | `/iago:fast` | (none) | Inline execution |
 
 ## Pause / Resume

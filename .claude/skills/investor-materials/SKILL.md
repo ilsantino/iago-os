@@ -35,9 +35,9 @@ Collect or confirm:
 - Team highlights
 - Funding ask and use of funds
 
-### 2. Dispatch content-writer
+### 2. Dispatch content profile
 
-Dispatch `content-writer` agent with:
+Dispatch `content` profile with:
 - Gathered inputs
 - Document type and structure template
 - Instruction: "Investor-grade prose — quantify everything, no superlatives without data"
@@ -75,4 +75,4 @@ For pitch decks, suggest `/frontend-slides` for visual presentation layer.
 - Produces text documents, not visual slides — use `/frontend-slides` for that
 - Does not send materials to investors — local files only
 - Does not fabricate metrics — if data is missing, flag it as "[NEEDED]"
-- If content-writer returns BLOCKED, generate inline
+- If content profile returns BLOCKED, generate inline
