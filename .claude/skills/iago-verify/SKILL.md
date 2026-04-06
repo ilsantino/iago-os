@@ -145,4 +145,4 @@ Display:
 - Never modify source code during verification — read and run only
 - Never create a PR unless ALL checks pass
 - If unsure about a check, mark it `human_needed` — don't guess
-- Consider recommending `/codex:review` or `/codex:adversarial-review` before shipping high-risk changes
+- `/codex:adversarial-review` is mandatory during execution — if it was skipped, flag it as a gap

@@ -129,6 +129,19 @@ checks internally (React/DynamoDB/Lambda patterns).
 Anti-performative-agreement: do not dismiss Critical findings. Do not auto-approve
 your own work. YAGNI check: flag any code that isn't required by the plan.
 
+### 4b. Codex adversarial review gate (mandatory)
+
+After internal review, dispatch `/codex:adversarial-review` (GPT-5.4 cross-model
+review) on the full diff. A different model catches different blind spots.
+
+The review targets: auth bypass, data loss, race conditions, rollback safety,
+business logic errors, and state management issues.
+
+| Codex Verdict | Action |
+|---------------|--------|
+| Pass | Proceed to learnings extraction |
+| Findings | Critical → dispatch fix agent (same profile) → re-review. Non-critical → log and proceed. |
+
 **Learnings extraction** — after processing all review findings:
 1. Identify recurring patterns from the review that apply beyond the current task (e.g., "Always validate DynamoDB pk/sk before write", "Use `useTransition` for mutation feedback").
 2. Append each new pattern to `.iago/learnings/patterns.md` using the format:

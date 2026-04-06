@@ -72,7 +72,7 @@ description: >-
 
 ### Codex (cross-model, plugin-managed)
 - `/codex:review` — GPT-5.4 read-only code review against git changes
-- `/codex:adversarial-review` — Challenge review targeting auth, data loss, race conditions, rollback safety
+- `/codex:adversarial-review` — **Mandatory** cross-model review on every plan (auth, data loss, race conditions, business logic)
 - `/codex:rescue` — Delegate debugging or implementation to Codex in background (`--write` for fixes)
 - `/codex:status` — Show active and recent Codex background jobs
 - `/codex:result` — Retrieve output from a finished Codex job

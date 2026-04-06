@@ -81,7 +81,18 @@ Each finding gets a severity:
 - **Self-review bias:** If reviewing your own code (same session), explicitly
   state this and increase scrutiny.
 
-### 5. Present findings
+### 5. Codex adversarial review gate (mandatory)
+
+After internal review, dispatch `/codex:adversarial-review` (GPT-5.4 cross-model
+review) on the same diff. A different model catches different blind spots.
+
+The review targets: auth bypass, data loss, race conditions, rollback safety,
+business logic errors, and state management issues.
+
+Merge Codex findings into the internal review findings before presenting.
+Critical Codex findings follow the same fix-before-merge rule.
+
+### 6. Present findings
 
 Display structured review:
 

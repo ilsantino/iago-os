@@ -178,22 +178,18 @@ For each identified pattern:
    - If not found: append a new entry with `occurrences: 1`, `first_seen`, and `last_seen` set to today.
 3. If any pattern reaches **5+ occurrences**, flag it in the plan summary as a candidate for promotion to `CLAUDE.md`.
 
-#### 3f. Codex adversarial review gate
+#### 3f. Codex adversarial review gate (mandatory)
 
-Check if the plan modified files matching any of these patterns:
-- `auth`, `cognito`, `jwt`, `token`, `session` (auth changes)
-- `payment`, `stripe`, `mercado`, `checkout`, `webhook`, `split`, `fee` (payment changes)
-- `dynamodb`, `order`, `ticket`, `ledger`, `migration` (data/schema changes)
+Dispatch `/codex:adversarial-review` (GPT-5.4 cross-model review) on every plan.
+A different model catches different blind spots — this is non-negotiable.
 
-**If yes:** Dispatch `/codex:adversarial-review` (GPT-5.4 cross-model review)
-targeting auth bypass, data loss, race conditions, and rollback safety.
+The review targets: auth bypass, data loss, race conditions, rollback safety,
+business logic errors, and state management issues.
 
 | Codex Verdict | Action |
 |---------------|--------|
 | Pass | Proceed to PR (3g) |
 | Findings | Log findings. Critical → re-dispatch implementation profile with fix instructions → back to build gate (3c). Non-critical → log and proceed. |
-
-**If no auth/data/payment changes:** Skip directly to PR (3g).
 
 #### 3g. Push branch and create PR
 
