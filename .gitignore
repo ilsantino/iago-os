@@ -17,3 +17,6 @@ Thumbs.db
 
 # Node
 node_modules/
+
+# Local client projects (not part of iaGO-OS distribution)
+clients/
