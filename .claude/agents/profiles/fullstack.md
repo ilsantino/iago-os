@@ -12,6 +12,7 @@ capabilities:
   - lambda
   - tdd
   - forms
+  - animation
 ---
 
 ## Match Signals

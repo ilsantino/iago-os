@@ -115,75 +115,84 @@ See [docs/SETUP.md](docs/SETUP.md) for detailed instructions (Windows + macOS).
 
 ## Skills (41)
 
-Skills are reusable workflows you invoke with `/skill-name` inside Claude Code. Think of them as recipes — each one knows what steps to follow, which agents to dispatch, and what evidence to collect.
+Skills are reusable workflows you invoke with `/skill-name` inside Claude Code. Each skill knows what steps to follow, which profiles to dispatch, what artifacts to produce, and what evidence to collect before reporting done.
 
-### Workflow
+### Workflow — The Delivery Pipeline
 
-| Skill | What it does |
-|-------|-------------|
-| `/iago:init` | Bootstrap project — gather vision, produce PROJECT.md + ROADMAP.md |
-| `/iago:discuss` | Clarify a ROADMAP phase before planning |
-| `/iago:plan` | Break a phase into implementation plans with verifiable tasks |
-| `/iago:execute` | Dispatch implementer + reviewer agents per plan |
-| `/iago:verify` | Verify phase goals against evidence, open PR |
-| `/iago:quick` | Lightweight path for 1-3 task standalone work |
-| `/iago:fast` | Inline trivial changes (3 files or fewer) |
-| `/iago:pause` | Save session state for next conversation |
-| `/iago:scaffold` | Scaffold a new project from the iaGO template |
-| `/iago:proposal` | Generate a client proposal document |
-| `/iago:onboard` | Scan existing codebase, produce architecture map |
-| `/iago:n8n` | Design n8n automation workflows |
-| `/iago:agents` | Design multi-agent architectures |
+These skills implement the full project lifecycle. Run them in order for structured delivery, or use the bypass modes for quick work.
 
-### Core
+| Skill | What it does | When to use | Dispatches |
+|-------|-------------|-------------|------------|
+| `/iago:init` | Interactive discovery — asks about vision, constraints, phases. Produces PROJECT.md, ROADMAP.md, STATE.md, config.json | Starting a new client project | `research` (optional) |
+| `/iago:discuss` | Surfaces 3-5 ambiguities in a ROADMAP phase, records decisions as a context artifact | Before planning a phase — clarifies gray areas | None (interactive) |
+| `/iago:plan` | Decomposes a phase into plans with 2-8 tasks each. Every task has a verification command. Self-reviews for gaps | After discuss, before execute | `research` (optional) |
+| `/iago:execute` | Wave analysis, profile dispatch per plan, build gate, 3-stage review pipeline, learnings extraction. The heavy lifter | When plans exist for a phase | Matching profile + review + `/codex:adversarial-review` |
+| `/iago:verify` | Goal-backward verification — checks every ROADMAP success criterion against evidence (test output, build, file existence). Opens PR if passed | After all plans in a phase are executed | None (orchestrator-direct) |
+| `/iago:quick` | One-shot path: lightweight plan → matching profile → review-single → done. Composable flags: `--discuss`, `--research`, `--verify` | Small standalone task (1-3 tasks) outside a ROADMAP phase | Matching profile + `review-single` |
+| `/iago:fast` | Inline execution with atomic commit. No planning, no agents, no review | Trivial fix — 3 files or fewer, obvious change | None (inline) |
+| `/iago:pause` | Writes HANDOFF.json with workflow position, completed tasks, next action. Next session auto-resumes | Switching context, ending day, hitting a blocker | None |
 
-| Skill | What it does |
-|-------|-------------|
-| `/brainstorming` | Socratic design exploration, produces a spec |
-| `/writing-plans` | Break a spec into small verifiable tasks |
-| `/subagent-driven-development` | Execute plans with fresh agent per task |
-| `/code-review` | Dispatch reviewer with severity-categorized findings |
-| `/deep-research` | Multi-source research with actionable recommendation |
-| `/prompt-optimizer` | Optimize LLM prompts for client deliverables |
+### Workflow — Project Setup
 
-### Content
+| Skill | What it does | When to use |
+|-------|-------------|-------------|
+| `/iago:scaffold` | Creates a new project directory from the iaGO template (React 19 + Vite + TS + Tailwind + ShadCN + AWS Amplify Gen 2). Copies hooks, replaces template variables, inits git | Starting a greenfield client project |
+| `/iago:proposal` | Generates a structured client proposal: scope, timeline, cost estimate, technical approach, deliverables. Dispatches `content` profile for prose quality | Pre-engagement — scoping a new client |
+| `/iago:onboard` | Scans an existing codebase (directory structure, package.json, configs), produces architecture map and tech debt inventory, populates PROJECT.md | Onboarding an existing repo into iaGO workflow |
+| `/iago:n8n` | Designs n8n automation workflow specs: node configs, trigger definitions, data flow diagrams, IAM policies | Designing webhook/event-driven automations |
+| `/iago:agents` | Designs multi-agent architectures: agent roles, tool schemas, LangGraph state graphs, orchestration patterns | Designing agent systems for client deliverables |
 
-| Skill | What it does |
-|-------|-------------|
-| `/article-writing` | Blog posts and long-form content |
-| `/content-engine` | Multi-format output (blog + social + newsletter) |
-| `/investor-materials` | Pitch decks and one-pagers |
-| `/investor-outreach` | Investor emails and outreach sequences |
-| `/market-research` | Market analysis and competitive research |
-| `/visa-doc-translate` | Visa document translation |
-| `/frontend-slides` | Presentation slides from code/data |
+### Core — Design, Plan, Build, Review, Research
 
-### Experimental
+| Skill | What it does | When to use | Dispatches |
+|-------|-------------|-------------|------------|
+| `/brainstorming` | Socratic design exploration — asks questions, maps trade-offs, writes a spec to `docs/specs/` | Starting a new feature or architecture decision | None (interactive) |
+| `/writing-plans` | Breaks an approved spec into 2-5 min tasks organized into parallel execution waves. Every task has a verify command | After brainstorming produces a spec | None (planning only) |
+| `/subagent-driven-development` | Executes a plan by dispatching a fresh profile per task. No cross-task state leakage. Mandatory Codex adversarial review after internal review | Executing a multi-task implementation plan | Matching profile + review + `/codex:adversarial-review` |
+| `/code-review` | Dispatches review profile against a git diff. Produces severity-categorized findings (Critical/Important/Minor). Anti-performative-agreement rules prevent empty "LGTM" | After implementation, before merge | `review-single` or `review-full` + `/codex:adversarial-review` |
+| `/deep-research` | Multi-source research (codebase + context7 docs + web). Produces an actionable recommendation document in `docs/research/` | Research question that goes beyond the codebase | `research` |
+| `/prompt-optimizer` | Analyzes, rewrites, and tests LLM prompts for client-facing features. Recommends model tier. Output to `docs/prompts/` | Building or tuning chatbot/agent/classifier prompts | None (inline) |
 
-| Skill | What it does |
-|-------|-------------|
-| `/autonomous-loops` | Long autonomous tasks without per-step approval |
-| `/continuous-agent-loop` | Persistent agent with cross-iteration state |
-| `/enterprise-agent-ops` | Multi-agent system design patterns |
-| `/agent-payment-x402` | Agent-to-agent payment via x402 protocol |
-| `/liquid-glass-design` | Glassmorphism UI effects (TailwindCSS 4) |
-| `/santa-method` | Structured problem decomposition |
+### Content — Articles, Investor Materials, Presentations
 
-### Industry
+| Skill | What it does | Dispatches |
+|-------|-------------|------------|
+| `/article-writing` | Blog posts and thought leadership with authoritative consulting voice. Tone/length/audience flags | `content` |
+| `/content-engine` | Transforms one source into blog + social (Twitter, LinkedIn, Threads) + newsletter + summary | `content` |
+| `/investor-materials` | Pitch deck outlines, one-pagers, executive summaries with data-driven narratives | `content` |
+| `/investor-outreach` | Personalized investor emails and follow-up sequences tailored to each investor's thesis | None (inline) |
+| `/market-research` | Market sizing, competitive landscape, trend identification for proposals or strategy | None (inline) |
+| `/visa-doc-translate` | Visa/immigration document translation with legal terminology and consulate conventions | None (inline) |
+| `/frontend-slides` | Presentation slide content for React 19 + TailwindCSS 4 rendering or Marp markdown | None (inline) |
+
+### Experimental — Advanced Patterns
 
 | Skill | What it does |
 |-------|-------------|
-| `/healthcare-phi-compliance` | HIPAA/PHI compliance patterns |
-| `/carrier-relationship-management` | Carrier management for logistics |
-| `/customs` | Customs and trade compliance |
-| `/energy` | Energy sector (metering, grid, trading) |
-| `/logistics` | Supply chain and logistics |
-| `/inventory` | Inventory management |
-| `/production-scheduling` | Manufacturing scheduling |
-| `/quality-nonconformance` | Quality control tracking |
-| `/returns-reverse-logistics` | Returns processing |
+| `/autonomous-loops` | Bounded autonomous work with safety rails (max iterations, cost ceiling, verify interval) |
+| `/continuous-agent-loop` | Persistent agent that watches for changes, reacts to events, checkpoints state |
+| `/enterprise-agent-ops` | Production-grade multi-agent architecture design (3-5 agents, topology, runbooks) |
+| `/agent-payment-x402` | Agent-to-agent payment flows via x402 HTTP payment protocol |
+| `/liquid-glass-design` | Glassmorphism and liquid glass UI effects with TailwindCSS 4 + ShadCN/UI |
+| `/santa-method` | SANTA decomposition (Situation, Actors, Needs, Tensions, Actions) for ambiguous problems |
 
-Full reference with triggers, arguments, and examples: [docs/SKILLS.md](docs/SKILLS.md)
+### Industry — Domain-Specific Pattern Libraries
+
+Advisory skills that provide DynamoDB schemas, API patterns, and compliance guidance for vertical industries.
+
+| Skill | Domain | Covers |
+|-------|--------|--------|
+| `/healthcare-phi-compliance` | Healthcare | HIPAA encryption, access controls, audit logging, BAA requirements |
+| `/carrier-relationship-management` | Logistics | Carrier profiles, rate tables, lane pricing, performance scorecards |
+| `/customs` | Trade | HTS classification, duty calculation, export controls, denied party screening |
+| `/energy` | Energy | Meter data ingestion, grid events, energy trading, demand response |
+| `/logistics` | Supply chain | Shipment lifecycle, route optimization, warehouse operations, carrier APIs |
+| `/inventory` | Warehousing | Stock tracking, reorder points, multi-location transfers, cycle counting |
+| `/production-scheduling` | Manufacturing | Work orders, resource allocation, shift planning, capacity constraints |
+| `/quality-nonconformance` | Quality | Inspections, defect classification, CAPA workflows, root cause analysis |
+| `/returns-reverse-logistics` | Returns | RMA creation, return shipping, disposition, refund processing |
+
+Full reference with triggers, arguments, and code examples: [docs/SKILLS.md](docs/SKILLS.md)
 
 ## Agent Architecture
 
@@ -269,39 +278,78 @@ flowchart LR
 
 If any stage returns Critical findings, the orchestrator routes back to the executor for fixes before proceeding.
 
-### Agent Catalog
+### Capability Modules (13)
 
-| Profile | Base | Capabilities | Model | Replaces |
-|---------|------|-------------|-------|----------|
-| `fullstack` | executor | react-19, dynamodb, lambda, tdd, forms | auto | implementer (multi-layer) |
-| `frontend` | executor | react-19, tdd, forms | auto | implementer (frontend) |
-| `backend` | executor | dynamodb, lambda, cognito, tdd | auto | implementer (backend) |
-| `review-single` | analyst | security, review-spec, review-quality | auto | code-reviewer |
-| `review-full` | analyst | security, review-spec, review-quality | auto | spec + quality reviewers |
-| `security-audit` | analyst | security, cognito, review-quality | opus | security-critical review |
-| `research` | operator | dynamic | sonnet | researcher |
-| `e2e` | executor | e2e, react-19 | sonnet | e2e-runner |
-| `infra` | operator | infra | sonnet | infra-runner |
-| `schema` | analyst | dynamodb | sonnet | data-modeler |
-| `content` | operator | content | sonnet | content-writer |
-| `debug` | executor | dynamic | auto | build-error-resolver |
+Domain knowledge injected into agent prompts at dispatch time. Each module is a markdown file in `.claude/agents/capabilities/`:
+
+| Capability | What it teaches the agent |
+|-----------|--------------------------|
+| `react-19` | `use()` + Suspense data fetching, ShadCN/UI patterns, TanStack Query, concurrent UI |
+| `animation` | Framer Motion, GSAP + ScrollTrigger, Lenis smooth scroll, integration rules, a11y |
+| `dynamodb` | Single-table design, access patterns, GSI strategy, batch operations, TTL |
+| `lambda` | Thin handler pattern, cold start mitigation, ESM, environment config |
+| `cognito` | JWT validation in API Gateway, token refresh, custom attributes, pre-signup triggers |
+| `tdd` | RED-GREEN-REFACTOR cycle, rationalization prevention, coverage rules |
+| `security` | OWASP Top 10, AWS-specific checks, hardcoded secrets, CORS, tenant isolation |
+| `e2e` | Playwright selectors, `data-testid`, Page Object Model, auth via `storageState` |
+| `review-spec` | Plan compliance verification — file paths, actions, tests, no deviations |
+| `review-quality` | Performance, TypeScript strictness, maintainability, React/DynamoDB conventions |
+| `content` | Consulting voice, multi-format output, channel adaptation, no filler |
+| `infra` | AWS CLI, Amplify Gen 2, CDK, IAM, deployment patterns |
+| `forms` | React Hook Form + Zod, ShadCN Controller integration, server error mapping |
+
+### Agent Profiles (12)
+
+Pre-composed base + capability combinations. The orchestrator selects the right profile based on file paths and task description.
+
+| Profile | Base | Capabilities | Model | When dispatched |
+|---------|------|-------------|-------|-----------------|
+| `fullstack` | executor | react-19, dynamodb, lambda, tdd, forms, animation | auto | Task touches both `src/` and `amplify/` (also the fallback) |
+| `frontend` | executor | react-19, tdd, forms, animation | auto | Task only touches `src/` — no backend changes |
+| `backend` | executor | dynamodb, lambda, cognito, tdd | auto | Task only touches `amplify/` — no frontend changes |
+| `review-single` | analyst | security, review-spec, review-quality | auto | Default review after implementation (`review.mode: "single"`) |
+| `review-full` | analyst | security, review-spec, review-quality | auto | Two-stage gated review (`review.mode: "full"`) — Stage 1 must pass before Stage 2 |
+| `security-audit` | analyst | security, cognito, review-quality | opus | Auth, payment, or data-access changes — always Opus, never downgraded |
+| `research` | operator | dynamic (context-dependent) | sonnet | `/deep-research`, `--research` flag on plan/quick skills |
+| `e2e` | executor | e2e, react-19 | sonnet | Writing or updating Playwright E2E tests |
+| `infra` | operator | infra | sonnet | AWS CLI, Amplify deployments, CDK operations |
+| `schema` | analyst | dynamodb | sonnet | DynamoDB single-table design, access pattern analysis |
+| `content` | operator | content | sonnet | Articles, proposals, investor materials, outreach |
+| `debug` | executor | dynamic (context-dependent) | auto | Build/typecheck/lint failures — capabilities selected based on error context |
 
 ## Hooks (10)
 
-Hooks are automatic behaviors that fire during Claude Code sessions. You don't invoke them — they run on their own.
+Hooks are automatic behaviors wired in `.claude/settings.json`. They fire on Claude Code lifecycle events — you never invoke them manually.
 
-| Hook | When | What it does |
-|------|------|-------------|
-| `context-persistence` | Session start, compact, stop | Saves/restores session state across conversations |
-| `context-monitor` | After every tool use | Warns when context window is filling up |
-| `usage-tracker` | After skill/agent use, stop | Logs usage telemetry to JSONL |
-| `safety-guard` | Before bash/edit | Blocks secrets and destructive commands |
-| `config-protection` | Before edit | Prevents weakening linter/formatter configs |
-| `commit-quality` | Before bash (git) | Validates conventional commit format |
-| `post-edit-format` | After edit | Auto-formats with Biome |
-| `post-edit-typecheck` | After edit | Runs `tsc --noEmit` on edited TS files |
-| `post-edit-console-warn` | After edit | Warns about `console.log` in production code |
-| `statusline` | Continuous | Shows branch, context %, client, duration |
+### Context & State
+
+| Hook | Fires on | What it does | Why it matters |
+|------|----------|-------------|----------------|
+| `context-persistence` | Session start, pre-compact, stop | Saves a session snapshot before context compression. Restores the previous session's state on startup. Loads HANDOFF.json if `/iago:pause` was used | Every conversation picks up where the last one left off — no re-explaining the project |
+| `context-monitor` | After every tool use | Reads the bridge file to check context window fill level. Warns at 70% and 90% thresholds with suggested actions (compact, pause, finish current task) | Prevents losing work to unexpected context limit hits |
+| `usage-tracker` | After skill/agent use, session stop | Logs every skill invocation and agent dispatch to `.iago/state/usage-log.jsonl`. Writes a session summary at stop (duration, skills used, agents dispatched) | Feeds the usage report script and future dashboard |
+
+### Safety & Quality
+
+| Hook | Fires on | What it does | Why it matters |
+|------|----------|-------------|----------------|
+| `safety-guard` | Before bash, edit, write | Blocks commands that could leak secrets (`env`, `printenv`, `.env` reads), destructive operations (`rm -rf`, `drop table`), and disk-level writes | Prevents accidental damage to the project or credential exposure |
+| `config-protection` | Before edit, write | Blocks changes that weaken Biome, TypeScript, or linter configs (disabling rules, loosening `strict`, adding `skipLibCheck`) | Config drift is how code quality erodes — this stops it at the source |
+| `commit-quality` | Before bash (git commit) | Validates conventional commit format: type prefix required, subject under 72 chars, no WIP on main | Enforces clean git history without relying on developer discipline |
+
+### Post-Edit Pipeline
+
+| Hook | Fires on | What it does | Why it matters |
+|------|----------|-------------|----------------|
+| `post-edit-format` | After file edit | Runs `npx biome format --write` on the edited file | Every edit is auto-formatted — no style debates, no format commits |
+| `post-edit-typecheck` | After TS/TSX edit | Runs `npx tsc --noEmit` on the edited file and reports type errors immediately | Type errors caught in seconds, not after a full build |
+| `post-edit-console-warn` | After file edit | Scans the edited file for `console.log` and warns if found in production code paths | `console.log` in production is a code smell — catch it before review |
+
+### Display
+
+| Hook | Fires on | What it does | Why it matters |
+|------|----------|-------------|----------------|
+| `statusline` | Continuous | Outputs git branch, context window %, active client slug, and session duration. Writes a bridge file for `context-monitor` | At-a-glance session status without running commands |
 
 ## Ecosystem Integrations
 
@@ -363,11 +411,11 @@ iago-os/
   .claude/
     settings.json            # Hook wiring
     skills/                  # 41 skill definitions (SKILL.md each)
-    agents/                  # 3 bases + 12 capabilities + 12 profiles
+    agents/                  # 3 bases + 13 capabilities + 12 profiles
       executor.md
       analyst.md
       operator.md
-      capabilities/          # 12 capability modules
+      capabilities/          # 13 capability modules
       profiles/              # 12 agent profiles
     rules/                   # 8 behavioral rules (TDD, debugging, git, etc.)
   .iago/
@@ -395,7 +443,7 @@ iago-os/
 
 Projects built with iaGO-OS use this stack (configurable per project):
 
-- **Frontend:** React 19 + Vite + TypeScript (strict) + TailwindCSS 4 + ShadCN/UI
+- **Frontend:** React 19 + Vite + TypeScript (strict) + TailwindCSS 4 + ShadCN/UI + Framer Motion + GSAP/ScrollTrigger + Lenis
 - **Backend:** AWS Amplify Gen 2 + Lambda + API Gateway + DynamoDB + Cognito + SES
 - **Agents:** Claude SDK (Anthropic) + LangGraph + n8n
 - **Testing:** Vitest (unit/integration), Playwright (E2E)

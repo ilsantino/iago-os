@@ -10,6 +10,7 @@ capabilities:
   - react-19
   - tdd
   - forms
+  - animation
 ---
 
 ## Match Signals

@@ -79,7 +79,7 @@ description: >-
 - `/codex:cancel` — Cancel an active background Codex job
 - `/codex:setup` — Check Codex CLI readiness and manage review gate
 
-## Agent Architecture (3 bases + 12 capabilities + 12 profiles)
+## Agent Architecture (3 bases + 13 capabilities + 12 profiles)
 
 Hub-and-spoke: only the orchestrator dispatches agents — agents never spawn other agents.
 
@@ -88,12 +88,12 @@ Hub-and-spoke: only the orchestrator dispatches agents — agents never spawn ot
 - `analyst` — Can read and run diagnostics. For reviews, modeling, analysis. Tools: Read, Glob, Grep, Bash
 - `operator` — Can read, run commands, and search web. For research, content, infra. Tools: Read, Glob, Grep, Bash, WebSearch, WebFetch
 
-### Capability Modules (12 — injected into agent prompts)
-react-19, dynamodb, lambda, cognito, tdd, security, e2e, review-spec, review-quality, content, infra, forms
+### Capability Modules (13 — injected into agent prompts)
+react-19, dynamodb, lambda, cognito, tdd, security, e2e, review-spec, review-quality, content, infra, forms, animation
 
 ### Profiles (12 — pre-composed base + capabilities)
-- `fullstack` (executor) — react-19 + dynamodb + lambda + tdd + forms — full-stack implementation
-- `frontend` (executor) — react-19 + tdd + forms — frontend-only implementation
+- `fullstack` (executor) — react-19 + dynamodb + lambda + tdd + forms + animation — full-stack implementation
+- `frontend` (executor) — react-19 + tdd + forms + animation — frontend-only implementation
 - `backend` (executor) — dynamodb + lambda + cognito + tdd — backend-only implementation
 - `review-single` (analyst) — security + review-spec + review-quality — single-pass code review
 - `review-full` (analyst) — security + review-spec + review-quality — two-stage gated review

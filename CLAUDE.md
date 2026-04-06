@@ -6,7 +6,7 @@ Stack is fixed — do not suggest alternatives unless explicitly asked.
 
 ## Tech Stack
 
-- **Frontend:** React 19 + Vite + TypeScript (strict) + TailwindCSS 4 + ShadCN/UI
+- **Frontend:** React 19 + Vite + TypeScript (strict) + TailwindCSS 4 + ShadCN/UI + Framer Motion + GSAP/ScrollTrigger + Lenis
 - **Backend:** AWS Amplify Gen 2 + Lambda (Node.js 20) + API Gateway + DynamoDB + Cognito + SES
 - **Agents:** Claude SDK (Anthropic) + LangGraph + n8n
 - **Testing:** Vitest (unit/integration), Playwright (E2E)
@@ -102,7 +102,7 @@ See `.claude/rules/available-skills.md` for the complete catalog including conte
 
 ## Agents
 
-3 base agents, 12 capability modules, and 12 profiles in `.claude/agents/`. Bases: executor (write), analyst (read-only), operator (external data). Profiles compose base + capabilities per task. Hub-and-spoke: only the orchestrator dispatches — agents never spawn agents.
+3 base agents, 13 capability modules, and 12 profiles in `.claude/agents/`. Bases: executor (write), analyst (read-only), operator (external data). Profiles compose base + capabilities per task. Hub-and-spoke: only the orchestrator dispatches — agents never spawn agents.
 
 ## Model Routing
 

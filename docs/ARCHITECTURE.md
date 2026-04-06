@@ -36,7 +36,7 @@ iaGO-OS is built in six layers, each building on the one below:
 │  Skills                             │  41 reusable workflows
 │  (.claude/skills/)                  │  (init, plan, execute, verify, ...)
 ├─────────────────────────────────────┤
-│  Agents                             │  3 base agents + 12 capability modules + 12 profiles
+│  Agents                             │  3 base agents + 13 capability modules + 12 profiles
 │  (.claude/agents/)                  │  (executor, analyst, operator + compositions)
 ├─────────────────────────────────────┤
 │  Hooks                              │  10 automatic behaviors
@@ -53,14 +53,14 @@ iaGO-OS is built in six layers, each building on the one below:
 
 **Skills** are reusable workflows invoked with `/skill-name`. Each skill has a `SKILL.md` that describes preconditions, steps, agents to dispatch, and artifacts to produce.
 
-**Agents** are composed per task from 3 base templates (executor, analyst, operator) and 12 capability modules. Profiles are pre-composed combinations — the orchestrator matches each task to a profile, selects the model, and composes the prompt. Hub-and-spoke: only the orchestrator dispatches agents — agents never spawn other agents.
+**Agents** are composed per task from 3 base templates (executor, analyst, operator) and 13 capability modules. Profiles are pre-composed combinations — the orchestrator matches each task to a profile, selects the model, and composes the prompt. Hub-and-spoke: only the orchestrator dispatches agents — agents never spawn other agents.
 
 ## Capability-Based Dispatch
 
 Agent capability is composed at dispatch time, not hardcoded per agent file:
 
 - **Base agents** define tool access tiers: executor (write access — code, files), analyst (read-only — grep, read, search), operator (external access — AWS CLI, APIs, infra)
-- **Capability modules** add domain knowledge injected into the prompt: `react-19`, `dynamodb`, `lambda`, `cognito`, `tdd`, `security`, `e2e`, `review-spec`, `review-quality`, `content`, `infra`, `forms`
+- **Capability modules** add domain knowledge injected into the prompt: `react-19`, `dynamodb`, `lambda`, `cognito`, `tdd`, `security`, `e2e`, `review-spec`, `review-quality`, `content`, `infra`, `forms`, `animation`
 - **Profiles** are pre-composed base + capability combinations ready for dispatch: `fullstack`, `frontend`, `backend`, `review-single`, `review-full`, `security-audit`, `research`, `e2e`, `infra`, `schema`, `content`, `debug` (dynamic)
 - **Dispatch flow:** match task to profile → select model from config.json routing table → compose prompt (base + capabilities) → dispatch agent → log to usage-log.jsonl
 - **Dynamic profiles** (`research`, `debug`) have capabilities selected at dispatch time based on task context — the orchestrator injects the relevant modules rather than using a fixed composition
