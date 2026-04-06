@@ -45,10 +45,10 @@ description: >-
 - `/iago:init` — Bootstrap .iago/, gather vision, produce PROJECT/ROADMAP/STATE/config
 - `/iago:discuss` — Clarify gray areas per phase, produce context artifact
 - `/iago:plan` — Break phase into plans with tasks, self-review, no placeholders
-- `/iago:execute` — Wave analysis, dispatch implementer per plan, review after
+- `/iago:execute` — Wave analysis, dispatch profile per plan, review after
 - `/iago:verify` — Goal-backward verification, ship PR if passed
 - `/iago:fast` — Inline trivial tasks (<=3 files), atomic commit, STATE.md log
-- `/iago:quick` — Lightweight plan -> implementer -> reviewer
+- `/iago:quick` — Lightweight plan -> profile -> reviewer
 - `/iago:pause` — Write HANDOFF.json to state/
 - `/iago:scaffold` — Scaffold new client project from iaGO template (React 19 + Vite + AWS)
 - `/iago:proposal` — Generate client proposal (scope, timeline, cost, tech approach)
@@ -79,18 +79,31 @@ description: >-
 - `/codex:cancel` — Cancel an active background Codex job
 - `/codex:setup` — Check Codex CLI readiness and manage review gate
 
-### Available Agents (11 — all Sonnet, hub-and-spoke)
-- `implementer` — Execute tasks from plans (React 19, DynamoDB, Amplify patterns built-in)
-- `code-reviewer` — Single-pass review with OWASP + AWS security checklist
-- `spec-reviewer` — Spec compliance with stack-specific validation (Stage 1)
-- `code-quality-reviewer` — Quality review with React/DynamoDB/Lambda checks (Stage 2)
-- `researcher` — Deep research via codebase, context7, and web sources
-- `tdd-guide` — RED-GREEN-REFACTOR with Vitest + React Testing Library patterns
-- `build-error-resolver` — 4-phase debugging with common Vite/TS/Amplify error patterns
-- `e2e-runner` — Playwright E2E with Cognito auth, ShadCN selectors, Suspense patterns
-- `content-writer` — Articles, investor materials, market research, outreach, presentations
-- `infra-runner` — AWS CLI, Amplify, CDK, DynamoDB, Lambda, Cognito, SES operations
-- `data-modeler` — DynamoDB single-table design, access patterns, GSI strategy
+## Agent Architecture (3 bases + 12 capabilities + 12 profiles)
+
+Hub-and-spoke: only the orchestrator dispatches agents — agents never spawn other agents.
+
+### Base Agents (3 — tool access tiers)
+- `executor` — Can read, write, and run commands. For implementation tasks. Tools: Read, Glob, Grep, Edit, Write, Bash, Notebook
+- `analyst` — Can read and run diagnostics. For reviews, modeling, analysis. Tools: Read, Glob, Grep, Bash
+- `operator` — Can read, run commands, and search web. For research, content, infra. Tools: Read, Glob, Grep, Bash, WebSearch, WebFetch
+
+### Capability Modules (12 — injected into agent prompts)
+react-19, dynamodb, lambda, cognito, tdd, security, e2e, review-spec, review-quality, content, infra, forms
+
+### Profiles (12 — pre-composed base + capabilities)
+- `fullstack` (executor) — react-19 + dynamodb + lambda + tdd + forms — full-stack implementation
+- `frontend` (executor) — react-19 + tdd + forms — frontend-only implementation
+- `backend` (executor) — dynamodb + lambda + cognito + tdd — backend-only implementation
+- `review-single` (analyst) — security + review-spec + review-quality — single-pass code review
+- `review-full` (analyst) — security + review-spec + review-quality — two-stage gated review
+- `security-audit` (analyst, opus) — security + cognito + review-quality — deep security review
+- `research` (operator) — dynamic capabilities — deep research across codebase and web
+- `e2e` (executor) — e2e + react-19 — Playwright E2E test writing
+- `infra` (operator) — infra — AWS CLI, Amplify, CDK operations
+- `schema` (analyst) — dynamodb — DynamoDB single-table design
+- `content` (operator) — content — articles, investor materials, outreach
+- `debug` (executor) — dynamic capabilities — build/typecheck/lint error resolution
 
 ### Behavioral Rules (always active)
 - Verification: never claim done without evidence (CLAUDE.md)

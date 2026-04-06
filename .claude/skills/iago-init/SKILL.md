@@ -22,6 +22,34 @@ ROADMAP.md, STATE.md, and config.json.
 
 Call the state engine `init()` function from `.iago/hooks/lib/state-manager.mjs`.
 This creates all `.iago/` subdirectories and default files. Skip any that already exist.
+Directories created include: `plans/`, `context/`, `summaries/`, `reviews/`, `state/`, `learnings/`.
+
+### 1b. Seed learnings directory
+
+Create `.iago/learnings/` if it doesn't exist (the `init()` call above should handle this).
+
+Create `.iago/learnings/patterns.md` with the review patterns table header (no rows — patterns
+accumulate during execution):
+
+```
+| # | Pattern | Occurrences | Last Seen | Source |
+|---|---------|-------------|-----------|--------|
+```
+
+Create `.iago/learnings/project-conventions.md` with a starter template:
+
+```
+## Project Conventions
+
+Project-specific conventions that are NOT already covered by CLAUDE.md.
+Add entries here as they emerge during execution (code review findings,
+team preferences, client constraints, etc.).
+
+<!-- Examples: date format (ISO 8601), API versioning strategy, naming rules -->
+```
+
+If the user mentioned any conventions during the discovery questions (step 2) — date formats,
+API patterns, language preferences, naming rules — capture them as initial entries here.
 
 ### 2. Gather project vision (interactive)
 
@@ -64,6 +92,9 @@ Populate `.iago/STATE.md`:
 - Phase: `01-{first-phase-slug}` | Status: `idle`
 - Empty tables for Recent Decisions, Blockers, Quick Tasks
 - Must be under 80 lines
+
+The `.iago/learnings/` directory accumulates review patterns during execution
+(via code-reviewer agent) and feeds them back into future agent dispatches.
 
 ### 7. Write active-client.json
 

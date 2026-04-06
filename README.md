@@ -189,103 +189,73 @@ Full reference with triggers, arguments, and examples: [docs/SKILLS.md](docs/SKI
 
 ### Hub-and-Spoke
 
-iaGO-OS uses a hub-and-spoke model. Your main Claude Code session is the **orchestrator** (Opus) — it plans, reasons, and dispatches work. The 11 **agents** (all Sonnet) are specialized workers that execute a single task and report back. Agents never spawn other agents, and they never talk to each other. All coordination flows through the orchestrator.
+iaGO-OS uses a hub-and-spoke model. Your main Claude Code session is the **orchestrator** (Opus) — it plans, reasons, and dispatches work. Agents are **capability-based**: each task is matched to a profile, the orchestrator selects a model, composes the prompt from a base + capability modules + learnings, and dispatches. Agents never spawn other agents, and they never talk to each other. All coordination flows through the orchestrator.
 
 ```mermaid
 flowchart TD
     You([You]) -->|talk to| Orch
 
-    subgraph Orchestrator
-        Orch[Main Session — Opus]
+    subgraph Orchestrator [Orchestrator — Opus]
+        Orch[Main Session]
+        PM[Profile Matching]
+        MC[Model Selection]
+        Orch --> PM --> MC
     end
 
-    Orch -->|dispatches| Impl[implementer]
-    Orch -->|dispatches| Rev[code-reviewer]
-    Orch -->|dispatches| Spec[spec-reviewer]
-    Orch -->|dispatches| Qual[code-quality-reviewer]
-    Orch -->|dispatches| Res[researcher]
-    Orch -->|dispatches| TDD[tdd-guide]
-    Orch -->|dispatches| BER[build-error-resolver]
-    Orch -->|dispatches| E2E[e2e-runner]
-    Orch -->|dispatches| CW[content-writer]
-    Orch -->|dispatches| IR[infra-runner]
-    Orch -->|dispatches| DM[data-modeler]
+    MC -->|compose + dispatch| E[Executor Base]
+    MC -->|compose + dispatch| A[Analyst Base]
+    MC -->|compose + dispatch| O[Operator Base]
 
-    Impl -->|status| Orch
-    Rev -->|status| Orch
-    Spec -->|status| Orch
-    Qual -->|status| Orch
-    Res -->|status| Orch
-    TDD -->|status| Orch
-    BER -->|status| Orch
-    E2E -->|status| Orch
-    CW -->|status| Orch
-    IR -->|status| Orch
-    DM -->|status| Orch
-
-    subgraph Agents [All Sonnet]
-        Impl
-        Rev
-        Spec
-        Qual
-        Res
-        TDD
-        BER
-        E2E
-        CW
-        IR
-        DM
-    end
-
-    subgraph Status Codes
+    subgraph Capabilities [12 Capability Modules]
         direction LR
-        S1[DONE]
-        S2[DONE_WITH_CONCERNS]
-        S3[NEEDS_CONTEXT]
-        S4[BLOCKED]
+        C1[react-19]
+        C2[dynamodb]
+        C3[tdd]
+        C4[security]
+        C5[...]
     end
+
+    Capabilities -.->|injected into| E
+    Capabilities -.->|injected into| A
+    Capabilities -.->|injected into| O
+
+    E -->|status| Orch
+    A -->|status| Orch
+    O -->|status| Orch
 ```
 
 Every agent ends its response with exactly one of four statuses — no ambiguity about whether work is finished.
 
 ### Tool Sandboxing
 
-Each agent gets only the tools it needs. This prevents accidents and keeps agents focused:
+Each base gets only the tools appropriate for its role. This prevents accidents and keeps agents focused:
 
-| Agent | Can read | Can write | Can run commands |
-|-------|----------|-----------|-----------------|
-| `implementer` | Yes | Yes | Yes |
-| `code-reviewer` | Yes | No | Yes (diagnostics only) |
-| `spec-reviewer` | Yes | No | No |
-| `code-quality-reviewer` | Yes | No | Yes (diagnostics only) |
-| `researcher` | Yes | No | Yes + WebSearch + WebFetch |
-| `tdd-guide` | Yes | Yes | Yes |
-| `build-error-resolver` | Yes | Yes | Yes |
-| `e2e-runner` | Yes | Yes | Yes |
-| `content-writer` | Yes | Yes | Yes |
-| `infra-runner` | Yes | No | Yes (AWS CLI, CDK) |
-| `data-modeler` | Yes | No | No |
+| Base | Can read | Can write | Can run commands | Can search web |
+|------|----------|-----------|-----------------|----------------|
+| `executor` | Yes | Yes | Yes | No |
+| `analyst` | Yes | No | Yes (diagnostics) | No |
+| `operator` | Yes | No | Yes | Yes |
 
-Reviewers can't edit files. The data-modeler can't run commands. The implementer can do everything. This is by design.
+Analysts can't edit files. Executors can't search the web. This is by design.
 
 ### Review Pipeline
 
 Code review has two modes depending on the config (`review.mode` in `.iago/config.json`):
 
-**Single-pass** (default for `/iago:quick`): The `code-reviewer` agent does one pass — correctness, security, standards.
+**Single-pass** (default for `/iago:quick`): The `review-single` profile does one pass — correctness, security, standards.
 
 **Full** (default for `/iago:execute`): Three-stage pipeline:
 
 ```mermaid
 flowchart LR
-    Impl[implementer completes task] --> S1
+    Impl[executor completes task] --> S1
 
-    S1[Stage 1: spec-reviewer] -->|pass| S2[Stage 2: code-quality-reviewer]
-    S1 -->|critical findings| Fix1[implementer fixes]
+    S1[Stage 1: review-single] -->|pass| S2[Stage 2: review-full]
+    S1 -->|critical findings| Fix1[executor fixes]
     Fix1 --> S1
 
     S2 -->|pass| S3{Auth/data/payment changes?}
-    S2 -->|critical findings| Fix2[implementer fixes]
+    S2 -->|critical findings| Fix2[executor fixes]
     Fix2 --> S2
 
     S3 -->|yes| Codex[Stage 3: codex adversarial-review]
@@ -293,27 +263,28 @@ flowchart LR
     Codex --> Done
 ```
 
-1. **Stage 1 — Spec review:** `spec-reviewer` checks if the implementation matches the plan
-2. **Stage 2 — Quality review:** `code-quality-reviewer` checks performance, security, maintainability
+1. **Stage 1 — Spec review:** `review-single` checks if the implementation matches the plan
+2. **Stage 2 — Quality review:** `review-full` checks performance, security, maintainability
 3. **Stage 3 — Cross-model (auto for auth/data/payment):** `/codex:adversarial-review` sends the diff to GPT-5.4 for a second opinion
 
-If any stage returns Critical findings, the orchestrator routes back to the implementer for fixes before proceeding.
+If any stage returns Critical findings, the orchestrator routes back to the executor for fixes before proceeding.
 
 ### Agent Catalog
 
-| Agent | Role | When dispatched |
-|-------|------|-----------------|
-| `implementer` | Execute tasks from plans (React 19, DynamoDB, Amplify) | `/iago:execute`, `/subagent-driven-development` |
-| `code-reviewer` | Single-pass review with OWASP + AWS security checklist | `/code-review`, `/iago:quick` |
-| `spec-reviewer` | Spec compliance — does the code match the plan? | `/iago:execute` (full review mode) |
-| `code-quality-reviewer` | Quality, performance, security, maintainability | `/iago:execute` (full review mode, after spec passes) |
-| `researcher` | Deep research via codebase, context7, and web | `/deep-research`, `/iago:onboard --deep` |
-| `tdd-guide` | RED-GREEN-REFACTOR with Vitest + React Testing Library | When enforcing TDD discipline on a task |
-| `build-error-resolver` | 4-phase debugging for Vite/TS/Amplify errors | Build failures during execution |
-| `e2e-runner` | Playwright E2E with Cognito auth and ShadCN selectors | After implementation, when E2E tests are needed |
-| `content-writer` | Articles, investor materials, outreach, presentations | `/article-writing`, `/content-engine`, `/investor-*` |
-| `infra-runner` | AWS CLI, Amplify, CDK, DynamoDB, Lambda, SES ops | Infrastructure tasks, deployments |
-| `data-modeler` | DynamoDB single-table design and access patterns | Schema design, GSI strategy |
+| Profile | Base | Capabilities | Model | Replaces |
+|---------|------|-------------|-------|----------|
+| `fullstack` | executor | react-19, dynamodb, lambda, tdd, forms | auto | implementer (multi-layer) |
+| `frontend` | executor | react-19, tdd, forms | auto | implementer (frontend) |
+| `backend` | executor | dynamodb, lambda, cognito, tdd | auto | implementer (backend) |
+| `review-single` | analyst | security, review-spec, review-quality | auto | code-reviewer |
+| `review-full` | analyst | security, review-spec, review-quality | auto | spec + quality reviewers |
+| `security-audit` | analyst | security, cognito, review-quality | opus | security-critical review |
+| `research` | operator | dynamic | sonnet | researcher |
+| `e2e` | executor | e2e, react-19 | sonnet | e2e-runner |
+| `infra` | operator | infra | sonnet | infra-runner |
+| `schema` | analyst | dynamodb | sonnet | data-modeler |
+| `content` | operator | content | sonnet | content-writer |
+| `debug` | executor | dynamic | auto | build-error-resolver |
 
 ## Hooks (10)
 
@@ -381,7 +352,7 @@ Not all work needs the same model. iaGO-OS routes tasks by complexity:
 | Model | Role | Used by |
 |-------|------|---------|
 | **Opus** | Orchestrator — planning, architecture, multi-file reasoning | Your main Claude Code session |
-| **Sonnet** | Worker — implementation, review, research, debugging | All 11 agents |
+| **Sonnet** | Worker — implementation, review, research, debugging | Default for all agent profiles |
 | **Haiku** | Mechanical — formatting, simple lookups | Reserved for lightweight tasks |
 | **Codex (GPT-5.4)** | Cross-model — adversarial review, rescue delegation | `/codex:*` skills |
 
@@ -392,7 +363,12 @@ iago-os/
   .claude/
     settings.json            # Hook wiring
     skills/                  # 41 skill definitions (SKILL.md each)
-    agents/                  # 11 agent definitions
+    agents/                  # 3 bases + 12 capabilities + 12 profiles
+      executor.md
+      analyst.md
+      operator.md
+      capabilities/          # 12 capability modules
+      profiles/              # 12 agent profiles
     rules/                   # 8 behavioral rules (TDD, debugging, git, etc.)
   .iago/
     hooks/                   # 10 hooks (context, safety, formatting, tracking)

@@ -1,0 +1,16 @@
+{
+  "project": {
+    "name": "iago-os",
+    "client": "iaGO AI",
+    "type": "internal"
+  },
+  "review": {
+    "mode": "single"
+  },
+  "routing": {
+    "default_model": "auto",
+    "security_critical": "opus",
+    "retry_upgrade": true,
+    "review_matches_impl": true
+  }
+}

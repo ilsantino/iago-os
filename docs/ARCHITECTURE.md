@@ -36,8 +36,8 @@ iaGO-OS is built in six layers, each building on the one below:
 │  Skills                             │  41 reusable workflows
 │  (.claude/skills/)                  │  (init, plan, execute, verify, ...)
 ├─────────────────────────────────────┤
-│  Agents                             │  11 specialized workers
-│  (.claude/agents/)                  │  (implementer, reviewer, researcher, ...)
+│  Agents                             │  3 base agents + 12 capability modules + 12 profiles
+│  (.claude/agents/)                  │  (executor, analyst, operator + compositions)
 ├─────────────────────────────────────┤
 │  Hooks                              │  10 automatic behaviors
 │  (.iago/hooks/)                     │  (context, safety, formatting, tracking)
@@ -53,7 +53,26 @@ iaGO-OS is built in six layers, each building on the one below:
 
 **Skills** are reusable workflows invoked with `/skill-name`. Each skill has a `SKILL.md` that describes preconditions, steps, agents to dispatch, and artifacts to produce.
 
-**Agents** are specialized workers dispatched by skills. They run on Sonnet (the orchestrator runs on Opus). Hub-and-spoke: only the orchestrator dispatches agents — agents never spawn other agents.
+**Agents** are composed per task from 3 base templates (executor, analyst, operator) and 12 capability modules. Profiles are pre-composed combinations — the orchestrator matches each task to a profile, selects the model, and composes the prompt. Hub-and-spoke: only the orchestrator dispatches agents — agents never spawn other agents.
+
+## Capability-Based Dispatch
+
+Agent capability is composed at dispatch time, not hardcoded per agent file:
+
+- **Base agents** define tool access tiers: executor (write access — code, files), analyst (read-only — grep, read, search), operator (external access — AWS CLI, APIs, infra)
+- **Capability modules** add domain knowledge injected into the prompt: `react-19`, `dynamodb`, `security`, `tdd`, `amplify`, `playwright`, `mcp`, `content`, `research`, `debug`, `infra`, `data-model`
+- **Profiles** are pre-composed base + capability combinations ready for dispatch: `fullstack`, `review-single`, `review-quality`, `tdd-guide`, `e2e-runner`, `infra-runner`, `data-modeler`, `researcher`, `content-writer`, `build-resolver`, `spec-reviewer`, `debug` (dynamic)
+- **Dispatch flow:** match task to profile → select model from config.json routing table → compose prompt (base + capabilities) → dispatch agent → log to usage-log.jsonl
+- **Dynamic profiles** (`research`, `debug`) have capabilities selected at dispatch time based on task context — the orchestrator injects the relevant modules rather than using a fixed composition
+
+## Feedback Loops
+
+Agent quality improves across sessions through two learnings files:
+
+- **`.iago/learnings/patterns.md`** accumulates recurring review findings — anti-patterns flagged by code-reviewer and code-quality-reviewer agents across sessions
+- **`.iago/learnings/project-conventions.md`** holds project-specific conventions discovered during work (naming, structure, decisions made)
+- Both files are injected into agent prompts before dispatch: `patterns.md` contributes the top 10 patterns (max 500 tokens); `project-conventions.md` injects up to 300 tokens
+- **Pattern promotion rule:** any pattern appearing 5+ times in `patterns.md` is surfaced to the orchestrator as a candidate for promotion to `CLAUDE.md` — making it a permanent constraint rather than a soft suggestion
 
 **Hooks** are automatic behaviors wired in `.claude/settings.json`. They fire on Claude Code lifecycle events (session start, tool use, stop) and handle context persistence, safety guards, formatting, and usage tracking.
 
@@ -181,6 +200,9 @@ This data feeds into the future iaGO Dashboard (see `docs/IAGO-DASHBOARD.md`) �
 | Role | Model | Why |
 |------|-------|-----|
 | Orchestrator (main session) | Opus | Planning, architecture, multi-file reasoning |
-| All subagents | Sonnet | Implementation, review, research, debugging |
+| Default subagents (executor, analyst, operator) | Sonnet | Implementation, review, research, debugging |
+| Profile override (e.g., `fullstack`, `tdd-guide`) | Sonnet (configurable via `config.json` `modelRouting`) | Profile-level model selection; override per profile in `.iago/config.json` |
 | Mechanical tasks | Haiku | Formatting, simple lookups (reserved) |
 | Cross-model review | GPT-5.4 (Codex) | Second opinion on critical changes |
+
+**Profile-level routing** is configured in `.iago/config.json` under the `modelRouting` key. Each profile can specify its own model; unspecified profiles inherit the `default` value. This allows high-stakes profiles (e.g., `infra-runner`) to be pinned to Opus while keeping routine profiles on Sonnet.

@@ -6,13 +6,12 @@ description: >-
   /iago:execute or /subagent-driven-development (those dispatch review internally).
 ---
 
-<!-- Source: Superpowers requesting-code-review + receiving-code-review + ECC code-reviewer -->
 
 ## Purpose
 
-Dispatch the `code-reviewer` agent against a git diff to produce a structured
-review with severity-categorized findings. Ensures code quality, security, and
-spec compliance before merge.
+Dispatch a review profile against a git diff to produce a structured review with
+severity-categorized findings. Ensures code quality, security, and spec
+compliance before merge.
 
 ## Arguments
 
@@ -20,7 +19,7 @@ spec compliance before merge.
 
 Optional arguments:
 - `{sha-range}` — specific commit range (e.g., `abc1234..def5678`)
-- `--full` — two-stage review (spec-reviewer + code-quality-reviewer)
+- `--full` — dispatch `review-full` profile instead of `review-single`
 - `--against {branch}` — diff against a branch instead of HEAD~1
 
 ## Steps
@@ -35,11 +34,11 @@ Priority:
 
 Generate the diff: `git diff {range}`.
 
-### 2. Dispatch code-reviewer
+### 2. Dispatch review profile
 
 **Single-pass (default):**
 
-Dispatch `code-reviewer` agent (Sonnet) with:
+Dispatch `review-single` profile with:
 - The git diff
 - CLAUDE.md
 - Relevant plan file (if identifiable from branch name or recent context)
@@ -55,8 +54,13 @@ The reviewer checks:
 
 **Two-stage (`--full` flag):**
 
-1. Dispatch `spec-reviewer` — does the implementation match the spec/plan?
-2. Dispatch `code-quality-reviewer` — React/DynamoDB/Lambda pattern compliance
+Dispatch `review-full` profile — handles spec compliance and code quality with
+internal gating between stages.
+
+**Security auto-upgrade:**
+
+For security-critical changes (auth, payment, data-access patterns), automatically
+upgrade to `security-audit` profile regardless of the `--full` flag.
 
 ### 3. Categorize findings
 
@@ -113,4 +117,4 @@ Display structured review:
 - Does not commit or merge — that's the user's or workflow's decision
 - Does not re-run tests — verification is separate (`/iago:verify`)
 - Single dispatch by default — do not chain multiple review rounds unless `--full`
-- If code-reviewer returns BLOCKED, report and suggest manual review
+- If the dispatched profile returns BLOCKED, report and suggest manual review

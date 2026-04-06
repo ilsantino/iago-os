@@ -45,6 +45,10 @@ Artifacts: `.iago/plans/`, `.iago/context/`, `.iago/summaries/`, `.iago/reviews/
 STATE.md is a digest — keep under 80 lines. Overflow decisions to PROJECT.md.
 Pause: `/iago:pause`. Resume is automatic on next session start.
 
+## Learnings
+
+`.iago/learnings/` accumulates review patterns and project conventions, injected into agent context before each dispatch. Patterns at 5+ occurrences are candidates for promotion to CLAUDE.md.
+
 ## Verification
 
 Never claim a task is complete without running a verification command and reading its output.
@@ -98,12 +102,13 @@ See `.claude/rules/available-skills.md` for the complete catalog including conte
 
 ## Agents
 
-11 agents in `.claude/agents/`: implementer, code-reviewer, spec-reviewer, code-quality-reviewer, researcher, tdd-guide, build-error-resolver, e2e-runner, content-writer, infra-runner, data-modeler.
-All on Sonnet. Hub-and-spoke: only the orchestrator (this session) dispatches agents — agents never spawn other agents.
+3 base agents, 12 capability modules, and 12 profiles in `.claude/agents/`. Bases: executor (write), analyst (read-only), operator (external data). Profiles compose base + capabilities per task. Hub-and-spoke: only the orchestrator dispatches — agents never spawn agents.
 
 ## Model Routing
 
 - **Opus:** Orchestrator (main session) — planning, architecture, multi-file reasoning
-- **Sonnet:** All subagents — implementation, review, research, debugging, testing
+- **Sonnet:** Default for all profiles — implementation, review, research, debugging, testing
 - **Haiku:** Reserve for mechanical tasks (formatting, simple lookups) when needed
 - **Codex (GPT-5.4):** Cross-model review (`/codex:review`, `/codex:adversarial-review`) and rescue delegation (`/codex:rescue`)
+
+Model selection per dispatch: profiles specify `model: auto | sonnet | opus`. Auto routing: 4+ files → opus, auth/payment → opus, retry → upgrade. Configurable in `.iago/config.json` routing section.

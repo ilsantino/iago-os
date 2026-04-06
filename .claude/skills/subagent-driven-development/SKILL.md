@@ -10,17 +10,17 @@ description: >-
 
 ## Purpose
 
-Execute an implementation plan by dispatching a fresh `implementer` agent per task,
-then reviewing results with `code-reviewer`. Each agent gets minimal, focused
-context — no cross-task state leakage.
+Execute an implementation plan by dispatching a fresh agent per task using
+profile-based dispatch, then reviewing results via the appropriate review profile.
+Each agent gets minimal, focused context — no cross-task state leakage.
 
 ## Arguments
 
 `/subagent-driven-development {plan-path}` — path to the plan file.
 
 Optional flags:
-- `--full-review` — two-stage review (spec-reviewer + code-quality-reviewer)
-  instead of single-pass code-reviewer
+- `--full-review` — two-stage review via `review-full` profile instead of
+  single-pass `review-single`
 - `--parallel` — dispatch all wave-1 tasks simultaneously (default: sequential)
 - `--dry-run` — validate plan without executing
 
@@ -44,15 +44,42 @@ If `--dry-run`: validate plan structure, report issues, stop.
 
 For each task (respecting wave order):
 
-**a. Dispatch implementer**
+**a. Dispatch agent via profile**
 
-Dispatch `implementer` agent (Sonnet) with:
+Match the task to a profile based on file paths:
+- Files in both `src/` and `amplify/` → `fullstack`
+- Files only in `src/` → `frontend`
+- Files only in `amplify/` → `backend`
+- Fallback → `fullstack`
+
+If the task specifies `profile:` explicitly, use that.
+
+**Smart model routing** — select model before dispatch:
+1. If the matched profile has a hardcoded model (e.g., `security-audit → opus`), use it.
+2. Read `.iago/config.json` `routing` section.
+3. If `routing.default_model` is `"sonnet"` or `"opus"` (not `"auto"`), use that.
+4. Otherwise apply heuristics:
+   - Task touches 4+ files → `opus`
+   - Task involves auth / payment / data-access → use `routing.security_critical` model
+   - Task is a retry → `opus` if `routing.retry_upgrade` is `true`
+   - Otherwise → `sonnet`
+5. For reviews: if `routing.review_matches_impl` is `true`, match the model used for the implementation task being reviewed.
+
+**Learnings injection** — before composing the agent prompt:
+1. Read `.iago/learnings/patterns.md` — inject the top 10 patterns sorted by occurrence count (max 500 tokens).
+2. Read `.iago/learnings/project-conventions.md` — inject in full (max 300 tokens).
+3. Insert both blocks between the profile's capability modules and the task description in the composed prompt. Skip gracefully if either file is absent.
+
+Compose the dispatch prompt from the profile's base agent + capability modules +
+learnings + task. Dispatch via the profile's base agent with the routed model.
+
+Provide each dispatch with:
 - The single task (not the full plan)
 - CLAUDE.md
 - rules/tdd.md
 - rules/systematic-debugging.md
 
-The implementer must end with an escalation status:
+The dispatched agent must end with an escalation status:
 - **DONE** — task complete, verify command passed
 - **DONE_WITH_CONCERNS** — task complete, minor issues noted
 - **NEEDS_CONTEXT** — missing information, cannot proceed
@@ -77,7 +104,7 @@ Collect results. If any BLOCKED, pause remaining and escalate.
 After all tasks complete:
 
 **Single-pass (default):**
-Dispatch `code-reviewer` agent with:
+Dispatch `review-single` profile with:
 - Git diff covering all task commits
 - CLAUDE.md
 - The plan file
@@ -88,19 +115,28 @@ Severity categories:
 - **Minor** — nice to have (style, naming, documentation)
 
 **Two-stage (`--full-review` flag):**
-1. Dispatch `spec-reviewer` — validates implementation matches spec/plan
-2. Dispatch `code-quality-reviewer` — checks React/DynamoDB/Lambda patterns
+Dispatch `review-full` profile — handles both spec compliance and code quality
+checks internally (React/DynamoDB/Lambda patterns).
 
 ### 4. Handle review findings
 
 | Severity | Action |
 |----------|--------|
-| Critical | Fix immediately — dispatch implementer with the finding |
+| Critical | Fix immediately — dispatch agent (same profile as original task) with the finding |
 | Important | Log, ask user: fix now or defer? |
 | Minor | Log only — do not fix unless user requests |
 
 Anti-performative-agreement: do not dismiss Critical findings. Do not auto-approve
 your own work. YAGNI check: flag any code that isn't required by the plan.
+
+**Learnings extraction** — after processing all review findings:
+1. Identify recurring patterns from the review that apply beyond the current task (e.g., "Always validate DynamoDB pk/sk before write", "Use `useTransition` for mutation feedback").
+2. Append each new pattern to `.iago/learnings/patterns.md` using the format:
+   ```
+   - {pattern description} | Occurrences: 1 | Last Seen: {date} | Source: {plan-slug}
+   ```
+3. If a pattern already exists (fuzzy match on description), increment its `Occurrences` count and update `Last Seen` — do not create a duplicate entry.
+4. If any pattern reaches 5+ occurrences, surface a recommendation to promote it to `CLAUDE.md` or the relevant rule file in `.claude/rules/`.
 
 ### 5. Write summary
 
@@ -147,7 +183,7 @@ Display:
 
 ## Boundaries
 
-- One fresh agent per task — no shared state between implementer instances
+- One fresh agent per task — no shared state between dispatched instances
 - Only the orchestrator (this session) dispatches agents — agents never spawn agents
 - Plan is the contract — implement what it says, nothing more
 - New ideas discovered during execution go to a "deferred" section in the summary

@@ -16,6 +16,12 @@
   "review": {
     "mode": "single"
   },
+  "routing": {
+    "default_model": "auto",
+    "security_critical": "opus",
+    "retry_upgrade": true,
+    "review_matches_impl": true
+  },
   "meta": {
     "tech_stack": "{{TECH_STACK}}",
     "created_date": "{{CREATED_DATE}}",
