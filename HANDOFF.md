@@ -85,7 +85,7 @@ Redesigned the entire agent system from role-based to capability-based.
 
 **Rules (8):** Unchanged. `available-skills.md` updated with new agent catalog.
 
-**Hooks (10):** Unchanged. Usage tracker hook active.
+**Hooks (9):** statusline.mjs removed (dead code — no Statusline event in Claude Code). Usage tracker hook active.
 
 **Config:** `.iago/config.json` now includes `routing` section (default_model, security_critical, retry_upgrade, review_matches_impl).
 

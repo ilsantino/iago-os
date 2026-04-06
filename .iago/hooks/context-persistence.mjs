@@ -5,7 +5,7 @@
 import { readInput } from "./lib/stdin.mjs";
 import { isDisabled } from "./lib/flags.mjs";
 import { readTranscript, getTokenUsage, extractDecisions, getFilesModified } from "./lib/transcript.mjs";
-import { readFileSync, writeFileSync, readdirSync, unlinkSync, mkdirSync, existsSync, appendFileSync } from "fs";
+import { readFileSync, writeFileSync, readdirSync, unlinkSync, mkdirSync, existsSync, appendFileSync, statSync } from "fs";
 import { join } from "path";
 import { execSync } from "child_process";
 
@@ -53,7 +53,7 @@ function listSessions() {
       .map((f) => ({
         name: f,
         path: join(SESSIONS_DIR, f),
-        mtime: require("fs").statSync(join(SESSIONS_DIR, f)).mtimeMs,
+        mtime: statSync(join(SESSIONS_DIR, f)).mtimeMs,
       }))
       .sort((a, b) => b.mtime - a.mtime);
   } catch { return []; }

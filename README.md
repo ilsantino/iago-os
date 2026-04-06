@@ -300,7 +300,7 @@ Pre-composed base + capability combinations. The orchestrator selects the right 
 | `content` | operator | content | sonnet | Articles, proposals, investor materials, outreach |
 | `debug` | executor | dynamic (context-dependent) | auto | Build/typecheck/lint failures — capabilities selected based on error context |
 
-## Hooks (10)
+## Hooks (9)
 
 Hooks are automatic behaviors wired in `.claude/settings.json`. They fire on Claude Code lifecycle events — you never invoke them manually.
 
@@ -327,12 +327,6 @@ Hooks are automatic behaviors wired in `.claude/settings.json`. They fire on Cla
 | `post-edit-format` | After file edit | Runs `npx biome format --write` on the edited file | Every edit is auto-formatted — no style debates, no format commits |
 | `post-edit-typecheck` | After TS/TSX edit | Runs `npx tsc --noEmit` on the edited file and reports type errors immediately | Type errors caught in seconds, not after a full build |
 | `post-edit-console-warn` | After file edit | Scans the edited file for `console.log` and warns if found in production code paths | `console.log` in production is a code smell — catch it before review |
-
-### Display
-
-| Hook | Fires on | What it does | Why it matters |
-|------|----------|-------------|----------------|
-| `statusline` | Continuous | Outputs git branch, context window %, active client slug, and session duration. Writes a bridge file for `context-monitor` | At-a-glance session status without running commands |
 
 ## Ecosystem Integrations
 
@@ -402,7 +396,7 @@ iago-os/
       profiles/              # 12 agent profiles
     rules/                   # 8 behavioral rules (TDD, debugging, git, etc.)
   .iago/
-    hooks/                   # 10 hooks (context, safety, formatting, tracking)
+    hooks/                   # 9 hooks (context, safety, formatting, tracking)
       lib/                   # Shared utilities (stdin, flags, state-manager)
     state/                   # Runtime state (sessions, usage log)
   templates/

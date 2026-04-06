@@ -38,8 +38,12 @@ async function main() {
       timeout: 4000,
       stdio: ["pipe", "pipe", "pipe"],
     });
-  } catch {
+  } catch (err) {
     // Biome not installed or format failed — non-fatal
+    const msg = err?.message || "";
+    if (err?.code === "ENOENT" || msg.includes("not found") || msg.includes("ENOENT")) {
+      process.stderr.write("iaGO: biome not found. Run npm install in iaGO-OS root.\n");
+    }
   }
 }
 

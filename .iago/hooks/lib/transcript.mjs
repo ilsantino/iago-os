@@ -1,7 +1,7 @@
 // iaGO-OS — Claude Code transcript JSONL reader
 // Reads the transcript file, extracts token usage, decisions, and file modifications.
 
-import { readFileSync, existsSync, readdirSync } from "fs";
+import { readFileSync, existsSync, readdirSync, statSync } from "fs";
 import { join } from "path";
 import { homedir } from "os";
 
@@ -30,7 +30,7 @@ function findLatestTranscript() {
         const files = readdirSync(dir).filter((f) => f.endsWith(".jsonl"));
         for (const f of files) {
           const fp = join(dir, f);
-          const { mtimeMs } = require("fs").statSync(fp);
+          const { mtimeMs } = statSync(fp);
           if (mtimeMs > latestMtime) {
             latestMtime = mtimeMs;
             latest = fp;

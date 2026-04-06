@@ -39,7 +39,7 @@ iaGO-OS is built in six layers, each building on the one below:
 │  Agents                             │  3 base agents + 13 capability modules + 12 profiles
 │  (.claude/agents/)                  │  (executor, analyst, operator + compositions)
 ├─────────────────────────────────────┤
-│  Hooks                              │  10 automatic behaviors
+│  Hooks                              │  9 automatic behaviors
 │  (.iago/hooks/)                     │  (context, safety, formatting, tracking)
 ├─────────────────────────────────────┤
 │  State Engine                       │  Session memory, workflow state,

@@ -30,6 +30,9 @@ Complete guide to using iaGO-OS for project delivery with Claude Code.
 git clone https://github.com/ilsantino/iago-os.git
 cd iago-os
 
+# Install hook dependencies (biome, typescript)
+npm install
+
 # Install skills globally (available in every Claude Code session)
 ./scripts/sync-skills.sh --global          # macOS/Linux
 .\scripts\sync-skills.ps1 -Global          # Windows PowerShell
@@ -51,7 +54,7 @@ acme-dashboard/
     agents/             # 3 bases + 13 capabilities + 12 profiles
     rules/              # 8 behavioral rules
   .iago/
-    hooks/              # 10 hook scripts
+    hooks/              # 9 hook scripts
       lib/              # Shared utilities
     state/              # Runtime state (created on first session)
     plans/              # Implementation plans (empty)
@@ -514,7 +517,6 @@ SessionStart → PreToolUse → [tool runs] → PostToolUse → ... → PreCompa
 Set environment variables to disable specific hooks:
 
 ```bash
-IAGO_DISABLE_STATUSLINE=1 claude          # Disable statusline
 IAGO_DISABLE_TYPECHECK=1 claude           # Disable post-edit typecheck
 ```
 
@@ -552,8 +554,6 @@ Stale warning: HANDOFF.json older than 7 days triggers an informational warning.
 The `context-monitor` hook watches context usage:
 - **70% threshold** — suggests compacting or finishing the current task
 - **90% threshold** — warns to pause or wrap up immediately
-
-The `statusline` hook shows context % at a glance.
 
 ---
 

@@ -55,6 +55,12 @@ async function main() {
       stdio: ["pipe", "pipe", "pipe"],
     });
   } catch (err) {
+    // tsc not installed — non-fatal, warn and exit
+    const errMsg = err?.message || "";
+    if (err?.code === "ENOENT" || errMsg.includes("not found") || errMsg.includes("ENOENT")) {
+      process.stderr.write("iaGO: tsc not found. Run npm install in iaGO-OS root.\n");
+      process.exit(0);
+    }
     // Filter to only show errors in the edited file
     const stderr = err.stderr || err.stdout || "";
     const lines = stderr.split("\n");

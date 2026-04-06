@@ -31,6 +31,9 @@ gh auth login
 ```bash
 git clone https://github.com/iagoai/iago-os.git
 cd iago-os
+
+# Install hook dependencies (biome, typescript)
+npm install
 ```
 
 ## Global Install

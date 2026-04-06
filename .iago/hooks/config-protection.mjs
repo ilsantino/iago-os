@@ -53,7 +53,15 @@ async function main() {
   const name = basename(filePath);
 
   // package.json: check for blocked fields in the edit content
+  // Skip field protection when creating the file from scratch (Write tool on new file)
   if (name === "package.json") {
+    const isWrite = input.tool_name === "Write";
+    const { existsSync } = await import("fs");
+    const fileExists = existsSync(filePath);
+    if (isWrite && !fileExists) {
+      // Allow full creation of a new package.json
+      process.exit(0);
+    }
     const content = input.tool_input?.new_string || input.tool_input?.content || "";
     for (const field of BLOCKED_PKG_FIELDS) {
       if (content.includes(`"${field}"`)) {

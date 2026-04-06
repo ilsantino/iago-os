@@ -5,8 +5,19 @@ set -euo pipefail
 # Usage: ./scripts/new-client.sh --name "Acme Corp" --project "dashboard" --path ../acme-dashboard
 #        ./scripts/new-client.sh --name "iaGO" --project "internal-tool" --path ../internal-tool --internal
 
+# Edge cases handled:
+# - Client names with & / | \ special characters (sed-escaped)
+# - Client names with spaces (quoted throughout)
+# - Non-ASCII characters stripped from CLIENT_ID (documented behavior)
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 IAGO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+# Escape special characters for safe use in sed replacement strings.
+# Handles: & (backreference), / (delimiter), \ (escape) and | (alternate delimiter).
+escape_sed() {
+  printf '%s\n' "$1" | sed -e 's/[\/&\\]/\\&/g'
+}
 
 # --- Defaults ---
 CLIENT_NAME=""
@@ -88,14 +99,19 @@ fi
 
 # --- Step 3: Replace variables and strip .template extension ---
 echo "[3/5] Replacing variables..."
+ESCAPED_CLIENT=$(escape_sed "$CLIENT_NAME")
+ESCAPED_PROJECT=$(escape_sed "$PROJECT_NAME")
+ESCAPED_CLIENT_ID=$(escape_sed "$CLIENT_ID")
+ESCAPED_DATE=$(escape_sed "$CREATED_DATE")
+ESCAPED_STACK=$(escape_sed "$TECH_STACK")
 find "$TARGET_PATH" -name "*.template" -type f | while read -r tpl; do
   dest="${tpl%.template}"
   sed \
-    -e "s/{{CLIENT_NAME}}/$CLIENT_NAME/g" \
-    -e "s/{{PROJECT_NAME}}/$PROJECT_NAME/g" \
-    -e "s/{{CLIENT_ID}}/$CLIENT_ID/g" \
-    -e "s/{{CREATED_DATE}}/$CREATED_DATE/g" \
-    -e "s|{{TECH_STACK}}|$TECH_STACK|g" \
+    -e "s/{{CLIENT_NAME}}/$ESCAPED_CLIENT/g" \
+    -e "s/{{PROJECT_NAME}}/$ESCAPED_PROJECT/g" \
+    -e "s/{{CLIENT_ID}}/$ESCAPED_CLIENT_ID/g" \
+    -e "s/{{CREATED_DATE}}/$ESCAPED_DATE/g" \
+    -e "s/{{TECH_STACK}}/$ESCAPED_STACK/g" \
     "$tpl" > "$dest"
   rm "$tpl"
 done

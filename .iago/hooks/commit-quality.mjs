@@ -2,6 +2,12 @@
 // Event: PreToolUse, Matcher: Bash
 // Validates conventional commit messages and scans staged changes for secrets.
 
+// Edge cases handled:
+// - Commit message via -m flag (single or multiple -m)
+// - Commit message via heredoc $(cat <<'EOF'...\nEOF)
+// - Escaped newlines in JSON input (\\n vs real newlines)
+// - Multi-line messages (subject extracted from first line)
+
 import { readInput } from "./lib/stdin.mjs";
 import { isDisabled } from "./lib/flags.mjs";
 import { execSync } from "child_process";
@@ -31,13 +37,15 @@ const SECRET_PATTERNS = [
 ];
 
 function extractCommitMessage(command) {
-  // Match -m "message" or -m 'message'
+  // Check heredoc FIRST: -m "$(cat <<'EOF'\n...\nEOF\n)" — real or JSON-escaped \n.
+  // Must run before the -m branch because the -m regex would greedily swallow the
+  // entire $(cat ...) block as the message, returning a non-conventional string.
+  const heredoc = command.match(/\$\(cat\s+<<'?EOF'?\s*(?:\\n|\n)([\s\S]*?)(?:\\n|\n)\s*EOF/);
+  if (heredoc) return heredoc[1].split(/\\n|\n/)[0].trim(); // First line = subject
+
+  // Match plain -m "message" or -m 'message' (no heredoc)
   const mFlag = command.match(/-m\s+(?:"([^"]+)"|'([^']+)')/);
   if (mFlag) return mFlag[1] || mFlag[2];
-
-  // Match heredoc: $(cat <<'EOF'...\nEOF\n)
-  const heredoc = command.match(/\$\(cat\s+<<'?EOF'?\s*\n([\s\S]*?)\nEOF/);
-  if (heredoc) return heredoc[1].split("\n")[0]; // First line = subject
 
   return null;
 }
