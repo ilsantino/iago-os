@@ -1,65 +1,48 @@
 # iaGO-OS
 
-A configuration layer for [Claude Code](https://claude.ai/code) that turns it into a structured project delivery system. Built for AI consultancies that ship client projects with Claude.
+A configuration layer for [Claude Code](https://claude.ai/code) that turns it into a structured project delivery system.
 
-**The problem:** Claude Code starts every conversation fresh. It doesn't remember what happened last session, doesn't follow a consistent workflow, and doesn't know which client you're working on. When you're running multiple projects across a team, this becomes chaos.
+iaGO-OS is not a framework, not an SDK, and not a SaaS product. It's a set of files — markdown skills, agent profiles, hook scripts, and state management — that sit alongside your code in `.claude/` and `.iago/` directories. When Claude Code loads your project, it reads these files and becomes a disciplined delivery system instead of a blank-slate chatbot.
 
-**iaGO-OS fixes this** by giving Claude Code skills (reusable workflows), agents (specialized workers), hooks (automatic behaviors), and a state engine (session memory). Every conversation picks up where the last one left off, follows the same workflow, and produces consistent results.
+**Who it's for:** Teams and solo developers shipping real projects with Claude Code. We built it for our own 3-person AI consultancy running multiple client projects simultaneously — it solves the problems we hit every day.
 
-## What Using It Looks Like
+**What it solves:**
 
-Here's a real workflow — starting a new client project from scratch:
+- **Context rot.** Claude forgets everything between sessions. iaGO-OS hooks save and restore session state automatically. Every conversation picks up where the last one left off.
+- **Config drift.** Without constraints, Claude writes inconsistent code — different patterns, different libraries, different quality. iaGO-OS enforces your stack, your conventions, and your review standards through rules and hooks.
+- **Invisible work.** When Claude dispatches subagents, you can't see what they did or whether the results were verified. iaGO-OS profiles define what each agent can do, learnings accumulate across sessions, and every task ends with evidence — not claims.
+- **No workflow.** Claude will happily write code without planning, skip tests, and call it done. iaGO-OS imposes a delivery pipeline: plan with verification commands, implement with TDD, review with multiple models, verify against goals before shipping.
 
-```
-# 1. Scaffold the project
+**How it works:** You type `/iago:init` and Claude asks about your project. It produces a roadmap. You run `/iago:plan` and it breaks the next phase into tasks. You run `/iago:execute` and it dispatches specialized agents — one per task — then reviews each one through a 3-stage pipeline (internal review, quality check, cross-model adversarial review via GPT-5.4). You run `/iago:verify` and it checks every goal against real evidence. If it passes, it opens a PR.
+
+For small stuff: `/iago:quick` does plan-implement-review in one shot. `/iago:fast` skips everything for a 3-file fix.
+
+## What It Looks Like
+
+```bash
+# Scaffold a new client project
 ./scripts/new-client.sh --name "Acme Corp" --project "dashboard" --path ../acme-dashboard
-
-=== iaGO New Client ===
-  Client:   Acme Corp (acme-corp)
-  Project:  dashboard
-  Template: client-project
-  Target:   ../acme-dashboard
-
-[1/5] Copying template...
-[2/5] Copying hooks...
-[3/5] Replacing variables...
-[4/5] Creating .iago subdirectories...
-[5/5] Initializing git...
-
-=== Done ===
-  Files:     23
-
-# 2. Open Claude Code in the new project
 cd ../acme-dashboard && claude
 ```
 
-Now inside Claude Code:
+Inside Claude Code:
 
 ```
-# Initialize — Claude asks about your vision, constraints, and phases
-> /iago:init
-
-# Clarify the first phase — surfaces ambiguities, records decisions
-> /iago:discuss phase 1
-
-# Plan — breaks the phase into tasks with verification commands
-> /iago:plan phase 1
-
-# Execute — dispatches implementer agents, reviews each plan after
-> /iago:execute phase 1
-
-# Verify — checks every ROADMAP goal against evidence, opens a PR
-> /iago:verify phase 1
+> /iago:init                    # Interactive discovery → PROJECT.md + ROADMAP.md
+> /iago:discuss phase 1         # Clarify ambiguities → context artifact
+> /iago:plan phase 1            # Decompose into tasks → plan files
+> /iago:execute phase 1         # Agent dispatch → build → review → PR
+> /iago:verify phase 1          # Goal verification → ship or re-plan
 ```
 
-Every session starts with context from the last one. Every skill follows the same discipline. Every agent reports with evidence, not claims.
-
-For quick one-off tasks that don't need the full workflow:
+Bypass modes for quick work:
 
 ```
-> /iago:quick    # 1-3 tasks: plan, implement, review in one pass
-> /iago:fast     # Trivial fix (3 files or fewer), no planning needed
+> /iago:quick Add a loading spinner to the dashboard    # 1-3 tasks, one pass
+> /iago:fast Fix the typo in the login button           # Inline, no agents
 ```
+
+See the [Usage Manual](docs/MANUAL.md) for the complete how-to guide.
 
 ## Prerequisites
 
@@ -215,7 +198,7 @@ flowchart TD
     MC -->|compose + dispatch| A[Analyst Base]
     MC -->|compose + dispatch| O[Operator Base]
 
-    subgraph Capabilities [12 Capability Modules]
+    subgraph Capabilities [13 Capability Modules]
         direction LR
         C1[react-19]
         C2[dynamodb]
@@ -449,12 +432,88 @@ Projects built with iaGO-OS use this stack (configurable per project):
 - **Testing:** Vitest (unit/integration), Playwright (E2E)
 - **Tooling:** Biome (formatter + linter)
 
+## How to Use
+
+The [Usage Manual](docs/MANUAL.md) covers everything in detail. Here's the condensed version:
+
+### The Delivery Cycle
+
+Every project follows the same phases: **init → discuss → plan → execute → verify**. Each phase produces artifacts that feed the next one. Skip a phase and the next one will ask for it.
+
+```
+/iago:init      → PROJECT.md, ROADMAP.md, STATE.md, config.json
+/iago:discuss   → .iago/context/{phase}.md
+/iago:plan      → .iago/plans/{phase}-{plan}.md
+/iago:execute   → .iago/summaries/{phase}-{plan}.md + git commits + PRs
+/iago:verify    → .iago/reviews/{phase}.md + PR (if passed)
+```
+
+### Choosing the Right Mode
+
+| Situation | Command | What happens |
+|-----------|---------|-------------|
+| New client project | `/iago:init` | Interactive discovery, foundation artifacts |
+| Next phase of ongoing work | `/iago:discuss` → `/iago:plan` → `/iago:execute` | Full pipeline |
+| Small standalone task (1-3 tasks) | `/iago:quick "add search to dashboard"` | Plan + implement + review in one pass |
+| Trivial fix (3 files max) | `/iago:fast "fix login button typo"` | Inline edit + atomic commit |
+| Need to stop mid-session | `/iago:pause` | Saves state, next session auto-resumes |
+| Design decision needed | `/brainstorming` | Socratic exploration → spec |
+| Spec ready, need implementation | `/subagent-driven-development plan.md` | Fresh agent per task, mandatory review |
+
+### Multi-Client Setup
+
+iaGO-OS supports multiple concurrent projects. Each gets its own `.iago/` state directory — no state is shared.
+
+```bash
+# Scaffold projects
+./scripts/new-client.sh --name "Client A" --project "app" --path ../client-a
+./scripts/new-client.sh --name "Client B" --project "api" --path ../client-b
+
+# Sync updates from iaGO-OS to existing projects
+./scripts/sync-skills.sh --target ../client-a
+./scripts/sync-skills.sh --target ../client-b --dry-run  # preview first
+```
+
+### Configuration
+
+Each project has `.iago/config.json` controlling review mode and model routing:
+
+```json
+{
+  "review": { "mode": "single" },
+  "routing": {
+    "default_model": "auto",
+    "security_critical": "opus",
+    "retry_upgrade": true
+  }
+}
+```
+
+- `review.mode: "single"` — one-pass review (faster, good for quick tasks)
+- `review.mode: "full"` — two-stage gated review (recommended for client work)
+- `routing.default_model: "auto"` — orchestrator picks model based on task complexity
+- `routing.security_critical: "opus"` — always use Opus for auth/payment/data code
+
+## Built On
+
+iaGO-OS synthesizes patterns from six open-source Claude Code configurations. The skill/agent/workflow structure is original design built on top of these foundations:
+
+| Project | What we learned from it |
+|---------|----------------------|
+| [Everything Claude Code](https://github.com/affaan-m/everything-claude-code) | Session lifecycle event model, post-edit quality pipeline (format → typecheck → console warn), config protection hooks, cost tracking patterns, hook-flags disable mechanism |
+| [Ruflo](https://github.com/ruvnet/ruflo) | Real token tracking from Claude transcript JSONL, importance-ranked context injection, bridge-file pattern for statusline data sharing |
+| [Get Shit Done](https://github.com/gsd-build/get-shit-done) | HANDOFF.json pause/resume pattern, bridge-file context monitoring, threshold-based compaction warnings that prevent context window surprises |
+| [Paperclip](https://github.com/paperclipai/paperclip) | Multi-client isolation model — each project gets its own state directory with no shared state. Adapted from their SaaS tenant model to filesystem directories |
+| [The Architect](https://github.com/Hainrixz/the-architect) | Agent-produces-agent-config pattern (agents that generate other agent definitions), blueprint template for project kickoff discovery |
+| [Superpowers](https://github.com/obra/superpowers) | Verification-before-completion discipline ("never claim done without evidence"), two-stage code review with anti-performative-agreement rules, rationalization prevention tables for TDD |
+
 ## Documentation
 
-- [SETUP.md](docs/SETUP.md) — First-time setup (Windows + macOS)
-- [ARCHITECTURE.md](docs/ARCHITECTURE.md) — How iaGO-OS works under the hood
-- [SKILLS.md](docs/SKILLS.md) — Full skill reference catalog
-- [WORKFLOW.md](docs/WORKFLOW.md) — Workflow phases explained
+- **[Usage Manual](docs/MANUAL.md)** — Complete how-to guide: workflow walkthrough, every mode explained, configuration, multi-client, troubleshooting
+- [Setup Guide](docs/SETUP.md) — First-time installation (Windows + macOS)
+- [Architecture](docs/ARCHITECTURE.md) — How iaGO-OS works under the hood
+- [Skills Reference](docs/SKILLS.md) — Full catalog with triggers, arguments, and examples
+- [Workflow](docs/WORKFLOW.md) — Phase flow, state transitions, artifact locations
 
 ## License
 
