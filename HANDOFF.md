@@ -1,8 +1,8 @@
 # iaGO-OS — Handoff
 
-> **Updated:** 2026-04-03
-> **Status:** Phase 5 COMPLETE. v0.1.0 ready to tag and push.
-> **Branch:** `master`
+> **Updated:** 2026-04-06
+> **Status:** Agent Architecture v2 COMPLETE. All plans executed and pushed.
+> **Branch:** `main`
 
 ---
 
@@ -23,140 +23,96 @@
 | 3D | Industry skills (9) | DONE | `e081d93` |
 | 4A | Templates (client + internal) | DONE | `77434da` |
 | 4B | Scripts (new-client + sync-skills) | DONE | `a0a548e` |
-| 5A | Usage tracking hook + aggregation script | DONE |
-| 5B | Validate (global install, e2e, dry run) | DONE |
-| 5C | Docs (README, SETUP, ARCHITECTURE, SKILLS) | DONE |
+| 5A-C | Usage tracking, validation, docs | DONE | `f2c1e4b` |
 | 5D | Release v0.1.0 (tag + push) | PENDING |
+| 6 | Agent Architecture v2 | DONE | `75e9871` |
+
+---
+
+## What Just Happened (Session 2026-04-04 → 04-06)
+
+### Agent Architecture v2 — Capability-Based Dispatch
+
+Redesigned the entire agent system from role-based to capability-based.
+
+**Before:** 11 fixed role-based agents (implementer, code-reviewer, spec-reviewer, etc.), all hardcoded Sonnet, serial execution, no cross-session learning.
+
+**After:**
+- **3 base agents** — executor (write), analyst (read-only), operator (external data)
+- **12 capability modules** — react-19, dynamodb, lambda, cognito, tdd, security, e2e, review-spec, review-quality, content, infra, forms
+- **12 profiles** — pre-composed base + capabilities (fullstack, frontend, backend, review-single, review-full, security-audit, research, e2e, infra, schema, content, debug)
+- **Smart model routing** — auto/sonnet/opus per task based on complexity, configurable in `.iago/config.json`
+- **Parallel execution** — same-wave plans dispatch concurrently in `/iago:execute`
+- **Feedback loops** — `.iago/learnings/` accumulates review patterns and project conventions, injected into agent prompts
+
+**4 plans executed:**
+1. Foundation — 12 capabilities + 3 bases (9 tasks)
+2. Profiles + Cutover — 12 profiles, 3 skill updates, 11 old agents deleted (11 tasks)
+3. Enhancements — routing config, parallel execution, learnings injection (5 tasks)
+4. Documentation — CLAUDE.md, README, ARCHITECTURE.md, templates updated (6 tasks)
+
+**Spec:** `docs/specs/agent-architecture-v2.md`
+**Plans + summaries:** `docs/plans/agent-v2-0{1-4}-*`
+
+### Also This Session
+
+- Added Ecosystem Integrations section to README (native skills, Codex, MCP servers, model routing)
+- Added Prerequisites section to README (Node.js, Git, Claude Code, AWS CLI, GitHub CLI)
+- Replaced ASCII diagrams with Mermaid flowcharts
+- AWS CLI configured and verified (user `iaguito`, account `582071018864`)
 
 ---
 
 ## What Exists Now
 
-**Skills (41 with SKILL.md):**
-- Workflow (13): iago-init, iago-discuss, iago-plan, iago-execute, iago-verify, iago-quick, iago-fast, iago-pause, iago-scaffold, iago-proposal, iago-onboard, iago-n8n, iago-agents
-- Core (6): brainstorming, writing-plans, subagent-driven-development, code-review, deep-research, prompt-optimizer
-- Content (7): article-writing, content-engine, investor-materials, investor-outreach, market-research, visa-doc-translate, frontend-slides
-- Experimental (6): autonomous-loops, continuous-agent-loop, enterprise-agent-ops, agent-payment-x402, liquid-glass-design, santa-method
-- Industry (9): healthcare-phi-compliance, carrier-relationship-management, customs, energy, logistics, inventory, production-scheduling, quality-nonconformance, returns-reverse-logistics
+**Agent Architecture:**
+- 3 base agents: `executor.md`, `analyst.md`, `operator.md`
+- 12 capability modules in `.claude/agents/capabilities/`
+- 12 profiles in `.claude/agents/profiles/`
+- Dispatch flow: match profile → select model → compose prompt (base + caps + learnings + task) → dispatch
 
-**Agents (11):** implementer, code-reviewer, spec-reviewer, code-quality-reviewer, researcher, tdd-guide, build-error-resolver, e2e-runner, content-writer, infra-runner, data-modeler
+**Skills (41 with SKILL.md):** Unchanged from Phase 5. Three skills updated for profile dispatch: iago-execute, subagent-driven-development, code-review.
 
-**Rules (8):** tdd, systematic-debugging, available-skills, git-workflow, e2e-testing, mcp-server-patterns, react-vite, aws-amplify
+**Rules (8):** Unchanged. `available-skills.md` updated with new agent catalog.
 
-**Hooks (9):** All wired in settings.json.
+**Hooks (10):** Unchanged. Usage tracker hook active.
 
-**Templates (2 sets):**
-- templates/client-project/ — 8 files (CLAUDE.md.template + 6 .iago/ + 1 .claude/)
-- templates/internal-project/ — 8 files (mirrors client, Opus default, IP clause)
+**Config:** `.iago/config.json` now includes `routing` section (default_model, security_critical, retry_upgrade, review_matches_impl).
 
-**Scripts (4):**
-- scripts/new-client.sh + .ps1 — scaffold new project from template
-- scripts/sync-skills.sh + .ps1 — sync skills/agents/rules/hooks to client project
+**Learnings:** `.iago/learnings/patterns.md` + `project-conventions.md` — empty, ready to accumulate during first real project execution.
 
-**State engine:** .iago/hooks/lib/state-manager.mjs — 8 exported functions
-
-**Other:** docs/WORKFLOW.md, Codex plugin, context7 MCP, built-in skills cataloged
+**Templates:** Both client and internal templates updated with learnings directory + routing config.
 
 ---
 
-## Phase 5 Plan
+## What's Next
 
-### 5A: Usage Tracking
+### Immediate
+1. **Tag v0.1.0** — Phase 5D is still pending. Tag and push.
+2. **First real client project** — Use the new capability-based system on MUNET or another client. This is the real validation.
+3. **Sync skills to global** — `./scripts/sync-skills.sh --global` to propagate the new agent architecture.
 
-**Goal:** Automatically document real iaGO-OS usage so we know what to improve before building the iaGO Dashboard (see docs/IAGO-DASHBOARD.md).
+### Watch For
+- Profile matching accuracy — do the file path heuristics pick the right profile?
+- Opus routing — is auto model selection actually picking opus when it should?
+- Learnings accumulation — do useful patterns emerge during real execution?
+- Parallel execution — any file conflict issues in wave dispatch?
 
-**Approach — hook-based telemetry:**
-
-1. **New hook: `usage-tracker.mjs`**
-   - Fires on PostToolUse (Skill matcher) — logs every skill invocation
-   - Fires on Stop — logs session summary (duration, skills used, agents dispatched)
-   - Writes JSONL to `.iago/state/usage-log.jsonl`
-
-2. **Event schema:**
-   ```json
-   {"ts":"ISO","event":"skill_invoked","skill":"iago-plan","session":"abc"}
-   {"ts":"ISO","event":"agent_dispatched","agent":"implementer","skill":"iago-execute","session":"abc"}
-   {"ts":"ISO","event":"session_end","duration_min":45,"skills_used":["iago-plan","iago-execute"],"agents_dispatched":["implementer","code-reviewer"],"session":"abc"}
-   ```
-
-3. **Aggregation script: `scripts/usage-report.sh/.ps1`**
-   - Reads `.iago/state/usage-log.jsonl` from one or more project paths
-   - Produces: skill frequency, agent frequency, avg session duration, most common workflows
-   - Output: `docs/usage-report-{date}.md`
-
-4. **Wire into settings.json.template** (both client + internal templates)
-
-**Why this approach:**
-- No new dependencies — uses existing hook infrastructure
-- JSONL is append-only, cheap, and easy to parse
-- Feeds directly into the iaGO Dashboard later (DynamoDB Streams ingest)
-- Answers the key questions: which skills matter, which agents earn their keep, where does the workflow break down
-
-### 5B: Validate
-
-Collapsed into one step — fix issues inline as found:
-
-1. **Global install:** Add `--global` flag to sync-skills that syncs skills + agents + rules to `~/.claude/` (NO hooks — hooks reference `.iago/hooks/` which only exists in projects). Verify counts.
-2. **E2E test:** Re-run new-client.ps1 → verify structure, no `{{vars}}`, valid JSON, git init (already passed in 4B, this is a final check).
-3. **Workflow dry run:** In a test project, verify `/iago:init` is discoverable, SKILL.md is readable, session-start hook loads context, state-manager functions work via Node.
-
-### 5C: Docs
-
-**README.md** — the "what is this and how do I use it in 2 minutes" document:
-- What (1 paragraph — what iaGO-OS is and who it's for)
-- Quick start (3 commands to scaffold a project)
-- Show don't tell: a real example workflow (init → discuss → plan → execute → verify)
-- Skills table (name + one-line purpose + trigger phrase)
-- Agents table (name + role + model)
-- Folder structure (ASCII tree)
-- License (proprietary)
-- **Tone:** dummy-proof, not intimidating. Explain to a developer who's never seen Claude Code skills before. Lead with "here's what using it looks like" before "here's how it works internally."
-
-**docs/SETUP.md** — first-time setup:
-- Prerequisites (Node 20+, Claude Code, git, Biome)
-- Windows + Mac setup (both paths)
-- Global install (sync-skills --global)
-- First project scaffold
-- Verification checklist
-- Troubleshooting common issues
-
-**docs/ARCHITECTURE.md** — how it works:
-- Problem: context rot, fresh-context agents, config drift across projects
-- Solution: configuration layer that lives alongside code
-- Layers diagram (CLAUDE.md → rules → skills → agents → hooks → state engine)
-- Source patterns (ECC, Ruflo/Superpowers, GSD — what was taken from where)
-- Config hierarchy (global ~/.claude/ → project .claude/ → .iago/)
-- Hook lifecycle (SessionStart → PreToolUse → PostToolUse → PreCompact → Stop)
-- Multi-project model (templates + sync-skills + per-project .iago/ state)
-
-**docs/SKILLS.md** — full reference catalog:
-- Grouped by category (Workflow, Core, Content, Experimental, Industry)
-- Per skill: name, purpose, trigger, arguments, agents dispatched, example usage
-
-### 5D: Release
-
-1. `git add -A && commit`
-2. `git tag v0.1.0`
-3. Push main + tags
-4. Print summary: file counts, skill/agent/rule/hook/script counts, status
-
----
-
-## Post v0.1.0
-
-**Immediate (weeks 1-2):** Use iaGO-OS on 2+ real client projects. Collect usage data via the tracking hook. Identify what works, what's friction, what's missing.
-
-**iaGO Dashboard:** Separate product — web UI that makes iaGO-OS visible. See `docs/IAGO-DASHBOARD.md` for vision. Prerequisites: stable config layer + 2+ weeks of real usage data. Do NOT start until prerequisites are met.
+### Deferred
+- iaGO Dashboard (needs 2+ weeks of real usage data first)
+- Agent pool resizing (dynamic maxTurns based on task complexity)
+- Custom profile promotion (auto-promote frequently used custom compositions)
 
 ---
 
 ## Key Design Decisions
 
-- **11 agents, hub-and-spoke** — orchestrator (Opus) dispatches, agents (Sonnet) never spawn agents
-- **Codex integration** — `/codex:review`, `/codex:adversarial-review`, `/codex:rescue` in catalog
-- **context7 MCP** — active for library docs
-- **Proprietary §4b was dropped** — CHERRY-PICK-PLAN compilation omitted the proprietary skills section. Specs derived from context clues.
-- **Usage tracking via hooks** — JSONL telemetry, not external analytics. Feeds future dashboard.
+- **Capability-based dispatch** — profiles compose base + capabilities per task, replacing fixed role agents
+- **3-tier tool sandboxing** — executor (write), analyst (read-only), operator (external) prevents accidents
+- **Smart routing via config.json** — per-project model routing, not hardcoded
+- **Feedback loops** — learnings accumulate and inject, patterns promote to CLAUDE.md at 5+ occurrences
+- **Hub-and-spoke preserved** — agents never spawn agents, all coordination through orchestrator
+- **Codex integration** — `/codex:*` skills unchanged, security-audit profile recommends adversarial review
 
 ---
 
@@ -164,6 +120,7 @@ Collapsed into one step — fix issues inline as found:
 
 - 3-person AI consultancy (CEO on Windows 11, CTO on Mac)
 - Stack: React 19 + Vite + TS strict + TailwindCSS 4 + ShadCN/UI + AWS (Amplify Gen 2 + Lambda + API Gateway + DynamoDB + Cognito + SES)
-- Claude Max plan
+- Claude Max plan (200k context, Opus available for agents)
+- AWS CLI authenticated (user iaguito, us-east-1)
 - Biome as formatter/linter
-- Codex plugin v1.0.2 installed and authenticated
+- Codex plugin installed and authenticated
