@@ -1,16 +1,18 @@
 ---
 name: iago-agents
 description: >-
-  Use when designing multi-agent architectures for client deliverables using
-  Claude SDK + LangGraph. Not when configuring iaGO's own agents (those are in
-  .claude/agents/) or when building simple single-prompt integrations.
+  Use when designing multi-agent architectures — client deliverables or operational
+  deployments. Replaces the former /enterprise-agent-ops skill (use --scope
+  operational). Not when configuring iaGO's own agents (.claude/agents/) or
+  building simple single-prompt integrations.
 ---
 
 ## Purpose
 
-Design multi-agent systems for client projects — defining agent roles, tool
-schemas, orchestration patterns, and LangGraph state graphs. Produces architecture
-specifications ready for implementation.
+Design multi-agent systems — defining agent roles, tool schemas, orchestration
+patterns, and LangGraph state graphs. Use `--scope client` (default) for client
+deliverables. Use `--scope operational` for production deployments with topology,
+monitoring, runbooks, and operational concerns.
 
 ## Arguments
 
@@ -18,6 +20,7 @@ specifications ready for implementation.
 
 Optional flags:
 - `--pattern {router|pipeline|hierarchical|collaborative}` — orchestration pattern
+- `--scope {client|operational}` — design scope (default: client). `operational` adds topology diagrams, monitoring/alerting, runbooks, and operational handoff docs.
 - `--output {path}` — custom output path (default: `docs/agents/`)
 
 ## Preconditions

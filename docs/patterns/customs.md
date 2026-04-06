@@ -1,10 +1,3 @@
----
-name: customs
-description: >-
-  Use when building customs and trade compliance features (tariff classification,
-  duty calculation, documentation, restricted party screening). Not when building
-  general logistics (use /logistics).
----
 
 <!-- Source: ECC customs-* (consolidated) -->
 

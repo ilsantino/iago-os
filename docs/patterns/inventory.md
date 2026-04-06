@@ -1,10 +1,3 @@
----
-name: inventory
-description: >-
-  Use when building inventory management features (stock tracking, reorder
-  points, multi-location inventory). Not when building warehouse logistics
-  (use /logistics) or production scheduling (use /production-scheduling).
----
 
 <!-- Source: ECC inventory-* (consolidated) -->
 

@@ -58,14 +58,14 @@ This makes all iaGO-OS skills, agents, and rules available in every Claude Code 
 
 ```bash
 # macOS / Linux
-ls ~/.claude/skills | wc -l                  # Should be 41
+ls ~/.claude/skills | wc -l                  # Should be 31
 ls ~/.claude/agents/*.md | wc -l             # Should be 3 (base agents)
 ls ~/.claude/agents/capabilities | wc -l     # Should be 12
 ls ~/.claude/agents/profiles | wc -l         # Should be 12
 ls ~/.claude/rules | wc -l                   # Should be 8
 
 # Windows (PowerShell)
-(Get-ChildItem ~/.claude/skills).Count                    # Should be 41
+(Get-ChildItem ~/.claude/skills).Count                    # Should be 31
 (Get-ChildItem ~/.claude/agents/*.md).Count               # Should be 3 (base agents)
 (Get-ChildItem ~/.claude/agents/capabilities).Count       # Should be 12
 (Get-ChildItem ~/.claude/agents/profiles).Count           # Should be 12

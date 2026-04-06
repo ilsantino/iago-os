@@ -1,10 +1,3 @@
----
-name: quality-nonconformance
-description: >-
-  Use when building quality control or nonconformance tracking features
-  (inspections, defect tracking, corrective actions). Not when building
-  general issue tracking or project management.
----
 
 <!-- Source: ECC quality-nonconformance -->
 

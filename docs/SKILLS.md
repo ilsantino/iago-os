@@ -1,6 +1,6 @@
 # Skills Reference
 
-Complete catalog of all 41 iaGO-OS skills. Each skill is a reusable workflow you invoke with `/skill-name` inside Claude Code.
+Complete catalog of all 31 iaGO-OS skills. Each skill is a reusable workflow you invoke with `/skill-name` inside Claude Code.
 
 ---
 
@@ -223,9 +223,11 @@ Skills that implement the iaGO delivery workflow: init, discuss, plan, execute, 
 
 ### `/iago:agents`
 
-**Purpose:** Design multi-agent system architectures — agent roles, tool schemas, LangGraph state graphs, orchestration patterns.
+**Purpose:** Design multi-agent system architectures — agent roles, tool schemas, LangGraph state graphs, orchestration patterns. Use `--scope operational` for production-grade multi-agent design with 3-5 agents, LangGraph state graphs, n8n integration, and runbooks.
 
 **Trigger:** Designing multi-agent architectures for client deliverables.
+
+**Arguments:** `--scope operational` — production-grade design with topology, runbooks, and operational patterns.
 
 **Agents:** None — orchestrator designs inline.
 
@@ -233,6 +235,9 @@ Skills that implement the iaGO delivery workflow: init, discuss, plan, execute, 
 ```
 > /iago:agents Design a 3-agent system for automated customer support
 # Produces: agent topology, tool schemas, state graph, orchestration pattern
+
+> /iago:agents Design a customer support system --scope operational
+# Produces: production-grade topology, LangGraph state graph, n8n integration, runbooks
 ```
 
 ---
@@ -315,9 +320,11 @@ General-purpose skills for design, planning, implementation, review, and researc
 
 ### `/deep-research`
 
-**Purpose:** Multi-source research (codebase, context7 docs, web) synthesized into an actionable recommendation.
+**Purpose:** Multi-source research (codebase, context7 docs, web) synthesized into an actionable recommendation. Use `--focus market` for market sizing, competitive landscape analysis, and trend identification.
 
-**Trigger:** Research, analysis, or competitive audit beyond the codebase.
+**Trigger:** Research, analysis, competitive audit, or market analysis beyond the codebase.
+
+**Arguments:** `--focus market` — structured market analysis (market sizing, competitors, trends) for proposals or strategic planning.
 
 **Output:** Research document written to `docs/research/`.
 
@@ -327,6 +334,9 @@ General-purpose skills for design, planning, implementation, review, and researc
 ```
 > /deep-research Compare DynamoDB single-table vs multi-table for our access patterns
 # Researches → analyzes → produces recommendation with evidence
+
+> /deep-research --focus market SaaS ticketing platforms for museums
+# Market sizing → competitive landscape → trend analysis → strategic recommendation
 ```
 
 ---
@@ -349,27 +359,28 @@ General-purpose skills for design, planning, implementation, review, and researc
 
 ---
 
-## Content Skills (7)
+## Content Skills (5)
 
 Skills for producing written content — articles, investor materials, presentations.
 
-### `/article-writing`
-
-**Purpose:** Produce polished long-form content (blog posts, thought leadership, tutorials) with an authoritative voice.
-
-**Trigger:** Writing blog posts, articles, or long-form content.
-
-**Profiles:** `content`.
-
----
-
 ### `/content-engine`
 
-**Purpose:** Transform a single content source into multiple output formats (blog, social posts, newsletter, summary).
+**Purpose:** Transform a single content source into multiple output formats. Use `--formats blog` for standalone blog posts and thought leadership articles. Other formats: `social` (Twitter, LinkedIn, Threads), `newsletter`, `summary`.
 
-**Trigger:** Producing multi-format content from a single source.
+**Trigger:** Producing articles, multi-format content, or blog posts from a single source.
+
+**Arguments:** `--formats blog` — standalone article/thought leadership. `--formats blog,social,newsletter` — full multi-format output. `--platforms twitter,linkedin` — target specific social channels.
 
 **Profiles:** `content`.
+
+**Example:**
+```
+> /content-engine --formats blog AI agents in supply chain management --tone technical
+# Produces: polished long-form article with authoritative consulting voice
+
+> /content-engine docs/content/ai-agents-article.md --platforms twitter,linkedin
+# Produces: blog + social posts + newsletter + summary in docs/content/{slug}/
+```
 
 ---
 
@@ -393,16 +404,6 @@ Skills for producing written content — articles, investor materials, presentat
 
 ---
 
-### `/market-research`
-
-**Purpose:** Structured market analysis — market sizing, competitive landscape, trend identification — for proposals or strategic planning.
-
-**Trigger:** Analyzing markets, competitors, or industry trends.
-
-**Agents:** None — orchestrator researches inline.
-
----
-
 ### `/visa-doc-translate`
 
 **Purpose:** Translate and prepare visa/immigration documents with attention to legal terminology and consulate-specific conventions.
@@ -423,7 +424,7 @@ Skills for producing written content — articles, investor materials, presentat
 
 ---
 
-## Experimental Skills (6)
+## Experimental Skills (5)
 
 Skills exploring advanced patterns — autonomous execution, persistent agents, payment protocols.
 
@@ -444,16 +445,6 @@ Skills exploring advanced patterns — autonomous execution, persistent agents, 
 **Trigger:** Monitoring, polling, continuous integration tasks.
 
 **Agents:** None — reacts inline.
-
----
-
-### `/enterprise-agent-ops`
-
-**Purpose:** Design production-grade multi-agent architectures (3-5 agents) with topology, LangGraph state graphs, n8n integration, and runbooks.
-
-**Trigger:** Designing multi-agent systems for client deployments.
-
-**Agents:** None — design specification only.
 
 ---
 
@@ -487,7 +478,7 @@ Skills exploring advanced patterns — autonomous execution, persistent agents, 
 
 ---
 
-## Industry Skills (9)
+## Industry Skills (2)
 
 Domain-specific pattern libraries for vertical industries. These are advisory — they provide DynamoDB data models, API patterns, and compliance guidance for their domain.
 
@@ -501,80 +492,31 @@ Domain-specific pattern libraries for vertical industries. These are advisory �
 
 ---
 
-### `/carrier-relationship-management`
+### `/industry-patterns`
 
-**Purpose:** DynamoDB data models, API patterns, and integration strategies for carrier onboarding, rate negotiation, and performance tracking.
+**Purpose:** Parameterized skill that loads domain-specific DynamoDB schemas, API patterns, and integration strategies for a named vertical. Pass `--domain` to select the domain.
 
-**Trigger:** Building carrier management features for logistics clients.
+**Trigger:** Building features for a specific industry vertical where standard patterns apply.
 
-**Covers:** Carrier profiles, rate tables, lane-level pricing, performance scorecards, contract management.
+**Arguments:** `--domain <name>` — required. Options:
+- `logistics` — Shipment lifecycle, route optimization, warehouse bin management, carrier API adapters
+- `carrier-management` — Carrier profiles, rate tables, lane-level pricing, performance scorecards
+- `customs` — HTS classification, duty/tax calculation, export license determination, denied party screening
+- `energy` — Meter data ingestion (DynamoDB TTL), grid event streams, energy trading positions, demand response
+- `inventory` — Stock tracking, reorder points, multi-location transfers, optimistic concurrency
+- `production-scheduling` — Work orders, resource allocation, shift planning, constraint-based scheduling
+- `quality-nonconformance` — Inspection records, defect classification, CAPA workflows, root cause analysis
+- `returns` — RMA creation, return shipping, inspection/grading, disposition, refund processing
 
----
+**Reference docs:** Full DynamoDB schemas, access patterns, and API examples for each domain live in `docs/patterns/`.
 
-### `/customs`
+**Agents:** None — orchestrator loads patterns and advises inline.
 
-**Purpose:** Patterns for customs and trade compliance — tariff classification, duty calculation, export controls, and restricted party screening.
+**Example:**
+```
+> /industry-patterns --domain logistics
+# Loads: shipment lifecycle schema, warehouse bin management, carrier API adapter patterns
 
-**Trigger:** Building customs and trade compliance features.
-
-**Covers:** HTS classification, duty/tax calculation, export license determination, denied party screening, AES filing.
-
----
-
-### `/energy`
-
-**Purpose:** Patterns for energy sector applications — smart metering, grid event processing, energy trading, and demand response.
-
-**Trigger:** Building energy sector applications.
-
-**Covers:** Meter data ingestion (DynamoDB TTL), grid event streams, energy trading positions, demand response programs.
-
----
-
-### `/logistics`
-
-**Purpose:** DynamoDB single-table design and event-driven patterns for shipment tracking, route planning, warehouse operations.
-
-**Trigger:** Building logistics and supply chain features.
-
-**Covers:** Shipment lifecycle, route optimization, warehouse bin management, n8n webhook integration, carrier API adapters.
-
----
-
-### `/inventory`
-
-**Purpose:** DynamoDB patterns for stock level management, optimistic-locking writes, reorder automation, multi-location transfers.
-
-**Trigger:** Building inventory management features.
-
-**Covers:** Stock tracking, reorder points, multi-location transfers, cycle counting, optimistic concurrency.
-
----
-
-### `/production-scheduling`
-
-**Purpose:** DynamoDB data models and Lambda-based scheduling patterns for work orders, resource allocation, and shift planning.
-
-**Trigger:** Building manufacturing production scheduling features.
-
-**Covers:** Work orders, resource allocation, shift planning, constraint-based scheduling, production line capacity.
-
----
-
-### `/quality-nonconformance`
-
-**Purpose:** DynamoDB data models, Cognito RBAC patterns, and CAPA workflows for inspection recording, defect classification, and corrective actions.
-
-**Trigger:** Building quality control or nonconformance tracking features.
-
-**Covers:** Inspection records, defect classification, CAPA workflows, root cause analysis, audit trails.
-
----
-
-### `/returns-reverse-logistics`
-
-**Purpose:** DynamoDB patterns, webhook integration, and disposition logic for RMA creation, return tracking, inspection, and refund processing.
-
-**Trigger:** Building returns processing or reverse logistics features.
-
-**Covers:** RMA creation, return shipping, inspection/grading, disposition (restock/refurbish/scrap), refund processing.
+> /industry-patterns --domain inventory
+# Loads: stock tracking schema, optimistic-locking writes, reorder automation patterns
+```

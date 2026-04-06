@@ -33,7 +33,7 @@ iaGO-OS is built in six layers, each building on the one below:
 │  Rules                              │  TDD, debugging, git workflow,
 │  (.claude/rules/)                   │  React/Vite, AWS/Amplify, E2E, MCP
 ├─────────────────────────────────────┤
-│  Skills                             │  41 reusable workflows
+│  Skills                             │  31 reusable workflows
 │  (.claude/skills/)                  │  (init, plan, execute, verify, ...)
 ├─────────────────────────────────────┤
 │  Agents                             │  3 base agents + 13 capability modules + 12 profiles

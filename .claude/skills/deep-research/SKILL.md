@@ -1,18 +1,20 @@
 ---
 name: deep-research
 description: >-
-  Use when the user requests research, analysis, or competitive audit on a topic
-  beyond the codebase. Not when the answer is in the codebase (use search-first
-  instead) or when researching library docs (use context7 MCP directly).
+  Use when the user requests research, analysis, competitive audit, or market
+  analysis on a topic beyond the codebase. Replaces the former /market-research
+  skill (use --focus market). Not when the answer is in the codebase (use
+  search-first) or when researching library docs (use context7 MCP directly).
 ---
 
-<!-- Source: ECC deep-research + GSD synthesizer concept -->
+<!-- Source: ECC deep-research + GSD synthesizer + market-research (merged) -->
 
 ## Purpose
 
 Conduct multi-source research across codebase, documentation, and web sources,
 then synthesize findings into an actionable recommendation — not just a summary
-of what was found.
+of what was found. Use `--focus market` for market sizing, competitive landscape,
+and trend identification.
 
 ## Arguments
 
@@ -20,6 +22,7 @@ of what was found.
 
 Optional flags:
 - `--sources {codebase|docs|web|all}` — limit source types (default: all)
+- `--focus {technical|market|competitive}` — research lens (default: technical). `market` adds TAM/SAM/SOM, competitive landscape, and trend identification. `competitive` focuses on alternatives and differentiation.
 - `--output {path}` — custom output path (default: `docs/research/`)
 
 ## Steps

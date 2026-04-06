@@ -81,7 +81,7 @@ Redesigned the entire agent system from role-based to capability-based.
 - 12 profiles in `.claude/agents/profiles/`
 - Dispatch flow: match profile → select model → compose prompt (base + caps + learnings + task) → dispatch
 
-**Skills (41 with SKILL.md):** Unchanged from Phase 5. Three skills updated for profile dispatch: iago-execute, subagent-driven-development, code-review.
+**Skills (31 with SKILL.md):** Consolidated from 41. 8 industry skills moved to `docs/patterns/` as reference docs, replaced by single `/industry-patterns` parameterized skill. `/article-writing` merged into `/content-engine` (`--formats blog`). `/market-research` merged into `/deep-research` (`--focus market`). `/enterprise-agent-ops` merged into `/iago:agents` (`--scope operational`).
 
 **Rules (8):** Unchanged. `available-skills.md` updated with new agent catalog.
 

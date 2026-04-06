@@ -1,10 +1,3 @@
----
-name: carrier-relationship-management
-description: >-
-  Use when building carrier management features for logistics clients (carrier
-  onboarding, rate management, performance tracking). Not when building
-  general CRM or forward logistics (use /logistics).
----
 
 <!-- Source: ECC carrier-relationship-management -->
 

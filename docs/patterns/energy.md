@@ -1,10 +1,3 @@
----
-name: energy
-description: >-
-  Use when building energy sector applications (metering, grid management,
-  energy trading, demand response). Not when building general industrial
-  applications.
----
 
 <!-- Source: ECC energy-* (consolidated) -->
 

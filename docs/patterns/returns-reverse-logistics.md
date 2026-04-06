@@ -1,10 +1,3 @@
----
-name: returns-reverse-logistics
-description: >-
-  Use when building returns processing or reverse logistics features (RMA,
-  refunds, restocking, disposition). Not when building forward logistics
-  (use /logistics) or inventory adjustments (use /inventory).
----
 
 <!-- Source: ECC returns-reverse-logistics -->
 

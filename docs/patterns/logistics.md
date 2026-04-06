@@ -1,11 +1,3 @@
----
-name: logistics
-description: >-
-  Use when building logistics and supply chain features (shipment tracking,
-  route optimization, warehouse operations). Not when building carrier
-  management (use /carrier-relationship-management) or returns (use
-  /returns-reverse-logistics).
----
 
 <!-- Source: ECC logistics-* (consolidated) -->
 

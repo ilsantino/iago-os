@@ -1,10 +1,3 @@
----
-name: production-scheduling
-description: >-
-  Use when building manufacturing production scheduling features (work orders,
-  resource allocation, shift planning). Not when building project management
-  tools or general task scheduling.
----
 
 <!-- Source: ECC production-scheduling -->
 

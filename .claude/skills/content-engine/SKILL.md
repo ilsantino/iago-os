@@ -1,33 +1,35 @@
 ---
 name: content-engine
 description: >-
-  Use when producing multi-format content from a single source (blog + social +
-  newsletter). Not when writing a single article (use /article-writing) or when
-  creating investor materials (use /investor-materials).
+  Use when producing written content — single articles or multi-format output
+  (blog + social + newsletter). Replaces the former /article-writing skill.
+  Not when creating investor materials (use /investor-materials).
 ---
 
-<!-- Source: ECC content-engine -->
+<!-- Source: ECC content-engine + article-writing (merged) -->
 
 ## Purpose
 
-Transform a single content source into multiple output formats — blog post,
-social media posts, newsletter excerpt, and summary — maintaining consistent
-messaging across channels.
+Produce written content — from a single blog post to multi-format output across
+channels. Use `--formats blog` for a standalone article (authoritative consulting
+voice, no filler). Use `--formats all` for blog + social + newsletter + summary.
 
 ## Arguments
 
-`/content-engine {source}` — path to source content, or a topic description.
+`/content-engine {source or topic}` — path to source content, or a topic description.
 
 Optional flags:
-- `--formats {blog,social,newsletter,summary}` — comma-separated (default: all)
+- `--formats {blog,social,newsletter,summary,all}` — comma-separated (default: all)
 - `--platforms {twitter,linkedin,threads}` — social platform targets
+- `--tone {technical|executive|casual}` — voice (default: technical)
+- `--length {short|medium|long}` — ~800 / ~1500 / ~2500 words (default: medium)
+- `--audience {developers|executives|general}` — target reader
 
 ## Steps
 
 ### 1. Identify source material
 
-If source is a file path, read it. If it's a topic, draft the core content first
-(or redirect to `/article-writing` for a full article).
+If source is a file path, read it. If it's a topic, draft the core content first.
 
 ### 2. Extract key messages
 

@@ -96,7 +96,7 @@ cd ../my-app && claude
 
 See [docs/SETUP.md](docs/SETUP.md) for detailed instructions (Windows + macOS).
 
-## Skills (41)
+## Skills (31)
 
 Skills are reusable workflows you invoke with `/skill-name` inside Claude Code. Each skill knows what steps to follow, which profiles to dispatch, what artifacts to produce, and what evidence to collect before reporting done.
 
@@ -123,7 +123,7 @@ These skills implement the full project lifecycle. Run them in order for structu
 | `/iago:proposal` | Generates a structured client proposal: scope, timeline, cost estimate, technical approach, deliverables. Dispatches `content` profile for prose quality | Pre-engagement — scoping a new client |
 | `/iago:onboard` | Scans an existing codebase (directory structure, package.json, configs), produces architecture map and tech debt inventory, populates PROJECT.md | Onboarding an existing repo into iaGO workflow |
 | `/iago:n8n` | Designs n8n automation workflow specs: node configs, trigger definitions, data flow diagrams, IAM policies | Designing webhook/event-driven automations |
-| `/iago:agents` | Designs multi-agent architectures: agent roles, tool schemas, LangGraph state graphs, orchestration patterns | Designing agent systems for client deliverables |
+| `/iago:agents` | Designs multi-agent architectures: agent roles, tool schemas, LangGraph state graphs, orchestration patterns. Use `--scope operational` for production-grade multi-agent design with topology, runbooks, and n8n integration | Designing agent systems for client deliverables |
 
 ### Core — Design, Plan, Build, Review, Research
 
@@ -133,18 +133,16 @@ These skills implement the full project lifecycle. Run them in order for structu
 | `/writing-plans` | Breaks an approved spec into 2-5 min tasks organized into parallel execution waves. Every task has a verify command | After brainstorming produces a spec | None (planning only) |
 | `/subagent-driven-development` | Executes a plan by dispatching a fresh profile per task. No cross-task state leakage. Mandatory Codex adversarial review after internal review | Executing a multi-task implementation plan | Matching profile + review + `/codex:adversarial-review` |
 | `/code-review` | Dispatches review profile against a git diff. Produces severity-categorized findings (Critical/Important/Minor). Anti-performative-agreement rules prevent empty "LGTM" | After implementation, before merge | `review-single` or `review-full` + `/codex:adversarial-review` |
-| `/deep-research` | Multi-source research (codebase + context7 docs + web). Produces an actionable recommendation document in `docs/research/` | Research question that goes beyond the codebase | `research` |
+| `/deep-research` | Multi-source research (codebase + context7 docs + web). Produces an actionable recommendation document in `docs/research/`. Use `--focus market` for market analysis and competitive research | Research question that goes beyond the codebase | `research` |
 | `/prompt-optimizer` | Analyzes, rewrites, and tests LLM prompts for client-facing features. Recommends model tier. Output to `docs/prompts/` | Building or tuning chatbot/agent/classifier prompts | None (inline) |
 
 ### Content — Articles, Investor Materials, Presentations
 
 | Skill | What it does | Dispatches |
 |-------|-------------|------------|
-| `/article-writing` | Blog posts and thought leadership with authoritative consulting voice. Tone/length/audience flags | `content` |
-| `/content-engine` | Transforms one source into blog + social (Twitter, LinkedIn, Threads) + newsletter + summary | `content` |
+| `/content-engine` | Multi-format content from a single source: blog (`--formats blog`), social posts, newsletter, summary. Use `--formats blog` for standalone articles | `content` |
 | `/investor-materials` | Pitch deck outlines, one-pagers, executive summaries with data-driven narratives | `content` |
 | `/investor-outreach` | Personalized investor emails and follow-up sequences tailored to each investor's thesis | None (inline) |
-| `/market-research` | Market sizing, competitive landscape, trend identification for proposals or strategy | None (inline) |
 | `/visa-doc-translate` | Visa/immigration document translation with legal terminology and consulate conventions | None (inline) |
 | `/frontend-slides` | Presentation slide content for React 19 + TailwindCSS 4 rendering or Marp markdown | None (inline) |
 
@@ -154,7 +152,6 @@ These skills implement the full project lifecycle. Run them in order for structu
 |-------|-------------|
 | `/autonomous-loops` | Bounded autonomous work with safety rails (max iterations, cost ceiling, verify interval) |
 | `/continuous-agent-loop` | Persistent agent that watches for changes, reacts to events, checkpoints state |
-| `/enterprise-agent-ops` | Production-grade multi-agent architecture design (3-5 agents, topology, runbooks) |
 | `/agent-payment-x402` | Agent-to-agent payment flows via x402 HTTP payment protocol |
 | `/liquid-glass-design` | Glassmorphism and liquid glass UI effects with TailwindCSS 4 + ShadCN/UI |
 | `/santa-method` | SANTA decomposition (Situation, Actors, Needs, Tensions, Actions) for ambiguous problems |
@@ -166,14 +163,9 @@ Advisory skills that provide DynamoDB schemas, API patterns, and compliance guid
 | Skill | Domain | Covers |
 |-------|--------|--------|
 | `/healthcare-phi-compliance` | Healthcare | HIPAA encryption, access controls, audit logging, BAA requirements |
-| `/carrier-relationship-management` | Logistics | Carrier profiles, rate tables, lane pricing, performance scorecards |
-| `/customs` | Trade | HTS classification, duty calculation, export controls, denied party screening |
-| `/energy` | Energy | Meter data ingestion, grid events, energy trading, demand response |
-| `/logistics` | Supply chain | Shipment lifecycle, route optimization, warehouse operations, carrier APIs |
-| `/inventory` | Warehousing | Stock tracking, reorder points, multi-location transfers, cycle counting |
-| `/production-scheduling` | Manufacturing | Work orders, resource allocation, shift planning, capacity constraints |
-| `/quality-nonconformance` | Quality | Inspections, defect classification, CAPA workflows, root cause analysis |
-| `/returns-reverse-logistics` | Returns | RMA creation, return shipping, disposition, refund processing |
+| `/industry-patterns` | Multi-domain | Parameterized skill for 8 domains — pass `--domain` to select: `logistics`, `carrier-management`, `customs`, `energy`, `inventory`, `production-scheduling`, `quality-nonconformance`, `returns` |
+
+Domain pattern reference docs (DynamoDB schemas, API patterns) live in `docs/patterns/`.
 
 Full reference with triggers, arguments, and code examples: [docs/SKILLS.md](docs/SKILLS.md)
 
@@ -387,7 +379,7 @@ Not all work needs the same model. iaGO-OS routes tasks by complexity:
 iago-os/
   .claude/
     settings.json            # Hook wiring
-    skills/                  # 41 skill definitions (SKILL.md each)
+    skills/                  # 31 skill definitions (SKILL.md each)
     agents/                  # 3 bases + 13 capabilities + 12 profiles
       executor.md
       analyst.md

@@ -50,7 +50,7 @@ cd ../acme-dashboard && claude
 acme-dashboard/
   .claude/
     settings.json       # Hooks wired and ready
-    skills/             # 41 skill definitions
+    skills/             # 31 skill definitions
     agents/             # 3 bases + 13 capabilities + 12 profiles
     rules/              # 8 behavioral rules
   .iago/
@@ -484,14 +484,16 @@ Domain-specific pattern libraries. These provide DynamoDB schemas, API patterns,
 | Skill | What it provides |
 |-------|-----------------|
 | `/healthcare-phi-compliance` | HIPAA-compliant DynamoDB, Cognito, Lambda, SES patterns for PHI |
-| `/carrier-relationship-management` | Carrier profiles, rate tables, performance scorecards for logistics |
-| `/customs` | Tariff classification, duty calculation, export controls, denied party screening |
-| `/energy` | Meter data ingestion, grid events, energy trading, demand response programs |
-| `/logistics` | Shipment lifecycle, route optimization, warehouse operations, carrier APIs |
-| `/inventory` | Stock tracking, reorder points, multi-location transfers, cycle counting |
-| `/production-scheduling` | Work orders, resource allocation, shift planning, capacity constraints |
-| `/quality-nonconformance` | Inspections, defect classification, CAPA workflows, root cause analysis |
-| `/returns-reverse-logistics` | RMA creation, return shipping, disposition, refund processing |
+| `/industry-patterns --domain logistics` | Shipment lifecycle, route optimization, warehouse operations, carrier APIs |
+| `/industry-patterns --domain carrier-management` | Carrier profiles, rate tables, performance scorecards |
+| `/industry-patterns --domain customs` | Tariff classification, duty calculation, export controls, denied party screening |
+| `/industry-patterns --domain energy` | Meter data ingestion, grid events, energy trading, demand response programs |
+| `/industry-patterns --domain inventory` | Stock tracking, reorder points, multi-location transfers, cycle counting |
+| `/industry-patterns --domain production-scheduling` | Work orders, resource allocation, shift planning, capacity constraints |
+| `/industry-patterns --domain quality-nonconformance` | Inspections, defect classification, CAPA workflows, root cause analysis |
+| `/industry-patterns --domain returns` | RMA creation, return shipping, disposition, refund processing |
+
+Full DynamoDB schemas and API pattern reference docs live in `docs/patterns/`.
 
 ---
 
