@@ -26,7 +26,7 @@ If any Critical finding is discovered, stop immediately and report that finding.
 - Plan says "data fetching" → confirm `use()` + `<Suspense>`, not `useEffect`
 - Plan says "form" → confirm React Hook Form + Zod, not uncontrolled inputs
 - Plan says "component" → confirm named export, functional component, colocated test file
-- Plan says "data model" → confirm single-table design with `pk`/`sk`
+- Plan says "data model" → confirm table design matches project's chosen approach (single-table or multi-table)
 - Plan says "API endpoint" → confirm thin handler + separate domain module
 - Plan says "environment config" → confirm env vars, not hardcoded values
 

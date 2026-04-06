@@ -261,7 +261,7 @@ Domain knowledge injected into agent prompts at dispatch time. Each module is a 
 |-----------|--------------------------|
 | `react-19` | `use()` + Suspense data fetching, ShadCN/UI patterns, TanStack Query, concurrent UI |
 | `animation` | Framer Motion, GSAP + ScrollTrigger, Lenis smooth scroll, integration rules, a11y |
-| `dynamodb` | Single-table design, access patterns, GSI strategy, batch operations, TTL |
+| `dynamodb` | Single-table vs multi-table decision criteria, access patterns, GSI strategy, batch ops, TTL |
 | `lambda` | Thin handler pattern, cold start mitigation, ESM, environment config |
 | `cognito` | JWT validation in API Gateway, token refresh, custom attributes, pre-signup triggers |
 | `tdd` | RED-GREEN-REFACTOR cycle, rationalization prevention, coverage rules |
@@ -288,7 +288,7 @@ Pre-composed base + capability combinations. The orchestrator selects the right 
 | `research` | operator | dynamic (context-dependent) | sonnet | `/deep-research`, `--research` flag on plan/quick skills |
 | `e2e` | executor | e2e, react-19 | sonnet | Writing or updating Playwright E2E tests |
 | `infra` | operator | infra | sonnet | AWS CLI, Amplify deployments, CDK operations |
-| `schema` | analyst | dynamodb | sonnet | DynamoDB single-table design, access pattern analysis |
+| `schema` | analyst | dynamodb | sonnet | DynamoDB schema design (evaluates single vs multi-table), access pattern analysis |
 | `content` | operator | content | sonnet | Articles, proposals, investor materials, outreach |
 | `debug` | executor | dynamic (context-dependent) | auto | Build/typecheck/lint failures — capabilities selected based on error context |
 

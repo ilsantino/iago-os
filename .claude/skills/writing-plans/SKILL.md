@@ -32,7 +32,7 @@ Optional flags:
 Read the spec file. Identify:
 - Components to build (React 19 functional components, ShadCN/UI primitives)
 - API endpoints (API Gateway + Lambda handlers)
-- Data layer (DynamoDB access patterns, single-table design)
+- Data layer (DynamoDB access patterns, table design)
 - Auth requirements (Cognito flows)
 - External integrations (SES, n8n, third-party APIs)
 

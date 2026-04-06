@@ -48,7 +48,7 @@ The reviewer checks:
   Cognito token handling, SES abuse)
 - **Correctness:** Logic errors, missing error handling at system boundaries,
   race conditions
-- **Stack compliance:** React 19 patterns, DynamoDB single-table design,
+- **Stack compliance:** React 19 patterns, DynamoDB conventions,
   Lambda thin handlers, TypeScript strict
 - **YAGNI:** Code not required by the plan or spec
 
