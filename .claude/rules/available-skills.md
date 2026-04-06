@@ -67,7 +67,7 @@ description: >-
 
 ### Marketplace Plugins (not installed — evaluate when needed)
 - `typescript-lsp` — Real-time TS diagnostics via language server (may replace post-edit-typecheck hook)
-- `playwright` — Playwright integration (may complement e2e-runner agent)
+- `playwright` — Playwright integration (may complement `e2e` profile)
 - `github` — PR/issue management directly from Claude Code
 
 ### Codex (cross-model, plugin-managed)

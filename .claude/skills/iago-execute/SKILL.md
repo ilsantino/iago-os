@@ -124,40 +124,98 @@ Wait for the agent to return with a status.
 | NEEDS_CONTEXT | Provide missing context, re-dispatch |
 | BLOCKED | Log to STATE.md blockers, skip plan, continue wave |
 
-#### 3c. Dispatch review
+#### 3c. Build gate
+
+Run verification commands immediately after implementation — before dispatching
+any review agents. This catches trivial errors in seconds instead of wasting an
+agent dispatch.
+
+```bash
+npm run type-check && npm run build   # tsc --noEmit + vite build
+```
+
+| Result | Action |
+|--------|--------|
+| Pass | Proceed to review (3d) |
+| Fail | Dispatch `debug` profile with build output. After fix, re-run build gate. Max 2 retries — after that, STOP and escalate. |
+
+The build gate is non-negotiable. No code enters review until it compiles.
+
+#### 3d. Parallel review dispatch
+
+Dispatch **both** review stages simultaneously. They are independent checks —
+spec compliance and code quality do not depend on each other.
 
 Read `.iago/config.json` for `review.mode`:
 
 **Single mode** (default):
 - Dispatch `review-single` profile with: git diff, CLAUDE.md, plan file, PROJECT.md
 
-**Full mode:**
-- Dispatch `review-full` profile with: plan file, CLAUDE.md, context artifact, git diff, PROJECT.md
-- The `review-full` profile handles gating internally: spec check first, quality check second.
-  If the spec check fails, the quality check is skipped and findings are reported.
+**Full mode** (recommended for client projects):
+- Dispatch the `review-full` profile, which handles spec compliance (Stage 1) and quality review (Stage 2) with internal gating — if Stage 1 finds Critical issues, Stage 2 is skipped.
+- Context: plan file, CLAUDE.md, context artifact, git diff, PROJECT.md
 
-#### 3d. Handle review response
+#### 3e. Handle review findings (merged)
+
+Merge findings from both reviewers into a single list. Deduplicate overlapping
+findings. Categorize by severity: Critical > Important > Minor.
 
 | Verdict | Action |
 |---------|--------|
-| approve | Write summary, continue to next plan |
-| request-changes | Log findings. If Critical findings: re-dispatch using the same implementation profile with fix instructions. If Important/Minor only: log and continue. |
+| Both approve | Proceed to Codex gate (3f) |
+| Important/Minor only | Log findings, proceed to Codex gate (3f) |
+| Any Critical findings | Re-dispatch implementation profile with ALL critical fix instructions (from both reviewers). After fix → back to build gate (3c). Max 2 fix rounds — after that, STOP and escalate. |
 
 **POST-REVIEW — extract learnings:**
-After handling the review verdict, scan the reviewer's findings for recurring patterns — issues that are not specific to this plan but represent a broader code-quality or convention gap (e.g., "missing error boundaries on feature routes", "inline fetch calls instead of typed API helpers").
+After handling the merged review verdict, scan findings for recurring patterns —
+issues not specific to this plan but representing a broader convention gap
+(e.g., "missing error boundaries", "inline fetch calls instead of typed API helpers").
 
 For each identified pattern:
 1. Open `.iago/learnings/patterns.md` (create if absent).
 2. Search for an existing entry matching the pattern.
-   - If found: increment its `occurrences` count and update `last_seen` to today's date.
+   - If found: increment its `occurrences` count and update `last_seen` to today.
    - If not found: append a new entry with `occurrences: 1`, `first_seen`, and `last_seen` set to today.
 3. If any pattern reaches **5+ occurrences**, flag it in the plan summary as a candidate for promotion to `CLAUDE.md`.
 
-#### 3e. Ad-hoc agent dispatch
+#### 3f. Codex adversarial review gate
+
+Check if the plan modified files matching any of these patterns:
+- `auth`, `cognito`, `jwt`, `token`, `session` (auth changes)
+- `payment`, `stripe`, `mercado`, `checkout`, `webhook`, `split`, `fee` (payment changes)
+- `dynamodb`, `order`, `ticket`, `ledger`, `migration` (data/schema changes)
+
+**If yes:** Dispatch `/codex:adversarial-review` (GPT-5.4 cross-model review)
+targeting auth bypass, data loss, race conditions, and rollback safety.
+
+| Codex Verdict | Action |
+|---------------|--------|
+| Pass | Proceed to PR (3g) |
+| Findings | Log findings. Critical → re-dispatch implementation profile with fix instructions → back to build gate (3c). Non-critical → log and proceed. |
+
+**If no auth/data/payment changes:** Skip directly to PR (3g).
+
+#### 3g. Push branch and create PR
+
+After all reviews pass:
+
+1. Stage and commit changes with conventional commit message:
+   `feat({phase}): {plan description}`
+2. Push branch to remote with `-u` flag.
+3. Create PR via `gh pr create` with:
+   - Title: conventional commit format
+   - Body: summary of tasks completed, files changed, review findings resolved
+4. Log PR URL in the plan summary.
+5. **Do NOT merge.** The user reviews on GitHub and merges manually.
+
+Branch naming: `feat/{phase-slug}/{plan-number}-{plan-name}`
+Example: `feat/stripe-connect-ticketing/01-dynamo-schema`
+
+#### 3h. Ad-hoc agent dispatch
 
 During execution, dispatch as needed:
 - TDD discipline required — re-dispatch using the same profile, ensuring the `tdd` capability is included
-- Build/typecheck/lint fails after implementation — dispatch `debug` profile
+- Unexpected runtime errors — dispatch `debug` profile with error output
 
 ### 4. Write summary per plan
 
@@ -204,8 +262,9 @@ Log completion:
 
 After all plans in all waves complete:
 - Update STATE.md: Status → `executed`
-- Display summary: plans completed, total tasks, total findings
-- Suggest: "Run `/iago:verify {phase-slug}` to verify the phase."
+- Display summary: plans completed, total tasks, total findings, PRs created
+- List all open PRs with URLs for user review
+- Suggest: "Review the PRs on GitHub, then run `/iago:verify {phase-slug}` to verify the phase."
 
 ## Boundaries
 
@@ -215,3 +274,5 @@ After all plans in all waves complete:
 - Never pass conversation history to agents — fresh context only
 - If all plans in a wave are BLOCKED, stop execution and escalate to user
 - Critical review findings on the same plan more than twice → STOP, escalate
+- Build gate is mandatory — no code enters review without passing tsc + build
+- PRs are never auto-merged — user reviews on GitHub and merges manually

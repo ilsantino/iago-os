@@ -134,4 +134,4 @@ After completion, display:
 - Never implement code — plans only
 - Never modify ROADMAP.md scope
 - If the phase is too large to plan (>4 plans, >24 tasks), recommend splitting in ROADMAP.md
-- Plans must be executable by a fresh-context `implementer` agent with no additional context
+- Plans must be executable by a fresh-context agent (via executor profile) with no additional context
