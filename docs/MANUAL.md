@@ -441,17 +441,14 @@ Multi-source research: codebase search, context7 library docs, web search.
 
 Produces: `docs/research/{slug}.md`
 
-### `/article-writing`
-
-Blog posts and thought leadership with an authoritative consulting voice.
-
-```
-> /article-writing AI agents in supply chain management --tone technical --length long
-```
-
 ### `/content-engine`
 
-Transforms one source into multiple formats.
+Blog posts, thought leadership, and multi-format content. Use `--formats blog` for a standalone article, or default to all formats (blog + social + newsletter + summary).
+
+```
+> /content-engine --formats blog AI agents in supply chain management --tone technical
+> /content-engine docs/content/source.md --platforms twitter,linkedin
+```
 
 ```
 > /content-engine docs/content/ai-agents-article.md --platforms twitter,linkedin

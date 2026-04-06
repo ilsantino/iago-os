@@ -14,32 +14,22 @@ description: >-
 - `/prompt-optimizer` — Optimize LLM prompts for client deliverables
 
 ### Content/Business
-- `/article-writing` — Blog posts and long-form content
-- `/content-engine` — Multi-format output (blog + social + newsletter)
+- `/content-engine` — Blog posts, articles, and multi-format output (`--formats blog` for standalone articles)
 - `/investor-materials` — Pitch decks, one-pagers
 - `/investor-outreach` — Investor emails and outreach sequences
-- `/market-research` — Market analysis and competitive research
 - `/visa-doc-translate` — Visa document translation
 - `/frontend-slides` — Presentation slides from code/data
 
 ### Experimental
 - `/autonomous-loops` — Long autonomous tasks without per-step approval
 - `/continuous-agent-loop` — Persistent agent with cross-iteration state
-- `/enterprise-agent-ops` — Multi-agent system design patterns
 - `/agent-payment-x402` — Agent-to-agent payment via x402
 - `/liquid-glass-design` — Glassmorphism UI effects (TailwindCSS 4)
 - `/santa-method` — Structured problem decomposition for ambiguous problems
 
 ### Industry
 - `/healthcare-phi-compliance` — HIPAA/PHI compliance patterns
-- `/carrier-relationship-management` — Carrier management for logistics
-- `/customs` — Customs/trade compliance
-- `/energy` — Energy sector patterns (metering, grid, trading)
-- `/logistics` — Supply chain and logistics
-- `/inventory` — Inventory management
-- `/production-scheduling` — Manufacturing scheduling
-- `/quality-nonconformance` — Quality control tracking
-- `/returns-reverse-logistics` — Returns processing
+- `/industry-patterns` — Parameterized skill for 8 industry domains (`--domain logistics|inventory|customs|energy|carrier|production|quality|returns`). Pattern docs in `docs/patterns/`
 
 ### Workflow (iaGO)
 - `/iago:init` — Bootstrap .iago/, gather vision, produce PROJECT/ROADMAP/STATE/config
