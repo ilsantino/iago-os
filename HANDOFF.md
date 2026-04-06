@@ -121,7 +121,7 @@ Redesigned the entire agent system from role-based to capability-based.
 - **Smart routing via config.json** — per-project model routing, not hardcoded
 - **Feedback loops** — learnings accumulate and inject, patterns promote to CLAUDE.md at 5+ occurrences
 - **Hub-and-spoke preserved** — agents never spawn agents, all coordination through orchestrator
-- **Codex integration** — `/codex:*` skills unchanged, security-audit profile recommends adversarial review
+- **Codex integration** — `/codex:adversarial-review` is mandatory on every plan (not just auth/data/payment)
 
 ---
 

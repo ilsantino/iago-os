@@ -254,18 +254,18 @@ flowchart LR
     S1 -->|critical findings| Fix1[executor fixes]
     Fix1 --> S1
 
-    S2 -->|pass| S3{Auth/data/payment changes?}
+    S2 -->|pass| Codex[Stage 3: codex adversarial-review]
     S2 -->|critical findings| Fix2[executor fixes]
     Fix2 --> S2
 
-    S3 -->|yes| Codex[Stage 3: codex adversarial-review]
-    S3 -->|no| Done[Approved]
-    Codex --> Done
+    Codex -->|pass| Done[Approved]
+    Codex -->|critical findings| Fix3[executor fixes]
+    Fix3 --> S1
 ```
 
 1. **Stage 1 — Spec review:** `review-single` checks if the implementation matches the plan
 2. **Stage 2 — Quality review:** `review-full` checks performance, security, maintainability
-3. **Stage 3 — Cross-model (auto for auth/data/payment):** `/codex:adversarial-review` sends the diff to GPT-5.4 for a second opinion
+3. **Stage 3 — Cross-model (mandatory):** `/codex:adversarial-review` sends every diff to GPT-5.4 — a different model catches different blind spots
 
 If any stage returns Critical findings, the orchestrator routes back to the executor for fixes before proceeding.
 
@@ -325,7 +325,7 @@ Uses GPT-5.4 via the Codex CLI for a second opinion from a different model famil
 | Skill | When to use |
 |-------|-------------|
 | `/codex:review` | Read-only code review against git changes — GPT-5.4 perspective |
-| `/codex:adversarial-review` | Targeted review for auth, data loss, race conditions, rollback safety |
+| `/codex:adversarial-review` | **Mandatory** cross-model review on every plan — auth, data loss, race conditions, business logic |
 | `/codex:rescue` | Delegate debugging or implementation to Codex in background |
 | `/codex:status` | Check active and recent Codex background jobs |
 | `/codex:result` | Retrieve output from a finished Codex job |
@@ -354,7 +354,7 @@ Not all work needs the same model. iaGO-OS routes tasks by complexity:
 | **Opus** | Orchestrator — planning, architecture, multi-file reasoning | Your main Claude Code session |
 | **Sonnet** | Worker — implementation, review, research, debugging | Default for all agent profiles |
 | **Haiku** | Mechanical — formatting, simple lookups | Reserved for lightweight tasks |
-| **Codex (GPT-5.4)** | Cross-model — adversarial review, rescue delegation | `/codex:*` skills |
+| **Codex (GPT-5.4)** | Cross-model — mandatory adversarial review on every plan, rescue delegation | `/codex:*` skills |
 
 ## Folder Structure
 

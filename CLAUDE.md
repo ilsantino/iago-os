@@ -109,6 +109,6 @@ See `.claude/rules/available-skills.md` for the complete catalog including conte
 - **Opus:** Orchestrator (main session) — planning, architecture, multi-file reasoning
 - **Sonnet:** Default for all profiles — implementation, review, research, debugging, testing
 - **Haiku:** Reserve for mechanical tasks (formatting, simple lookups) when needed
-- **Codex (GPT-5.4):** Cross-model review (`/codex:review`, `/codex:adversarial-review`) and rescue delegation (`/codex:rescue`)
+- **Codex (GPT-5.4):** Mandatory cross-model adversarial review on every plan (`/codex:adversarial-review`), plus `/codex:review` and `/codex:rescue`
 
 Model selection per dispatch: profiles specify `model: auto | sonnet | opus`. Auto routing: 4+ files → opus, auth/payment → opus, retry → upgrade. Configurable in `.iago/config.json` routing section.

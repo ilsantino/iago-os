@@ -117,6 +117,7 @@ Plan naming: `quick-{YYMMDD}-{slug}.md`.
 | `/iago:execute` | `review-single` | After each plan (`review.mode: "single"`) |
 | `/iago:execute` | `review-full` | After each plan (`review.mode: "full"`) |
 | `/iago:execute` | `debug` | Ad-hoc, when build/typecheck/lint fails |
+| `/iago:execute` | `/codex:adversarial-review` | Mandatory after every internal review — cross-model gate |
 | `/iago:verify` | (none) | Orchestrator-direct |
 | `/iago:quick` | `research` | Optional — `--research` flag |
 | `/iago:quick` | matching profile | Per plan |

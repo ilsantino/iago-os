@@ -203,6 +203,6 @@ This data feeds into the future iaGO Dashboard (see `docs/IAGO-DASHBOARD.md`) �
 | Default subagents (executor, analyst, operator) | Sonnet | Implementation, review, research, debugging |
 | Profile override (e.g., `security-audit` → opus) | Sonnet (configurable via `config.json` routing) | Profile-level model selection; override per profile in `.iago/config.json` |
 | Mechanical tasks | Haiku | Formatting, simple lookups (reserved) |
-| Cross-model review | GPT-5.4 (Codex) | Second opinion on critical changes |
+| Cross-model review | GPT-5.4 (Codex) | Mandatory adversarial review on every plan |
 
 **Profile-level routing** is configured in `.iago/config.json` under the `routing` key. Each profile can specify its own model; unspecified profiles inherit `routing.default_model`. Auto routing: 4+ files → opus, auth/payment → `routing.security_critical` model, retry → upgrade if `routing.retry_upgrade` is true.
