@@ -28,7 +28,7 @@ Stack is fixed — do not suggest alternatives unless explicitly asked.
 
 ## Architecture
 
-- DynamoDB single-table design — access patterns drive schema, not entity relationships
+- DynamoDB — evaluate single-table vs multi-table per project (see dynamodb capability for decision criteria). Access patterns drive schema, not entity relationships
 - Lambda: thin handler wrappers calling domain logic modules
 - Cognito JWT validation in API Gateway authorizer, not in Lambda handlers
 - Amplify Gen 2: `defineBackend`, `defineAuth`, `defineData`, `defineFunction`

@@ -18,8 +18,9 @@ globs:
 
 ## DynamoDB
 
-- Single-table design — access patterns drive schema, not entity relationships
-- Partition key (`pk`) and sort key (`sk`) encode entity type and relationships
+- Evaluate single-table vs multi-table per project — see dynamodb capability for decision criteria
+- Single-table: `pk` and `sk` encode entity type and relationships (e.g., `USER#123`, `ORDER#456`)
+- Multi-table: one table per entity or bounded context, simpler keys, better for Amplify `defineData`
 - GSI for alternate access patterns — plan GSIs upfront, max 5 per table
 - Use `DocumentClient` with typed helpers — no ORMs, no Mongoose-style abstractions
 - TTL attribute for auto-expiring records (sessions, temp tokens)
