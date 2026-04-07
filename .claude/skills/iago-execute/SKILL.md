@@ -85,6 +85,11 @@ The script handles the FULL pipeline per plan:
 3. **Review** — `claude -p` session reviews the diff against the plan
 4. **Codex adversarial** — `codex review` or `claude -p` adversarial check
 5. **Create PR** — `claude -p` session stages, commits, pushes, creates PR via `gh`
+5b. **Tag @claude** — haiku synthesizes review request, posts on PR
+6. **Summary** — write pipeline results to `.iago/summaries/`
+
+After the script completes, the review-fix loop runs async via GitHub Actions
+(`claude-review-fix.yml`): Claude reviews → fixes → re-tags → max 5 rounds.
 
 **Between plans:** Do NOT run `git checkout main && git pull`. The next plan
 builds on the previous plan's commits. Plans are sequential — each plan's code

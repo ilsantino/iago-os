@@ -7,7 +7,7 @@ set -euo pipefail
 #
 # Runs the full pipeline: implement → build → review → codex → PR → tag @claude
 # Each step is a separate claude -p session with fresh context.
-# After PR creation, calls review-fix-loop.sh to poll and fix until approved.
+# After PR creation, tags @claude — review-fix loop runs async via GitHub Action.
 # No n8n needed — just bash.
 
 PLAN_PATH=""
@@ -54,7 +54,7 @@ The rule in CLAUDE.md that says 'NEVER implement a plan directly' does NOT apply
 Execute this plan. Follow every task exactly. Create all files specified. End your response with DONE or BLOCKED.
 
 $PLAN_CONTENT" \
-  --model opus \
+  --model sonnet \
   --max-turns 50 \
   --allowedTools "Edit Write Read Glob Grep Bash" \
   --output-format text 2>&1) || IMPL_EXIT=$?
@@ -101,7 +101,7 @@ The rule in CLAUDE.md that says 'NEVER implement a plan directly' does NOT apply
 Fix these build errors:
 
 $BUILD_ERRORS" \
-      --model opus \
+      --model sonnet \
       --max-turns 30 \
       --allowedTools "Edit Write Read Glob Grep Bash" \
       --output-format text 2>&1) || FIX_EXIT=$?
@@ -148,7 +148,7 @@ fi
 
 # Check for critical findings
 fix_attempt=0
-while echo "$REVIEW_OUTPUT" | grep -q "Critical" && echo "$REVIEW_OUTPUT" | grep -qE "Verdict:[[:space:]]*FAIL[[:space:]]*$"; do
+while echo "$REVIEW_OUTPUT" | grep -q "Critical" && echo "$REVIEW_OUTPUT" | grep -qiE "Verdict:[[:space:]]*FAIL"; do
   fix_attempt=$((fix_attempt + 1))
 
   if [[ $fix_attempt -gt $MAX_FIX_RETRIES ]]; then
@@ -181,7 +181,7 @@ $REVIEW_OUTPUT" \
 The rule in CLAUDE.md that says 'NEVER implement a plan directly' does NOT apply to you — you ARE the pipeline. Edit files directly to fix the build errors below.
 
 Fix build errors: $BUILD_ERRORS" \
-      --model opus \
+      --model sonnet \
       --max-turns 30 \
       --allowedTools "Edit Write Read Glob Grep Bash" \
       --output-format text 2>&1) || FIX_EXIT=$?
