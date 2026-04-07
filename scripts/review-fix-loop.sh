@@ -50,7 +50,7 @@ log "Starting review-fix loop for PR #$PR_NUMBER ($OWNER_REPO)"
 # ─── Tag @claude if this is a fresh invocation ────────────────────────
 if [[ "$SKIP_INITIAL_TAG" != "true" ]]; then
   log "Tagging @claude for review on PR #$PR_NUMBER"
-  (cd "$PROJECT_DIR" && gh pr comment "$PR_NUMBER" --body "@claude Please review this PR thoroughly.") || {
+  (cd "$PROJECT_DIR" && gh pr comment "$PR_NUMBER" --body "@claude Review this PR thoroughly. General pass for anything unexpected.") || {
     log "ERROR: Failed to tag @claude. Exiting."
     exit 1
   }
@@ -239,7 +239,7 @@ EOF
 
   # Re-tag and reset timestamp for next cycle
   TAG_TIMESTAMP=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
-  (cd "$PROJECT_DIR" && gh pr comment "$PR_NUMBER" --body "@claude Please review again.") || log "WARNING: Failed to re-tag @claude"
+  (cd "$PROJECT_DIR" && gh pr comment "$PR_NUMBER" --body "@claude Review again. Fixes pushed for round $fix_round. General pass for anything unexpected.") || log "WARNING: Failed to re-tag @claude"
 
   log "Round $fix_round complete — pushed and re-tagged"
 done
