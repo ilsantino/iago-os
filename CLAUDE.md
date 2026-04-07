@@ -45,6 +45,45 @@ Artifacts: `.iago/plans/`, `.iago/context/`, `.iago/summaries/`, `.iago/reviews/
 STATE.md is a digest — keep under 80 lines. Overflow decisions to PROJECT.md.
 Pause: `/iago:pause`. Resume is automatic on next session start.
 
+## Mandatory Execution Path (BLOCKING)
+
+**NEVER implement a plan, spec, or task by directly editing code.** All implementation
+MUST go through the execution skill that matches the scope:
+
+| Scope | Skill | Review pipeline |
+|-------|-------|-----------------|
+| ROADMAP phase (1+ plans) | `/iago:execute {slug}` | Full 3-stage |
+| Standalone plan (1-3 tasks) | `/iago:quick {desc}` | Full 3-stage |
+| Multi-task plan (outside ROADMAP) | `/subagent-driven-development` | Full 3-stage |
+| Trivial fix (≤3 files, obvious) | `/iago:fast {desc}` | Build gate only |
+
+**You MUST invoke the Skill tool to load the skill.** Reading the plan file and
+implementing it yourself is a critical workflow violation — even if you "know" what
+to do. The skill orchestrates agent dispatch, build gates, and the review pipeline.
+Without it, reviews are skipped and bugs ship.
+
+If the user says "execute plan X" or "implement this", your FIRST action is to invoke
+the matching skill via the Skill tool. Not read files. Not create tasks. Invoke the skill.
+
+## Mandatory Review Pipeline (3-stage, non-negotiable)
+
+Every plan that produces code changes MUST pass all 3 stages before a PR is created.
+No exceptions. No "I'll review later." No skipping stages because the build passes.
+
+**Stage 1 — Spec review:** `review-full` profile checks implementation matches the plan.
+**Stage 2 — Quality review:** Same profile checks performance, security, maintainability.
+**Stage 3 — Cross-model:** `/codex:adversarial-review` sends diff to GPT-5.4 for auth,
+data-loss, race-condition, and business-logic review. A different model catches different
+blind spots.
+
+The pipeline also requires:
+- **Build gate before review:** `npm run type-check && npm run build` must pass.
+- **Critical findings → fix → re-review:** Max 2 fix rounds, then escalate.
+- **Summary artifact:** `.iago/summaries/{plan}.md` written after pipeline completes.
+- **Learnings extraction:** Review patterns logged to `.iago/learnings/patterns.md`.
+
+See `.claude/rules/execution-pipeline.md` for the full pipeline specification.
+
 ## Learnings
 
 `.iago/learnings/` accumulates review patterns and project conventions, injected into agent context before each dispatch. Patterns at 5+ occurrences are candidates for promotion to CLAUDE.md.
@@ -59,13 +98,6 @@ Do not assert outcomes — demonstrate them.
 
 Before creating any new file, component, or utility, search the codebase for existing implementations.
 Duplication is a bug.
-
-## Pipeline Suggestion
-
-When about to execute a phase with 3 or more plans, ALWAYS suggest `--pipeline` before starting:
-"This phase has {N} plans. Recommend `--pipeline` — each step runs in a fresh session so context doesn't fill up and you can walk away. Use it? (`/iago:execute {slug} --pipeline`)"
-
-Do not silently start in-session execution on 3+ plans. The user must consciously choose.
 
 ## Agent Escalation Protocol
 
@@ -91,6 +123,7 @@ Auto-fix bugs, missing imports, and blocking issues. ASK before architectural ch
 ## Rules
 
 Detailed rules in `.claude/rules/`:
+- `execution-pipeline.md` — **MANDATORY** 3-stage review pipeline, build gates, no-skip policy
 - `tdd.md` — RED-GREEN-REFACTOR, rationalization prevention, 80% coverage
 - `systematic-debugging.md` — 4-phase debugging, 3-fix escalation
 - `git-workflow.md` — branching, PRs, merge strategy
