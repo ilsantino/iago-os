@@ -52,8 +52,8 @@ If `--dry-run`: validate plan structure, report issues, stop.
 bash scripts/execute-pipeline.sh --plan .iago/plans/sdd-{slug}-{N}.md --project-dir {dir}
 ```
 The pipeline handles implement → build gate → review → codex → PR for each task.
-Skip steps 3-4b (review) since the pipeline handles them. Proceed directly to
-step 5 (write summary) after all tasks complete.
+Skip "3. Review" and "4b. Codex adversarial review gate" since the pipeline
+handles both. Proceed directly to "5. Write summary" after all tasks complete.
 
 **Default (no `--pipeline`):** For each task (respecting wave order):
 
