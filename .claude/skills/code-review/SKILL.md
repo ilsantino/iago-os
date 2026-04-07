@@ -86,11 +86,21 @@ Each finding gets a severity:
 After internal review, dispatch `/codex:adversarial-review` (GPT-5.4 cross-model
 review) on the same diff. A different model catches different blind spots.
 
+**If Codex CLI is unavailable** (`command -v codex` fails or returns non-zero):
+fall back to a Claude adversarial review session — dispatch `review-single`
+profile with the diff and an adversarial prompt targeting auth bypass, data loss,
+race conditions, and business logic errors. Log that Codex was unavailable so
+the user knows cross-model review did not occur.
+
 The review targets: auth bypass, data loss, race conditions, rollback safety,
 business logic errors, and state management issues.
 
-Merge Codex findings into the internal review findings before presenting.
-Critical Codex findings follow the same fix-before-merge rule.
+| Codex Status | Action |
+|--------------|--------|
+| Available | Merge Codex findings into internal review |
+| Unavailable | Use Claude fallback findings instead, log the gap |
+
+Critical findings (from either source) follow the same fix-before-merge rule.
 
 ### 6. Present findings
 
