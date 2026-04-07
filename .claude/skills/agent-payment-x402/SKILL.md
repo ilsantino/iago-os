@@ -6,7 +6,6 @@ description: >-
   human-facing checkout flows.
 ---
 
-<!-- Source: ECC agent-payment-x402 -->
 
 ## Purpose
 

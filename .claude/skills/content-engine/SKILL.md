@@ -6,7 +6,6 @@ description: >-
   Not when creating investor materials (use /investor-materials).
 ---
 
-<!-- Source: ECC content-engine + article-writing (merged) -->
 
 ## Purpose
 

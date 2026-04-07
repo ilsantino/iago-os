@@ -6,7 +6,6 @@ description: >-
   or when a spec already exists (use /writing-plans instead).
 ---
 
-<!-- Source: Superpowers brainstorming + ECC product-lens -->
 
 ## Purpose
 

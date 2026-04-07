@@ -6,7 +6,6 @@ description: >-
   emails (use /investor-outreach).
 ---
 
-<!-- Source: ECC investor-materials -->
 
 ## Purpose
 

@@ -5,7 +5,6 @@ description: >-
   Not when building non-healthcare applications or when PHI is not involved.
 ---
 
-<!-- Source: ECC healthcare-phi-compliance -->
 
 ## Purpose
 
