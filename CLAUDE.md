@@ -60,6 +60,19 @@ MUST go through the execution skill that matches the scope:
 If the user says "execute plan X" or "implement this", invoke the matching skill via
 the Skill tool. Not read files. Not create tasks. Invoke the skill.
 
+### execute vs quick — when to use which
+
+Both run the same `scripts/execute-pipeline.sh` with full 3-stage review. The difference
+is scope and planning:
+
+- **`/iago:execute {phase-slug}`** — runs all plans in a ROADMAP phase. Plans already
+  exist from `/iago:plan`. Supports wave grouping and parallel dispatch.
+  Example: `/iago:execute stripe-connect-ticketing` runs plans 01-04 in order.
+
+- **`/iago:quick {description}`** — creates a lightweight plan on the fly (max 3 tasks),
+  then runs the pipeline on that single plan. No ROADMAP phase required.
+  Example: `/iago:quick add email validation to contact form`
+
 ## Automatic Review Pipeline
 
 The review pipeline is built into `scripts/execute-pipeline.sh`. When `/iago:execute`

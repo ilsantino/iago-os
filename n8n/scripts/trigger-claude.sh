@@ -26,17 +26,32 @@ if [[ -z "$PROMPT" || -z "$PROJECT_DIR" ]]; then
   exit 1
 fi
 
-START_MS=$(date +%s%3N 2>/dev/null || python3 -c "import time; print(int(time.time()*1000))")
+START_MS=$(date +%s%3N 2>/dev/null || node -e "process.stdout.write(String(Date.now()))")
+
+# Resolve timeout command (GNU timeout vs macOS gtimeout)
+TIMEOUT_ARGS=()
+if command -v timeout &>/dev/null; then
+  TIMEOUT_ARGS=(timeout "$TIMEOUT")
+elif command -v gtimeout &>/dev/null; then
+  TIMEOUT_ARGS=(gtimeout "$TIMEOUT")
+fi
 
 EXIT_CODE=0
-OUTPUT=$(cd "$PROJECT_DIR" && timeout "$TIMEOUT" claude -p "$PROMPT" \
-  --model "$MODEL" \
-  --max-turns "$MAX_TURNS" \
-  --output-format text 2>&1) || EXIT_CODE=$?
-END_MS=$(date +%s%3N 2>/dev/null || python3 -c "import time; print(int(time.time()*1000))")
+if [[ ${#TIMEOUT_ARGS[@]} -gt 0 ]]; then
+  OUTPUT=$(cd "$PROJECT_DIR" && "${TIMEOUT_ARGS[@]}" claude -p "$PROMPT" \
+    --model "$MODEL" \
+    --max-turns "$MAX_TURNS" \
+    --output-format text 2>&1) || EXIT_CODE=$?
+else
+  OUTPUT=$(cd "$PROJECT_DIR" && claude -p "$PROMPT" \
+    --model "$MODEL" \
+    --max-turns "$MAX_TURNS" \
+    --output-format text 2>&1) || EXIT_CODE=$?
+fi
+END_MS=$(date +%s%3N 2>/dev/null || node -e "process.stdout.write(String(Date.now()))")
 DURATION=$((END_MS - START_MS))
 
-# Escape output for JSON
-ESCAPED_OUTPUT=$(printf '%s' "$OUTPUT" | python3 -c "import sys,json; print(json.dumps(sys.stdin.read()))")
+# Escape output for JSON (use node — it's a stack requirement, python3 is not)
+ESCAPED_OUTPUT=$(printf '%s' "$OUTPUT" | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>process.stdout.write(JSON.stringify(d)))")
 
 echo "{\"exit_code\": $EXIT_CODE, \"output\": $ESCAPED_OUTPUT, \"duration_ms\": $DURATION}"

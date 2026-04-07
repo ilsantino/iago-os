@@ -302,7 +302,7 @@ Hooks are automatic behaviors wired in `.claude/settings.json`. They fire on Cla
 | Hook | Fires on | What it does | Why it matters |
 |------|----------|-------------|----------------|
 | `context-persistence` | Session start, pre-compact, stop | Saves a session snapshot before context compression. Restores the previous session's state on startup. Loads HANDOFF.json if `/iago:pause` was used | Every conversation picks up where the last one left off — no re-explaining the project |
-| `context-monitor` | After every tool use | Reads the bridge file to check context window fill level. Warns at 70% and 90% thresholds with suggested actions (compact, pause, finish current task) | Prevents losing work to unexpected context limit hits |
+| ~~`context-monitor`~~ | *(removed)* | Was designed to warn at 70%/90% context fill, but Claude Code doesn't expose context % to hooks. The `PreCompact` event is the real signal — `context-persistence` handles it | — |
 | `usage-tracker` | After skill/agent use, session stop | Logs every skill invocation and agent dispatch to `.iago/state/usage-log.jsonl`. Writes a session summary at stop (duration, skills used, agents dispatched) | Feeds the usage report script and future dashboard |
 
 ### Safety & Quality
@@ -415,7 +415,7 @@ iago-os/
     automations/             # Trigger templates + pipeline specs
     patterns/                # Industry domain reference docs (8 domains)
   CLAUDE.md                  # Root config — stack, standards, workflow
-  HANDOFF.md                 # Current project state
+  IAGO-OS-HANDOFF.md         # Current project state
 ```
 
 ## Tech Stack

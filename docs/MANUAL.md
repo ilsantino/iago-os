@@ -504,11 +504,11 @@ Hooks fire automatically on Claude Code lifecycle events. They're wired in `.cla
 SessionStart → PreToolUse → [tool runs] → PostToolUse → ... → PreCompact → Stop
      |              |                          |                    |          |
      v              v                          v                    v          v
-  context-       safety-guard           context-monitor        context-    context-
-  persistence    config-protection      post-edit-format       persistence persistence
-  (restore)      commit-quality         post-edit-typecheck    (snapshot)  (finalize)
-                                        post-edit-console-warn              usage-tracker
-                                        usage-tracker                       (summary)
+  context-       safety-guard           post-edit-format       context-    context-
+  persistence    config-protection      post-edit-typecheck    persistence persistence
+  (restore)      commit-quality         post-edit-console-warn (snapshot)  (finalize)
+                                        usage-tracker                      usage-tracker
+                                        (skill/agent tracking)             (summary)
 ```
 
 ### Disabling Hooks
@@ -550,9 +550,7 @@ Stale warning: HANDOFF.json older than 7 days triggers an informational warning.
 
 ### Context Window Management
 
-The `context-monitor` hook watches context usage:
-- **70% threshold** — suggests compacting or finishing the current task
-- **90% threshold** — warns to pause or wrap up immediately
+Context window management relies on the `PreCompact` event — `context-persistence` automatically snapshots the session before Claude Code compresses context. The `context-monitor` hook was removed (Claude Code doesn't expose context % to hooks).
 
 ---
 

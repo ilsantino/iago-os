@@ -1,16 +1,25 @@
 {
-  "project": {
-    "name": "iago-os",
-    "client": "iaGO AI",
-    "type": "internal"
-  },
-  "review": {
-    "mode": "single"
-  },
-  "routing": {
-    "default_model": "auto",
-    "security_critical": "opus",
-    "retry_upgrade": true,
-    "review_matches_impl": true
-  }
+	"project": {
+		"name": "iago-os",
+		"client": "iaGO AI",
+		"type": "internal"
+	},
+	"workflow": {
+		"skip_discuss": false,
+		"auto_verify": true,
+		"auto_advance": false
+	},
+	"planning": {
+		"max_tasks_per_plan": 8,
+		"context_budget_pct": 40
+	},
+	"review": {
+		"mode": "single"
+	},
+	"routing": {
+		"default_model": "auto",
+		"security_critical": "opus",
+		"retry_upgrade": true,
+		"review_matches_impl": true
+	}
 }

@@ -14,8 +14,9 @@ Produce a verification report. If passed, create a PR and advance to the next ph
 
 - `.iago/PROJECT.md` must exist.
 - `.iago/ROADMAP.md` must exist with the target phase.
-- All plan summaries for the phase must exist in `.iago/summaries/`.
-  If missing, STOP: "Not all plans have been executed. Run `/iago:execute {slug}` first."
+- Plans for the phase must have been executed. Check for evidence in any of:
+  `.iago/summaries/`, `.iago/reviews/`, git log (PRs/commits for the phase branch).
+  If no evidence exists for any plan, STOP: "Not all plans have been executed. Run `/iago:execute {slug}` first."
 
 ## Arguments
 
@@ -29,7 +30,9 @@ If no phase-slug provided, read STATE.md for the current phase (should be status
 
 Read:
 - `.iago/ROADMAP.md` — phase goal and success criteria
-- `.iago/summaries/{NN}-{slug}-*.md` — all plan summaries for this phase
+- `.iago/summaries/{NN}-{slug}-*.md` — plan summaries (if they exist)
+- `.iago/reviews/{NN}-{slug}*.md` — review artifacts (fallback if summaries absent)
+- `git log --oneline --grep="{slug}"` — PR commits as evidence of execution
 - `.iago/PROJECT.md` — constraints, architecture decisions
 - `.iago/context/{NN}-{slug}.md` — decisions from discuss phase (if exists)
 
@@ -65,7 +68,7 @@ Check connections between components:
 ### 5. Gap analysis
 
 Identify anything that:
-- Was in the plan but not in the summaries
+- Was in the plan but has no execution evidence (summaries, reviews, or commits)
 - Was in the context decisions but not implemented
 - Passes locally but has obvious deployment concerns
 

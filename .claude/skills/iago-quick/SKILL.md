@@ -9,8 +9,8 @@ description: >-
 ## Purpose
 
 Lightweight one-shot execution path for standalone tasks that don't warrant the
-full workflow. Produces a plan, dispatches a matching profile (fullstack/frontend/backend)
-and `review-single`, and optionally verifies — all in one pass.
+full workflow. Produces a plan, then runs it through `scripts/execute-pipeline.sh`
+for the full 5-stage pipeline (implement → build gate → review → codex → PR).
 
 ## When to Use
 
@@ -65,6 +65,8 @@ plan: quick-{YYMMDD}-{slug}
 wave: 1
 depends_on: []
 created: {YYYY-MM-DD}
+branch: fix/quick-{slug}
+base: main
 ---
 
 # Quick: {short description}
@@ -87,86 +89,49 @@ created: {YYYY-MM-DD}
 - **expected:** {output}
 ```
 
-**No self-review loop** — quick plans are simple enough to get right in one pass.
 **Max 3 tasks** — if you need more, redirect to full workflow.
 
-### 4. Dispatch matching profile
+### 4. Run the execution pipeline
 
-Select profile based on file paths in the plan (fullstack/frontend/backend) and dispatch with:
-- The quick plan file
-- CLAUDE.md
-- rules/tdd.md
-- rules/systematic-debugging.md
-- .iago/PROJECT.md (if exists)
-- .iago/learnings/ (patterns + conventions)
+Determine the project directory (repo root or client project dir).
 
-Wait for response.
-
-### 5. Dispatch review-single
-
-Dispatch `review-single` profile with:
-- Git diff from implementation
-- CLAUDE.md
-- The quick plan file
-
-If review finds Critical issues: inform user, ask whether to fix or accept.
-If Important/Minor only: log and continue.
-
-### 6. Write summary
-
-Write `.iago/summaries/quick-{YYMMDD}-{slug}.md`:
-
-```markdown
----
-phase: quick
-plan: quick-{YYMMDD}-{slug}
-status: done
-key_files:
-  - {path}
-commits:
-  - {hash}
----
-
-# Summary: quick-{YYMMDD}-{slug}
-
-## Tasks Completed
-
-| # | Task | Files Changed | Commit |
-|---|------|--------------|--------|
-
-## Verification
-
-{Verify command output}
-
-## Review
-
-{Review findings summary}
+Run:
+```bash
+bash scripts/execute-pipeline.sh --plan .iago/plans/quick-{YYMMDD}-{slug}.md --project-dir {project-dir}
 ```
 
-### 7. Optional verify (`--verify` flag)
+This runs the full 5-stage pipeline as separate `claude -p` sessions:
+1. **Implement** — writes code from the plan (sonnet, `--allowedTools` constrained)
+2. **Build gate** — `tsc --noEmit && vite build` (max 2 retries with fix sessions)
+3. **Review** — checks diff against plan (Critical/Important/Minor)
+4. **Codex adversarial** — auth bypass, data loss, race conditions, business logic
+5. **Create PR** — stages, commits, pushes feature branch, creates PR via `gh`
 
-If `--verify` is set:
-- Run the same verification checks as `/iago:verify` but lighter:
-  - `npx tsc --noEmit` — type check
-  - `npx vitest run` — test suite
-  - `npx biome check` — lint
+Critical findings trigger automatic fix → rebuild → re-review (max 2 rounds).
+If the pipeline fails, report the error to the user. Do not retry manually.
+
+### 5. Optional verify (`--verify` flag)
+
+If `--verify` is set (the pipeline already runs a build gate, so this is for
+additional checks beyond build):
+- `npx vitest run` — test suite
+- `npx biome check` — lint
 - Report pass/fail for each
 
-### 8. Update STATE.md
+### 6. Update STATE.md
 
 Log to the Quick Tasks table in STATE.md:
 
-| Date | Mode | Description | Commit |
-|------|------|-------------|--------|
-| {today} | quick | {description} | {hash} |
+| Date | Mode | Description | PR |
+|------|------|-------------|-----|
+| {today} | quick | {description} | #{number} |
 
 ## Output
 
 Display:
-1. What was built (task list with file changes)
-2. Review findings (if any)
+1. Pipeline result (pass/fail, PR URL)
+2. Review findings (from pipeline output)
 3. Verification results (if `--verify`)
-4. Commit hashes
 
 ## Boundaries
 
@@ -174,4 +139,5 @@ Display:
 - No wave grouping — single plan only
 - No plan-checker self-review loop
 - Max 3 tasks — redirect to full workflow if more needed
-- If profile returns BLOCKED, escalate to user immediately (no retry logic)
+- If pipeline reports BLOCKED, escalate to user immediately (no retry logic)
+- The pipeline handles all review — do NOT dispatch agents for implementation or review

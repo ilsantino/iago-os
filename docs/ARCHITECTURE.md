@@ -133,19 +133,18 @@ Hooks fire on five Claude Code lifecycle events:
 SessionStart ──→ PreToolUse ──→ [tool runs] ──→ PostToolUse ──→ ... ──→ PreCompact ──→ Stop
      │                │                              │                       │           │
      ▼                ▼                              ▼                       ▼           ▼
-  context-         safety-guard              context-monitor           context-       context-
-  persistence      config-protection         post-edit-format          persistence    persistence
-  (restore)        commit-quality            post-edit-typecheck       (snapshot)     (finalize)
-                                             post-edit-console-warn                   usage-tracker
-                                             usage-tracker                            (summary)
-                                             (skill/agent tracking)
+  context-         safety-guard              post-edit-format          context-       context-
+  persistence      config-protection         post-edit-typecheck       persistence    persistence
+  (restore)        commit-quality            post-edit-console-warn    (snapshot)     (finalize)
+                                             usage-tracker                            usage-tracker
+                                             (skill/agent tracking)                   (summary)
 ```
 
 **SessionStart:** `context-persistence` loads the previous session snapshot or HANDOFF.json. Injects context so Claude knows what happened last time.
 
 **PreToolUse:** Safety hooks run before every bash command and file edit. `safety-guard` blocks secrets and destructive commands. `config-protection` prevents weakening linter configs. `commit-quality` validates conventional commits.
 
-**PostToolUse:** Quality hooks run after tool execution. `context-monitor` checks context window fill level. Post-edit hooks format code, type-check, and warn about console.log. `usage-tracker` logs skill and agent invocations.
+**PostToolUse:** Quality hooks run after file edits. Post-edit hooks format code, type-check, and warn about console.log. `usage-tracker` logs skill and agent invocations.
 
 **PreCompact:** `context-persistence` snapshots the current session before context window compaction.
 
@@ -183,7 +182,7 @@ The `usage-tracker` hook logs telemetry to `.iago/state/usage-log.jsonl`:
 
 ```json
 {"ts":"...","event":"skill_invoked","skill":"iago-plan","session":"s-123"}
-{"ts":"...","event":"agent_dispatched","agent":"implementer","session":"s-123"}
+{"ts":"...","event":"agent_dispatched","agent":"fullstack","session":"s-123"}
 {"ts":"...","event":"session_end","duration_min":45,"skills_used":[...],"agents_dispatched":[...],"session":"s-123"}
 ```
 

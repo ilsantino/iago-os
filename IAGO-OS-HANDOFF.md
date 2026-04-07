@@ -85,7 +85,7 @@ Redesigned the entire agent system from role-based to capability-based.
 
 **Rules (8):** Unchanged. `available-skills.md` updated with new agent catalog.
 
-**Hooks (9):** statusline.mjs removed (dead code — no Statusline event in Claude Code). Usage tracker hook active.
+**Hooks (8):** statusline.mjs and context-monitor.mjs removed (dead code). Usage tracker hook active.
 
 **Config:** `.iago/config.json` now includes `routing` section (default_model, security_critical, retry_upgrade, review_matches_impl).
 
@@ -97,9 +97,23 @@ Redesigned the entire agent system from role-based to capability-based.
 
 ## What's Next
 
-### Immediate
-1. **First real client project** — Use the capability-based system on MUNET or another client. This is the real validation.
-2. **Sync skills to global** — `./scripts/sync-skills.sh --global` to propagate the v0.1.0 architecture.
+### In Progress — Full Audit (Important Tier)
+
+Audit found 11 Critical, 14 Important, 14 Minor issues. Criticals fixed. Batch A (stale refs) fixed. 13 Important issues remain across Batches B-F:
+
+| Batch | Area | Issues | Status |
+|-------|------|--------|--------|
+| B | iago-quick pipeline gaps | 4 | Pending |
+| C | Summary path (execute→verify broken) | 3 | Pending |
+| D | Script portability (macOS compat) | 3 | Pending |
+| E | Hook/config schema | 1 | Pending |
+| F | Docs/dead code | 2 | Pending |
+
+See `sessions/2026-04-07-iago-os-audit.md` in Obsidian for full audit details.
+
+### After Audit
+1. **Sync skills to global** — `./scripts/sync-skills.sh --global` to propagate fixes.
+2. **First real client validation** — MUNET Phase 1 is in progress (see `clients/munet-web/MUNET-HANDOFF.md`).
 
 ### Watch For
 - Profile matching accuracy — do the file path heuristics pick the right profile?
@@ -111,6 +125,7 @@ Redesigned the entire agent system from role-based to capability-based.
 - iaGO Dashboard (needs 2+ weeks of real usage data first)
 - Agent pool resizing (dynamic maxTurns based on task complexity)
 - Custom profile promotion (auto-promote frequently used custom compositions)
+- 14 Minor audit issues (unused deps, content duplication between rules/ and capabilities/)
 
 ---
 

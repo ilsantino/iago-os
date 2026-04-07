@@ -153,7 +153,7 @@ business logic errors, and state management issues.
 
 ### 5. Write summary
 
-After execution + review, write summary to `docs/plans/{slug}-summary.md`:
+After execution + review, write summary to `.iago/summaries/{slug}-summary.md`:
 
 ```markdown
 # Summary: {plan-name}

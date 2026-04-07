@@ -31,6 +31,9 @@ description: >-
 - `/healthcare-phi-compliance` — HIPAA/PHI compliance patterns
 - `/industry-patterns` — Parameterized skill for 8 industry domains (`--domain logistics|inventory|customs|energy|carrier|production|quality|returns`). Pattern docs in `docs/patterns/`
 
+### Post-Review
+- `/iago:prfix` — Fix all PR review comments, dispatch through pipeline, push, request re-review
+
 ### Workflow (iaGO)
 - `/iago:init` — Bootstrap .iago/, gather vision, produce PROJECT/ROADMAP/STATE/config
 - `/iago:discuss` — Clarify gray areas per phase, produce context artifact

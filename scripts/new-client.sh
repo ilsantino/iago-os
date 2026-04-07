@@ -73,7 +73,7 @@ if [[ ! -d "$TEMPLATE_DIR" ]]; then
 fi
 
 # Warn on unusual characters in names
-if echo "$CLIENT_NAME" | grep -qP '[^\w\s.-]'; then
+if echo "$CLIENT_NAME" | grep -qE '[^[:alnum:]_[:space:]._-]'; then
   echo "Warning: Client name contains special characters. Slug will be: $CLIENT_ID"
 fi
 
@@ -127,17 +127,19 @@ mkdir -p "$TARGET_PATH/.iago/state/sessions"
 
 # --- Step 5: Init git ---
 echo "[5/5] Initializing git..."
-cd "$TARGET_PATH"
-git init -q
-git add -A
-git commit -q -m "chore: scaffold $PROJECT_NAME from iaGO $TEMPLATE_TYPE template"
+(
+  cd "$TARGET_PATH"
+  git init -q
+  git add -A
+  git commit -q -m "chore: scaffold $PROJECT_NAME from iaGO $TEMPLATE_TYPE template"
 
-# --- Summary ---
-echo ""
-echo "=== Done ==="
-echo "  Directory: $(pwd)"
-echo "  Files:     $(git ls-files | wc -l | tr -d ' ')"
-echo "  Template:  $TEMPLATE_TYPE"
+  # --- Summary ---
+  echo ""
+  echo "=== Done ==="
+  echo "  Directory: $(pwd)"
+  echo "  Files:     $(git ls-files | wc -l | tr -d ' ')"
+  echo "  Template:  $TEMPLATE_TYPE"
+)
 echo ""
 echo "Next steps:"
 echo "  cd $TARGET_PATH"

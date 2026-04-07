@@ -244,4 +244,45 @@ Create a PR for plan $PLAN_PATH. Read the plan file to get the branch name from 
 log "PR creation output:"
 echo "$PR_OUTPUT"
 
+if [[ $PR_EXIT -ne 0 ]]; then
+  log "ERROR: PR creation failed (exit $PR_EXIT). Pipeline stopping."
+  exit 1
+fi
+
+# ─── Step 6: Write summary ────────────────────────────────────────────
+log "SUMMARY — $PLAN_NAME"
+SUMMARY_DIR="$PROJECT_DIR/.iago/summaries"
+mkdir -p "$SUMMARY_DIR"
+
+PR_URL=$(echo "$PR_OUTPUT" | grep -oE 'https://github\.com/[^ ]+/pull/[0-9]+' | head -1)
+DIFF_STAT=$(cd "$PROJECT_DIR" && git diff --stat "$PRE_IMPL_SHA"..HEAD 2>/dev/null || echo "(no stats)")
+NOW=$(date -u '+%Y-%m-%d')
+
+cat > "$SUMMARY_DIR/${PLAN_NAME}.md" <<SUMMARY_EOF
+---
+plan: $PLAN_NAME
+status: done
+verified: $NOW
+pr: ${PR_URL:-"(none)"}
+---
+
+# Summary: $PLAN_NAME
+
+## Pipeline Result
+
+- **Implement:** exit $IMPL_EXIT
+- **Build gate:** passed
+- **Review:** $(echo "$REVIEW_OUTPUT" | grep -oE 'Verdict:[[:space:]]*(PASS|PASS_WITH_CONCERNS|FAIL)' | head -1 || echo "completed")
+- **Codex:** exit $CODEX_EXIT
+- **PR:** ${PR_URL:-"(not created)"}
+
+## Diff Stats
+
+\`\`\`
+$DIFF_STAT
+\`\`\`
+SUMMARY_EOF
+
+log "Summary written to .iago/summaries/${PLAN_NAME}.md"
+
 log "PIPELINE COMPLETE — $PLAN_NAME"
