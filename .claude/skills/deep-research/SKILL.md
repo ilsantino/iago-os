@@ -37,13 +37,13 @@ Break the question into 2-4 sub-questions:
 
 ### 2. Dispatch research agent
 
-Dispatch `research` agent (Sonnet) with:
+Dispatch `research` profile (Sonnet) with:
 - The research question and sub-questions
 - CLAUDE.md (for stack context)
 - .iago/PROJECT.md (if exists, for project context)
 - Source constraints (if `--sources` specified)
 
-The research agent will:
+The research profile will:
 - **Codebase:** Grep, Glob, Read for relevant patterns and prior implementations
 - **Docs:** Use `context7` MCP to fetch current library/framework documentation
 - **Web:** WebSearch + WebFetch for articles, comparisons, benchmarks, GitHub issues
@@ -125,5 +125,5 @@ Display:
 - Research only — does not implement, modify code, or create plans
 - Must produce a written artifact — no "I found that..." without saving it
 - Must include actionable recommendation — no open-ended summaries
-- If research agent returns BLOCKED (e.g., no web access), continue with available sources
+- If research profile returns BLOCKED (e.g., no web access), continue with available sources
 - Time-box: if research exceeds 10 sub-queries without convergence, synthesize what you have

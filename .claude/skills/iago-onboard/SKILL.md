@@ -17,7 +17,7 @@ full iaGO workflow on a project that wasn't built with it.
 `/iago:onboard` — run in the root of the target codebase.
 
 Optional flags:
-- `--deep` — dispatch `research` agent for thorough multi-pass analysis
+- `--deep` — dispatch `research` profile for thorough multi-pass analysis
 - `--skip-init` — only produce the analysis, don't write `.iago/` files
 
 ## Preconditions
@@ -41,15 +41,15 @@ Read the project root to identify:
 - Infrastructure (Amplify Gen 2, Docker, etc.)
 - CI/CD (GitHub Actions, CircleCI, etc.)
 
-### 2. Dispatch research agent (`--deep` flag or default)
+### 2. Dispatch research profile (`--deep` flag only)
 
-Dispatch `research` agent with:
+If `--deep` is set, dispatch `research` profile with:
 - The project root path
 - CLAUDE.md (for stack comparison)
 - Instruction: "Analyze this codebase and produce a structured report covering:
   architecture, patterns, dependencies, tech debt, test coverage, security concerns."
 
-The research agent will:
+The research profile will:
 - Scan directory tree and key configuration files
 - Identify architectural patterns (monolith, microservices, feature-sliced)
 - Catalog external dependencies and their versions
@@ -140,4 +140,4 @@ Produces analysis artifact only — useful for evaluating a codebase before comm
 - Only writes to `.iago/` directory (unless `--skip-init`, then only displays)
 - Does not install dependencies, run migrations, or execute builds
 - Does not start planning or implementation — analysis only
-- If research agent returns BLOCKED, fall back to inline single-pass analysis
+- If research profile returns BLOCKED, fall back to inline single-pass analysis

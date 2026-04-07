@@ -62,7 +62,7 @@ probe what's vague:
 4. **Does the stack deviate from the default?** — React 19 + Vite + TS + Tailwind + ShadCN + AWS
 5. **What are the first 2-5 phases?** — high-level breakdown of the work
 
-If working on an existing codebase, optionally dispatch the `research` agent to
+If working on an existing codebase, optionally dispatch the `research` profile to
 scan the repo structure and infer context before asking questions.
 
 ### 3. Write config.json
