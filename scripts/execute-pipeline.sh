@@ -264,25 +264,25 @@ if [[ -n "$PR_URL" ]]; then
   PR_NUMBER=$(echo "$PR_URL" | grep -oE '[0-9]+$')
   log "TAGGING @claude on PR #$PR_NUMBER"
 
-  # Use a short claude session to write a natural-language review request
-  # from the pipeline context — not a grep-assembled template
+  # Use a haiku session to synthesize a direct review request from pipeline context
   TAG_EXIT=0
-  CLAUDE_REVIEW_BODY=$(claude -p "Write a GitHub PR review request comment. Output ONLY the comment text, nothing else.
+  CLAUDE_REVIEW_BODY=$(claude -p "Write a GitHub PR comment tagging @claude for review. Output ONLY the comment text, nothing else.
 
-Format:
-- First line: @claude Please review this PR thoroughly.
-- Blank line, then 1-2 sentences summarizing what this PR does (plain language).
-- Blank line, then 'Watch for:' followed by a conversational paragraph of specific things to check — synthesize from the context below into natural language. No bullet points, no markdown headers, no structured formatting. Write like you're briefing a colleague.
+Rules:
+- First line: @claude Review this PR thoroughly.
+- Blank line. 1-2 sentences: what this PR does. Direct, no fluff.
+- Blank line. Watch for: one paragraph, specific concerns synthesized from context below. End with 'General pass for anything unexpected.'
+- No markdown headers, no bullet points, no 'please', no politeness. Direct and terse.
 
-Context to synthesize from:
+Context:
 
 Plan ($PLAN_PATH):
 $PLAN_CONTENT
 
-Review stage output (spec deviations already caught):
+Review findings:
 $REVIEW_OUTPUT
 
-Codex adversarial output (production risks flagged):
+Codex findings:
 $CODEX_OUTPUT" \
     --model haiku \
     --max-turns 1 \
@@ -290,7 +290,7 @@ $CODEX_OUTPUT" \
 
   if [[ $TAG_EXIT -ne 0 ]] || [[ -z "$CLAUDE_REVIEW_BODY" ]]; then
     log "WARNING: Failed to generate review comment — using fallback"
-    CLAUDE_REVIEW_BODY="@claude Please review this PR thoroughly. This implements plan $PLAN_PATH."
+    CLAUDE_REVIEW_BODY="@claude Review this PR thoroughly. Implements plan $PLAN_PATH. General pass for anything unexpected."
   fi
 
   (cd "$PROJECT_DIR" && gh pr comment "$PR_NUMBER" --body "$CLAUDE_REVIEW_BODY") || log "WARNING: Failed to post @claude comment on PR #$PR_NUMBER"
