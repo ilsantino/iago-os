@@ -1,7 +1,7 @@
 ## Execution Pipeline
 
 The review pipeline is enforced by `scripts/execute-pipeline.sh`. Every plan
-goes through 5 stages as separate `claude -p` sessions. No shortcuts.
+goes through 7 stages as separate `claude -p` sessions. No shortcuts.
 
 ### How It Works
 
@@ -48,6 +48,18 @@ scripts/execute-pipeline.sh --plan {path} --project-dir {dir}
   |  auth bypass, data loss, race conditions, business logic
   v
 5. CREATE PR — claude -p stages, commits, pushes, creates PR via gh
+  |
+  v
+5b. TAG @CLAUDE — post review request on PR (fallback: gh pr view by branch)
+  |
+  v
+6. REVIEW-FIX LOOP — delegates to review-fix-loop.sh:
+  |  poll for @claude response → fix all comments → build gate →
+  |  push → re-tag → repeat (max 5 rounds, 15 min poll timeout)
+  |  exits on: APPROVED, clean review, max rounds, or BLOCKED
+  |  also used by /iago:prfix (with --skip-initial-poll --skip-initial-tag)
+  v
+7. SUMMARY — write pipeline results to .iago/summaries/
 ```
 
 ### Handling Findings

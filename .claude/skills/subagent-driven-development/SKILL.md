@@ -6,7 +6,6 @@ description: >-
   phase (use /iago:execute instead).
 ---
 
-<!-- Source: Superpowers subagent-driven-development + executing-plans + dispatching-parallel-agents -->
 
 ## Purpose
 

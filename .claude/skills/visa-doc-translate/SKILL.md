@@ -5,7 +5,6 @@ description: >-
   Not when doing general-purpose translation or writing content.
 ---
 
-<!-- Source: ECC visa-doc-translate -->
 
 ## Purpose
 

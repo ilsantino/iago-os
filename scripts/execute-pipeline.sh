@@ -5,8 +5,9 @@ set -euo pipefail
 #
 # Usage: ./scripts/execute-pipeline.sh --plan .iago/plans/plan-01.md --project-dir /path/to/project
 #
-# Runs the full pipeline: implement → build → review → codex → PR
+# Runs the full pipeline: implement → build → review → codex → PR → tag @claude
 # Each step is a separate claude -p session with fresh context.
+# After PR creation, calls review-fix-loop.sh to poll and fix until approved.
 # No n8n needed — just bash.
 
 PLAN_PATH=""
@@ -249,12 +250,70 @@ if [[ $PR_EXIT -ne 0 ]]; then
   exit 1
 fi
 
-# ─── Step 6: Write summary ────────────────────────────────────────────
+# ─── Step 5b: Tag @claude for PR review ─────────────────────────────
+PR_URL=$(echo "$PR_OUTPUT" | grep -oE 'https://github\.com/[^ ]+/pull/[0-9]+' | head -1)
+
+# Fallback: if URL extraction failed, query gh for the PR by current branch
+if [[ -z "$PR_URL" ]]; then
+  log "WARNING: Could not extract PR URL from session output — querying gh"
+  CURRENT_BRANCH=$(cd "$PROJECT_DIR" && git branch --show-current)
+  PR_URL=$(cd "$PROJECT_DIR" && gh pr view "$CURRENT_BRANCH" --json url -q '.url' 2>/dev/null || echo "")
+fi
+
+if [[ -n "$PR_URL" ]]; then
+  PR_NUMBER=$(echo "$PR_URL" | grep -oE '[0-9]+$')
+  log "TAGGING @claude on PR #$PR_NUMBER"
+
+  # Use a haiku session to synthesize a direct review request from pipeline context
+  TAG_EXIT=0
+  CLAUDE_REVIEW_BODY=$(claude -p "Write a GitHub PR comment tagging @claude for review. Output ONLY the comment text, nothing else.
+
+Rules:
+- First line: @claude Review this PR thoroughly.
+- Blank line. 1-2 sentences: what this PR does. Direct, no fluff.
+- Blank line. Watch for: one paragraph, specific concerns synthesized from context below. End with 'General pass for anything unexpected.'
+- No markdown headers, no bullet points, no 'please', no politeness. Direct and terse.
+
+Context:
+
+Plan ($PLAN_PATH):
+$PLAN_CONTENT
+
+Review findings:
+$REVIEW_OUTPUT
+
+Codex findings:
+$CODEX_OUTPUT" \
+    --model haiku \
+    --max-turns 1 \
+    --output-format text 2>&1) || TAG_EXIT=$?
+
+  if [[ $TAG_EXIT -ne 0 ]] || [[ -z "$CLAUDE_REVIEW_BODY" ]]; then
+    log "WARNING: Failed to generate review comment — using fallback"
+    CLAUDE_REVIEW_BODY="@claude Review this PR thoroughly. Implements plan $PLAN_PATH. General pass for anything unexpected."
+  fi
+
+  (cd "$PROJECT_DIR" && gh pr comment "$PR_NUMBER" --body "$CLAUDE_REVIEW_BODY") || log "WARNING: Failed to post @claude comment on PR #$PR_NUMBER"
+else
+  log "ERROR: Could not determine PR URL — @claude review tag was NOT posted. Check PR manually."
+fi
+
+# ─── Step 6: Review-fix loop (delegates to review-fix-loop.sh) ───────
+if [[ -n "${PR_NUMBER:-}" ]]; then
+  log "Launching review-fix loop for PR #$PR_NUMBER"
+  "$SCRIPT_DIR/review-fix-loop.sh" --pr "$PR_NUMBER" --project-dir "$PROJECT_DIR" || {
+    log "WARNING: Review-fix loop exited non-zero — check PR manually"
+  }
+else
+  log "WARNING: No PR number — skipping review-fix loop"
+fi
+
+# ─── Step 7: Write summary ────────────────────────────────────────────
 log "SUMMARY — $PLAN_NAME"
 SUMMARY_DIR="$PROJECT_DIR/.iago/summaries"
 mkdir -p "$SUMMARY_DIR"
 
-PR_URL=$(echo "$PR_OUTPUT" | grep -oE 'https://github\.com/[^ ]+/pull/[0-9]+' | head -1)
+# PR_URL already extracted in Step 5b
 DIFF_STAT=$(cd "$PROJECT_DIR" && git diff --stat "$PRE_IMPL_SHA"..HEAD 2>/dev/null || echo "(no stats)")
 NOW=$(date -u '+%Y-%m-%d')
 
