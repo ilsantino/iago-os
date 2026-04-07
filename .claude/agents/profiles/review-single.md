@@ -5,7 +5,7 @@ description: >-
   Use for quick reviews where spec compliance, quality, and security
   are checked together in one analysis.
 base: analyst
-model: auto
+model: sonnet
 maxTurns: 15
 capabilities:
   - security

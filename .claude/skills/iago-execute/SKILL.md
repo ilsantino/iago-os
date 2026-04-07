@@ -18,6 +18,9 @@ orchestrator session.
 - At least one `.iago/plans/{NN}-{slug}-*.md` must exist for the target phase.
   If not, STOP: "No plans found. Run `/iago:plan {slug}` first."
 - `scripts/execute-pipeline.sh` must exist in the iago-os root.
+- When invoking from a client project directory, set `IAGO_OS_ROOT` to the
+  iago-os installation path (e.g., `export IAGO_OS_ROOT=~/dev/iago-os`).
+  `git rev-parse --show-toplevel` resolves to the client root, not iago-os.
 
 ## Arguments
 
@@ -52,7 +55,11 @@ Execute all? (y/n)
 ### 2. Resolve paths
 
 ```bash
-IAGO_ROOT="/c/Users/sanal/dev/iago-os"
+# Dynamic resolution. Set IAGO_OS_ROOT env var, or auto-detect via git.
+IAGO_ROOT="${IAGO_OS_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null)}"
+if [[ -z "$IAGO_ROOT" || ! -f "$IAGO_ROOT/scripts/execute-pipeline.sh" ]]; then
+  echo "ERROR: Cannot resolve iago-os root. Set IAGO_OS_ROOT env var." >&2; exit 1
+fi
 SCRIPT="$IAGO_ROOT/scripts/execute-pipeline.sh"
 PROJECT_DIR="{cwd}"  # the client project directory (where .iago/ lives)
 ```

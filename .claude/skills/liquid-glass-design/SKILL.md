@@ -1,11 +1,14 @@
 ---
 name: liquid-glass-design
+experimental: true
 description: >-
   Use when implementing glassmorphism or liquid glass UI effects for client
   projects. Not when building standard UI components (use ShadCN/UI defaults)
   or when the design doesn't call for glass effects.
 ---
 
+
+> **Experimental:** This skill describes behavior that may exceed current Claude Code capabilities. Cost ceilings, context introspection, and persistent daemon loops are not enforced by the platform. Use with awareness of these limitations.
 
 ## Purpose
 

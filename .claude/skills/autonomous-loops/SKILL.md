@@ -4,8 +4,10 @@ description: >-
   Use when running long autonomous tasks that don't need human approval at each
   step (bulk refactors, migration scripts, batch processing). Not when task
   requires human judgment at checkpoints (use /subagent-driven-development).
+experimental: true
 ---
 
+> **Experimental:** This skill describes behavior that may exceed current Claude Code capabilities. Cost ceilings, context introspection, and persistent daemon loops are not enforced by the platform. Use with awareness of these limitations.
 
 ## Purpose
 

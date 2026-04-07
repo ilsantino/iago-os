@@ -3,7 +3,7 @@ name: executor
 description: >-
   Base agent for tasks that produce code. Receives capability modules
   and task instructions via dispatch prompt.
-model: sonnet
+model: opus
 tools:
   - Read
   - Glob

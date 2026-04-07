@@ -4,7 +4,7 @@ description: >-
   Diagnose and fix build, TypeScript, and lint errors.
   Capabilities are dynamic — orchestrator selects based on error type.
 base: executor
-model: auto
+model: opus
 maxTurns: 20
 capabilities: dynamic
 ---

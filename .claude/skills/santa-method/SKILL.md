@@ -1,11 +1,14 @@
 ---
 name: santa-method
+experimental: true
 description: >-
   Use when decomposing a complex, ambiguous problem into structured sub-problems
   before exploring solutions. Not when requirements are already clear (use
   /writing-plans) or when exploring solutions (use /brainstorming).
 ---
 
+
+> **Experimental:** This skill describes behavior that may exceed current Claude Code capabilities. Cost ceilings, context introspection, and persistent daemon loops are not enforced by the platform. Use with awareness of these limitations.
 
 ## Purpose
 

@@ -2,10 +2,11 @@
 name: agent-payment-x402
 description: >-
   Use when implementing agent-to-agent payment flows using the x402 protocol.
-  Not when building traditional payment integrations (Stripe, PayPal) or
-  human-facing checkout flows.
+  Not when building traditional payment integrations (Stripe, PayPal) or human-facing checkout flows.
+experimental: true
 ---
 
+> **Experimental:** This skill describes behavior that may exceed current Claude Code capabilities. Cost ceilings, context introspection, and persistent daemon loops are not enforced by the platform. Use with awareness of these limitations.
 
 ## Purpose
 
