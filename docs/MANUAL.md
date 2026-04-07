@@ -50,7 +50,7 @@ cd ../acme-dashboard && claude
 acme-dashboard/
   .claude/
     settings.json       # Hooks wired and ready
-    skills/             # 31 skill definitions
+    skills/             # 32 skill definitions
     agents/             # 3 bases + 13 capabilities + 12 profiles
     rules/              # 8 behavioral rules
   .iago/
@@ -553,6 +553,68 @@ Stale warning: HANDOFF.json older than 7 days triggers an informational warning.
 The `context-monitor` hook watches context usage:
 - **70% threshold** — suggests compacting or finishing the current task
 - **90% threshold** — warns to pause or wrap up immediately
+
+---
+
+## Scheduled Automation
+
+Automated triggers run prompts on a cron schedule — without you being in a session. Use them for recurring hygiene tasks: nightly code review, dependency audits, stale-handoff detection.
+
+### Two Modes
+
+| Mode | Persistence | Auth required | Expiry |
+|------|-------------|---------------|--------|
+| **RemoteTrigger** | Persistent — survives session end | Yes (Claude Code RemoteTrigger auth) | No auto-expiry |
+| **Session cron** (built-in `/schedule`) | Session-scoped only | No | 7 days |
+
+Use RemoteTrigger for anything you want running unattended. Session cron is for monitoring tasks during an active session only.
+
+### Install a Template
+
+Six ready-to-use templates cover the most common recurring tasks:
+
+```
+> /iago:schedule nightly-review         # 10:43pm weeknights — code review against main
+> /iago:schedule usage-digest           # 9:17am Monday — skill + agent usage summary
+> /iago:schedule stale-handoff          # 8:23am daily — warn if HANDOFF.json > 3 days old
+> /iago:schedule dependency-audit       # 10:41am Saturday — npm audit, critical/high vulns
+> /iago:schedule learnings-promotion    # 9:07am Friday — find patterns qualifying for CLAUDE.md
+> /iago:schedule build-health           # Every 6 hours — tsc + biome check
+```
+
+The skill reads the template from `docs/automations/trigger-templates.md`, resolves `$PROJECT_DIR` to the current working directory, and calls RemoteTrigger create. If RemoteTrigger auth fails, it falls back to session cron with a 7-day expiry warning.
+
+### Create a Custom Trigger
+
+```
+> /iago:schedule create "43 22 * * 1-5" "Run /code-review --against main for today's commits."
+```
+
+Five-field cron expression (minute hour day month weekday), then the prompt in quotes.
+
+### List Active Triggers
+
+```
+> /iago:schedule list
+```
+
+Shows trigger IDs, schedules, and first 60 characters of the prompt.
+
+### Remove a Trigger
+
+```
+> /iago:schedule remove {trigger-id}
+```
+
+Use the ID from `list`. For session cron jobs, this calls CronDelete instead of RemoteTrigger delete.
+
+### Template Reference
+
+Full library with cron expressions, prompt text, and RemoteTrigger API bodies: [`docs/automations/trigger-templates.md`](automations/trigger-templates.md)
+
+### RemoteTrigger Auth
+
+Persistent triggers require RemoteTrigger authentication. If `/iago:schedule` reports an auth failure, run `/schedule` setup from the Claude Code command palette or authenticate via Claude Code settings before retrying.
 
 ---
 

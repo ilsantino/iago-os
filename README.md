@@ -96,7 +96,7 @@ cd ../my-app && claude
 
 See [docs/SETUP.md](docs/SETUP.md) for detailed instructions (Windows + macOS).
 
-## Skills (31)
+## Skills (32)
 
 Skills are reusable workflows you invoke with `/skill-name` inside Claude Code. Each skill knows what steps to follow, which profiles to dispatch, what artifacts to produce, and what evidence to collect before reporting done.
 
@@ -124,6 +124,7 @@ These skills implement the full project lifecycle. Run them in order for structu
 | `/iago:onboard` | Scans an existing codebase (directory structure, package.json, configs), produces architecture map and tech debt inventory, populates PROJECT.md | Onboarding an existing repo into iaGO workflow |
 | `/iago:n8n` | Designs n8n automation workflow specs: node configs, trigger definitions, data flow diagrams, IAM policies | Designing webhook/event-driven automations |
 | `/iago:agents` | Designs multi-agent architectures: agent roles, tool schemas, LangGraph state graphs, orchestration patterns. Use `--scope operational` for production-grade multi-agent design with topology, runbooks, and n8n integration | Designing agent systems for client deliverables |
+| `/iago:schedule` | Install automated triggers (nightly review, usage digest, build health) from templates or create custom cron jobs | Setting up recurring automation for a project |
 
 ### Core — Design, Plan, Build, Review, Research
 
@@ -379,7 +380,7 @@ Not all work needs the same model. iaGO-OS routes tasks by complexity:
 iago-os/
   .claude/
     settings.json            # Hook wiring
-    skills/                  # 31 skill definitions (SKILL.md each)
+    skills/                  # 32 skill definitions (SKILL.md each)
     agents/                  # 3 bases + 13 capabilities + 12 profiles
       executor.md
       analyst.md

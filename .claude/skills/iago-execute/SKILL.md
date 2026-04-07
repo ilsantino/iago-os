@@ -25,6 +25,8 @@ agents do the work.
 
 `/iago:execute {phase-slug} --serial` — bypass parallel execution; run all plans sequentially (useful for debugging and CI).
 
+`/iago:execute {phase-slug} --n8n` — dispatch plans to the n8n cross-session pipeline instead of in-session agents. Each plan runs in a fresh Claude Code session with clean context. Requires n8n setup (see `n8n/README.md`).
+
 If no phase-slug provided, read STATE.md for the current active phase.
 
 ## Steps
@@ -39,6 +41,19 @@ Wave 1: plans with no dependencies → execute first
 Wave 2: plans depending on wave 1 → execute after wave 1 completes
 Wave N: continue sequentially
 ```
+
+### 1b. Check for --n8n dispatch
+
+If `--n8n` flag is set:
+
+1. Read `.iago/config.json` for `automation.n8n_webhook_url`. If not set, STOP:
+   "n8n webhook URL not configured. Add `automation.n8n_webhook_url` to `.iago/config.json` or see `n8n/README.md` for setup."
+2. For each plan, construct webhook payload:
+   `{ "phase": "{slug}", "plan_path": "{plan_file}", "project_dir": "{cwd}" }`
+3. POST each payload to the webhook URL (use WebFetch or curl).
+4. Report: "Dispatched {N} plans to n8n pipeline. Monitor progress in the n8n dashboard."
+5. Update STATE.md: Status → `executing (n8n)`
+6. STOP — do not proceed to in-session dispatch. n8n handles everything from here.
 
 ### 2. Update STATE.md
 
