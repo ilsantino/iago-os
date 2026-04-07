@@ -28,13 +28,11 @@ fi
 
 START_MS=$(date +%s%3N 2>/dev/null || python3 -c "import time; print(int(time.time()*1000))")
 
-OUTPUT=$(timeout "$TIMEOUT" claude -p "$PROMPT" \
-  --project-dir "$PROJECT_DIR" \
+EXIT_CODE=0
+OUTPUT=$(cd "$PROJECT_DIR" && timeout "$TIMEOUT" claude -p "$PROMPT" \
   --model "$MODEL" \
   --max-turns "$MAX_TURNS" \
-  --output-format text 2>&1) || true
-
-EXIT_CODE=$?
+  --output-format text 2>&1) || EXIT_CODE=$?
 END_MS=$(date +%s%3N 2>/dev/null || python3 -c "import time; print(int(time.time()*1000))")
 DURATION=$((END_MS - START_MS))
 

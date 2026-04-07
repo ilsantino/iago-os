@@ -13,7 +13,7 @@ const ROADMAP_PATH = join(IAGO_DIR, "ROADMAP.md");
 const PLANS_DIR = join(IAGO_DIR, "plans");
 const SESSION_LOG_PATH = join(IAGO_DIR, "state", "session-log.jsonl");
 
-const SUBDIRS = ["context", "plans", "summaries", "reviews", "hooks", "state"];
+const SUBDIRS = ["context", "plans", "summaries", "reviews", "learnings", "hooks", "state"];
 
 const DEFAULT_CONFIG = {
   project: { name: "", client: "internal", type: "saas" },
@@ -274,7 +274,8 @@ export function listPlans() {
 
 /**
  * Read and return .iago/config.json, merging with defaults for any missing fields.
- * @returns {{ project: { name: string, client: string, type: string }, workflow: { skip_discuss: boolean, auto_verify: boolean, auto_advance: boolean }, planning: { max_tasks_per_plan: number, context_budget_pct: number }, review: { mode: string } }}
+ * Preserves all keys from config (including routing, automation, etc.) while merging known sections with defaults.
+ * @returns {{ project: { name: string, client: string, type: string }, workflow: { skip_discuss: boolean, auto_verify: boolean, auto_advance: boolean }, planning: { max_tasks_per_plan: number, context_budget_pct: number }, review: { mode: string }, [key: string]: unknown }}
  */
 export function getConfig() {
   if (!existsSync(CONFIG_PATH)) {
@@ -283,11 +284,13 @@ export function getConfig() {
 
   try {
     const raw = JSON.parse(readFileSync(CONFIG_PATH, "utf8"));
+    const obj = (v) => v !== null && typeof v === "object" && !Array.isArray(v) ? v : {};
     return {
-      project: { ...DEFAULT_CONFIG.project, ...raw.project },
-      workflow: { ...DEFAULT_CONFIG.workflow, ...raw.workflow },
-      planning: { ...DEFAULT_CONFIG.planning, ...raw.planning },
-      review: { ...DEFAULT_CONFIG.review, ...raw.review },
+      ...raw,
+      project: { ...DEFAULT_CONFIG.project, ...obj(raw.project) },
+      workflow: { ...DEFAULT_CONFIG.workflow, ...obj(raw.workflow) },
+      planning: { ...DEFAULT_CONFIG.planning, ...obj(raw.planning) },
+      review: { ...DEFAULT_CONFIG.review, ...obj(raw.review) },
     };
   } catch {
     return structuredClone(DEFAULT_CONFIG);

@@ -3,7 +3,7 @@ set -euo pipefail
 
 # iaGO-OS — Cross-session execute pipeline (no n8n required)
 #
-# Usage: ./n8n/scripts/execute-pipeline.sh --plan .iago/plans/plan-01.md --project-dir /path/to/project
+# Usage: ./scripts/execute-pipeline.sh --plan .iago/plans/plan-01.md --project-dir /path/to/project
 #
 # Runs the full pipeline: implement → build → review → codex → PR
 # Each step is a separate claude -p session with fresh context.
@@ -40,12 +40,33 @@ log() { echo "[$(date '+%H:%M:%S')] $1"; }
 
 # ─── Step 1: Implement ───────────────────────────────────────────────
 log "IMPLEMENT — $PLAN_NAME"
-claude -p "Execute this plan. Follow every task exactly. End with DONE or BLOCKED.
+
+PRE_IMPL_SHA=$(cd "$PROJECT_DIR" && git rev-parse HEAD) || {
+  log "ERROR: Could not capture pre-impl SHA. Is $PROJECT_DIR a git repo?"
+  exit 1
+}
+
+IMPL_EXIT=0
+IMPL_OUTPUT=$(cd "$PROJECT_DIR" && claude -p "Execute this plan. Follow every task exactly. End with DONE or BLOCKED.
 
 $PLAN_CONTENT" \
-  --project-dir "$PROJECT_DIR" \
   --model sonnet \
-  --max-turns 50 > /dev/null 2>&1 || true
+  --max-turns 50 \
+  --output-format text 2>&1) || IMPL_EXIT=$?
+
+if [[ $IMPL_EXIT -ne 0 ]]; then
+  log "ERROR: Implementation failed (exit $IMPL_EXIT)"
+  echo "$IMPL_OUTPUT"
+  exit 1
+fi
+
+# Check last few lines for agent status (avoid false positives from conversational text)
+IMPL_STATUS=$(echo "$IMPL_OUTPUT" | tail -5)
+if echo "$IMPL_STATUS" | grep -qE "^(BLOCKED|NEEDS_CONTEXT)"; then
+  log "ERROR: Agent reported $(echo "$IMPL_STATUS" | grep -oE "^(BLOCKED|NEEDS_CONTEXT)" | head -1)"
+  echo "$IMPL_OUTPUT"
+  exit 1
+fi
 
 log "Implementation complete"
 
@@ -54,10 +75,11 @@ build_attempt=0
 while true; do
   log "BUILD GATE — attempt $((build_attempt + 1))"
 
-  if cd "$PROJECT_DIR" && npx tsc --noEmit 2>&1 && npx vite build 2>&1; then
+  if (cd "$PROJECT_DIR" && npx tsc --noEmit 2>&1 && npx vite build 2>&1); then
     log "Build passed"
     break
   else
+    # || true is intentional: tsc exits non-zero on type errors, but we need its output for the fix session
     BUILD_ERRORS=$(cd "$PROJECT_DIR" && npx tsc --noEmit 2>&1 || true)
     build_attempt=$((build_attempt + 1))
 
@@ -67,32 +89,49 @@ while true; do
     fi
 
     log "Build failed — dispatching fix session"
-    claude -p "Fix these build errors:
+    FIX_EXIT=0
+    FIX_OUTPUT=$(cd "$PROJECT_DIR" && claude -p "Fix these build errors:
 
 $BUILD_ERRORS" \
-      --project-dir "$PROJECT_DIR" \
       --model sonnet \
-      --max-turns 30 > /dev/null 2>&1 || true
+      --max-turns 30 \
+      --output-format text 2>&1) || FIX_EXIT=$?
+    log "Build fix output (exit $FIX_EXIT):"
+    echo "$FIX_OUTPUT"
   fi
 done
 
 # ─── Step 3: Review ──────────────────────────────────────────────────
 log "REVIEW — $PLAN_NAME"
-DIFF=$(cd "$PROJECT_DIR" && git diff HEAD~1 2>/dev/null || echo "no diff available")
+DIFF=$(cd "$PROJECT_DIR" && git diff "$PRE_IMPL_SHA"..HEAD 2>/dev/null || echo "no diff available")
 
-REVIEW_OUTPUT=$(claude -p "Review this diff against the plan. Categorize findings as Critical, Important, or Minor. End with verdict: PASS, PASS_WITH_CONCERNS, or FAIL.
+if [[ -z "$DIFF" || "$DIFF" == "no diff available" ]]; then
+  log "WARNING: Implementation produced no changes (empty diff). Skipping review."
+  REVIEW_OUTPUT="No changes to review — implementation may have failed silently."
+  REVIEW_EXIT=0
+else
+
+REVIEW_EXIT=0
+REVIEW_OUTPUT=$(cd "$PROJECT_DIR" && claude -p "Review this diff against the plan. Categorize findings as Critical, Important, or Minor. End with verdict: PASS, PASS_WITH_CONCERNS, or FAIL.
 
 Plan: $PLAN_PATH
 
 Diff:
 $DIFF" \
-  --project-dir "$PROJECT_DIR" \
   --model sonnet \
-  --max-turns 25 2>&1) || true
+  --max-turns 25 \
+  --output-format text 2>&1) || REVIEW_EXIT=$?
+
+log "Review output:"
+echo "$REVIEW_OUTPUT"
+
+if [[ $REVIEW_EXIT -ne 0 ]]; then
+  log "WARNING: Review session exited non-zero ($REVIEW_EXIT) — review may be incomplete"
+fi
 
 # Check for critical findings
 fix_attempt=0
-while echo "$REVIEW_OUTPUT" | grep -qi "critical" && echo "$REVIEW_OUTPUT" | grep -qi "FAIL"; do
+while echo "$REVIEW_OUTPUT" | grep -q "Critical" && echo "$REVIEW_OUTPUT" | grep -qE "Verdict:[[:space:]]*FAIL[[:space:]]*$"; do
   fix_attempt=$((fix_attempt + 1))
 
   if [[ $fix_attempt -gt $MAX_FIX_RETRIES ]]; then
@@ -101,56 +140,79 @@ while echo "$REVIEW_OUTPUT" | grep -qi "critical" && echo "$REVIEW_OUTPUT" | gre
   fi
 
   log "Critical findings — dispatching fix session (round $fix_attempt)"
-  claude -p "Fix these critical review findings:
+  FIX_EXIT=0
+  FIX_OUTPUT=$(cd "$PROJECT_DIR" && claude -p "Fix these critical review findings:
 
 $REVIEW_OUTPUT" \
-    --project-dir "$PROJECT_DIR" \
     --model sonnet \
-    --max-turns 40 > /dev/null 2>&1 || true
+    --max-turns 40 \
+    --output-format text 2>&1) || FIX_EXIT=$?
+  log "Fix output (exit $FIX_EXIT):"
+  echo "$FIX_OUTPUT"
 
   # Re-run build gate
   if ! (cd "$PROJECT_DIR" && npx tsc --noEmit 2>&1 && npx vite build 2>&1); then
     log "Build broke during fix — running build fix"
+    # || true is intentional: tsc exits non-zero on type errors, but we need its output
     BUILD_ERRORS=$(cd "$PROJECT_DIR" && npx tsc --noEmit 2>&1 || true)
-    claude -p "Fix build errors: $BUILD_ERRORS" \
-      --project-dir "$PROJECT_DIR" \
+    FIX_EXIT=0
+    FIX_OUTPUT=$(cd "$PROJECT_DIR" && claude -p "Fix build errors: $BUILD_ERRORS" \
       --model sonnet \
-      --max-turns 30 > /dev/null 2>&1 || true
+      --max-turns 30 \
+      --output-format text 2>&1) || FIX_EXIT=$?
+    log "Build fix output (exit $FIX_EXIT):"
+    echo "$FIX_OUTPUT"
   fi
 
   # Re-review
-  DIFF=$(cd "$PROJECT_DIR" && git diff HEAD~1 2>/dev/null || echo "no diff")
-  REVIEW_OUTPUT=$(claude -p "Review this diff. Categorize as Critical/Important/Minor. Verdict: PASS/PASS_WITH_CONCERNS/FAIL.
+  DIFF=$(cd "$PROJECT_DIR" && git diff "$PRE_IMPL_SHA"..HEAD 2>/dev/null || echo "no diff")
+  REVIEW_EXIT=0
+  REVIEW_OUTPUT=$(cd "$PROJECT_DIR" && claude -p "Review this diff. Categorize as Critical/Important/Minor. Verdict: PASS/PASS_WITH_CONCERNS/FAIL.
 
 Diff:
 $DIFF" \
-    --project-dir "$PROJECT_DIR" \
     --model sonnet \
-    --max-turns 25 2>&1) || true
+    --max-turns 25 \
+    --output-format text 2>&1) || REVIEW_EXIT=$?
+  log "Re-review output:"
+  echo "$REVIEW_OUTPUT"
+  if [[ $REVIEW_EXIT -ne 0 ]]; then
+    log "WARNING: Re-review session exited non-zero ($REVIEW_EXIT)"
+  fi
 done
 
 log "Review passed"
+fi  # end of non-empty diff check
 
 # ─── Step 4: Codex adversarial review ────────────────────────────────
 log "CODEX REVIEW — $PLAN_NAME"
+DIFF=$(cd "$PROJECT_DIR" && git diff "$PRE_IMPL_SHA"..HEAD 2>/dev/null || echo "no diff")
+
+CODEX_EXIT=0
 if command -v codex &> /dev/null; then
-  cd "$PROJECT_DIR" && codex review 2>&1 || true
+  CODEX_OUTPUT=$(cd "$PROJECT_DIR" && codex review "${PRE_IMPL_SHA}..HEAD" 2>&1) || CODEX_EXIT=$?
 else
-  claude -p "Adversarial review: check this diff for auth bypass, data loss, race conditions, rollback safety, business logic errors.
+  CODEX_OUTPUT=$(cd "$PROJECT_DIR" && claude -p "Adversarial review: check this diff for auth bypass, data loss, race conditions, rollback safety, business logic errors.
 
 $DIFF" \
-    --project-dir "$PROJECT_DIR" \
     --model sonnet \
-    --max-turns 20 > /dev/null 2>&1 || true
+    --max-turns 20 \
+    --output-format text 2>&1) || CODEX_EXIT=$?
 fi
+
+log "Codex findings:"
+echo "$CODEX_OUTPUT"
 
 log "Codex review complete"
 
 # ─── Step 5: Create PR ───────────────────────────────────────────────
 log "CREATE PR — $PLAN_NAME"
-claude -p "Create a PR for plan $PLAN_PATH. Stage changes, write a conventional commit message, push a feature branch, create PR via gh. Output the PR URL." \
-  --project-dir "$PROJECT_DIR" \
+PR_EXIT=0
+PR_OUTPUT=$(cd "$PROJECT_DIR" && claude -p "Create a PR for plan $PLAN_PATH. Stage changes, write a conventional commit message, push a feature branch, create PR via gh. Output the PR URL." \
   --model sonnet \
-  --max-turns 15 2>&1 || true
+  --max-turns 15 \
+  --output-format text 2>&1) || PR_EXIT=$?
+log "PR creation output:"
+echo "$PR_OUTPUT"
 
 log "PIPELINE COMPLETE — $PLAN_NAME"
