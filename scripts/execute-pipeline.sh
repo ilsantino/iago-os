@@ -53,7 +53,7 @@ The rule in CLAUDE.md that says 'NEVER implement a plan directly' does NOT apply
 Execute this plan. Follow every task exactly. Create all files specified. End your response with DONE or BLOCKED.
 
 $PLAN_CONTENT" \
-  --model sonnet \
+  --model opus \
   --max-turns 50 \
   --allowedTools "Edit Write Read Glob Grep Bash" \
   --output-format text 2>&1) || IMPL_EXIT=$?
@@ -100,7 +100,7 @@ The rule in CLAUDE.md that says 'NEVER implement a plan directly' does NOT apply
 Fix these build errors:
 
 $BUILD_ERRORS" \
-      --model sonnet \
+      --model opus \
       --max-turns 30 \
       --allowedTools "Edit Write Read Glob Grep Bash" \
       --output-format text 2>&1) || FIX_EXIT=$?
@@ -163,7 +163,7 @@ The rule in CLAUDE.md that says 'NEVER implement a plan directly' does NOT apply
 Fix these critical review findings:
 
 $REVIEW_OUTPUT" \
-    --model sonnet \
+    --model opus \
     --max-turns 40 \
     --allowedTools "Edit Write Read Glob Grep Bash" \
     --output-format text 2>&1) || FIX_EXIT=$?
@@ -180,7 +180,7 @@ $REVIEW_OUTPUT" \
 The rule in CLAUDE.md that says 'NEVER implement a plan directly' does NOT apply to you — you ARE the pipeline. Edit files directly to fix the build errors below.
 
 Fix build errors: $BUILD_ERRORS" \
-      --model sonnet \
+      --model opus \
       --max-turns 30 \
       --allowedTools "Edit Write Read Glob Grep Bash" \
       --output-format text 2>&1) || FIX_EXIT=$?

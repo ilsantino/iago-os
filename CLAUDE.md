@@ -141,6 +141,7 @@ Detailed rules in `.claude/rules/`:
 
 Core: `/brainstorming`, `/writing-plans`, `/subagent-driven-development`, `/code-review`, `/deep-research`, `/prompt-optimizer`.
 Workflow: `/iago:init`, `/iago:discuss`, `/iago:plan`, `/iago:execute`, `/iago:verify`, `/iago:fast`, `/iago:quick`, `/iago:pause`.
+Post-review: `/iago:prfix` — fix all PR review comments, push, request re-review.
 Proprietary: `/iago:scaffold`, `/iago:proposal`, `/iago:onboard`, `/iago:n8n`, `/iago:agents`.
 See `.claude/rules/available-skills.md` for the complete catalog including content, experimental, and industry skills.
 
@@ -150,9 +151,12 @@ See `.claude/rules/available-skills.md` for the complete catalog including conte
 
 ## Model Routing
 
-- **Opus:** Orchestrator (main session) — planning, architecture, multi-file reasoning
-- **Sonnet:** Pipeline sessions (`claude -p`) — implementation, review, debugging
-- **Haiku:** Reserve for mechanical tasks (formatting, simple lookups) when needed
+- **Opus:** Orchestrator + all code-writing sessions (implementation, fix, debug)
+- **Sonnet:** Review sessions, PR creation, mechanical analysis
+- **Haiku:** Reserve for simple lookups when needed
 - **Codex (GPT-5.4):** Cross-model adversarial review via `codex review`, plus `/codex:rescue`
 
-Pipeline sessions use sonnet by default. The script handles model selection.
+Pipeline sessions use opus for implementation/fix, sonnet for review/PR. The
+orchestrator uses opus for agent dispatches that write code (fullstack, frontend,
+backend, debug, e2e profiles). Analyst profiles (review-single, review-full,
+schema) use sonnet unless security-critical.

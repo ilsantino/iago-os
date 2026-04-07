@@ -96,7 +96,7 @@ cd ../my-app && claude
 
 See [docs/SETUP.md](docs/SETUP.md) for detailed instructions (Windows + macOS).
 
-## Skills (32)
+## Skills (33)
 
 Skills are reusable workflows you invoke with `/skill-name` inside Claude Code. Each skill knows what steps to follow, which profiles to dispatch, what artifacts to produce, and what evidence to collect before reporting done.
 
@@ -111,8 +111,9 @@ These skills implement the full project lifecycle. Run them in order for structu
 | `/iago:plan` | Decomposes a phase into plans with 2-8 tasks each. Every task has a verification command. Self-reviews for gaps | After discuss, before execute | `research` (optional) |
 | `/iago:execute` | Wave analysis, profile dispatch per plan, build gate, 3-stage review pipeline, learnings extraction. The heavy lifter | When plans exist for a phase | Matching profile + review + `/codex:adversarial-review` |
 | `/iago:verify` | Goal-backward verification — checks every ROADMAP success criterion against evidence (test output, build, file existence). Opens PR if passed | After all plans in a phase are executed | None (orchestrator-direct) |
-| `/iago:quick` | One-shot path: lightweight plan → matching profile → review-single → done. Composable flags: `--discuss`, `--research`, `--verify` | Small standalone task (1-3 tasks) outside a ROADMAP phase | Matching profile + `review-single` |
+| `/iago:quick` | One-shot path: lightweight plan → full pipeline (implement → build gate → review → codex → PR). Composable flags: `--discuss`, `--research`, `--verify` | Small standalone task (1-3 tasks) outside a ROADMAP phase | Pipeline (same as `/iago:execute`) |
 | `/iago:fast` | Inline execution with atomic commit. No planning, no agents, no review | Trivial fix — 3 files or fewer, obvious change | None (inline) |
+| `/iago:prfix` | Fetches all PR review comments via `gh`, dispatches parallel agents to fix each, verifies, runs tests/linter, commits, pushes, and tags reviewer for re-review | After PR gets review comments | Matching profile per fix |
 | `/iago:pause` | Writes HANDOFF.json with workflow position, completed tasks, next action. Next session auto-resumes | Switching context, ending day, hitting a blocker | None |
 
 ### Workflow — Project Setup
@@ -225,34 +226,30 @@ Analysts can't edit files. Executors can't search the web. This is by design.
 
 ### Review Pipeline
 
-Code review has two modes depending on the config (`review.mode` in `.iago/config.json`):
-
-**Single-pass** (default for `/iago:quick`): The `review-single` profile does one pass — correctness, security, standards.
-
-**Full** (default for `/iago:execute`): Three-stage pipeline:
+Both `/iago:execute` and `/iago:quick` run the same `scripts/execute-pipeline.sh`. Every plan goes through 5 stages as separate `claude -p` sessions — no context bleed, no token burn in the orchestrator:
 
 ```mermaid
 flowchart LR
-    Impl[executor completes task] --> S1
-
-    S1[Stage 1: review-single] -->|pass| S2[Stage 2: review-full]
-    S1 -->|critical findings| Fix1[executor fixes]
-    Fix1 --> S1
-
-    S2 -->|pass| Codex[Stage 3: codex adversarial-review]
-    S2 -->|critical findings| Fix2[executor fixes]
-    Fix2 --> S2
-
-    Codex -->|pass| Done[Approved]
-    Codex -->|critical findings| Fix3[executor fixes]
-    Fix3 --> S1
+    Plan[Plan file] --> Impl[1. Implement — Opus]
+    Impl --> Build[2. Build gate — tsc + vite]
+    Build -->|fail| Fix[Fix — Opus]
+    Fix --> Build
+    Build -->|pass| Review[3. Review — Sonnet]
+    Review -->|critical| Fix2[Fix — Opus]
+    Fix2 --> Build
+    Review -->|pass| Codex[4. Codex — GPT-5.4]
+    Codex --> PR[5. Create PR — Sonnet]
+    PR --> Summary[6. Write summary]
 ```
 
-1. **Stage 1 — Spec review:** `review-single` checks if the implementation matches the plan
-2. **Stage 2 — Quality review:** `review-full` checks performance, security, maintainability
-3. **Stage 3 — Cross-model (mandatory):** `/codex:adversarial-review` sends every diff to GPT-5.4 — a different model catches different blind spots
+1. **Implement (Opus):** Writes code from the plan, constrained to Edit/Write/Read/Glob/Grep/Bash
+2. **Build gate:** `tsc --noEmit && vite build` — max 2 retries with Opus fix sessions
+3. **Review (Sonnet):** Checks diff against plan — Critical/Important/Minor findings
+4. **Codex adversarial (GPT-5.4):** Cross-model review for auth bypass, data loss, race conditions
+5. **Create PR (Sonnet):** Stages, commits, pushes feature branch, creates PR via `gh`
+6. **Write summary:** Persists result to `.iago/summaries/` for `/iago:verify`
 
-If any stage returns Critical findings, the orchestrator routes back to the executor for fixes before proceeding.
+Critical findings trigger automatic fix (Opus) → rebuild → re-review (max 2 rounds).
 
 ### Capability Modules (13)
 
@@ -280,20 +277,20 @@ Pre-composed base + capability combinations. The orchestrator selects the right 
 
 | Profile | Base | Capabilities | Model | When dispatched |
 |---------|------|-------------|-------|-----------------|
-| `fullstack` | executor | react-19, dynamodb, lambda, tdd, forms, animation | auto | Task touches both `src/` and `amplify/` (also the fallback) |
-| `frontend` | executor | react-19, tdd, forms, animation | auto | Task only touches `src/` — no backend changes |
-| `backend` | executor | dynamodb, lambda, cognito, tdd | auto | Task only touches `amplify/` — no frontend changes |
-| `review-single` | analyst | security, review-spec, review-quality | auto | Default review after implementation (`review.mode: "single"`) |
-| `review-full` | analyst | security, review-spec, review-quality | auto | Two-stage gated review (`review.mode: "full"`) — Stage 1 must pass before Stage 2 |
+| `fullstack` | executor | react-19, dynamodb, lambda, tdd, forms, animation | opus | Task touches both `src/` and `amplify/` (also the fallback) |
+| `frontend` | executor | react-19, tdd, forms, animation | opus | Task only touches `src/` — no backend changes |
+| `backend` | executor | dynamodb, lambda, cognito, tdd | opus | Task only touches `amplify/` — no frontend changes |
+| `review-single` | analyst | security, review-spec, review-quality | sonnet | Default review after implementation (`review.mode: "single"`) |
+| `review-full` | analyst | security, review-spec, review-quality | sonnet | Two-stage gated review (`review.mode: "full"`) — Stage 1 must pass before Stage 2 |
 | `security-audit` | analyst | security, cognito, review-quality | opus | Auth, payment, or data-access changes — always Opus, never downgraded |
 | `research` | operator | dynamic (context-dependent) | sonnet | `/deep-research`, `--research` flag on plan/quick skills |
-| `e2e` | executor | e2e, react-19 | sonnet | Writing or updating Playwright E2E tests |
+| `e2e` | executor | e2e, react-19 | opus | Writing or updating Playwright E2E tests |
 | `infra` | operator | infra | sonnet | AWS CLI, Amplify Gen 2 deployments, sandbox management |
 | `schema` | analyst | dynamodb | sonnet | DynamoDB schema design (evaluates single vs multi-table), access pattern analysis |
 | `content` | operator | content | sonnet | Articles, proposals, investor materials, outreach |
-| `debug` | executor | dynamic (context-dependent) | auto | Build/typecheck/lint failures — capabilities selected based on error context |
+| `debug` | executor | dynamic (context-dependent) | opus | Build/typecheck/lint failures — capabilities selected based on error context |
 
-## Hooks (9)
+## Hooks (8)
 
 Hooks are automatic behaviors wired in `.claude/settings.json`. They fire on Claude Code lifecycle events — you never invoke them manually.
 
@@ -302,7 +299,6 @@ Hooks are automatic behaviors wired in `.claude/settings.json`. They fire on Cla
 | Hook | Fires on | What it does | Why it matters |
 |------|----------|-------------|----------------|
 | `context-persistence` | Session start, pre-compact, stop | Saves a session snapshot before context compression. Restores the previous session's state on startup. Loads HANDOFF.json if `/iago:pause` was used | Every conversation picks up where the last one left off — no re-explaining the project |
-| ~~`context-monitor`~~ | *(removed)* | Was designed to warn at 70%/90% context fill, but Claude Code doesn't expose context % to hooks. The `PreCompact` event is the real signal — `context-persistence` handles it | — |
 | `usage-tracker` | After skill/agent use, session stop | Logs every skill invocation and agent dispatch to `.iago/state/usage-log.jsonl`. Writes a session summary at stop (duration, skills used, agents dispatched) | Feeds the usage report script and future dashboard |
 
 ### Safety & Quality

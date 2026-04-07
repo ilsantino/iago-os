@@ -17,9 +17,10 @@
 		"mode": "single"
 	},
 	"routing": {
-		"default_model": "auto",
+		"default_model": "opus",
 		"security_critical": "opus",
-		"retry_upgrade": true,
-		"review_matches_impl": true
+		"code_writing": "opus",
+		"review_analysis": "sonnet",
+		"mechanical": "sonnet"
 	}
 }
