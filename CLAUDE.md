@@ -28,10 +28,10 @@ Stack is fixed — do not suggest alternatives unless explicitly asked.
 
 ## Architecture
 
+- **AWS is mandatory for all backend.** No CloudFormation templates, no raw CDK stacks, no serverless framework. Use Amplify Gen 2 exclusively: `defineBackend`, `defineAuth`, `defineData`, `defineFunction`. Amplify Gen 2 manages CloudFormation under the hood — never create CF templates directly.
 - DynamoDB — evaluate single-table vs multi-table per project (see dynamodb capability for decision criteria). Access patterns drive schema, not entity relationships
 - Lambda: thin handler wrappers calling domain logic modules
 - Cognito JWT validation in API Gateway authorizer, not in Lambda handlers
-- Amplify Gen 2: `defineBackend`, `defineAuth`, `defineData`, `defineFunction`
 - TanStack Query for server state, React Context for UI state only
 - Feature folders: `src/features/{name}/` with components, hooks, api, types
 - No ORMs — DynamoDB DocumentClient with typed helpers
@@ -45,44 +45,40 @@ Artifacts: `.iago/plans/`, `.iago/context/`, `.iago/summaries/`, `.iago/reviews/
 STATE.md is a digest — keep under 80 lines. Overflow decisions to PROJECT.md.
 Pause: `/iago:pause`. Resume is automatic on next session start.
 
-## Mandatory Execution Path (BLOCKING)
+## Execution Path
 
 **NEVER implement a plan, spec, or task by directly editing code.** All implementation
 MUST go through the execution skill that matches the scope:
 
-| Scope | Skill | Review pipeline |
-|-------|-------|-----------------|
-| ROADMAP phase (1+ plans) | `/iago:execute {slug}` | Full 3-stage |
-| Standalone plan (1-3 tasks) | `/iago:quick {desc}` | Full 3-stage |
-| Multi-task plan (outside ROADMAP) | `/subagent-driven-development` | Full 3-stage |
+| Scope | Skill | Review |
+|-------|-------|--------|
+| ROADMAP phase (1+ plans) | `/iago:execute {slug}` | Automatic 3-stage |
+| Standalone plan (1-3 tasks) | `/iago:quick {desc}` | Automatic 3-stage |
+| Multi-task plan (outside ROADMAP) | `/subagent-driven-development` | Automatic 3-stage |
 | Trivial fix (≤3 files, obvious) | `/iago:fast {desc}` | Build gate only |
 
-**You MUST invoke the Skill tool to load the skill.** Reading the plan file and
-implementing it yourself is a critical workflow violation — even if you "know" what
-to do. The skill orchestrates agent dispatch, build gates, and the review pipeline.
-Without it, reviews are skipped and bugs ship.
+If the user says "execute plan X" or "implement this", invoke the matching skill via
+the Skill tool. Not read files. Not create tasks. Invoke the skill.
 
-If the user says "execute plan X" or "implement this", your FIRST action is to invoke
-the matching skill via the Skill tool. Not read files. Not create tasks. Invoke the skill.
+## Automatic Review Pipeline
 
-## Mandatory Review Pipeline (3-stage, non-negotiable)
+The 3-stage review pipeline runs automatically after every implementation dispatch.
+You do not invoke it, request it, or think about it. It just happens.
 
-Every plan that produces code changes MUST pass all 3 stages before a PR is created.
-No exceptions. No "I'll review later." No skipping stages because the build passes.
-
-**Stage 1 — Spec review:** `review-full` profile checks implementation matches the plan.
+**Stage 1 — Spec review:** `review-full` checks implementation matches the plan.
 **Stage 2 — Quality review:** Same profile checks performance, security, maintainability.
-**Stage 3 — Cross-model:** `/codex:adversarial-review` sends diff to GPT-5.4 for auth,
-data-loss, race-condition, and business-logic review. A different model catches different
-blind spots.
+**Stage 3 — Cross-model:** `/codex:adversarial-review` (GPT-5.4) — automatic, every plan.
 
-The pipeline also requires:
-- **Build gate before review:** `npm run type-check && npm run build` must pass.
-- **Critical findings → fix → re-review:** Max 2 fix rounds, then escalate.
-- **Summary artifact:** `.iago/summaries/{plan}.md` written after pipeline completes.
-- **Learnings extraction:** Review patterns logged to `.iago/learnings/patterns.md`.
+Also automatic:
+- Build gate before review (`tsc --noEmit` + `vite build`)
+- Critical findings → fix → re-review (max 2 rounds)
+- Summary artifact written to `.iago/summaries/`
+- Learnings extracted to `.iago/learnings/patterns.md`
 
-See `.claude/rules/execution-pipeline.md` for the full pipeline specification.
+**To skip:** Only with explicit `--skip-review` flag or by using `/iago:fast`.
+The user must consciously opt out. The system never skips on its own.
+
+See `.claude/rules/execution-pipeline.md` for the full specification.
 
 ## Learnings
 

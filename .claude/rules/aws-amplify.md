@@ -7,7 +7,12 @@ globs:
   - "infra/**"
 ---
 
-## Amplify Gen 2
+## Amplify Gen 2 (MANDATORY)
+
+**All backend infrastructure MUST use Amplify Gen 2.** Never create raw CloudFormation
+templates, CDK stacks, SAM templates, or Serverless Framework configs. Amplify Gen 2
+manages CloudFormation under the hood — let it. Creating CF templates directly is a
+violation of the architecture.
 
 - Define resources with TypeScript: `defineBackend`, `defineAuth`, `defineData`, `defineFunction`
 - Backend definition in `amplify/backend.ts` — single entry point
@@ -15,6 +20,7 @@ globs:
 - Data in `amplify/data/resource.ts` — AppSync/DynamoDB schema
 - Functions in `amplify/functions/{name}/handler.ts` — one directory per Lambda
 - Use `amplify sandbox` for local development — creates isolated cloud sandbox
+- If you need custom AWS resources not covered by Amplify, use `defineBackend` with `backend.addOutput()` — still within Amplify, not separate CF
 
 ## DynamoDB
 

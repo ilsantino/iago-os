@@ -1,29 +1,34 @@
-## Execution Pipeline (MANDATORY)
+## Execution Pipeline (AUTOMATIC)
 
-This rule is non-negotiable. Violating it ships unreviewed code to clients.
+The review pipeline runs automatically after every implementation dispatch.
+No one invokes it. No one remembers to run it. It just happens.
 
-### The Problem This Solves
+### How It Works
 
-Claude reads a plan, implements the code, runs `npm run build`, and creates a PR —
-skipping all review stages. The build passing does NOT mean the code is correct.
-Build gates catch syntax errors. Reviews catch logic errors, security holes, spec
-drift, and architectural mistakes. Codex catches blind spots that Claude misses.
+Every execution skill (`/iago:execute`, `/iago:quick`, `/subagent-driven-development`)
+has the 3-stage review pipeline built in. After the implementation agent returns DONE:
+
+1. Build gate runs automatically
+2. Review dispatches automatically
+3. Codex adversarial review dispatches automatically
+4. Summary and learnings are written automatically
+
+The only way to skip this is an explicit `--skip-review` flag or using `/iago:fast`.
+The system never skips on its own.
 
 ### Rule: Skill Invocation Is Required
 
 When a plan, spec, or task exists that requires code changes:
 
-1. **Invoke the skill FIRST** — Use the Skill tool to load `/iago:execute`,
-   `/iago:quick`, or `/subagent-driven-development`. The skill file contains
-   the orchestration logic for dispatch, build gates, reviews, and PR creation.
+1. **Invoke the skill** — Use the Skill tool to load `/iago:execute`,
+   `/iago:quick`, or `/subagent-driven-development`. The review pipeline is
+   built into these skills. Invoking the skill = reviews happen automatically.
 
-2. **Do NOT read the plan and implement it yourself.** Even if you have all the
-   context. Even if it seems faster. Even if the user is in a hurry. The skill
-   dispatches agents with fresh context, proper profiles, and capability modules.
-   You implementing directly means zero review coverage.
+2. **Do NOT read the plan and implement it yourself.** You implementing directly
+   means the automatic pipeline never triggers. Zero review coverage.
 
-3. **The only exception is `/iago:fast`** — for trivial fixes (<=3 files, obvious
-   change). Even then, a build gate is mandatory.
+3. **`/iago:fast`** is the only path that skips review — for trivial fixes
+   (<=3 files, obvious change). Build gate still runs.
 
 ### Detecting the Violation
 
@@ -33,11 +38,9 @@ If you notice yourself doing any of these WITHOUT having invoked an execution sk
 - Calling Edit/Write on implementation files referenced in a plan
 - Running `npm run build` as your only quality gate
 
-**STOP IMMEDIATELY.** You are bypassing the pipeline. Invoke the skill.
+**STOP.** You are bypassing the automatic pipeline. Invoke the skill.
 
-### The 3-Stage Review Pipeline
-
-After implementation and build gate pass, ALL THREE stages must run:
+### The 3-Stage Review Pipeline (automatic)
 
 #### Stage 1 + 2: Internal Review (spec + quality)
 
