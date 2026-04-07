@@ -226,30 +226,34 @@ Analysts can't edit files. Executors can't search the web. This is by design.
 
 ### Review Pipeline
 
-Both `/iago:execute` and `/iago:quick` run the same `scripts/execute-pipeline.sh`. Every plan goes through 5 stages as separate `claude -p` sessions — no context bleed, no token burn in the orchestrator:
+Both `/iago:execute` and `/iago:quick` run the same `scripts/execute-pipeline.sh`. Every plan goes through 6 local stages as separate `claude -p` sessions, then an async GitHub Action review-fix loop — no context bleed, no token burn in the orchestrator:
 
 ```mermaid
 flowchart LR
-    Plan[Plan file] --> Impl[1. Implement — Opus]
+    Plan[Plan file] --> Impl[1. Implement — Sonnet]
     Impl --> Build[2. Build gate — tsc + vite]
-    Build -->|fail| Fix[Fix — Opus]
+    Build -->|fail| Fix[Fix — Sonnet]
     Fix --> Build
     Build -->|pass| Review[3. Review — Sonnet]
-    Review -->|critical| Fix2[Fix — Opus]
+    Review -->|critical| Fix2[Fix — Sonnet]
     Fix2 --> Build
     Review -->|pass| Codex[4. Codex — GPT-5.4]
     Codex --> PR[5. Create PR — Sonnet]
-    PR --> Summary[6. Write summary]
+    PR --> Tag[5b. Tag @claude]
+    Tag --> Summary[6. Summary]
+    Tag -.->|async| GHA[GitHub Action review-fix loop]
 ```
 
-1. **Implement (Opus):** Writes code from the plan, constrained to Edit/Write/Read/Glob/Grep/Bash
-2. **Build gate:** `tsc --noEmit && vite build` — max 2 retries with Opus fix sessions
+1. **Implement (Sonnet):** Writes code from the plan, constrained to Edit/Write/Read/Glob/Grep/Bash
+2. **Build gate:** `tsc --noEmit && vite build` — max 2 retries with Sonnet fix sessions
 3. **Review (Sonnet):** Checks diff against plan — Critical/Important/Minor findings
 4. **Codex adversarial (GPT-5.4):** Cross-model review for auth bypass, data loss, race conditions
 5. **Create PR (Sonnet):** Stages, commits, pushes feature branch, creates PR via `gh`
-6. **Write summary:** Persists result to `.iago/summaries/` for `/iago:verify`
+5b. **Tag @claude:** Haiku synthesizes review request, posts on PR
+6. **Summary:** Persists result to `.iago/summaries/` for `/iago:verify`
 
-Critical findings trigger automatic fix (Opus) → rebuild → re-review (max 2 rounds).
+Critical findings trigger automatic fix → rebuild → re-review (max 2 rounds).
+After PR creation, `claude-review-fix.yml` handles the async fix loop: Claude reviews → fix Action → push → re-tag → repeat until clean (max 5 rounds). Human reviews and merges.
 
 ### Capability Modules (13)
 

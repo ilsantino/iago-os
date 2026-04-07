@@ -10,7 +10,7 @@ description: >-
 
 Lightweight one-shot execution path for standalone tasks that don't warrant the
 full workflow. Produces a plan, then runs it through `scripts/execute-pipeline.sh`
-for the full 5-stage pipeline (implement → build gate → review → codex → PR).
+for the full pipeline (implement → build → review → codex → PR → tag @claude → summary).
 
 ## When to Use
 
@@ -100,12 +100,16 @@ Run:
 bash scripts/execute-pipeline.sh --plan .iago/plans/quick-{YYMMDD}-{slug}.md --project-dir {project-dir}
 ```
 
-This runs the full 5-stage pipeline as separate `claude -p` sessions:
-1. **Implement** — writes code from the plan (sonnet, `--allowedTools` constrained)
-2. **Build gate** — `tsc --noEmit && vite build` (max 2 retries with fix sessions)
+This runs the full pipeline as separate `claude -p` sessions:
+1. **Implement** — writes code from the plan
+2. **Build gate** — `tsc --noEmit && vite build` (max 2 retries)
 3. **Review** — checks diff against plan (Critical/Important/Minor)
-4. **Codex adversarial** — auth bypass, data loss, race conditions, business logic
-5. **Create PR** — stages, commits, pushes feature branch, creates PR via `gh`
+4. **Codex adversarial** — auth bypass, data loss, race conditions
+5. **Create PR** — stages, commits, pushes, creates PR via `gh`
+5b. **Tag @claude** — posts review request on PR
+6. **Summary** — writes results to `.iago/summaries/`
+
+Review-fix loop runs async via GitHub Action (`claude-review-fix.yml`).
 
 Critical findings trigger automatic fix → rebuild → re-review (max 2 rounds).
 If the pipeline fails, report the error to the user. Do not retry manually.

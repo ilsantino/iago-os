@@ -41,7 +41,7 @@ description: >-
 - `/iago:execute` — Wave analysis, dispatch profile per plan, review after
 - `/iago:verify` — Goal-backward verification, ship PR if passed
 - `/iago:fast` — Inline trivial tasks (<=3 files), atomic commit, STATE.md log
-- `/iago:quick` — Lightweight plan -> pipeline (full 5-stage review)
+- `/iago:quick` — Lightweight plan -> pipeline (full review + async fix loop)
 - `/iago:pause` — Write HANDOFF.json to state/
 - `/iago:scaffold` — Scaffold new client project from iaGO template (React 19 + Vite + AWS)
 - `/iago:proposal` — Generate client proposal (scope, timeline, cost, tech approach)
