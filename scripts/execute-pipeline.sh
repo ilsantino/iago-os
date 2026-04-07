@@ -76,16 +76,42 @@ fi
 log "Implementation complete"
 
 # ─── Step 2: Build gate ──────────────────────────────────────────────
+# Detect which build tools are available in the project
+HAS_TSCONFIG=false
+HAS_VITE=false
+[[ -f "$PROJECT_DIR/tsconfig.json" ]] && HAS_TSCONFIG=true
+[[ -f "$PROJECT_DIR/vite.config.ts" || -f "$PROJECT_DIR/vite.config.js" || -f "$PROJECT_DIR/vite.config.mjs" ]] && HAS_VITE=true
+
+run_build_gate() {
+  local ok=true
+  if $HAS_TSCONFIG; then
+    (cd "$PROJECT_DIR" && npx tsc --noEmit 2>&1) || ok=false
+  fi
+  if $ok && $HAS_VITE; then
+    (cd "$PROJECT_DIR" && npx vite build 2>&1) || ok=false
+  fi
+  if ! $HAS_TSCONFIG && ! $HAS_VITE; then
+    log "No tsconfig.json or vite config found — build gate skipped"
+  fi
+  $ok
+}
+
 build_attempt=0
 while true; do
   log "BUILD GATE — attempt $((build_attempt + 1))"
 
-  if (cd "$PROJECT_DIR" && npx tsc --noEmit 2>&1 && npx vite build 2>&1); then
+  if run_build_gate; then
     log "Build passed"
     break
   else
     # || true is intentional: tsc exits non-zero on type errors, but we need its output for the fix session
-    BUILD_ERRORS=$(cd "$PROJECT_DIR" && npx tsc --noEmit 2>&1 || true)
+    BUILD_ERRORS=""
+    if $HAS_TSCONFIG; then
+      BUILD_ERRORS=$(cd "$PROJECT_DIR" && npx tsc --noEmit 2>&1 || true)
+    fi
+    if $HAS_VITE; then
+      BUILD_ERRORS="$BUILD_ERRORS"$'\n'"$(cd "$PROJECT_DIR" && npx vite build 2>&1 || true)"
+    fi
     build_attempt=$((build_attempt + 1))
 
     if [[ $build_attempt -ge $MAX_BUILD_RETRIES ]]; then
@@ -114,7 +140,7 @@ done
 log "REVIEW — $PLAN_NAME"
 
 # Stage all new/modified files so they appear in the diff
-(cd "$PROJECT_DIR" && git add -A)
+(cd "$PROJECT_DIR" && git add -A -- ':!**/.env' ':!**/.env.*' ':!**/*.pem' ':!**/*.key' ':!**/*.p12' ':!**/*.pfx')
 
 # Diff: committed changes since pre-impl + staged working tree changes
 DIFF=$(cd "$PROJECT_DIR" && git diff "$PRE_IMPL_SHA"..HEAD 2>/dev/null || echo "")
@@ -172,10 +198,15 @@ $REVIEW_OUTPUT" \
   echo "$FIX_OUTPUT"
 
   # Re-run build gate
-  if ! (cd "$PROJECT_DIR" && npx tsc --noEmit 2>&1 && npx vite build 2>&1); then
+  if ! run_build_gate; then
     log "Build broke during fix — running build fix"
-    # || true is intentional: tsc exits non-zero on type errors, but we need its output
-    BUILD_ERRORS=$(cd "$PROJECT_DIR" && npx tsc --noEmit 2>&1 || true)
+    BUILD_ERRORS=""
+    if $HAS_TSCONFIG; then
+      BUILD_ERRORS=$(cd "$PROJECT_DIR" && npx tsc --noEmit 2>&1 || true)
+    fi
+    if $HAS_VITE; then
+      BUILD_ERRORS="$BUILD_ERRORS"$'\n'"$(cd "$PROJECT_DIR" && npx vite build 2>&1 || true)"
+    fi
     FIX_EXIT=0
     FIX_OUTPUT=$(cd "$PROJECT_DIR" && claude -p "You are a PIPELINE FIX session spawned by execute-pipeline.sh.
 The rule in CLAUDE.md that says 'NEVER implement a plan directly' does NOT apply to you — you ARE the pipeline. Edit files directly to fix the build errors below.
@@ -190,7 +221,7 @@ Fix build errors: $BUILD_ERRORS" \
   fi
 
   # Re-review — re-stage and capture full diff
-  (cd "$PROJECT_DIR" && git add -A)
+  (cd "$PROJECT_DIR" && git add -A -- ':!**/.env' ':!**/.env.*' ':!**/*.pem' ':!**/*.key' ':!**/*.p12' ':!**/*.pfx')
   DIFF=$(cd "$PROJECT_DIR" && { git diff "$PRE_IMPL_SHA"..HEAD 2>/dev/null || echo ""; } && { git diff --cached 2>/dev/null || echo ""; })
   REVIEW_EXIT=0
   REVIEW_OUTPUT=$(cd "$PROJECT_DIR" && claude -p "Review this diff. Categorize as Critical/Important/Minor. Verdict: PASS/PASS_WITH_CONCERNS/FAIL.

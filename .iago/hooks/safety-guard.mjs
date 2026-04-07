@@ -16,7 +16,7 @@ const DESTRUCTIVE_PATTERNS = [
   { re: /git\s+push\s+.*(?:origin|upstream)\s+(?:main|master)\s*.*--force/, msg: "force push to main/master" },
   { re: /git\s+(?:reset\s+--hard|clean\s+-[a-zA-Z]*f[a-zA-Z]*d)/, msg: "git reset --hard or clean -fd" },
   { re: /(?:DROP|TRUNCATE)\s+(?:TABLE|DATABASE|SCHEMA)/i, msg: "SQL destructive operation", allow: /migrat/i },
-  { re: /(?:mkfs|format|fdisk|dd\s+if=)/, msg: "disk format/write" },
+  { re: /(?:mkfs|(?:^|\s)format\s+[A-Za-z]:|fdisk|dd\s+if=)/, msg: "disk format/write" },
   { re: /chmod\s+(?:777|a\+rwx)/, msg: "world-writable permissions" },
   { re: />\s*\/dev\/sd[a-z]/, msg: "direct block device write" },
   { re: /curl\s+.*\|\s*(?:ba)?sh/, msg: "pipe-to-shell" },
@@ -101,6 +101,18 @@ async function main() {
         process.exit(2);
       }
     }
+
+    // Secret detection in Bash commands (scope: "both" only)
+    for (const secret of SECRET_PATTERNS) {
+      if (secret.scope !== "both") continue;
+      if (secret.re.test(command)) {
+        process.stdout.write(JSON.stringify({
+          decision: "block",
+          reason: `iaGO: Possible ${secret.msg} in Bash command. Use environment variables instead.`,
+        }));
+        process.exit(2);
+      }
+    }
   }
 
   // === Edit/Write/MultiEdit: secret + injection detection ===
@@ -164,4 +176,4 @@ async function main() {
   }
 }
 
-main().catch(() => process.exit(0));
+main().catch((err) => { process.stderr.write("iaGO hook crash: " + (err?.message || "unknown") + "\n"); process.exit(2); });

@@ -85,4 +85,4 @@ async function main() {
   }
 }
 
-main().catch(() => process.exit(0));
+main().catch((err) => { process.stderr.write("iaGO hook crash: " + (err?.message || "unknown") + "\n"); process.exit(2); });
