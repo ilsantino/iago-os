@@ -1,7 +1,7 @@
 ## Execution Pipeline
 
 The review pipeline is enforced by `scripts/execute-pipeline.sh`. Every plan
-goes through 7 stages as separate `claude -p` sessions. No shortcuts.
+goes through 6 local stages + async GitHub review-fix loop. No shortcuts.
 
 ### How It Works
 
@@ -50,16 +50,15 @@ scripts/execute-pipeline.sh --plan {path} --project-dir {dir}
 5. CREATE PR — claude -p stages, commits, pushes, creates PR via gh
   |
   v
-5b. TAG @CLAUDE — post review request on PR (fallback: gh pr view by branch)
+5b. TAG @CLAUDE — haiku synthesizes review request, posts on PR
   |
   v
-6. REVIEW-FIX LOOP — delegates to review-fix-loop.sh:
-  |  poll for @claude response → fix all comments → build gate →
-  |  push → re-tag → repeat (max 5 rounds, 15 min poll timeout)
-  |  exits on: APPROVED, clean review, max rounds, or BLOCKED
-  |  also used by /iago:prfix (with --skip-initial-poll --skip-initial-tag)
-  v
-7. SUMMARY — write pipeline results to .iago/summaries/
+6. SUMMARY — write pipeline results to .iago/summaries/
+
+  ── async (GitHub Actions) ──────────────────────────────
+  claude.yml: @claude tag triggers Claude Code Action review
+  claude-review-fix.yml: when claude[bot] posts findings,
+    auto-fix → build → push → re-tag (max 5 rounds)
 ```
 
 ### Handling Findings

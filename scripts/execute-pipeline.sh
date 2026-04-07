@@ -298,17 +298,11 @@ else
   log "ERROR: Could not determine PR URL — @claude review tag was NOT posted. Check PR manually."
 fi
 
-# ─── Step 6: Review-fix loop (delegates to review-fix-loop.sh) ───────
-if [[ -n "${PR_NUMBER:-}" ]]; then
-  log "Launching review-fix loop for PR #$PR_NUMBER"
-  "$SCRIPT_DIR/review-fix-loop.sh" --pr "$PR_NUMBER" --project-dir "$PROJECT_DIR" || {
-    log "WARNING: Review-fix loop exited non-zero — check PR manually"
-  }
-else
-  log "WARNING: No PR number — skipping review-fix loop"
-fi
+# Review-fix loop is handled by GitHub Action (claude-review-fix.yml).
+# After @claude responds, the Action detects findings and auto-fixes.
+# No local polling needed.
 
-# ─── Step 7: Write summary ────────────────────────────────────────────
+# ─── Step 6: Write summary ────────────────────────────────────────────
 log "SUMMARY — $PLAN_NAME"
 SUMMARY_DIR="$PROJECT_DIR/.iago/summaries"
 mkdir -p "$SUMMARY_DIR"

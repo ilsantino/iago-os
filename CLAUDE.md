@@ -83,8 +83,11 @@ runs the script for each plan, every step is a separate `claude -p` session:
 3. **Review** — fresh session checks diff against plan (Critical/Important/Minor)
 4. **Codex adversarial** — `codex review` or fresh session checks auth, data loss, races
 5. **Create PR** — fresh session stages, commits, pushes, creates PR via `gh`
-6. **Review-fix loop** — tag @claude → poll for review → fix all comments → build gate → push → re-tag → repeat until approved (max 5 rounds)
-7. **Summary** — write pipeline results to `.iago/summaries/`
+5b. **Tag @claude** — haiku synthesizes review request, posts on PR
+6. **Summary** — write pipeline results to `.iago/summaries/`
+
+After the pipeline completes, the review-fix loop runs **async via GitHub Actions**:
+`claude.yml` handles @claude review, `claude-review-fix.yml` auto-fixes findings and re-tags (max 5 rounds).
 
 Critical findings → fix → rebuild → re-review (max 2 rounds). Non-critical → logged.
 
