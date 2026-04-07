@@ -1,0 +1,119 @@
+name: Claude Review Fix Loop
+
+# Triggered by claude[bot] posting review findings on a PR.
+# Fixes all findings via Claude Code, pushes, then github-actions[bot]
+# tags @claude for another review. This routes back through claude.yml
+# (review) instead of re-triggering this workflow.
+#
+# Loop: claude.yml (review) → findings → this (fix) → tag @claude → claude.yml
+# Breaks when: claude[bot] posts clean comment, or max 5 rounds.
+
+on:
+  issue_comment:
+    types: [created]
+
+jobs:
+  fix:
+    # Only when claude[bot] comments on a PR with actionable findings
+    if: |
+      github.event.issue.pull_request &&
+      github.event.comment.user.login == 'claude[bot]' &&
+      !contains(github.event.comment.body, 'No issues found') &&
+      !contains(github.event.comment.body, 'LGTM') &&
+      !contains(github.event.comment.body, 'looks good') &&
+      !contains(github.event.comment.body, 'no concerns') &&
+      !contains(github.event.comment.body, 'no issues') &&
+      !contains(github.event.comment.body, '[review-fix-loop]') &&
+      !contains(github.event.comment.body, 'approved')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+      id-token: write
+    steps:
+      - name: Get PR info and check round limit
+        id: pr
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const MAX_ROUNDS = 5;
+            const prNumber = context.issue.number;
+
+            const { data: pr } = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: prNumber,
+            });
+            core.setOutput('head_ref', pr.head.ref);
+
+            // Count fix rounds by github-actions[bot] re-tag comments
+            const comments = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: prNumber,
+            });
+            const retagComments = comments.data.filter(c =>
+              c.user.login === 'github-actions[bot]' &&
+              c.body.includes('[review-fix-loop]')
+            );
+            const round = retagComments.length + 1;
+            core.info(`Fix round ${round}/${MAX_ROUNDS}`);
+
+            if (round > MAX_ROUNDS) {
+              core.setOutput('skip', 'true');
+            } else {
+              core.setOutput('skip', 'false');
+              core.setOutput('round', round.toString());
+            }
+
+      - name: Post max-rounds notice
+        if: steps.pr.outputs.skip == 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: '[review-fix-loop] Max rounds (5) reached. Manual review required.'
+            });
+
+      - uses: actions/checkout@v4
+        if: steps.pr.outputs.skip != 'true'
+        with:
+          ref: ${{ steps.pr.outputs.head_ref }}
+          fetch-depth: 0
+
+      - name: Fix review findings
+        if: steps.pr.outputs.skip != 'true'
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          claude_args: "--max-turns 50"
+          custom_instructions: |
+            You are a review-fix agent. Round ${{ steps.pr.outputs.round }}/5.
+
+            The last review found issues on this PR. Fix ALL of them.
+            Read the review comment, identify every actionable finding, fix the code,
+            verify the changes are correct, and push.
+
+            Do NOT skip any finding regardless of severity. If you cannot fix something,
+            explain why in a comment instead of silently skipping it.
+
+            Do NOT post a comment tagging @claude — a separate workflow step handles that.
+
+      # Re-tag @claude from github-actions[bot] so it routes through claude.yml
+      # (review), not back through this fix workflow.
+      - name: Tag @claude for re-review
+        if: steps.pr.outputs.skip != 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const round = '${{ steps.pr.outputs.round }}';
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: `[review-fix-loop] @claude Review again. Fixes pushed for round ${round}. General pass for anything unexpected.`
+            });
