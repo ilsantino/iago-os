@@ -263,23 +263,36 @@ fi
 if [[ -n "$PR_URL" ]]; then
   PR_NUMBER=$(echo "$PR_URL" | grep -oE '[0-9]+$')
   log "TAGGING @claude on PR #$PR_NUMBER"
-  # Extract plan goal (first paragraph after ## Goal heading)
-  PLAN_GOAL=$(echo "$PLAN_CONTENT" | sed -n '/^## Goal/,/^##/{/^## Goal/d;/^##/d;p;}' | head -5)
-  # Build focused review prompt from pipeline context
-  CLAUDE_REVIEW_BODY=$(cat <<REVIEW_EOF
-@claude Review this PR. Focus on:
 
-**Plan goal:** ${PLAN_GOAL:-"See $PLAN_PATH"}
+  # Use a short claude session to write a natural-language review request
+  # from the pipeline context — not a grep-assembled template
+  TAG_EXIT=0
+  CLAUDE_REVIEW_BODY=$(claude -p "Write a GitHub PR review request comment. Output ONLY the comment text, nothing else.
 
-**Codex flagged these risks — verify they are addressed or acceptably deferred:**
-$(echo "$CODEX_OUTPUT" | grep -E '^\- \[P[0-9]\]' | head -5)
+Format:
+- First line: @claude Please review this PR thoroughly.
+- Blank line, then 1-2 sentences summarizing what this PR does (plain language).
+- Blank line, then 'Watch for:' followed by a conversational paragraph of specific things to check — synthesize from the context below into natural language. No bullet points, no markdown headers, no structured formatting. Write like you're briefing a colleague.
 
-**Review stage found:**
-$(echo "$REVIEW_OUTPUT" | grep -E '(Critical|Important)' | head -5)
+Context to synthesize from:
 
-Check correctness of the implementation against the plan goal. Flag anything that could break in production.
-REVIEW_EOF
-)
+Plan ($PLAN_PATH):
+$PLAN_CONTENT
+
+Review stage output (spec deviations already caught):
+$REVIEW_OUTPUT
+
+Codex adversarial output (production risks flagged):
+$CODEX_OUTPUT" \
+    --model haiku \
+    --max-turns 1 \
+    --output-format text 2>&1) || TAG_EXIT=$?
+
+  if [[ $TAG_EXIT -ne 0 ]] || [[ -z "$CLAUDE_REVIEW_BODY" ]]; then
+    log "WARNING: Failed to generate review comment — using fallback"
+    CLAUDE_REVIEW_BODY="@claude Please review this PR thoroughly. This implements plan $PLAN_PATH."
+  fi
+
   (cd "$PROJECT_DIR" && gh pr comment "$PR_NUMBER" --body "$CLAUDE_REVIEW_BODY") || log "WARNING: Failed to post @claude comment on PR #$PR_NUMBER"
 else
   log "ERROR: Could not determine PR URL — @claude review tag was NOT posted. Check PR manually."
