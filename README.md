@@ -399,12 +399,20 @@ iago-os/
     new-client.sh/.ps1       # Scaffold new project from template
     sync-skills.sh/.ps1      # Sync skills/agents/rules to project or globally
     usage-report.sh/.ps1     # Usage analytics from JSONL telemetry
+    validate-hooks.sh        # CI: hook syntax validation
+    validate-skills.sh       # CI: skill frontmatter validation
+  n8n/
+    workflows/               # Importable n8n workflow JSON
+    scripts/                 # Shell wrappers for claude CLI invocation
+    README.md                # n8n setup guide
   docs/
+    MANUAL.md                # Complete usage manual
     SETUP.md                 # First-time setup guide
     ARCHITECTURE.md          # How it works under the hood
     SKILLS.md                # Full skill reference catalog
     WORKFLOW.md              # Workflow phases explained
-    IAGO-DASHBOARD.md        # Future dashboard vision
+    automations/             # Trigger templates + pipeline specs
+    patterns/                # Industry domain reference docs (8 domains)
   CLAUDE.md                  # Root config — stack, standards, workflow
   HANDOFF.md                 # Current project state
 ```
@@ -463,7 +471,7 @@ iaGO-OS supports multiple concurrent projects. Each gets its own `.iago/` state 
 
 ### Configuration
 
-Each project has `.iago/config.json` controlling review mode and model routing:
+Each project has `.iago/config.json` controlling review mode, model routing, and automation:
 
 ```json
 {
@@ -472,6 +480,10 @@ Each project has `.iago/config.json` controlling review mode and model routing:
     "default_model": "auto",
     "security_critical": "opus",
     "retry_upgrade": true
+  },
+  "automation": {
+    "n8n_webhook_url": "http://localhost:5678/webhook/iago-execute",
+    "slack_webhook_url": ""
   }
 }
 ```
@@ -480,6 +492,45 @@ Each project has `.iago/config.json` controlling review mode and model routing:
 - `review.mode: "full"` — two-stage gated review (recommended for client work)
 - `routing.default_model: "auto"` — orchestrator picks model based on task complexity
 - `routing.security_critical: "opus"` — always use Opus for auth/payment/data code
+- `automation.n8n_webhook_url` — endpoint for cross-session dispatch (`/iago:execute --n8n`)
+- `automation.slack_webhook_url` — optional Slack notifications for pipeline results
+
+### Automation & Orchestration
+
+iaGO-OS has three levels of automation, each solving a different problem:
+
+**Level 1 — Scheduled triggers** (`/iago:schedule`)
+
+Recurring tasks that run on a cron schedule without you being in a session. Install from templates or create custom:
+
+```
+> /iago:schedule nightly-review          # Code review against main every weeknight
+> /iago:schedule build-health            # tsc + biome check every 6 hours
+> /iago:schedule create "17 9 * * 1" "Weekly usage summary"   # Custom
+```
+
+6 built-in templates: nightly review, usage digest, stale handoff, dependency audit, learnings promotion, build health. See `docs/automations/trigger-templates.md`.
+
+**Level 2 — Worktree parallelism** (in-session)
+
+Non-conflicting plans within the same wave execute simultaneously in isolated git worktrees. Each agent gets its own copy of the repo — no file conflicts, no merge races. This happens automatically during `/iago:execute` when plans in the same wave don't share files. No setup needed.
+
+**Level 3 — n8n cross-session pipeline** (`/iago:execute --n8n`)
+
+The full execute cycle (implement → build gate → review → codex → PR) runs across **separate Claude Code sessions**, each with fresh context. n8n orchestrates the state machine:
+
+```
+/iago:execute phase-1 --n8n
+    → n8n receives plan via webhook
+    → Session 1: implement (full context budget)
+    → Build gate: tsc + vite (shell, no Claude)
+    → Session 2: review (only sees diff + plan)
+    → Session 3: codex adversarial review (GPT-5.4)
+    → Session 4: create PR
+    → Slack notification with PR URL + findings
+```
+
+Each step gets clean context. The review agent never sees implementation conversation noise. Fix cycles loop automatically (max 2 rounds). Setup: `npx n8n` → import `n8n/workflows/iago-execute-pipeline.json` → set env vars. Full guide in `n8n/README.md`.
 
 ## Built On
 
@@ -501,6 +552,9 @@ iaGO-OS synthesizes patterns from six open-source Claude Code configurations. Th
 - [Architecture](docs/ARCHITECTURE.md) — How iaGO-OS works under the hood
 - [Skills Reference](docs/SKILLS.md) — Full catalog with triggers, arguments, and examples
 - [Workflow](docs/WORKFLOW.md) — Phase flow, state transitions, artifact locations
+- [n8n Pipeline](n8n/README.md) — Cross-session orchestration setup and usage
+- [Trigger Templates](docs/automations/trigger-templates.md) — 6 ready-to-use scheduled automation templates
+- [Pipeline Spec](docs/automations/cross-session-pipeline.md) — n8n workflow node-by-node specification
 
 ## License
 

@@ -87,9 +87,10 @@ For each wave:
 
 **Parallel dispatch (skip if `--serial`):**
 4. Batch non-conflicting plans into groups of up to 5.
-5. Dispatch each group as concurrent Agent tool calls.
+5. Dispatch each group as concurrent Agent tool calls with `isolation: "worktree"`. Each agent gets its own git worktree — an isolated copy of the repo. This prevents file conflicts and merge races between parallel agents.
 6. Wait for all results in the batch before dispatching the next batch or proceeding to reviews.
 7. If any plan in a batch returns BLOCKED, pause remaining undispatched plans in the wave and escalate to the user before continuing.
+8. After all agents in a batch return, merge worktree changes back to the main branch. If merge conflicts occur (shouldn't with proper conflict detection), escalate to the user.
 
 **Serial fallback:** If `--serial` flag is set, bypass all parallel logic and execute every plan one at a time in plan-number order.
 
