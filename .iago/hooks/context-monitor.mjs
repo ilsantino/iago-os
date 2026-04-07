@@ -1,6 +1,6 @@
 // iaGO-OS — Context Monitor hook
 // Event: PostToolUse (all tools)
-// Reads bridge-ctx.json, injects warnings at 80%/90% thresholds.
+// Reads bridge-ctx.json, injects warnings at 50%/70%/90% thresholds.
 
 import { readInput } from "./lib/stdin.mjs";
 import { isDisabled } from "./lib/flags.mjs";
@@ -26,7 +26,7 @@ async function main() {
 
   const pct = bridge.context_pct || 0;
 
-  if (pct < 80) process.exit(0);
+  if (pct < 50) process.exit(0);
 
   // Track tool use count for debounce
   const toolCount = (bridge.last_warning_tool_count || 0) + 1;
@@ -42,7 +42,7 @@ async function main() {
     return;
   }
 
-  if (pct >= 80) {
+  if (pct >= 70) {
     // WARNING — debounce every 5 tool uses
     if (toolCount % 5 !== 1) {
       bridge.last_warning_tool_count = toolCount;
@@ -55,6 +55,23 @@ async function main() {
 
     process.stdout.write(JSON.stringify({
       hookSpecificOutput: `⚠ Context at ${pct}%. Finish current task, then /compact or /iago:pause.`,
+    }));
+    return;
+  }
+
+  if (pct >= 50) {
+    // INFO — debounce every 10 tool uses
+    if (toolCount % 10 !== 1) {
+      bridge.last_warning_tool_count = toolCount;
+      writeFileSync(BRIDGE_PATH, JSON.stringify(bridge, null, 2));
+      process.exit(0);
+    }
+
+    bridge.last_warning_tool_count = toolCount;
+    writeFileSync(BRIDGE_PATH, JSON.stringify(bridge, null, 2));
+
+    process.stdout.write(JSON.stringify({
+      hookSpecificOutput: `ℹ Context at ${pct}%. Halfway — consider what to wrap up before compaction.`,
     }));
   }
 }
