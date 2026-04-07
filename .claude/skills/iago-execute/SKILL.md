@@ -42,6 +42,20 @@ Wave 2: plans depending on wave 1 → execute after wave 1 completes
 Wave N: continue sequentially
 ```
 
+### 1a. Recommend --n8n when appropriate
+
+After loading plans, if ALL of these are true, suggest cross-session dispatch:
+- 3 or more plans in the phase
+- `automation.n8n_webhook_url` is configured in `.iago/config.json`
+- `--n8n` flag was NOT already provided
+
+Display: "This phase has {N} plans. Consider `/iago:execute {slug} --n8n` for cross-session dispatch — each step gets fresh context, and you don't need to stay in the session. Proceed in-session? (y/n)"
+
+If the user says yes, continue with normal in-session execution.
+If the user says no or wants --n8n, switch to the n8n dispatch flow below.
+
+If `n8n_webhook_url` is NOT configured but plan count >= 3, still mention it: "This phase has {N} plans — context may fill up. For future runs, set up cross-session dispatch: see `n8n/README.md`."
+
 ### 1b. Check for --n8n dispatch
 
 If `--n8n` flag is set:
