@@ -14,17 +14,12 @@ on:
 
 jobs:
   fix:
-    # Only when claude[bot] comments on a PR with actionable findings
+    # Only trigger on Claude's COMPLETION comment — not intermediate findings.
+    # Claude Code Action posts "Claude finished" when done. That's our signal.
     if: |
       github.event.issue.pull_request &&
       github.event.comment.user.login == 'claude[bot]' &&
-      !contains(github.event.comment.body, 'No issues found') &&
-      !contains(github.event.comment.body, 'LGTM') &&
-      !contains(github.event.comment.body, 'looks good') &&
-      !contains(github.event.comment.body, 'no concerns') &&
-      !contains(github.event.comment.body, 'no issues') &&
-      !contains(github.event.comment.body, '[review-fix-loop]') &&
-      !contains(github.event.comment.body, 'approved')
+      contains(github.event.comment.body, 'Claude finished')
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -32,7 +27,7 @@ jobs:
       issues: write
       id-token: write
     steps:
-      - name: Get PR info and check round limit
+      - name: Check for findings and round limit
         id: pr
         uses: actions/github-script@v7
         with:
@@ -47,28 +42,55 @@ jobs:
             });
             core.setOutput('head_ref', pr.head.ref);
 
-            // Count fix rounds by github-actions[bot] re-tag comments
             const comments = await github.rest.issues.listComments({
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: prNumber,
             });
+
+            // Check if Claude's review had actionable findings.
+            // The completion comment ("Claude finished") is the trigger,
+            // but the actual findings are in other claude[bot] comments.
+            const cleanSignals = ['no issues found', 'lgtm', 'looks good', 'no concerns', 'approved', 'no issues'];
+            const completionComment = context.payload.comment.body.toLowerCase();
+            const isClean = cleanSignals.some(s => completionComment.includes(s));
+
+            // Also check inline review comments from claude[bot]
+            const reviewComments = await github.rest.pulls.listReviewComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: prNumber,
+            });
+            const recentInline = reviewComments.data.filter(c =>
+              c.user.login === 'claude[bot]' &&
+              new Date(c.created_at) > new Date(Date.now() - 10 * 60 * 1000) // last 10 min
+            );
+
+            // If clean completion and no inline comments, skip
+            if (isClean && recentInline.length === 0) {
+              core.info('Review is clean — no fixes needed');
+              core.setOutput('skip', 'true');
+              return;
+            }
+
+            // Count fix rounds by github-actions[bot] re-tag comments
             const retagComments = comments.data.filter(c =>
               c.user.login === 'github-actions[bot]' &&
               c.body.includes('[review-fix-loop]')
             );
             const round = retagComments.length + 1;
-            core.info(`Fix round ${round}/${MAX_ROUNDS}`);
+            core.info(`Fix round ${round}/${MAX_ROUNDS}, inline findings: ${recentInline.length}`);
 
             if (round > MAX_ROUNDS) {
               core.setOutput('skip', 'true');
+              core.setOutput('max_rounds', 'true');
             } else {
               core.setOutput('skip', 'false');
               core.setOutput('round', round.toString());
             }
 
       - name: Post max-rounds notice
-        if: steps.pr.outputs.skip == 'true'
+        if: steps.pr.outputs.skip == 'true' && steps.pr.outputs.max_rounds == 'true'
         uses: actions/github-script@v7
         with:
           script: |
