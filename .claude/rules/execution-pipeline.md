@@ -1,129 +1,72 @@
-## Execution Pipeline (AUTOMATIC)
+## Execution Pipeline
 
-The review pipeline runs automatically after every implementation dispatch.
-No one invokes it. No one remembers to run it. It just happens.
+The review pipeline is enforced by `scripts/execute-pipeline.sh`. Every plan
+goes through 5 stages as separate `claude -p` sessions. No shortcuts.
 
 ### How It Works
 
-Every execution skill (`/iago:execute`, `/iago:quick`, `/subagent-driven-development`)
-has the 3-stage review pipeline built in. After the implementation agent returns DONE:
+`/iago:execute {slug}` runs the pipeline script for each plan in the phase.
+Each step is a fresh Claude session — no context bleed, no token burn in the
+orchestrator.
 
-1. Build gate runs automatically
-2. Review dispatches automatically
-3. Codex adversarial review dispatches automatically
-4. Summary and learnings are written automatically
-
-The only way to skip this is an explicit `--skip-review` flag or using `/iago:fast`.
-The system never skips on its own.
+The only way to skip the pipeline is `/iago:fast` (trivial fixes, ≤3 files).
 
 ### Rule: Skill Invocation Is Required
 
-When a plan, spec, or task exists that requires code changes:
+When a plan exists that requires code changes:
 
-1. **Invoke the skill** — Use the Skill tool to load `/iago:execute`,
-   `/iago:quick`, or `/subagent-driven-development`. The review pipeline is
-   built into these skills. Invoking the skill = reviews happen automatically.
-
-2. **Do NOT read the plan and implement it yourself.** You implementing directly
-   means the automatic pipeline never triggers. Zero review coverage.
-
-3. **`/iago:fast`** is the only path that skips review — for trivial fixes
-   (<=3 files, obvious change). Build gate still runs.
+1. **Invoke `/iago:execute`** — it runs the script. The pipeline is automatic.
+2. **Do NOT read the plan and implement it yourself.** That bypasses the pipeline.
+3. **`/iago:fast`** is the only path that skips review.
 
 ### Detecting the Violation
 
-If you notice yourself doing any of these WITHOUT having invoked an execution skill:
-- Reading a plan file and mentally decomposing it into tasks
+If you notice yourself doing any of these WITHOUT having invoked `/iago:execute`:
+- Reading a plan file and decomposing it into tasks
 - Creating TaskCreate items based on a plan
-- Calling Edit/Write on implementation files referenced in a plan
-- Running `npm run build` as your only quality gate
+- Calling Edit/Write on files referenced in a plan
+- Dispatching agents to implement a plan
 
-**STOP.** You are bypassing the automatic pipeline. Invoke the skill.
+**STOP.** Invoke the skill. The script handles everything.
 
-### The 3-Stage Review Pipeline (automatic)
+### Pipeline Stages (per plan)
 
-#### Stage 1 + 2: Internal Review (spec + quality)
+```
+scripts/execute-pipeline.sh --plan {path} --project-dir {dir}
+  |
+  v
+1. IMPLEMENT — claude -p reads plan, writes code (sonnet, max 50 turns)
+  |
+  v
+2. BUILD GATE — tsc --noEmit && vite build (max 2 retries with fix sessions)
+  |
+  v
+3. REVIEW — claude -p checks diff against plan (Critical/Important/Minor)
+  |  critical → fix session → rebuild → re-review (max 2 rounds)
+  v
+4. CODEX ADVERSARIAL — codex review or claude -p adversarial check
+  |  auth bypass, data loss, race conditions, business logic
+  v
+5. CREATE PR — claude -p stages, commits, pushes, creates PR via gh
+```
 
-Dispatch the `review-full` profile (or `review-single` based on config).
-
-- **Spec compliance:** Does the implementation match every task in the plan?
-  Missing tasks, partial implementations, wrong behavior — all caught here.
-- **Quality:** Performance issues, security vulnerabilities, maintainability
-  problems, missing error handling, naming inconsistencies.
-- **Gating:** If Stage 1 finds Critical issues, Stage 2 is skipped until fixed.
-
-Context passed to reviewer: git diff, plan file, CLAUDE.md, PROJECT.md.
-
-#### Stage 3: Cross-Model Adversarial Review (Codex / GPT-5.4)
-
-Dispatch `/codex:adversarial-review`. This is MANDATORY on every plan.
-
-A different model architecture catches different classes of bugs:
-- Auth bypass and privilege escalation
-- Data loss and corruption paths
-- Race conditions and state management errors
-- Rollback safety (can this deployment be safely rolled back?)
-- Business logic errors (wrong calculations, wrong conditions)
-
-#### Handling Findings
+### Handling Findings
 
 | Severity | Action |
 |----------|--------|
-| Critical | Fix immediately. Re-run build gate + re-review. Max 2 rounds. |
-| Important | Log. Proceed. User decides fix timing. |
-| Minor | Log only. |
+| Critical | Fix → rebuild → re-review. Max 2 rounds. Then STOP. |
+| Important | Logged in PR. User decides timing. |
+| Minor | Logged only. |
 
-After 2 failed fix rounds on the same Critical finding: **STOP and escalate.**
+### What the Orchestrator Does
 
-### Artifacts
-
-Every plan execution MUST produce:
-
-1. **Summary** — `.iago/summaries/{NN}-{slug}-{PP}.md` with tasks, files, commits,
-   deviations, review findings, and verdict.
-2. **Learnings** — Review patterns logged to `.iago/learnings/patterns.md`.
-   Patterns at 5+ occurrences are candidates for promotion to CLAUDE.md.
-
-If these artifacts don't exist after a plan is "complete," the pipeline was skipped.
-
-### Pipeline Order
-
-```
-Plan loaded
-  |
-  v
-Agent dispatch (profile-based, fresh context)
-  |
-  v
-Implementation complete (agent returns DONE)
-  |
-  v
-BUILD GATE: tsc --noEmit && vite build
-  |  fail -> dispatch debug profile, max 2 retries
-  v
-STAGE 1+2: review-full profile
-  |  critical -> fix -> rebuild -> re-review (max 2 rounds)
-  v
-STAGE 3: /codex:adversarial-review (GPT-5.4)
-  |  critical -> fix -> rebuild -> re-review (max 2 rounds)
-  v
-Write summary + extract learnings
-  |
-  v
-Create PR (never auto-merge)
-```
-
-### What This Means For the Orchestrator
-
-The orchestrator (you, in the main session) does NOT:
+The orchestrator (main session) does NOT:
 - Write implementation code
 - Review implementation code
-- Decide that reviews are unnecessary
+- Dispatch agents for implementation or review
 
 The orchestrator DOES:
-- Invoke the execution skill
-- Dispatch agents via profiles
-- Handle agent responses (DONE / BLOCKED / NEEDS_CONTEXT)
-- Coordinate the build gate and review dispatches
-- Write summaries and update STATE.md
-- Create the PR after all gates pass
+- Invoke `/iago:execute` (which runs the script)
+- Report results to the user
+- Update STATE.md after completion
+- Escalate if the script fails

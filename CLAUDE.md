@@ -62,27 +62,22 @@ the Skill tool. Not read files. Not create tasks. Invoke the skill.
 
 ## Automatic Review Pipeline
 
-The 3-stage review pipeline runs automatically after every implementation dispatch.
-You do not invoke it, request it, or think about it. It just happens.
+The review pipeline is built into `scripts/execute-pipeline.sh`. When `/iago:execute`
+runs the script for each plan, every step is a separate `claude -p` session:
 
-**Stage 1 — Spec review:** `review-full` checks implementation matches the plan.
-**Stage 2 — Quality review:** Same profile checks performance, security, maintainability.
-**Stage 3 — Cross-model:** `/codex:adversarial-review` (GPT-5.4) — automatic, every plan.
+1. **Implement** — fresh session reads plan, writes code
+2. **Build gate** — `tsc --noEmit && vite build` (max 2 retries)
+3. **Review** — fresh session checks diff against plan (Critical/Important/Minor)
+4. **Codex adversarial** — `codex review` or fresh session checks auth, data loss, races
+5. **Create PR** — fresh session stages, commits, pushes, creates PR via `gh`
 
-Also automatic:
-- Build gate before review (`tsc --noEmit` + `vite build`)
-- Critical findings → fix → re-review (max 2 rounds)
-- Summary artifact written to `.iago/summaries/`
-- Learnings extracted to `.iago/learnings/patterns.md`
+Critical findings → fix → rebuild → re-review (max 2 rounds). Non-critical → logged.
 
-**To skip:** Only with explicit `--skip-review` flag or by using `/iago:fast`.
-The user must consciously opt out. The system never skips on its own.
-
-See `.claude/rules/execution-pipeline.md` for the full specification.
+**To skip:** Only by using `/iago:fast` (trivial fixes, build gate only).
 
 ## Learnings
 
-`.iago/learnings/` accumulates review patterns and project conventions, injected into agent context before each dispatch. Patterns at 5+ occurrences are candidates for promotion to CLAUDE.md.
+`.iago/learnings/` accumulates review patterns and project conventions. Patterns at 5+ occurrences are candidates for promotion to CLAUDE.md.
 
 ## Verification
 
@@ -143,8 +138,8 @@ See `.claude/rules/available-skills.md` for the complete catalog including conte
 ## Model Routing
 
 - **Opus:** Orchestrator (main session) — planning, architecture, multi-file reasoning
-- **Sonnet:** Default for all profiles — implementation, review, research, debugging, testing
+- **Sonnet:** Pipeline sessions (`claude -p`) — implementation, review, debugging
 - **Haiku:** Reserve for mechanical tasks (formatting, simple lookups) when needed
-- **Codex (GPT-5.4):** Mandatory cross-model adversarial review on every plan (`/codex:adversarial-review`), plus `/codex:review` and `/codex:rescue`
+- **Codex (GPT-5.4):** Cross-model adversarial review via `codex review`, plus `/codex:rescue`
 
-Model selection per dispatch: profiles specify `model: auto | sonnet | opus`. Auto routing: 4+ files → opus, auth/payment → opus, retry → upgrade. Configurable in `.iago/config.json` routing section.
+Pipeline sessions use sonnet by default. The script handles model selection.
