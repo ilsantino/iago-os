@@ -618,6 +618,55 @@ Persistent triggers require RemoteTrigger authentication. If `/iago:schedule` re
 
 ---
 
+## Cross-Session Orchestration
+
+### The Problem
+
+Long execute cycles accumulate context. A session that implements 3 plans, reviews each,
+and handles fix cycles hits 90% context fast. The review agent carries the implementation
+context. The fix agent carries everything.
+
+### The Solution
+
+n8n orchestrates the same pipeline across fresh Claude Code sessions. Each `claude -p`
+invocation starts with clean context dedicated to its specific task.
+
+### Architecture
+
+```
+/iago:execute phase --n8n
+    → n8n webhook receives plan
+    → Session 1: implement (full context budget for implementation)
+    → Session 2: review (only sees the diff + plan, no implementation noise)
+    → Session 3: codex review (fresh GPT-5.4 analysis)
+    → Session 4: create PR (just the summary)
+```
+
+### Comparison
+
+| | Single-session | n8n pipeline |
+|---|---|---|
+| Context per step | Shrinking (accumulated) | Full (fresh each step) |
+| Parallelism | Agent tool calls (shared context) | Independent sessions (true parallel) |
+| Review quality | Degrades as context fills | Consistent (clean context) |
+| Setup | None | n8n instance required |
+
+### Setup
+
+See `n8n/README.md`. Trigger with `/iago:execute phase --n8n`.
+
+Add the webhook URL to `.iago/config.json`:
+
+```json
+{
+  "automation": {
+    "n8n_webhook_url": "http://localhost:5678/webhook/iago-execute"
+  }
+}
+```
+
+---
+
 ## Troubleshooting
 
 ### Skills not showing in autocomplete

@@ -1,0 +1,238 @@
+{
+  "name": "iaGO Execute Pipeline",
+  "nodes": [
+    {
+      "id": "node-1",
+      "name": "Receive Plan",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [0, 300],
+      "parameters": {
+        "path": "iago-execute",
+        "responseMode": "responseNode",
+        "options": {}
+      }
+    },
+    {
+      "id": "node-2",
+      "name": "Implement",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [200, 300],
+      "parameters": {
+        "command": "={{ $env.N8N_IAGO_SCRIPTS + \"/trigger-claude.sh --prompt \\\"Execute plan: \" + $('Receive Plan').item.json.plan_path + \"\\\" --project-dir \" + $('Receive Plan').item.json.project_dir + \" --max-turns 50\" }}",
+        "timeout": 600000
+      }
+    },
+    {
+      "id": "node-3",
+      "name": "Parse Implementation",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [400, 300],
+      "parameters": {
+        "jsCode": "const output = $input.item.json.stdout || '';\nconst projectDir = $('Receive Plan').item.json.project_dir;\nconst { execSync } = require('child_process');\n\nconst escapedOutput = output.replace(/'/g, \"'\\\\''\" );\nlet result;\ntry {\n  result = execSync(\n    process.env.N8N_IAGO_SCRIPTS + `/parse-agent-status.sh --output '${escapedOutput}' --project-dir '${projectDir}'`\n  ).toString();\n} catch (e) {\n  result = JSON.stringify({ status: 'UNKNOWN', diff: '', critical_count: 0, important_count: 0, minor_count: 0 });\n}\n\nreturn [{ json: JSON.parse(result) }];"
+      }
+    },
+    {
+      "id": "node-4",
+      "name": "Build Gate",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [600, 300],
+      "parameters": {
+        "command": "={{ \"cd \" + $('Receive Plan').item.json.project_dir + \" && npx tsc --noEmit && npx vite build 2>&1; echo \\\"EXIT:$?\\\"\" }}",
+        "timeout": 120000
+      }
+    },
+    {
+      "id": "node-5",
+      "name": "Build Failed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [800, 300],
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{ $json.stdout }}",
+              "operation": "notContains",
+              "value2": "EXIT:0"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "node-6",
+      "name": "Fix Build",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [1000, 450],
+      "parameters": {
+        "command": "={{ $env.N8N_IAGO_SCRIPTS + \"/trigger-claude.sh --prompt \\\"Fix build errors in \" + $('Receive Plan').item.json.project_dir + \": \" + $('Build Gate').item.json.stdout + \"\\\" --project-dir \" + $('Receive Plan').item.json.project_dir + \" --max-turns 30\" }}",
+        "timeout": 600000
+      }
+    },
+    {
+      "id": "node-7",
+      "name": "Review",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [1000, 300],
+      "parameters": {
+        "command": "={{ $env.N8N_IAGO_SCRIPTS + \"/trigger-claude.sh --prompt \\\"Review this diff against plan \" + $('Receive Plan').item.json.plan_path + \": \" + $('Parse Implementation').item.json.diff + \"\\\" --project-dir \" + $('Receive Plan').item.json.project_dir + \" --max-turns 25\" }}",
+        "timeout": 300000
+      }
+    },
+    {
+      "id": "node-8",
+      "name": "Parse Review",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1200, 300],
+      "parameters": {
+        "jsCode": "const output = $input.item.json.stdout || '';\nconst lines = output.split('\\n');\n\nconst findings = lines.filter(l =>\n  /\\*\\*(Critical|Important|Minor)\\*\\*/i.test(l)\n);\n\nconst critical_count = findings.filter(l => /Critical/i.test(l)).length;\nconst important_count = findings.filter(l => /Important/i.test(l)).length;\nconst minor_count = findings.filter(l => /Minor/i.test(l)).length;\n\nreturn [{ json: { findings, critical_count, important_count, minor_count, raw_review: output } }];"
+      }
+    },
+    {
+      "id": "node-9",
+      "name": "Critical Findings?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [1400, 300],
+      "parameters": {
+        "conditions": {
+          "number": [
+            {
+              "value1": "={{ $json.critical_count }}",
+              "operation": "larger",
+              "value2": 0
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "node-10",
+      "name": "Fix Critical",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [1600, 450],
+      "parameters": {
+        "command": "={{ $env.N8N_IAGO_SCRIPTS + \"/trigger-claude.sh --prompt \\\"Fix these critical findings in \" + $('Receive Plan').item.json.project_dir + \": \" + JSON.stringify($('Parse Review').item.json.findings.filter(f => /Critical/i.test(f))) + \"\\\" --project-dir \" + $('Receive Plan').item.json.project_dir + \" --max-turns 40\" }}",
+        "timeout": 600000
+      }
+    },
+    {
+      "id": "node-11",
+      "name": "Codex Review",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [1600, 300],
+      "parameters": {
+        "command": "={{ $env.N8N_IAGO_SCRIPTS + \"/trigger-claude.sh --prompt \\\"Adversarial review of this diff — check for auth bypass, data loss, race conditions, rollback safety, business logic errors: \" + $('Parse Implementation').item.json.diff + \"\\\" --project-dir \" + $('Receive Plan').item.json.project_dir + \" --max-turns 20\" }}",
+        "timeout": 300000
+      }
+    },
+    {
+      "id": "node-12",
+      "name": "Create PR",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [1800, 300],
+      "parameters": {
+        "command": "={{ $env.N8N_IAGO_SCRIPTS + \"/trigger-claude.sh --prompt \\\"Create PR for plan \" + $('Receive Plan').item.json.plan_path + \" — stage changes, write conventional commit, push branch, create PR via gh, output the PR URL\\\" --project-dir \" + $('Receive Plan').item.json.project_dir + \" --max-turns 15\" }}",
+        "timeout": 120000
+      }
+    },
+    {
+      "id": "node-13",
+      "name": "Notify",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [2000, 300],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.SLACK_WEBHOOK_URL }}",
+        "sendBody": true,
+        "bodyContentType": "json",
+        "jsonBody": "={{ JSON.stringify({ text: 'iaGO Pipeline Complete', blocks: [{ type: 'section', text: { type: 'mrkdwn', text: '*Plan:* `' + $('Receive Plan').item.json.plan_path + '`\\n*PR:* ' + $('Create PR').item.json.stdout + '\\n*Critical:* ' + $('Parse Review').item.json.critical_count + ' | *Important:* ' + $('Parse Review').item.json.important_count + ' | *Minor:* ' + $('Parse Review').item.json.minor_count } }] }) }}"
+      }
+    }
+  ],
+  "connections": {
+    "Receive Plan": {
+      "main": [
+        [{ "node": "Implement", "type": "main", "index": 0 }]
+      ]
+    },
+    "Implement": {
+      "main": [
+        [{ "node": "Parse Implementation", "type": "main", "index": 0 }]
+      ]
+    },
+    "Parse Implementation": {
+      "main": [
+        [{ "node": "Build Gate", "type": "main", "index": 0 }]
+      ]
+    },
+    "Build Gate": {
+      "main": [
+        [{ "node": "Build Failed?", "type": "main", "index": 0 }]
+      ]
+    },
+    "Build Failed?": {
+      "main": [
+        [{ "node": "Fix Build", "type": "main", "index": 0 }],
+        [{ "node": "Review", "type": "main", "index": 0 }]
+      ]
+    },
+    "Fix Build": {
+      "main": [
+        [{ "node": "Build Gate", "type": "main", "index": 0 }]
+      ]
+    },
+    "Review": {
+      "main": [
+        [{ "node": "Parse Review", "type": "main", "index": 0 }]
+      ]
+    },
+    "Parse Review": {
+      "main": [
+        [{ "node": "Critical Findings?", "type": "main", "index": 0 }]
+      ]
+    },
+    "Critical Findings?": {
+      "main": [
+        [{ "node": "Fix Critical", "type": "main", "index": 0 }],
+        [{ "node": "Codex Review", "type": "main", "index": 0 }]
+      ]
+    },
+    "Fix Critical": {
+      "main": [
+        [{ "node": "Build Gate", "type": "main", "index": 0 }]
+      ]
+    },
+    "Codex Review": {
+      "main": [
+        [{ "node": "Create PR", "type": "main", "index": 0 }]
+      ]
+    },
+    "Create PR": {
+      "main": [
+        [{ "node": "Notify", "type": "main", "index": 0 }]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner",
+    "errorWorkflow": "iago-error-handler"
+  },
+  "staticData": null,
+  "meta": {
+    "instanceId": "iago-os"
+  }
+}
