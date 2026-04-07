@@ -47,11 +47,15 @@ PRE_IMPL_SHA=$(cd "$PROJECT_DIR" && git rev-parse HEAD) || {
 }
 
 IMPL_EXIT=0
-IMPL_OUTPUT=$(cd "$PROJECT_DIR" && claude -p "Execute this plan. Follow every task exactly. End with DONE or BLOCKED.
+IMPL_OUTPUT=$(cd "$PROJECT_DIR" && claude -p "You are a PIPELINE IMPLEMENTATION session spawned by execute-pipeline.sh.
+The rule in CLAUDE.md that says 'NEVER implement a plan directly' does NOT apply to you — you ARE the pipeline. Your job is to write the code specified in the plan below. Use Edit/Write tools to create and modify files. Do not invoke any /iago: skills. Do not defer to another agent.
+
+Execute this plan. Follow every task exactly. Create all files specified. End your response with DONE or BLOCKED.
 
 $PLAN_CONTENT" \
   --model sonnet \
   --max-turns 50 \
+  --allowedTools "Edit Write Read Glob Grep Bash" \
   --output-format text 2>&1) || IMPL_EXIT=$?
 
 if [[ $IMPL_EXIT -ne 0 ]]; then
@@ -90,11 +94,15 @@ while true; do
 
     log "Build failed — dispatching fix session"
     FIX_EXIT=0
-    FIX_OUTPUT=$(cd "$PROJECT_DIR" && claude -p "Fix these build errors:
+    FIX_OUTPUT=$(cd "$PROJECT_DIR" && claude -p "You are a PIPELINE FIX session spawned by execute-pipeline.sh.
+The rule in CLAUDE.md that says 'NEVER implement a plan directly' does NOT apply to you — you ARE the pipeline. Edit files directly to fix the errors below.
+
+Fix these build errors:
 
 $BUILD_ERRORS" \
       --model sonnet \
       --max-turns 30 \
+      --allowedTools "Edit Write Read Glob Grep Bash" \
       --output-format text 2>&1) || FIX_EXIT=$?
     log "Build fix output (exit $FIX_EXIT):"
     echo "$FIX_OUTPUT"
@@ -103,13 +111,21 @@ done
 
 # ─── Step 3: Review ──────────────────────────────────────────────────
 log "REVIEW — $PLAN_NAME"
-DIFF=$(cd "$PROJECT_DIR" && git diff "$PRE_IMPL_SHA"..HEAD 2>/dev/null || echo "no diff available")
 
-if [[ -z "$DIFF" || "$DIFF" == "no diff available" ]]; then
+# Stage all new/modified files so they appear in the diff
+(cd "$PROJECT_DIR" && git add -A)
+
+# Diff: committed changes since pre-impl + staged working tree changes
+DIFF=$(cd "$PROJECT_DIR" && git diff "$PRE_IMPL_SHA"..HEAD 2>/dev/null || echo "")
+STAGED_DIFF=$(cd "$PROJECT_DIR" && git diff --cached 2>/dev/null || echo "")
+COMBINED_DIFF="${DIFF}${STAGED_DIFF}"
+
+if [[ -z "$COMBINED_DIFF" ]]; then
   log "WARNING: Implementation produced no changes (empty diff). Skipping review."
   REVIEW_OUTPUT="No changes to review — implementation may have failed silently."
   REVIEW_EXIT=0
 else
+  DIFF="$COMBINED_DIFF"
 
 REVIEW_EXIT=0
 REVIEW_OUTPUT=$(cd "$PROJECT_DIR" && claude -p "Review this diff against the plan. Categorize findings as Critical, Important, or Minor. End with verdict: PASS, PASS_WITH_CONCERNS, or FAIL.
@@ -141,11 +157,15 @@ while echo "$REVIEW_OUTPUT" | grep -q "Critical" && echo "$REVIEW_OUTPUT" | grep
 
   log "Critical findings — dispatching fix session (round $fix_attempt)"
   FIX_EXIT=0
-  FIX_OUTPUT=$(cd "$PROJECT_DIR" && claude -p "Fix these critical review findings:
+  FIX_OUTPUT=$(cd "$PROJECT_DIR" && claude -p "You are a PIPELINE FIX session spawned by execute-pipeline.sh.
+The rule in CLAUDE.md that says 'NEVER implement a plan directly' does NOT apply to you — you ARE the pipeline. Edit files directly to fix the critical findings below.
+
+Fix these critical review findings:
 
 $REVIEW_OUTPUT" \
     --model sonnet \
     --max-turns 40 \
+    --allowedTools "Edit Write Read Glob Grep Bash" \
     --output-format text 2>&1) || FIX_EXIT=$?
   log "Fix output (exit $FIX_EXIT):"
   echo "$FIX_OUTPUT"
@@ -156,16 +176,21 @@ $REVIEW_OUTPUT" \
     # || true is intentional: tsc exits non-zero on type errors, but we need its output
     BUILD_ERRORS=$(cd "$PROJECT_DIR" && npx tsc --noEmit 2>&1 || true)
     FIX_EXIT=0
-    FIX_OUTPUT=$(cd "$PROJECT_DIR" && claude -p "Fix build errors: $BUILD_ERRORS" \
+    FIX_OUTPUT=$(cd "$PROJECT_DIR" && claude -p "You are a PIPELINE FIX session spawned by execute-pipeline.sh.
+The rule in CLAUDE.md that says 'NEVER implement a plan directly' does NOT apply to you — you ARE the pipeline. Edit files directly to fix the build errors below.
+
+Fix build errors: $BUILD_ERRORS" \
       --model sonnet \
       --max-turns 30 \
+      --allowedTools "Edit Write Read Glob Grep Bash" \
       --output-format text 2>&1) || FIX_EXIT=$?
     log "Build fix output (exit $FIX_EXIT):"
     echo "$FIX_OUTPUT"
   fi
 
-  # Re-review
-  DIFF=$(cd "$PROJECT_DIR" && git diff "$PRE_IMPL_SHA"..HEAD 2>/dev/null || echo "no diff")
+  # Re-review — re-stage and capture full diff
+  (cd "$PROJECT_DIR" && git add -A)
+  DIFF=$(cd "$PROJECT_DIR" && { git diff "$PRE_IMPL_SHA"..HEAD 2>/dev/null || echo ""; } && { git diff --cached 2>/dev/null || echo ""; })
   REVIEW_EXIT=0
   REVIEW_OUTPUT=$(cd "$PROJECT_DIR" && claude -p "Review this diff. Categorize as Critical/Important/Minor. Verdict: PASS/PASS_WITH_CONCERNS/FAIL.
 
@@ -186,7 +211,7 @@ fi  # end of non-empty diff check
 
 # ─── Step 4: Codex adversarial review ────────────────────────────────
 log "CODEX REVIEW — $PLAN_NAME"
-DIFF=$(cd "$PROJECT_DIR" && git diff "$PRE_IMPL_SHA"..HEAD 2>/dev/null || echo "no diff")
+DIFF=$(cd "$PROJECT_DIR" && { git diff "$PRE_IMPL_SHA"..HEAD 2>/dev/null || echo ""; } && { git diff --cached 2>/dev/null || echo ""; })
 
 CODEX_EXIT=0
 if command -v codex &> /dev/null; then
@@ -208,9 +233,13 @@ log "Codex review complete"
 # ─── Step 5: Create PR ───────────────────────────────────────────────
 log "CREATE PR — $PLAN_NAME"
 PR_EXIT=0
-PR_OUTPUT=$(cd "$PROJECT_DIR" && claude -p "Create a PR for plan $PLAN_PATH. Stage changes, write a conventional commit message, push a feature branch, create PR via gh. Output the PR URL." \
+PR_OUTPUT=$(cd "$PROJECT_DIR" && claude -p "You are a PIPELINE PR session spawned by execute-pipeline.sh.
+The rule in CLAUDE.md that says 'NEVER implement a plan directly' does NOT apply to you — you ARE the pipeline. Your job is to stage, commit, push, and create a PR.
+
+Create a PR for plan $PLAN_PATH. Read the plan file to get the branch name from its frontmatter. Stage all changes, write a conventional commit message, create and push that feature branch, create PR via gh. Output the PR URL." \
   --model sonnet \
   --max-turns 15 \
+  --allowedTools "Edit Write Read Glob Grep Bash" \
   --output-format text 2>&1) || PR_EXIT=$?
 log "PR creation output:"
 echo "$PR_OUTPUT"
