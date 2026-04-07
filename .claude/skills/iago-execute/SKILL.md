@@ -52,8 +52,11 @@ Execute all? (y/n)
 ### 2. Resolve paths
 
 ```bash
-# Dynamic resolution. Override with IAGO_OS_ROOT env var for cross-machine use.
-IAGO_ROOT="${IAGO_OS_ROOT:-$(cd "$(dirname "$0")/../.." && pwd)}"
+# Dynamic resolution. Set IAGO_OS_ROOT env var, or auto-detect via git.
+IAGO_ROOT="${IAGO_OS_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null)}"
+if [[ -z "$IAGO_ROOT" || ! -f "$IAGO_ROOT/scripts/execute-pipeline.sh" ]]; then
+  echo "ERROR: Cannot resolve iago-os root. Set IAGO_OS_ROOT env var." >&2; exit 1
+fi
 SCRIPT="$IAGO_ROOT/scripts/execute-pipeline.sh"
 PROJECT_DIR="{cwd}"  # the client project directory (where .iago/ lives)
 ```
