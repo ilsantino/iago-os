@@ -49,7 +49,7 @@ Dispatch `research` agent with:
 - Instruction: "Analyze this codebase and produce a structured report covering:
   architecture, patterns, dependencies, tech debt, test coverage, security concerns."
 
-The researcher will:
+The research agent will:
 - Scan directory tree and key configuration files
 - Identify architectural patterns (monolith, microservices, feature-sliced)
 - Catalog external dependencies and their versions
@@ -140,4 +140,4 @@ Produces analysis artifact only — useful for evaluating a codebase before comm
 - Only writes to `.iago/` directory (unless `--skip-init`, then only displays)
 - Does not install dependencies, run migrations, or execute builds
 - Does not start planning or implementation — analysis only
-- If researcher returns BLOCKED, fall back to inline single-pass analysis
+- If research agent returns BLOCKED, fall back to inline single-pass analysis
