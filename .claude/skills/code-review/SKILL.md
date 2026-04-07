@@ -95,8 +95,12 @@ the user knows cross-model review did not occur.
 The review targets: auth bypass, data loss, race conditions, rollback safety,
 business logic errors, and state management issues.
 
-Merge Codex findings (or fallback findings) into the internal review findings
-before presenting. Critical findings follow the same fix-before-merge rule.
+| Codex Status | Action |
+|--------------|--------|
+| Available | Merge Codex findings into internal review |
+| Unavailable | Use Claude fallback findings instead, log the gap |
+
+Critical findings (from either source) follow the same fix-before-merge rule.
 
 ### 6. Present findings
 
