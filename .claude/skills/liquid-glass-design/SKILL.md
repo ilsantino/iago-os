@@ -6,7 +6,6 @@ description: >-
   or when the design doesn't call for glass effects.
 ---
 
-<!-- Source: ECC liquid-glass-design + design-system -->
 
 ## Purpose
 

@@ -6,7 +6,6 @@ description: >-
   definitions, or skill files (those follow iaGO conventions, not prompt engineering).
 ---
 
-<!-- Source: ECC prompt-optimizer -->
 
 ## Purpose
 

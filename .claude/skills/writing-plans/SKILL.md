@@ -6,7 +6,6 @@ description: >-
   planning a ROADMAP phase (use /iago:plan instead).
 ---
 
-<!-- Source: Superpowers writing-plans + GSD wave concept -->
 
 ## Purpose
 

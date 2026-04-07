@@ -7,7 +7,6 @@ description: >-
   search-first) or when researching library docs (use context7 MCP directly).
 ---
 
-<!-- Source: ECC deep-research + GSD synthesizer + market-research (merged) -->
 
 ## Purpose
 

@@ -5,7 +5,6 @@ description: >-
   Not when writing static documents or articles (use /content-engine --formats blog).
 ---
 
-<!-- Source: ECC frontend-slides -->
 
 ## Purpose
 

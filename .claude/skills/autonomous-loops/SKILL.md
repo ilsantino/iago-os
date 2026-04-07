@@ -6,7 +6,6 @@ description: >-
   requires human judgment at checkpoints (use /subagent-driven-development).
 ---
 
-<!-- Source: ECC autonomous-loops -->
 
 ## Purpose
 

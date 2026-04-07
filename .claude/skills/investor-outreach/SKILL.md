@@ -6,7 +6,6 @@ description: >-
   market research (use /deep-research --focus market).
 ---
 
-<!-- Source: ECC investor-outreach -->
 
 ## Purpose
 

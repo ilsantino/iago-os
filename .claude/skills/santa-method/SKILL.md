@@ -6,7 +6,6 @@ description: >-
   /writing-plans) or when exploring solutions (use /brainstorming).
 ---
 
-<!-- Source: ECC santa-method -->
 
 ## Purpose
 

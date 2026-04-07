@@ -6,7 +6,6 @@ description: >-
   task (use /autonomous-loops) or a bounded implementation (use /subagent-driven-development).
 ---
 
-<!-- Source: ECC continuous-agent-loop -->
 
 ## Purpose
 
