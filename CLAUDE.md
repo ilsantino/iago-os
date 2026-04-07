@@ -60,6 +60,13 @@ Do not assert outcomes — demonstrate them.
 Before creating any new file, component, or utility, search the codebase for existing implementations.
 Duplication is a bug.
 
+## Pipeline Suggestion
+
+When about to execute a phase with 3 or more plans, ALWAYS suggest `--pipeline` before starting:
+"This phase has {N} plans. Recommend `--pipeline` — each step runs in a fresh session so context doesn't fill up and you can walk away. Use it? (`/iago:execute {slug} --pipeline`)"
+
+Do not silently start in-session execution on 3+ plans. The user must consciously choose.
+
 ## Agent Escalation Protocol
 
 Every subagent MUST end its response with exactly one status:

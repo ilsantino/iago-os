@@ -618,45 +618,51 @@ Persistent triggers require RemoteTrigger authentication. If `/iago:schedule` re
 
 ---
 
-## Cross-Session Orchestration
+## Pipeline Mode
 
 ### The Problem
 
-Long execute cycles accumulate context. A session that implements 3 plans, reviews each,
-and handles fix cycles hits 90% context fast. The review agent carries the implementation
-context. The fix agent carries everything.
+When a phase has 3+ plans, running `/iago:execute` normally fills up the context window. The review agent carries all the implementation conversation. Quality drops. You might need to start a new session and re-explain everything.
 
-### The Solution
-
-n8n orchestrates the same pipeline across fresh Claude Code sessions. Each `claude -p`
-invocation starts with clean context dedicated to its specific task.
-
-### Architecture
+### The Solution: `--pipeline`
 
 ```
-/iago:execute phase --n8n
-    → n8n webhook receives plan
-    → Session 1: implement (full context budget for implementation)
-    → Session 2: review (only sees the diff + plan, no implementation noise)
-    → Session 3: codex review (fresh GPT-5.4 analysis)
-    → Session 4: create PR (just the summary)
+/iago:execute phase-1 --pipeline
 ```
 
-### Comparison
+Same pipeline (implement → build → review → codex → PR), but each step runs in a **separate Claude session**. No context accumulates. You can walk away.
 
-| | Single-session | n8n pipeline |
-|---|---|---|
-| Context per step | Shrinking (accumulated) | Full (fresh each step) |
-| Parallelism | Agent tool calls (shared context) | Independent sessions (true parallel) |
-| Review quality | Degrades as context fills | Consistent (clean context) |
-| Setup | None | n8n instance required |
+```
+Step 1: claude -p "implement plan"    → fresh session, full context
+Step 2: tsc + vite build              → shell command, no Claude
+Step 3: claude -p "review this diff"  → fresh session, only sees the diff
+Step 4: claude -p "codex review"      → fresh session, adversarial check
+Step 5: claude -p "create PR"         → fresh session, commits + PR
+```
 
-### Setup
+If the build breaks, it auto-dispatches a fix session (max 2 retries). If review finds Critical issues, same thing. You don't need to be there.
 
-See `n8n/README.md`. Trigger with `/iago:execute phase --n8n`.
+### When to Use It
 
-Add the webhook URL to `.iago/config.json`:
+The orchestrator **tells you automatically** when a phase has 3+ plans:
 
+> "This phase has 4 plans. Recommend `--pipeline` — each step runs in a fresh session so context doesn't fill up and you can walk away. Use it?"
+
+You can also just add `--pipeline` yourself anytime.
+
+### Three Ways to Execute
+
+| Command | When | You need to be there? |
+|---------|------|----------------------|
+| `/iago:execute phase` | 1-2 plans, quick work | Yes — you're watching |
+| `/iago:execute phase --pipeline` | 3+ plans, or you want to leave | No — walk away |
+| `/iago:execute phase --n8n` | Same as pipeline + visual dashboard + Slack | No — plus monitoring |
+
+### n8n (Optional Upgrade)
+
+`--n8n` does the same thing as `--pipeline` but routes through n8n for visual execution history, retry UI, and Slack notifications. Only set this up if you want monitoring. See `n8n/README.md`.
+
+Config for n8n:
 ```json
 {
   "automation": {
