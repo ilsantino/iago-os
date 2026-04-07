@@ -1,3 +1,4 @@
+<!-- Sync with: .claude/rules/react-vite.md (main session source of truth) -->
 # React 19 Patterns
 
 ## Data Fetching

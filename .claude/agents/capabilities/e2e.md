@@ -1,3 +1,4 @@
+<!-- Sync with: .claude/rules/e2e-testing.md (main session source of truth) -->
 # E2E Testing Capability
 
 Apply these patterns when writing or reviewing Playwright end-to-end tests.
@@ -34,3 +35,9 @@ Apply these patterns when writing or reviewing Playwright end-to-end tests.
 - Screenshots on failure: set `use.screenshot: "only-on-failure"` in `playwright.config.ts`
 - Base URL: `http://localhost:5173` (Vite dev server)
 - Browsers: chromium only for local dev; chromium + firefox + webkit in CI
+
+## React 19 Considerations
+
+- Suspense boundaries: wait for content to load, not for loading indicators to disappear
+- Server components: test the rendered output, not the component internals
+- Transitions: use `expect` auto-retry to handle concurrent rendering delays

@@ -103,11 +103,11 @@ Audit found 11 Critical, 14 Important, 14 Minor issues. Criticals fixed. Batch A
 
 | Batch | Area | Issues | Status |
 |-------|------|--------|--------|
-| B | iago-quick pipeline gaps | 4 | Pending |
-| C | Summary path (execute→verify broken) | 3 | Pending |
-| D | Script portability (macOS compat) | 3 | Pending |
-| E | Hook/config schema | 1 | Pending |
-| F | Docs/dead code | 2 | Pending |
+| B | iago-quick pipeline gaps | 4 | DONE (`5dd6b13`) |
+| C | Summary path (execute→verify broken) | 3 | DONE (`5dd6b13`) |
+| D | Script portability (macOS compat) | 3 | DONE (`5dd6b13`) |
+| E | Hook/config schema | 1 | DONE (`5dd6b13`) |
+| F | Docs/dead code | 2 | DONE (`5dd6b13`) |
 
 See `sessions/2026-04-07-iago-os-audit.md` in Obsidian for full audit details.
 

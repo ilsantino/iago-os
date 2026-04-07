@@ -18,7 +18,7 @@ this project are proprietary to iaGO. Do not:
 - **Agents:** Claude SDK (Anthropic) + LangGraph + n8n
 - **Testing:** Vitest (unit/integration), Playwright (E2E)
 - **Tooling:** Biome (formatter + linter) — never Prettier, ESLint, or gofmt
-- **Infra:** AWS CDK, GitHub Actions CI/CD
+- **Infra:** AWS Amplify Gen 2 (manages all AWS resources), GitHub Actions CI/CD
 
 ## Code Standards
 
@@ -35,7 +35,7 @@ this project are proprietary to iaGO. Do not:
 
 ## Architecture
 
-- DynamoDB single-table design — access patterns drive schema
+- DynamoDB — evaluate single-table vs multi-table per project; access patterns drive schema
 - Lambda: thin handler wrappers calling domain logic modules
 - Cognito JWT validation in API Gateway authorizer, not in Lambda handlers
 - Amplify Gen 2: `defineBackend`, `defineAuth`, `defineData`, `defineFunction`

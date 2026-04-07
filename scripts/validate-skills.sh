@@ -22,7 +22,7 @@ for skill_file in "$SKILLS_DIR"/*/SKILL.md; do
   fi
 
   # Check (3): file contains "description:"
-  if ! grep -q "^description" "$skill_file"; then
+  if ! grep -q "^description:" "$skill_file"; then
     errors="${errors}missing description:, "
   fi
 

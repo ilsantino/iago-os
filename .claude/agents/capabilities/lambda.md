@@ -1,3 +1,4 @@
+<!-- Sync with: .claude/rules/aws-amplify.md Lambda section -->
 # Lambda Capability
 
 ## Handler Pattern

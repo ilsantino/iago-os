@@ -1,3 +1,4 @@
+<!-- Sync with: .claude/rules/tdd.md (main session source of truth) -->
 # TDD Discipline
 
 ## The Cycle

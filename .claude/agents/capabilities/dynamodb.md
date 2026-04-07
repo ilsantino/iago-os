@@ -1,3 +1,4 @@
+<!-- Sync with: .claude/rules/aws-amplify.md DynamoDB section -->
 # DynamoDB Capability
 
 ## Choosing: Single-Table vs Multi-Table

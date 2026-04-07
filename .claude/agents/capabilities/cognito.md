@@ -1,3 +1,4 @@
+<!-- Sync with: .claude/rules/aws-amplify.md Cognito section -->
 # Cognito Auth Patterns
 
 - JWT validation belongs in the API Gateway authorizer — never in Lambda handler code. Lambda receives a pre-validated identity; do not re-validate tokens inside handlers.

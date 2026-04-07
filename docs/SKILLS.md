@@ -1,6 +1,6 @@
 # Skills Reference
 
-Complete catalog of all 31 iaGO-OS skills. Each skill is a reusable workflow you invoke with `/skill-name` inside Claude Code.
+Complete catalog of all 33 iaGO-OS skills. Each skill is a reusable workflow you invoke with `/skill-name` inside Claude Code.
 
 ---
 
