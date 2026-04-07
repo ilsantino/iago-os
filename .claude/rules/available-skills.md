@@ -91,7 +91,7 @@ react-19, dynamodb, lambda, cognito, tdd, security, e2e, review-spec, review-qua
 - `security-audit` (analyst, opus) — security + cognito + review-quality — deep security review
 - `research` (operator) — dynamic capabilities — deep research across codebase and web
 - `e2e` (executor) — e2e + react-19 — Playwright E2E test writing
-- `infra` (operator) — infra — AWS CLI, Amplify, CDK operations
+- `infra` (operator) — infra — AWS CLI, Amplify Gen 2 deployments, sandbox management
 - `schema` (analyst) — dynamodb — DynamoDB schema design (evaluates single vs multi-table)
 - `content` (operator) — content — articles, investor materials, outreach
 - `debug` (executor) — dynamic capabilities — build/typecheck/lint error resolution

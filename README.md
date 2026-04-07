@@ -271,7 +271,7 @@ Domain knowledge injected into agent prompts at dispatch time. Each module is a 
 | `review-spec` | Plan compliance verification — file paths, actions, tests, no deviations |
 | `review-quality` | Performance, TypeScript strictness, maintainability, React/DynamoDB conventions |
 | `content` | Consulting voice, multi-format output, channel adaptation, no filler |
-| `infra` | AWS CLI, Amplify Gen 2, CDK, IAM, deployment patterns |
+| `infra` | AWS CLI, Amplify Gen 2, IAM, deployment patterns |
 | `forms` | React Hook Form + Zod, ShadCN Controller integration, server error mapping |
 
 ### Agent Profiles (12)
@@ -288,7 +288,7 @@ Pre-composed base + capability combinations. The orchestrator selects the right 
 | `security-audit` | analyst | security, cognito, review-quality | opus | Auth, payment, or data-access changes — always Opus, never downgraded |
 | `research` | operator | dynamic (context-dependent) | sonnet | `/deep-research`, `--research` flag on plan/quick skills |
 | `e2e` | executor | e2e, react-19 | sonnet | Writing or updating Playwright E2E tests |
-| `infra` | operator | infra | sonnet | AWS CLI, Amplify deployments, CDK operations |
+| `infra` | operator | infra | sonnet | AWS CLI, Amplify Gen 2 deployments, sandbox management |
 | `schema` | analyst | dynamodb | sonnet | DynamoDB schema design (evaluates single vs multi-table), access pattern analysis |
 | `content` | operator | content | sonnet | Articles, proposals, investor materials, outreach |
 | `debug` | executor | dynamic (context-dependent) | auto | Build/typecheck/lint failures — capabilities selected based on error context |

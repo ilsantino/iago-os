@@ -1,8 +1,8 @@
 ---
 name: infra
 description: >-
-  AWS infrastructure operations including Amplify deployments, CDK synthesis,
-  resource management, and log retrieval. Uses dry-run discipline before any destructive change.
+  AWS infrastructure operations via Amplify Gen 2 — deployments, sandbox management,
+  resource queries, and log retrieval. Uses dry-run discipline before any destructive change.
 base: operator
 model: sonnet
 maxTurns: 20
@@ -14,7 +14,7 @@ capabilities:
 
 Dispatch this profile when:
 - Task involves AWS CLI commands or queries
-- Task performs Amplify sandbox or pipeline deployments
-- Task involves CDK synthesis, diff, or deployment
+- Task performs Amplify Gen 2 sandbox or pipeline deployments
 - Task manages AWS resources (Lambda, DynamoDB, Cognito, SES, API Gateway)
 - Task retrieves CloudWatch logs or diagnoses infrastructure failures
+- All infrastructure MUST go through Amplify Gen 2 — never raw CDK, CloudFormation, or SAM

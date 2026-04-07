@@ -38,7 +38,7 @@ Read the project root to identify:
 - Directory structure pattern (feature folders, layer folders, flat)
 - Test setup (Vitest, Jest, Playwright, pytest, etc.)
 - Linter/formatter (Biome, ESLint, Prettier)
-- Infrastructure (Amplify, CDK, Terraform, Docker, etc.)
+- Infrastructure (Amplify Gen 2, Docker, etc.)
 - CI/CD (GitHub Actions, CircleCI, etc.)
 
 ### 2. Dispatch researcher (`--deep` flag or default)

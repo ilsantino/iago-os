@@ -11,7 +11,7 @@ Stack is fixed — do not suggest alternatives unless explicitly asked.
 - **Agents:** Claude SDK (Anthropic) + LangGraph + n8n
 - **Testing:** Vitest (unit/integration), Playwright (E2E)
 - **Tooling:** Biome (formatter + linter) — never Prettier, ESLint, or gofmt
-- **Infra:** AWS CDK, GitHub Actions CI/CD
+- **Infra:** AWS Amplify Gen 2 (manages all AWS resources), GitHub Actions CI/CD
 
 ## Code Standards
 

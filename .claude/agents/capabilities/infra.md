@@ -9,10 +9,12 @@
 - Local development: `npx ampx sandbox` — creates an isolated cloud environment per developer
 - Deploy to branch: `npx ampx pipeline-deploy --branch {branch}`
 
-## CDK
-- Use CDK constructs for custom resources not covered by Amplify defaults
-- Always run `npx cdk diff` before deploying — review the changeset before applying
-- Deploy with `npx cdk deploy --require-approval broadening`
+## Custom Resources
+
+If a resource is not covered by Amplify Gen 2 defaults, use `backend.addOutput()` or
+custom Amplify constructs within `amplify/backend.ts`. NEVER create standalone CDK apps,
+CloudFormation templates, SAM templates, or Serverless Framework configs. All infrastructure
+must flow through Amplify Gen 2.
 
 ## SES
 - Use SES v2 API exclusively: `@aws-sdk/client-sesv2` — the legacy `@aws-sdk/client-ses` is not used

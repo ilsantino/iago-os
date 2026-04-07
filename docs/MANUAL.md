@@ -286,7 +286,7 @@ Requires the Codex CLI: `npm install -g @openai/codex`. Run `/codex:setup` to ve
 | `security-audit` | analyst | Deep security review — always Opus |
 | `research` | operator | Multi-source research across codebase and web |
 | `e2e` | executor | Playwright E2E test writing |
-| `infra` | operator | AWS CLI, Amplify, CDK operations |
+| `infra` | operator | AWS CLI, Amplify Gen 2 deployments, sandbox management |
 | `schema` | analyst | DynamoDB single-table design |
 | `content` | operator | Articles, proposals, investor materials |
 | `debug` | executor | Build/typecheck/lint error resolution |
