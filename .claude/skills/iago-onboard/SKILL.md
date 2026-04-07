@@ -17,7 +17,7 @@ full iaGO workflow on a project that wasn't built with it.
 `/iago:onboard` — run in the root of the target codebase.
 
 Optional flags:
-- `--deep` — dispatch `researcher` agent for thorough multi-pass analysis
+- `--deep` — dispatch `research` agent for thorough multi-pass analysis
 - `--skip-init` — only produce the analysis, don't write `.iago/` files
 
 ## Preconditions
@@ -41,9 +41,9 @@ Read the project root to identify:
 - Infrastructure (Amplify Gen 2, Docker, etc.)
 - CI/CD (GitHub Actions, CircleCI, etc.)
 
-### 2. Dispatch researcher (`--deep` flag or default)
+### 2. Dispatch research agent (`--deep` flag or default)
 
-Dispatch `researcher` agent with:
+Dispatch `research` agent with:
 - The project root path
 - CLAUDE.md (for stack comparison)
 - Instruction: "Analyze this codebase and produce a structured report covering:

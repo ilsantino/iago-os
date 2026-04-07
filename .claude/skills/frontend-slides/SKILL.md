@@ -2,7 +2,7 @@
 name: frontend-slides
 description: >-
   Use when generating presentation slides from code, data, or content.
-  Not when writing static documents or articles (use /article-writing).
+  Not when writing static documents or articles (use /content-engine --formats blog).
 ---
 
 <!-- Source: ECC frontend-slides -->

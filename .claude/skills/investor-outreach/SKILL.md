@@ -3,7 +3,7 @@ name: investor-outreach
 description: >-
   Use when drafting investor emails, follow-ups, or outreach sequences.
   Not when creating pitch materials (use /investor-materials) or doing
-  market research (use /market-research).
+  market research (use /deep-research --focus market).
 ---
 
 <!-- Source: ECC investor-outreach -->

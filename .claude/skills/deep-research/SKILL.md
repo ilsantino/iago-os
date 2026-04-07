@@ -35,9 +35,9 @@ Break the question into 2-4 sub-questions:
 - What do others do? (prior art / competition)
 - What applies to our stack? (relevance filter)
 
-### 2. Dispatch researcher
+### 2. Dispatch research agent
 
-Dispatch `researcher` agent (Sonnet) with:
+Dispatch `research` agent (Sonnet) with:
 - The research question and sub-questions
 - CLAUDE.md (for stack context)
 - .iago/PROJECT.md (if exists, for project context)

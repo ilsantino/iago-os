@@ -2,7 +2,7 @@
 name: investor-materials
 description: >-
   Use when creating pitch decks, one-pagers, or investor-facing documents.
-  Not when doing market research (use /market-research) or drafting outreach
+  Not when doing market research (use /deep-research --focus market) or drafting outreach
   emails (use /investor-outreach).
 ---
 

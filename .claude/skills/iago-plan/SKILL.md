@@ -23,7 +23,7 @@ expected output. No placeholders.
 `/iago:plan {phase-slug}` — plan the specified phase.
 
 Optional flags:
-- `--research` — dispatch `researcher` agent to investigate codebase before planning
+- `--research` — dispatch `research` agent to investigate codebase before planning
 
 If no phase-slug provided, read ROADMAP.md and suggest the next `pending` or `active` phase.
 
@@ -40,7 +40,7 @@ Read:
 
 ### 2. Optional research
 
-If `--research` flag is set, dispatch the `researcher` agent:
+If `--research` flag is set, dispatch the `research` agent:
 - Question: "Scan the codebase for existing implementations related to {phase goal}.
   Report: relevant files, patterns in use, dependencies, potential conflicts."
 - Use findings to inform plan structure.
