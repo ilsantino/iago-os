@@ -95,7 +95,21 @@ For each wave:
 
 For each plan in the wave (whether dispatched in parallel or serially):
 
-#### 3a. Dispatch agent via profile
+#### 3a. Sync with remote before branching
+
+Before creating a branch or starting work on any plan:
+
+```bash
+git checkout main && git pull origin main
+```
+
+Then create the plan branch from the appropriate base:
+- If the plan depends on a previous plan's branch, rebase that branch onto the updated main first.
+- If the plan has no dependencies, branch directly from main.
+
+This prevents drift from remote changes made by other collaborators.
+
+#### 3b. Dispatch agent via profile
 
 Select a profile based on the plan's file paths:
 - Files in both `src/` and `amplify/` → `fullstack` profile
@@ -130,7 +144,7 @@ Context passed to the agent:
 
 Wait for the agent to return with a status.
 
-#### 3b. Handle agent response
+#### 3c. Handle agent response
 
 | Status | Action |
 |--------|--------|
@@ -139,7 +153,7 @@ Wait for the agent to return with a status.
 | NEEDS_CONTEXT | Provide missing context, re-dispatch |
 | BLOCKED | Log to STATE.md blockers, skip plan, continue wave |
 
-#### 3c. Build gate
+#### 3d. Build gate
 
 Run verification commands immediately after implementation — before dispatching
 any review agents. This catches trivial errors in seconds instead of wasting an
@@ -151,12 +165,12 @@ npm run type-check && npm run build   # tsc --noEmit + vite build
 
 | Result | Action |
 |--------|--------|
-| Pass | Proceed to review (3d) |
+| Pass | Proceed to review (3e) |
 | Fail | Dispatch `debug` profile with build output. After fix, re-run build gate. Max 2 retries — after that, STOP and escalate. |
 
 The build gate is non-negotiable. No code enters review until it compiles.
 
-#### 3d. Parallel review dispatch
+#### 3e. Parallel review dispatch
 
 Dispatch **both** review stages simultaneously. They are independent checks —
 spec compliance and code quality do not depend on each other.
@@ -170,16 +184,16 @@ Read `.iago/config.json` for `review.mode`:
 - Dispatch the `review-full` profile, which handles spec compliance (Stage 1) and quality review (Stage 2) with internal gating — if Stage 1 finds Critical issues, Stage 2 is skipped.
 - Context: plan file, CLAUDE.md, context artifact, git diff, PROJECT.md
 
-#### 3e. Handle review findings (merged)
+#### 3f. Handle review findings (merged)
 
 Merge findings from both reviewers into a single list. Deduplicate overlapping
 findings. Categorize by severity: Critical > Important > Minor.
 
 | Verdict | Action |
 |---------|--------|
-| Both approve | Proceed to Codex gate (3f) |
-| Important/Minor only | Log findings, proceed to Codex gate (3f) |
-| Any Critical findings | Re-dispatch implementation profile with ALL critical fix instructions (from both reviewers). After fix → back to build gate (3c). Max 2 fix rounds — after that, STOP and escalate. |
+| Both approve | Proceed to Codex gate (3g) |
+| Important/Minor only | Log findings, proceed to Codex gate (3g) |
+| Any Critical findings | Re-dispatch implementation profile with ALL critical fix instructions (from both reviewers). After fix → back to build gate (3d). Max 2 fix rounds — after that, STOP and escalate. |
 
 **POST-REVIEW — extract learnings:**
 After handling the merged review verdict, scan findings for recurring patterns —
@@ -193,7 +207,7 @@ For each identified pattern:
    - If not found: append a new entry with `occurrences: 1`, `first_seen`, and `last_seen` set to today.
 3. If any pattern reaches **5+ occurrences**, flag it in the plan summary as a candidate for promotion to `CLAUDE.md`.
 
-#### 3f. Codex adversarial review gate (mandatory)
+#### 3g. Codex adversarial review gate (mandatory)
 
 Dispatch `/codex:adversarial-review` (GPT-5.4 cross-model review) on every plan.
 A different model catches different blind spots — this is non-negotiable.
@@ -204,9 +218,9 @@ business logic errors, and state management issues.
 | Codex Verdict | Action |
 |---------------|--------|
 | Pass | Proceed to PR (3g) |
-| Findings | Log findings. Critical → re-dispatch implementation profile with fix instructions → back to build gate (3c). Non-critical → log and proceed. |
+| Findings | Log findings. Critical → re-dispatch implementation profile with fix instructions → back to build gate (3d). Non-critical → log and proceed. |
 
-#### 3g. Push branch and create PR
+#### 3h. Push branch and create PR
 
 After all reviews pass:
 
@@ -222,7 +236,7 @@ After all reviews pass:
 Branch naming: `feat/{phase-slug}/{plan-number}-{plan-name}`
 Example: `feat/stripe-connect-ticketing/01-dynamo-schema`
 
-#### 3h. Ad-hoc agent dispatch
+#### 3i. Ad-hoc agent dispatch
 
 During execution, dispatch as needed:
 - TDD discipline required — re-dispatch using the same profile, ensuring the `tdd` capability is included
