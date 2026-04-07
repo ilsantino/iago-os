@@ -1,11 +1,11 @@
 ---
 name: subagent-driven-development
 description: >-
-  Use when executing a multi-task implementation plan. Not when task is trivial
-  (single file, <5 min — use /iago:fast instead) or when executing a ROADMAP
-  phase (use /iago:execute instead).
+  Use when executing a multi-task implementation plan. Supports --pipeline for
+  full 5-stage review isolation. Not when task is trivial (single file, <5 min
+  — use /iago:fast instead) or when executing a ROADMAP phase (use /iago:execute
+  instead).
 ---
-
 
 ## Purpose
 
@@ -18,8 +18,13 @@ Each agent gets minimal, focused context — no cross-task state leakage.
 `/subagent-driven-development {plan-path}` — path to the plan file.
 
 Optional flags:
+- `--pipeline` — run each task through `scripts/execute-pipeline.sh` instead of
+  in-session agents. Gives full 5-stage review isolation (implement → build gate
+  → review → codex → PR) at the cost of more API calls and slower execution.
+  Recommended for production code changes; skip for config-only repos.
 - `--full-review` — two-stage review via `review-full` profile instead of
-  single-pass `review-single`
+  single-pass `review-single` (ignored when `--pipeline` is set, since the
+  pipeline handles its own review)
 - `--parallel` — dispatch all wave-1 tasks simultaneously (default: sequential)
 - `--dry-run` — validate plan without executing
 
@@ -41,7 +46,16 @@ If `--dry-run`: validate plan structure, report issues, stop.
 
 ### 2. Execute tasks
 
-For each task (respecting wave order):
+**If `--pipeline` is set:** For each task, write a single-task plan to
+`.iago/plans/sdd-{slug}-{N}.md`, then run:
+```bash
+bash scripts/execute-pipeline.sh --plan .iago/plans/sdd-{slug}-{N}.md --project-dir {dir}
+```
+The pipeline handles implement → build gate → review → codex → PR for each task.
+Skip steps 3-4b (review) since the pipeline handles them. Proceed directly to
+step 5 (write summary) after all tasks complete.
+
+**Default (no `--pipeline`):** For each task (respecting wave order):
 
 **a. Dispatch agent via profile**
 
@@ -133,6 +147,12 @@ your own work. YAGNI check: flag any code that isn't required by the plan.
 After internal review, dispatch `/codex:adversarial-review` (GPT-5.4 cross-model
 review) on the full diff. A different model catches different blind spots.
 
+**If Codex CLI is unavailable** (`command -v codex` fails or returns non-zero):
+fall back to a Claude adversarial review session — dispatch `review-single`
+profile with the diff and an adversarial prompt targeting auth bypass, data loss,
+race conditions, and business logic errors. Log that Codex was unavailable so
+the user knows cross-model review did not occur.
+
 The review targets: auth bypass, data loss, race conditions, rollback safety,
 business logic errors, and state management issues.
 
@@ -140,6 +160,7 @@ business logic errors, and state management issues.
 |---------------|--------|
 | Pass | Proceed to learnings extraction |
 | Findings | Critical → dispatch fix agent (same profile) → re-review. Non-critical → log and proceed. |
+| Unavailable | Fall back to Claude adversarial review (see above). Log the fallback. |
 
 **Learnings extraction** — after processing all review findings:
 1. Identify recurring patterns from the review that apply beyond the current task (e.g., "Always validate DynamoDB pk/sk before write", "Use `useTransition` for mutation feedback").
