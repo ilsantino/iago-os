@@ -140,7 +140,7 @@ done
 log "REVIEW — $PLAN_NAME"
 
 # Stage all new/modified files so they appear in the diff
-(cd "$PROJECT_DIR" && git add -A)
+(cd "$PROJECT_DIR" && git add -A -- ':!**/.env' ':!**/.env.*' ':!**/*.pem' ':!**/*.key' ':!**/*.p12' ':!**/*.pfx')
 
 # Diff: committed changes since pre-impl + staged working tree changes
 DIFF=$(cd "$PROJECT_DIR" && git diff "$PRE_IMPL_SHA"..HEAD 2>/dev/null || echo "")
@@ -221,7 +221,7 @@ Fix build errors: $BUILD_ERRORS" \
   fi
 
   # Re-review — re-stage and capture full diff
-  (cd "$PROJECT_DIR" && git add -A)
+  (cd "$PROJECT_DIR" && git add -A -- ':!**/.env' ':!**/.env.*' ':!**/*.pem' ':!**/*.key' ':!**/*.p12' ':!**/*.pfx')
   DIFF=$(cd "$PROJECT_DIR" && { git diff "$PRE_IMPL_SHA"..HEAD 2>/dev/null || echo ""; } && { git diff --cached 2>/dev/null || echo ""; })
   REVIEW_EXIT=0
   REVIEW_OUTPUT=$(cd "$PROJECT_DIR" && claude -p "Review this diff. Categorize as Critical/Important/Minor. Verdict: PASS/PASS_WITH_CONCERNS/FAIL.
