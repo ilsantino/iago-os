@@ -52,7 +52,8 @@ Execute all? (y/n)
 ### 2. Resolve paths
 
 ```bash
-IAGO_ROOT="/c/Users/sanal/dev/iago-os"
+# Dynamic resolution. Override with IAGO_OS_ROOT env var for cross-machine use.
+IAGO_ROOT="${IAGO_OS_ROOT:-$(cd "$(dirname "$0")/../.." && pwd)}"
 SCRIPT="$IAGO_ROOT/scripts/execute-pipeline.sh"
 PROJECT_DIR="{cwd}"  # the client project directory (where .iago/ lives)
 ```

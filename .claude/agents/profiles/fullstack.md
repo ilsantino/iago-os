@@ -4,7 +4,7 @@ description: >-
   Full-stack implementation tasks spanning React frontend and
   DynamoDB/Lambda backend. Use for tasks that touch both layers.
 base: executor
-model: auto
+model: opus
 maxTurns: 25
 capabilities:
   - react-19

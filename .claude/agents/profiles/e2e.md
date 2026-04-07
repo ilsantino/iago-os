@@ -4,7 +4,7 @@ description: >-
   Playwright E2E test writing and execution. Understands Suspense boundaries,
   selector priority, and test independence patterns for React 19 applications.
 base: executor
-model: sonnet
+model: opus
 maxTurns: 25
 capabilities:
   - e2e

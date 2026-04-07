@@ -4,7 +4,7 @@ description: >-
   Backend-only implementation tasks. Use for tasks confined to Lambda
   handlers, DynamoDB schema, and Cognito configuration with no frontend changes.
 base: executor
-model: auto
+model: opus
 maxTurns: 25
 capabilities:
   - dynamodb

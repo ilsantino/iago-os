@@ -5,7 +5,7 @@ description: >-
   and stops on any Critical finding. Stage 2 checks code quality and
   security only if Stage 1 passes.
 base: analyst
-model: auto
+model: sonnet
 maxTurns: 18
 capabilities:
   - security

@@ -4,8 +4,10 @@ description: >-
   Use when maintaining a persistent agent that watches and reacts over time
   (monitoring, polling, continuous integration). Not when running a one-shot
   task (use /autonomous-loops) or a bounded implementation (use /subagent-driven-development).
+experimental: true
 ---
 
+> **Experimental:** This skill describes behavior that may exceed current Claude Code capabilities. Cost ceilings, context introspection, and persistent daemon loops are not enforced by the platform. Use with awareness of these limitations.
 
 ## Purpose
 

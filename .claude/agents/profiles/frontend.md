@@ -4,7 +4,7 @@ description: >-
   Frontend-only implementation tasks. Use for tasks confined to React
   components, features, and forms with no backend changes.
 base: executor
-model: auto
+model: opus
 maxTurns: 25
 capabilities:
   - react-19
