@@ -125,12 +125,13 @@ jobs:
 
             Do NOT post a comment tagging @claude — a separate workflow step handles that.
 
-      # Re-tag @claude from github-actions[bot] so it routes through claude.yml
-      # (review), not back through this fix workflow.
+      # Re-tag @claude using PAT so the comment triggers claude.yml.
+      # Default GITHUB_TOKEN can't trigger other workflows (GitHub limitation).
       - name: Tag @claude for re-review
         if: steps.pr.outputs.skip != 'true'
         uses: actions/github-script@v7
         with:
+          github-token: ${{ secrets.GH_PAT }}
           script: |
             const round = '${{ steps.pr.outputs.round }}';
             await github.rest.issues.createComment({
