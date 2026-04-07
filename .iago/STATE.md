@@ -22,5 +22,5 @@
 |------|------|-------------|--------|
 | 2026-04-07 | quick | Security hardening: fail-closed hooks, bash secrets, safe staging | 476e82c |
 | 2026-04-07 | quick | Agent/skill config: model routing, dynamic paths, experimental tags | dc3b80b |
-| 2026-04-07 | quick | Housekeeping: ECC comments, archive research, STATE.md | pending |
+| 2026-04-07 | quick | Housekeeping: ECC comments, archive research, STATE.md | 2f20a3f |
 | 2026-04-07 | quick | Harden SDD: --pipeline flag, Codex fallback | pending |
