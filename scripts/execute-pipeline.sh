@@ -5,8 +5,9 @@ set -euo pipefail
 #
 # Usage: ./scripts/execute-pipeline.sh --plan .iago/plans/plan-01.md --project-dir /path/to/project
 #
-# Runs the full pipeline: implement → build → review → codex → PR
+# Runs the full pipeline: implement → build → review → codex → PR → tag @claude
 # Each step is a separate claude -p session with fresh context.
+# After PR creation, calls review-fix-loop.sh to poll and fix until approved.
 # No n8n needed — just bash.
 
 PLAN_PATH=""
@@ -249,12 +250,57 @@ if [[ $PR_EXIT -ne 0 ]]; then
   exit 1
 fi
 
-# ─── Step 6: Write summary ────────────────────────────────────────────
+# ─── Step 5b: Tag @claude for PR review ─────────────────────────────
+PR_URL=$(echo "$PR_OUTPUT" | grep -oE 'https://github\.com/[^ ]+/pull/[0-9]+' | head -1)
+
+# Fallback: if URL extraction failed, query gh for the PR by current branch
+if [[ -z "$PR_URL" ]]; then
+  log "WARNING: Could not extract PR URL from session output — querying gh"
+  CURRENT_BRANCH=$(cd "$PROJECT_DIR" && git branch --show-current)
+  PR_URL=$(cd "$PROJECT_DIR" && gh pr view "$CURRENT_BRANCH" --json url -q '.url' 2>/dev/null || echo "")
+fi
+
+if [[ -n "$PR_URL" ]]; then
+  PR_NUMBER=$(echo "$PR_URL" | grep -oE '[0-9]+$')
+  log "TAGGING @claude on PR #$PR_NUMBER"
+  # Extract plan goal (first paragraph after ## Goal heading)
+  PLAN_GOAL=$(echo "$PLAN_CONTENT" | sed -n '/^## Goal/,/^##/{/^## Goal/d;/^##/d;p;}' | head -5)
+  # Build focused review prompt from pipeline context
+  CLAUDE_REVIEW_BODY=$(cat <<REVIEW_EOF
+@claude Review this PR. Focus on:
+
+**Plan goal:** ${PLAN_GOAL:-"See $PLAN_PATH"}
+
+**Codex flagged these risks — verify they are addressed or acceptably deferred:**
+$(echo "$CODEX_OUTPUT" | grep -E '^\- \[P[0-9]\]' | head -5)
+
+**Review stage found:**
+$(echo "$REVIEW_OUTPUT" | grep -E '(Critical|Important)' | head -5)
+
+Check correctness of the implementation against the plan goal. Flag anything that could break in production.
+REVIEW_EOF
+)
+  (cd "$PROJECT_DIR" && gh pr comment "$PR_NUMBER" --body "$CLAUDE_REVIEW_BODY") || log "WARNING: Failed to post @claude comment on PR #$PR_NUMBER"
+else
+  log "ERROR: Could not determine PR URL — @claude review tag was NOT posted. Check PR manually."
+fi
+
+# ─── Step 6: Review-fix loop (delegates to review-fix-loop.sh) ───────
+if [[ -n "${PR_NUMBER:-}" ]]; then
+  log "Launching review-fix loop for PR #$PR_NUMBER"
+  "$SCRIPT_DIR/review-fix-loop.sh" --pr "$PR_NUMBER" --project-dir "$PROJECT_DIR" || {
+    log "WARNING: Review-fix loop exited non-zero — check PR manually"
+  }
+else
+  log "WARNING: No PR number — skipping review-fix loop"
+fi
+
+# ─── Step 7: Write summary ────────────────────────────────────────────
 log "SUMMARY — $PLAN_NAME"
 SUMMARY_DIR="$PROJECT_DIR/.iago/summaries"
 mkdir -p "$SUMMARY_DIR"
 
-PR_URL=$(echo "$PR_OUTPUT" | grep -oE 'https://github\.com/[^ ]+/pull/[0-9]+' | head -1)
+# PR_URL already extracted in Step 5b
 DIFF_STAT=$(cd "$PROJECT_DIR" && git diff --stat "$PRE_IMPL_SHA"..HEAD 2>/dev/null || echo "(no stats)")
 NOW=$(date -u '+%Y-%m-%d')
 

@@ -83,6 +83,8 @@ runs the script for each plan, every step is a separate `claude -p` session:
 3. **Review** — fresh session checks diff against plan (Critical/Important/Minor)
 4. **Codex adversarial** — `codex review` or fresh session checks auth, data loss, races
 5. **Create PR** — fresh session stages, commits, pushes, creates PR via `gh`
+6. **Review-fix loop** — tag @claude → poll for review → fix all comments → build gate → push → re-tag → repeat until approved (max 5 rounds)
+7. **Summary** — write pipeline results to `.iago/summaries/`
 
 Critical findings → fix → rebuild → re-review (max 2 rounds). Non-critical → logged.
 
