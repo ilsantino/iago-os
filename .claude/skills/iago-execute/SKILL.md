@@ -18,6 +18,9 @@ orchestrator session.
 - At least one `.iago/plans/{NN}-{slug}-*.md` must exist for the target phase.
   If not, STOP: "No plans found. Run `/iago:plan {slug}` first."
 - `scripts/execute-pipeline.sh` must exist in the iago-os root.
+- When invoking from a client project directory, set `IAGO_OS_ROOT` to the
+  iago-os installation path (e.g., `export IAGO_OS_ROOT=~/dev/iago-os`).
+  `git rev-parse --show-toplevel` resolves to the client root, not iago-os.
 
 ## Arguments
 
