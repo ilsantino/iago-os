@@ -25,7 +25,9 @@ agents do the work.
 
 `/iago:execute {phase-slug} --serial` — bypass parallel execution; run all plans sequentially (useful for debugging and CI).
 
-`/iago:execute {phase-slug} --n8n` — dispatch plans to the n8n cross-session pipeline instead of in-session agents. Each plan runs in a fresh Claude Code session with clean context. Requires n8n setup (see `n8n/README.md`).
+`/iago:execute {phase-slug} --pipeline` — run each plan through the cross-session pipeline (`scripts/execute-pipeline.sh`). Each step (implement, build, review, codex, PR) is a separate `claude -p` session with fresh context. No n8n required.
+
+`/iago:execute {phase-slug} --n8n` — same as `--pipeline` but dispatches to an n8n webhook for visual monitoring, retries, and Slack notifications. Requires n8n setup (see `n8n/README.md`).
 
 If no phase-slug provided, read STATE.md for the current active phase.
 
@@ -42,21 +44,29 @@ Wave 2: plans depending on wave 1 → execute after wave 1 completes
 Wave N: continue sequentially
 ```
 
-### 1a. Recommend --n8n when appropriate
+### 1a. Recommend --pipeline when appropriate
 
-After loading plans, if ALL of these are true, suggest cross-session dispatch:
-- 3 or more plans in the phase
-- `automation.n8n_webhook_url` is configured in `.iago/config.json`
-- `--n8n` flag was NOT already provided
+After loading plans, if the phase has 3 or more plans and neither `--pipeline` nor `--n8n` was provided:
 
-Display: "This phase has {N} plans. Consider `/iago:execute {slug} --n8n` for cross-session dispatch — each step gets fresh context, and you don't need to stay in the session. Proceed in-session? (y/n)"
+Display: "This phase has {N} plans. Consider `--pipeline` for cross-session dispatch — each step (implement, build, review, codex, PR) runs in a fresh Claude session with full context budget. You can walk away while it runs. Proceed in-session? (y/n)"
 
 If the user says yes, continue with normal in-session execution.
-If the user says no or wants --n8n, switch to the n8n dispatch flow below.
+If the user says no, switch to the pipeline dispatch below.
 
-If `n8n_webhook_url` is NOT configured but plan count >= 3, still mention it: "This phase has {N} plans — context may fill up. For future runs, set up cross-session dispatch: see `n8n/README.md`."
+### 1b. Check for --pipeline dispatch
 
-### 1b. Check for --n8n dispatch
+If `--pipeline` flag is set:
+
+1. For each plan (respecting wave order — wave 1 first, then wave 2, etc.):
+2. Run: `bash scripts/execute-pipeline.sh --plan {plan_path} --project-dir {cwd}`
+3. The script handles the full cycle: implement → build gate → review → codex → PR, each as a separate `claude -p` session.
+4. If running multiple plans, execute them sequentially (wave order). Plans in the same wave with no file conflicts can be run in parallel by launching multiple `execute-pipeline.sh` processes.
+5. Update STATE.md: Status → `executing (pipeline)`
+6. Report: "Running {N} plans through cross-session pipeline. Each step is a fresh Claude session."
+
+No n8n required. No webhook. Just bash.
+
+### 1c. Check for --n8n dispatch
 
 If `--n8n` flag is set:
 

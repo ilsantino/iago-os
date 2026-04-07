@@ -399,11 +399,12 @@ iago-os/
     new-client.sh/.ps1       # Scaffold new project from template
     sync-skills.sh/.ps1      # Sync skills/agents/rules to project or globally
     usage-report.sh/.ps1     # Usage analytics from JSONL telemetry
+    execute-pipeline.sh      # Cross-session pipeline (no n8n needed)
     validate-hooks.sh        # CI: hook syntax validation
     validate-skills.sh       # CI: skill frontmatter validation
-  n8n/
+  n8n/                       # Optional: n8n visual orchestration layer
     workflows/               # Importable n8n workflow JSON
-    scripts/                 # Shell wrappers for claude CLI invocation
+    scripts/                 # Shell wrappers for n8n Execute Command nodes
     README.md                # n8n setup guide
   docs/
     MANUAL.md                # Complete usage manual
@@ -515,22 +516,30 @@ Recurring tasks that run on a cron schedule without you being in a session. Inst
 
 Non-conflicting plans within the same wave execute simultaneously in isolated git worktrees. Each agent gets its own copy of the repo — no file conflicts, no merge races. This happens automatically during `/iago:execute` when plans in the same wave don't share files. No setup needed.
 
-**Level 3 — n8n cross-session pipeline** (`/iago:execute --n8n`)
+**Level 3 — Cross-session pipeline** (`/iago:execute --pipeline`)
 
-The full execute cycle (implement → build gate → review → codex → PR) runs across **separate Claude Code sessions**, each with fresh context. n8n orchestrates the state machine:
+The full execute cycle (implement → build gate → review → codex → PR) runs across **separate Claude Code sessions**, each with fresh context. No n8n required — just a bash script:
 
 ```
-/iago:execute phase-1 --n8n
-    → n8n receives plan via webhook
+/iago:execute phase-1 --pipeline
     → Session 1: implement (full context budget)
-    → Build gate: tsc + vite (shell, no Claude)
-    → Session 2: review (only sees diff + plan)
+    → Build gate: tsc + vite (shell command, no Claude)
+    → Session 2: review (only sees diff + plan, no implementation noise)
     → Session 3: codex adversarial review (GPT-5.4)
     → Session 4: create PR
-    → Slack notification with PR URL + findings
 ```
 
-Each step gets clean context. The review agent never sees implementation conversation noise. Fix cycles loop automatically (max 2 rounds). Setup: `npx n8n` → import `n8n/workflows/iago-execute-pipeline.json` → set env vars. Full guide in `n8n/README.md`.
+Each step gets clean context. Fix cycles loop automatically (max 2 rounds). You can walk away while it runs. The orchestrator suggests this automatically when a phase has 3+ plans.
+
+Or run it directly for a single plan:
+
+```bash
+bash scripts/execute-pipeline.sh --plan .iago/plans/01-phase-1-01.md --project-dir .
+```
+
+**Level 4 — n8n visual orchestration** (`/iago:execute --n8n`)
+
+Same pipeline as Level 3, but orchestrated by n8n for visual monitoring, execution history, retry UI, and Slack notifications. Import `n8n/workflows/iago-execute-pipeline.json` into n8n. Full guide in `n8n/README.md`.
 
 ## Built On
 
