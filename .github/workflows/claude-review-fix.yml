@@ -29,7 +29,6 @@ jobs:
       pull-requests: write
       issues: write
       id-token: write
-      workflows: write
     steps:
       - name: Check for findings and round limit
         id: pr
