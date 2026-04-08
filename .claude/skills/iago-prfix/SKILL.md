@@ -7,9 +7,9 @@ description: >-
 
 ## Purpose
 
-Fix every review comment on this branch's open PR to main. Tags @claude on the
-PR with fix instructions — the `claude-review-fix.yml` GitHub Action handles the
-automated fix → build → push → re-tag loop (max 5 rounds).
+Fix every review comment on this branch's open PR to main. Tags @claude for a
+REVIEW (not fix) — `claude.yml` reviews, then `claude-review-fix.yml` handles
+the automated fix → build → push → re-review loop (max 5 rounds).
 
 ## Arguments
 
@@ -52,17 +52,17 @@ Filter to PRs that have `CHANGES_REQUESTED` or unresolved review comments.
 
 ### 2. Tag @claude on each PR
 
-For each PR, post a comment that triggers the review-fix Action:
+For each PR, post a comment that triggers `claude.yml` to REVIEW:
 
 ```bash
-gh pr comment {number} --body "@claude Fix all review comments on this PR. Read every comment, fix the code, run the build (npx tsc --noEmit && npx vite build), push. Do not skip any finding. General pass for anything unexpected."
+gh pr comment {number} --body "@claude Review this PR. Check all existing review comments and whether they have been addressed. Flag any unresolved findings. General pass for anything unexpected."
 ```
 
-The `claude-review-fix.yml` Action handles the loop:
-1. Claude Code fixes all findings, builds, pushes
-2. Tags @claude for another review
-3. If new findings → Action triggers again → fixes → re-tags
-4. Stops when clean or max 5 rounds
+The review-fix loop handles everything after:
+1. `claude.yml` reviews → posts findings → signals `[claude-review-complete]`
+2. `claude-review-fix.yml` fixes all findings → pushes → re-tags @claude
+3. `claude.yml` re-reviews → if clean, posts summary → human merges
+4. If still findings → loop repeats (max 5 rounds)
 
 ### 3. Report
 
