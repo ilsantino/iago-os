@@ -155,14 +155,16 @@ else
   DIFF="$COMBINED_DIFF"
 
 REVIEW_EXIT=0
-REVIEW_OUTPUT=$(cd "$PROJECT_DIR" && claude -p "Review this diff against the plan. Categorize findings as Critical, Important, or Minor. End with verdict: PASS, PASS_WITH_CONCERNS, or FAIL.
+REVIEW_OUTPUT=$(cd "$PROJECT_DIR" && claude -p "Review this diff against the plan below. Categorize findings as Critical, Important, or Minor. End with verdict: PASS, PASS_WITH_CONCERNS, or FAIL.
 
-Plan: $PLAN_PATH
+Plan:
+$PLAN_CONTENT
 
 Diff:
 $DIFF" \
   --model opus \
   --max-turns 25 \
+  --allowedTools "Read Glob Grep Bash" \
   --output-format text 2>&1) || REVIEW_EXIT=$?
 
 log "Review output:"
@@ -224,12 +226,16 @@ Fix build errors: $BUILD_ERRORS" \
   (cd "$PROJECT_DIR" && git add -A -- ':!**/.env' ':!**/.env.*' ':!**/*.pem' ':!**/*.key' ':!**/*.p12' ':!**/*.pfx')
   DIFF=$(cd "$PROJECT_DIR" && { git diff "$PRE_IMPL_SHA"..HEAD 2>/dev/null || echo ""; } && { git diff --cached 2>/dev/null || echo ""; })
   REVIEW_EXIT=0
-  REVIEW_OUTPUT=$(cd "$PROJECT_DIR" && claude -p "Review this diff. Categorize as Critical/Important/Minor. Verdict: PASS/PASS_WITH_CONCERNS/FAIL.
+  REVIEW_OUTPUT=$(cd "$PROJECT_DIR" && claude -p "Re-review this diff against the plan below. Categorize findings as Critical, Important, or Minor. End with verdict: PASS, PASS_WITH_CONCERNS, or FAIL.
+
+Plan:
+$PLAN_CONTENT
 
 Diff:
 $DIFF" \
     --model opus \
     --max-turns 25 \
+    --allowedTools "Read Glob Grep Bash" \
     --output-format text 2>&1) || REVIEW_EXIT=$?
   log "Re-review output:"
   echo "$REVIEW_OUTPUT"
