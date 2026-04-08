@@ -137,17 +137,24 @@ jobs:
             every actionable finding (Critical, Important, Minor), and fix ALL of them.
 
             WORKFLOW:
-            1. Use `gh api repos/${{ github.repository }}/issues/${{ github.event.issue.number }}/comments` to read the review
-            2. Find the most recent claude[bot] comment containing review findings
-            3. For each finding: read the referenced file, apply the fix
-            4. After all fixes, commit and push:
+            1. Read review comments:
+               gh api repos/${{ github.repository }}/issues/${{ github.event.issue.number }}/comments --jq '.[] | select(.user.login == "claude[bot]") | .body' | tail -1
+            2. Extract each finding — look for lines with Critical, Important, or Minor
+            3. For each finding:
+               a. Read the referenced file
+               b. Apply the fix
+               c. VERIFY the fix worked — re-read the file and confirm the issue is gone
+            4. After all fixes verified, commit and push:
                git add -A
                git commit -m "fix: address review findings (round ${{ steps.pr.outputs.round }})"
                git push
 
             RULES:
             - Do NOT skip any finding regardless of severity
-            - If you cannot fix something, explain why in a PR comment
+            - VERIFY each fix before moving on — if the issue persists, try again
+            - If a finding was flagged in a previous round and is still present,
+              it means your previous fix didn't work. Try a DIFFERENT approach.
+            - If you cannot fix something after 2 attempts, explain why in a PR comment
             - Do NOT post a comment tagging @claude — a later step handles that
             - You MUST commit and push even if changes are small
 

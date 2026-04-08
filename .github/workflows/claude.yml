@@ -36,6 +36,24 @@ jobs:
       - uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          custom_instructions: |
+            When reviewing PRs, follow these rules:
+
+            OUTPUT RULES:
+            - Report ONLY actionable findings (things that need to change)
+            - Do NOT list files/functions that are correct — no "clean" confirmations
+            - Do NOT write "General pass — no new findings" followed by a list of clean items
+            - If everything is clean, just say "No issues found" and stop
+            - Categorize findings as Critical, Important, or Minor
+            - End with a verdict: PASS, PASS_WITH_CONCERNS, or FAIL
+
+            RE-REVIEW RULES (when previous review comments exist on the PR):
+            - Check if previously flagged findings have been resolved
+            - Report only: (1) findings that are STILL unresolved, (2) NEW findings
+            - Do NOT re-report findings that were fixed
+            - If all previous findings are resolved and no new ones, verdict is PASS
+
+            Be concise. Findings only. No filler.
 
       # Post a signal comment AFTER the action completes.
       # The action edits its own comment to add "Claude finished", but
