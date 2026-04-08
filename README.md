@@ -269,7 +269,7 @@ flowchart LR
 6. **Summary:** Persists result to `.iago/summaries/` for `/iago:verify`
 
 Critical findings trigger automatic fix → rebuild → re-review (max 2 rounds).
-After PR creation, `claude-review-fix.yml` handles the async fix loop: Claude reviews → fix Action → push → re-tag → repeat until clean (max 5 rounds). Human reviews and merges.
+After PR creation, `claude-review-fix.yml` handles the async fix loop: Claude reviews → fix Action → push → re-tag → repeat until clean (max 5 rounds). When clean, Claude posts a structured summary of all changes and fixes across all rounds. Human reviews the summary and merges. Both workflows skip merged/closed PRs automatically.
 
 ### Capability Modules (13)
 
@@ -408,12 +408,16 @@ iago-os/
     hooks/                   # 8 hooks (context, safety, formatting, tracking)
       lib/                   # Shared utilities (stdin, flags, state-manager)
     state/                   # Runtime state (sessions, usage log)
+  .github/
+    workflows/
+      claude.yml             # PR review via Claude Code Action
+      claude-review-fix.yml  # Async review-fix loop (fix → push → re-review)
   templates/
-    client-project/          # Client project template
+    client-project/          # Client project template (includes workflows)
     internal-project/        # Internal project template
   scripts/
     new-client.sh/.ps1       # Scaffold new project from template
-    sync-skills.sh/.ps1      # Sync skills/agents/rules to project or globally
+    sync-skills.sh/.ps1      # Sync skills/agents/rules/workflows to project or globally
     usage-report.sh/.ps1     # Usage analytics from JSONL telemetry
     execute-pipeline.sh      # Cross-session pipeline (no n8n needed)
     validate-hooks.sh        # CI: hook syntax validation

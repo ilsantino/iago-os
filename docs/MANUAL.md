@@ -277,12 +277,13 @@ What happens:
 3. Claude Code Action reads all review findings, fixes the code, and pushes
 4. A `[claude-review-complete]` signal triggers the review-fix loop
 5. If findings remain, it loops: fix → push → re-tag → re-review (max 5 rounds)
-6. When clean (or max rounds reached), the loop stops and the PR is ready for human merge
+6. When clean, Claude posts a structured summary of all changes and fixes across all rounds
+7. Human reviews the summary and merges (or requests more changes)
 
-**Important:** This runs entirely via GitHub Actions — you don't need to stay in a session. The async loop handles everything.
+**Important:** This runs entirely via GitHub Actions — you don't need to stay in a session. The async loop handles everything. Both workflows skip merged/closed PRs automatically.
 
 **Requirements:**
-- `.github/workflows/claude.yml` and `.github/workflows/claude-review-fix.yml` installed on the repo
+- `.github/workflows/claude.yml` and `.github/workflows/claude-review-fix.yml` installed on the repo (synced via `sync-skills.sh --target` or scaffolded with `new-client.sh`)
 - `GH_PAT` secret set on the repo (fine-grained PAT with Contents/Issues/Pull requests R/W scope)
 - `CLAUDE_CODE_OAUTH_TOKEN` secret set on the repo
 

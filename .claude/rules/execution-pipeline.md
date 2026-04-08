@@ -59,9 +59,12 @@ scripts/execute-pipeline.sh --plan {path} --project-dir {dir}
   claude.yml: @claude tag triggers Claude Code Action review.
     After review completes, posts [claude-review-complete] signal via GH_PAT.
   claude-review-fix.yml: [claude-review-complete] signal triggers fix loop.
-    Checks if review is clean → if not, fixes all findings → pushes →
+    Checks if review is clean → if not, fix agent fixes all findings →
+    git config + commit + push (with fallback push step) →
     re-tags @claude via GH_PAT → claude.yml re-reviews (max 5 rounds).
-  Human merges when clean.
+    When clean → posts structured summary of all changes/fixes for human review.
+  Both workflows skip merged/closed PRs (state == open guard).
+  Human reviews summary and merges.
 ```
 
 ### Handling Findings
