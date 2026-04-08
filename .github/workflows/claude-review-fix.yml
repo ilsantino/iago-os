@@ -141,7 +141,7 @@ jobs:
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           claude_args: "--max-turns 50"
-          custom_instructions: |
+          prompt: |
             You are a review-fix agent. Round ${{ steps.pr.outputs.round }}/5.
 
             TASK: Read the latest claude[bot] review comment on this PR, identify
@@ -217,7 +217,7 @@ jobs:
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           claude_args: "--max-turns 10"
-          custom_instructions: |
+          prompt: |
             The review-fix loop has completed — all findings are resolved.
 
             Write a PR summary comment for the human reviewer. Use bullet points.
