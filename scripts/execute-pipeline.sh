@@ -174,7 +174,7 @@ fi
 
 # Check for critical findings
 fix_attempt=0
-while echo "$REVIEW_OUTPUT" | grep -qE "\*\*Critical" || echo "$REVIEW_OUTPUT" | grep -qiE "Verdict:[[:space:]]*FAIL"; do
+while echo "$REVIEW_OUTPUT" | grep -qiE "(\*\*Critical|^#+[[:space:]]*Critical)" || echo "$REVIEW_OUTPUT" | grep -qiE "Verdict:[[:space:]]*FAIL"; do
   fix_attempt=$((fix_attempt + 1))
 
   if [[ $fix_attempt -gt $MAX_FIX_RETRIES ]]; then
