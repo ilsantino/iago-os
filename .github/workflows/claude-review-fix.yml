@@ -21,6 +21,7 @@ jobs:
     # This is a separate comment from the Claude Code Action's own review comment.
     if: |
       github.event.issue.pull_request &&
+      github.event.issue.state == 'open' &&
       contains(github.event.comment.body, '[claude-review-complete]')
     runs-on: ubuntu-latest
     permissions:
