@@ -77,14 +77,15 @@ jobs:
             const isClean = hasCleanSignal || hasPassVerdict;
 
             // Also check inline review comments from claude[bot]
-            const reviewComments = await github.rest.pulls.listReviewComments({
+            const reviewComments = await github.paginate(github.rest.pulls.listReviewComments, {
               owner: context.repo.owner,
               repo: context.repo.repo,
               pull_number: prNumber,
+              per_page: 100,
             });
-            const recentInline = reviewComments.data.filter(c =>
+            const recentInline = reviewComments.filter(c =>
               c.user.login === 'claude[bot]' &&
-              new Date(c.created_at) > new Date(Date.now() - 10 * 60 * 1000) // last 10 min
+              new Date(c.created_at) > new Date(Date.now() - 30 * 60 * 1000) // last 30 min
             );
 
             // If clean completion and no inline comments, mark as clean
