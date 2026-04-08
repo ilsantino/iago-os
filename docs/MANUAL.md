@@ -214,6 +214,10 @@ For obvious changes to 3 files or fewer. No planning, no agents, no review.
 
 **Redirects to `/iago:quick`** if you try to touch more than 3 files or the scope is unclear.
 
+### Post-Review Fixes (`/iago:prfix`)
+
+When a PR has review comments that need fixing, `/iago:prfix` dispatches the GitHub Action review-fix loop. See the Code Review Pipeline section for details.
+
 ---
 
 ## Code Review Pipeline
@@ -253,6 +257,36 @@ The Codex adversarial review is mandatory — not optional, not conditional. A d
 ```
 
 Requires the Codex CLI: `npm install -g @openai/codex`. Run `/codex:setup` to verify.
+
+---
+
+### Post-Review: Fixing PR Comments (`/iago:prfix`)
+
+After a PR gets review comments — from Claude, Codex, or a human reviewer — use `/iago:prfix` to fix them automatically.
+
+```
+> /iago:prfix              # Fix comments on current branch's PR
+> /iago:prfix 16           # Fix a specific PR by number
+> /iago:prfix --all        # Fix all open PRs with unresolved comments
+```
+
+What happens:
+
+1. `/iago:prfix` posts a comment tagging `@claude` on the PR with fix instructions
+2. The `claude-review-fix.yml` GitHub Action picks it up
+3. Claude Code Action reads all review findings, fixes the code, and pushes
+4. A `[claude-review-complete]` signal triggers the review-fix loop
+5. If findings remain, it loops: fix → push → re-tag → re-review (max 5 rounds)
+6. When clean (or max rounds reached), the loop stops and the PR is ready for human merge
+
+**Important:** This runs entirely via GitHub Actions — you don't need to stay in a session. The async loop handles everything.
+
+**Requirements:**
+- `.github/workflows/claude.yml` and `.github/workflows/claude-review-fix.yml` installed on the repo
+- `GH_PAT` secret set on the repo (fine-grained PAT with Contents/Issues/Pull requests R/W scope)
+- `CLAUDE_CODE_OAUTH_TOKEN` secret set on the repo
+
+The GH_PAT is needed because GitHub's default `GITHUB_TOKEN` cannot trigger other workflows — a PAT makes the re-tag comment trigger the next review cycle.
 
 ---
 

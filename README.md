@@ -1,5 +1,21 @@
 # iaGO-OS
 
+<div align="center">
+
+<img src="https://img.shields.io/badge/Claude_Code-config_layer-7C3AED?style=for-the-badge&logo=anthropic&logoColor=white" alt="Claude Code">
+<img src="https://img.shields.io/badge/Skills-33-blue?style=for-the-badge" alt="Skills">
+<img src="https://img.shields.io/badge/Agent_Profiles-12-green?style=for-the-badge" alt="Agent Profiles">
+<img src="https://img.shields.io/badge/Platform-Windows_%7C_macOS-lightgrey?style=for-the-badge" alt="Platform">
+<img src="https://img.shields.io/badge/License-Proprietary-red?style=for-the-badge" alt="License">
+
+**Turn Claude Code into a disciplined project delivery system.**
+
+*Plan with verification. Implement with TDD. Review with multiple models. Ship with evidence.*
+
+</div>
+
+---
+
 A configuration layer for [Claude Code](https://claude.ai/code) that turns it into a structured project delivery system.
 
 iaGO-OS is not a framework, not an SDK, and not a SaaS product. It's a set of files — markdown skills, agent profiles, hook scripts, and state management — that sit alongside your code in `.claude/` and `.iago/` directories. When Claude Code loads your project, it reads these files and becomes a disciplined delivery system instead of a blank-slate chatbot.
@@ -15,7 +31,7 @@ iaGO-OS is not a framework, not an SDK, and not a SaaS product. It's a set of fi
 
 **How it works:** You type `/iago:init` and Claude asks about your project. It produces a roadmap. You run `/iago:plan` and it breaks the next phase into tasks. You run `/iago:execute` and it dispatches specialized agents — one per task — then reviews each one through a 3-stage pipeline (internal review, quality check, cross-model adversarial review via GPT-5.4). You run `/iago:verify` and it checks every goal against real evidence. If it passes, it opens a PR.
 
-For small stuff: `/iago:quick` does plan-implement-review in one shot. `/iago:fast` skips everything for a 3-file fix.
+For small stuff: `/iago:quick` does plan-implement-review in one shot. `/iago:fast` skips everything for a 3-file fix. `/iago:prfix` fixes PR review comments automatically.
 
 ## What It Looks Like
 
@@ -380,7 +396,7 @@ Not all work needs the same model. iaGO-OS routes tasks by complexity:
 iago-os/
   .claude/
     settings.json            # Hook wiring
-    skills/                  # 32 skill definitions (SKILL.md each)
+    skills/                  # 33 skill definitions (SKILL.md each)
     agents/                  # 3 bases + 13 capabilities + 12 profiles
       executor.md
       analyst.md
@@ -446,15 +462,82 @@ Every project follows the same phases: **init → discuss → plan → execute �
 
 ### Choosing the Right Mode
 
-| Situation | Command | What happens |
-|-----------|---------|-------------|
-| New client project | `/iago:init` | Interactive discovery, foundation artifacts |
-| Next phase of ongoing work | `/iago:discuss` → `/iago:plan` → `/iago:execute` | Full pipeline |
-| Small standalone task (1-3 tasks) | `/iago:quick "add search to dashboard"` | Plan + implement + review in one pass |
-| Trivial fix (3 files max) | `/iago:fast "fix login button typo"` | Inline edit + atomic commit |
-| Need to stop mid-session | `/iago:pause` | Saves state, next session auto-resumes |
-| Design decision needed | `/brainstorming` | Socratic exploration → spec |
-| Spec ready, need implementation | `/subagent-driven-development plan.md` | Fresh agent per task, mandatory review |
+#### `/iago:execute` — Full Pipeline for ROADMAP Phases
+
+For planned, multi-step work that was discussed, planned, and is ready to ship.
+
+```
+> /iago:execute stripe-connect-ticketing
+```
+
+This runs **all plans** in the phase through the 6-stage pipeline. Each plan gets its own implement → build → review → codex → PR cycle. Plans already exist from `/iago:plan`.
+
+**Use when:** You ran `/iago:plan` and have `.iago/plans/` files ready. The phase has 2+ plans. You want full review coverage including Codex adversarial.
+
+**Example:** You're building a Stripe Connect integration. Phase has 4 plans (domain logic, checkout handler, webhooks, frontend). `/iago:execute stripe-connect-ticketing` runs all 4 sequentially, each getting a separate PR with full review.
+
+---
+
+#### `/iago:quick` — Plan + Pipeline in One Shot
+
+For standalone tasks that don't belong to a ROADMAP phase but still deserve proper review.
+
+```
+> /iago:quick add email validation to the contact form
+> /iago:quick --discuss --verify refactor the auth middleware
+```
+
+This **creates a lightweight plan on the fly** (max 3 tasks), then runs it through the same pipeline as `/iago:execute`. Composable flags: `--discuss` (clarify first), `--research` (research first), `--verify` (verify after).
+
+**Use when:** A task pops up that's not in the ROADMAP. It's too complex for a trivial fix (needs 1-3 tasks) but doesn't warrant a full phase cycle.
+
+**Example:** Client asks for a loading spinner on the dashboard. Not in the ROADMAP, but needs a component + hook + test. `/iago:quick add loading spinner to dashboard` creates a plan, implements, reviews, and opens a PR.
+
+---
+
+#### `/iago:fast` — Inline Fix, No Pipeline
+
+For trivially obvious changes where review would be overkill.
+
+```
+> /iago:fast fix the typo in the login button
+> /iago:fast update the copyright year in footer
+```
+
+This edits files **directly in the current session** — no plan, no agents, no review pipeline. Just edit → verify (tsc/biome) → atomic commit.
+
+**Use when:** The fix touches ≤3 files, requires no new dependencies, and the change is obvious. If you have to think about it, use `/iago:quick` instead.
+
+**Example:** There's a typo in a button label. `/iago:fast fix typo in login button` edits the file, runs typecheck, and commits. Done in 30 seconds.
+
+---
+
+#### `/iago:prfix` — Fix PR Review Comments
+
+For when a PR has been reviewed and comments need addressing.
+
+```
+> /iago:prfix              # Fix comments on current branch's PR
+> /iago:prfix 16           # Fix comments on PR #16
+> /iago:prfix --all        # Fix all open PRs with unresolved comments
+```
+
+This tags `@claude` on the PR, triggering the GitHub Action review-fix loop. Claude Code fixes all findings, pushes, and re-tags for re-review — up to 5 rounds until clean. You don't need to be in a session.
+
+**Use when:** You get review comments on a PR (from Claude, Codex, or a human reviewer) and want them fixed automatically.
+
+---
+
+#### Quick Comparison
+
+| | `/iago:execute` | `/iago:quick` | `/iago:fast` | `/iago:prfix` |
+|---|---|---|---|---|
+| **Plans** | Uses existing | Creates on-the-fly | None | None |
+| **Pipeline** | Full 6-stage | Full 6-stage | Build gate only | GitHub Action loop |
+| **Review** | 3-stage + Codex | 3-stage + Codex | None | Async (up to 5 rounds) |
+| **Scope** | Phase (2+ plans) | 1-3 tasks | ≤3 files | Existing PR |
+| **PR created** | Yes (per plan) | Yes | No | N/A (fixes existing) |
+| **Time** | 30-60 min/plan | 10-20 min | < 1 min | Varies (async) |
 
 ### Multi-Client Setup
 

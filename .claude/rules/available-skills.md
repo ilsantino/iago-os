@@ -32,7 +32,7 @@ description: >-
 - `/industry-patterns` — Parameterized skill for 8 industry domains (`--domain logistics|inventory|customs|energy|carrier|production|quality|returns`). Pattern docs in `docs/patterns/`
 
 ### Post-Review
-- `/iago:prfix` — Fix all PR review comments, dispatch through pipeline, push, request re-review
+- `/iago:prfix` — Tag @claude on PR to trigger async review-fix loop (fix → push → re-tag → re-review, max 5 rounds)
 
 ### Workflow (iaGO)
 - `/iago:init` — Bootstrap .iago/, gather vision, produce PROJECT/ROADMAP/STATE/config
@@ -58,6 +58,7 @@ description: >-
 
 ### MCP Servers (active)
 - `context7` — Fetch current library/framework docs (React, Tailwind, ShadCN, AWS SDK, etc.) — prefer over web search for API syntax and setup
+- `obsidian` — Read/write access to Obsidian vault (notes, tags, frontmatter, search)
 
 ### Marketplace Plugins (not installed — evaluate when needed)
 - `typescript-lsp` — Real-time TS diagnostics via language server (may replace post-edit-typecheck hook)
@@ -66,7 +67,7 @@ description: >-
 
 ### Codex (cross-model, plugin-managed)
 - `/codex:review` — GPT-5.4 read-only code review against git changes
-- `/codex:adversarial-review` — **Mandatory** cross-model review on every plan (auth, data loss, race conditions, business logic)
+- `/codex:adversarial-review` — Cross-model review on every plan; falls back to Claude adversarial if Codex CLI unavailable (auth, data loss, race conditions, business logic)
 - `/codex:rescue` — Delegate debugging or implementation to Codex in background (`--write` for fixes)
 - `/codex:status` — Show active and recent Codex background jobs
 - `/codex:result` — Retrieve output from a finished Codex job

@@ -44,21 +44,24 @@ scripts/execute-pipeline.sh --plan {path} --project-dir {dir}
 3. REVIEW — claude -p checks diff against plan (Critical/Important/Minor)
   |  critical → fix session → rebuild → re-review (max 2 rounds)
   v
-4. CODEX ADVERSARIAL — codex review or claude -p adversarial check
-  |  auth bypass, data loss, race conditions, business logic
+4. CODEX ADVERSARIAL — codex CLI if available, else claude -p adversarial
+  |  checks: auth bypass, data loss, race conditions, rollback safety
   v
 5. CREATE PR — claude -p stages, commits, pushes, creates PR via gh
   |
   v
-5b. TAG @CLAUDE — haiku synthesizes review request, posts on PR
+5b. TAG @claude — haiku synthesizes review request, posts on PR
   |
   v
 6. SUMMARY — write pipeline results to .iago/summaries/
 
   ── async (GitHub Actions) ──────────────────────────────
-  claude.yml: @claude tag triggers Claude Code Action review
-  claude-review-fix.yml: when claude[bot] posts findings,
-    auto-fix → build → push → re-tag (max 5 rounds)
+  claude.yml: @claude tag triggers Claude Code Action review.
+    After review completes, posts [claude-review-complete] signal via GH_PAT.
+  claude-review-fix.yml: [claude-review-complete] signal triggers fix loop.
+    Checks if review is clean → if not, fixes all findings → pushes →
+    re-tags @claude via GH_PAT → claude.yml re-reviews (max 5 rounds).
+  Human merges when clean.
 ```
 
 ### Handling Findings
