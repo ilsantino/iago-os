@@ -92,7 +92,7 @@ run_build_gate() {
     tsc_out=$(cd "$PROJECT_DIR" && npx tsc --noEmit 2>&1) || ok=false
     BUILD_GATE_OUTPUT="$tsc_out"
   fi
-  if $ok && $HAS_VITE; then
+  if $HAS_VITE; then
     vite_out=$(cd "$PROJECT_DIR" && npx vite build 2>&1) || ok=false
     BUILD_GATE_OUTPUT="${BUILD_GATE_OUTPUT:+${BUILD_GATE_OUTPUT}
 }${vite_out}"
