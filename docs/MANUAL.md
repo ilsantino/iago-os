@@ -139,7 +139,7 @@ Decomposes the phase into implementation plans. Each plan has 2-8 tasks. Every t
 The heavy lifter. For each plan:
 
 1. **Profile matching** — selects fullstack/frontend/backend based on file paths
-2. **Model routing** — Opus for code-writing (executor-based profiles), Sonnet for review/analysis (analyst/operator profiles)
+2. **Model routing** — Opus for implementation, fix, and review. Sonnet for PR creation and Codex fallback. Haiku for @claude tag synthesis
 3. **Learnings injection** — injects patterns from previous sessions
 4. **Agent dispatch** — fresh agent per plan, no shared state
 5. **Build gate** — `tsc --noEmit` + `vite build` must pass before review

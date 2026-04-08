@@ -41,16 +41,16 @@ scripts/execute-pipeline.sh --plan {path} --project-dir {dir}
 2. BUILD GATE — tsc --noEmit && vite build (max 2 retries with fix sessions)
   |
   v
-3. REVIEW — claude -p checks diff against plan (Critical/Important/Minor)
-  |  critical → fix session → rebuild → re-review (max 2 rounds)
+3. REVIEW — claude -p opus, checks diff against plan (Critical/Important/Minor)
+  |  critical → fix session (opus) → rebuild → re-review (opus, max 2 rounds)
   v
-4. CODEX ADVERSARIAL — codex CLI if available, else claude -p adversarial
+4. CODEX ADVERSARIAL — codex CLI / GPT-5.4 if available, else claude -p sonnet
   |  checks: auth bypass, data loss, race conditions, rollback safety
   v
-5. CREATE PR — claude -p stages, commits, pushes, creates PR via gh
+5. CREATE PR — claude -p sonnet, stages, commits, pushes, creates PR via gh
   |
   v
-5b. TAG @claude — haiku synthesizes review request, posts on PR
+5b. TAG @claude — claude -p haiku synthesizes review request, posts on PR
   |
   v
 6. SUMMARY — write pipeline results to .iago/summaries/
