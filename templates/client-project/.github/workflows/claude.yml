@@ -45,6 +45,9 @@ jobs:
             - Do NOT write "General pass — no new findings" followed by a list of clean items
             - If everything is clean, just say "No issues found" and stop
             - Categorize findings as Critical, Important, or Minor
+            - NEVER dismiss a finding as "acceptable", "carry-over", or "MVP-acceptable"
+            - If an issue exists, report it with severity — the fix loop decides priority
+            - Performance issues (N+1 queries, sequential where parallel is possible) are Important
             - End with a verdict: PASS, PASS_WITH_CONCERNS, or FAIL
 
             RE-REVIEW RULES (when previous review comments exist on the PR):
