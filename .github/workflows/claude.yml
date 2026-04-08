@@ -31,4 +31,20 @@ jobs:
       - uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+
+      # Post a signal comment AFTER the action completes.
+      # The action edits its own comment to add "Claude finished", but
+      # issue_comment:created already fired (with just the checklist).
+      # This new comment triggers claude-review-fix.yml via GH_PAT.
+      - name: Signal review complete
+        if: success() && github.event.issue.pull_request
+        uses: actions/github-script@v7
+        with:
           github-token: ${{ secrets.GH_PAT }}
+          script: |
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: '[claude-review-complete] Claude finished reviewing this PR.'
+            });

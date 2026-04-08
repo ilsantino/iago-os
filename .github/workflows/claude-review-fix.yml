@@ -1,12 +1,15 @@
 name: Claude Review Fix Loop
 
-# Triggered by claude[bot] posting review findings on a PR.
-# Fixes all findings via Claude Code, pushes, then github-actions[bot]
-# tags @claude for another review. This routes back through claude.yml
-# (review) instead of re-triggering this workflow.
+# Triggered by the [claude-review-complete] signal comment posted by
+# claude.yml after the Claude Code Action finishes.
 #
-# Loop: claude.yml (review) → findings → this (fix) → tag @claude → claude.yml
-# Breaks when: claude[bot] posts clean comment, or max 5 rounds.
+# The Claude Code Action edits its own comment (checklist → "Claude finished"),
+# but issue_comment:created fires only once — when the checklist is first
+# posted, before "Claude finished" exists. So claude.yml posts a separate
+# signal comment via GH_PAT after the action completes.
+#
+# Loop: claude.yml (review + signal) → this (fix) → tag @claude → claude.yml
+# Breaks when: review is clean, or max 5 rounds.
 
 on:
   issue_comment:
@@ -14,12 +17,11 @@ on:
 
 jobs:
   fix:
-    # Only trigger on Claude's COMPLETION comment — not intermediate findings.
-    # Claude Code Action posts "Claude finished" when done. That's our signal.
+    # Trigger on the signal comment posted by claude.yml after review completes.
+    # This is a separate comment from the Claude Code Action's own review comment.
     if: |
       github.event.issue.pull_request &&
-      github.event.comment.user.login == 'claude[bot]' &&
-      contains(github.event.comment.body, 'Claude finished')
+      contains(github.event.comment.body, '[claude-review-complete]')
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -48,12 +50,18 @@ jobs:
               issue_number: prNumber,
             });
 
-            // Check if Claude's review had actionable findings.
-            // The completion comment ("Claude finished") is the trigger,
-            // but the actual findings are in other claude[bot] comments.
+            // The trigger is [claude-review-complete] (signal comment).
+            // The actual review is in the most recent claude[bot] comment.
+            const claudeComments = comments.data.filter(c =>
+              c.user.login === 'claude[bot]' &&
+              c.body.includes('Claude finished')
+            );
+            const latestReview = claudeComments.length > 0
+              ? claudeComments[claudeComments.length - 1].body.toLowerCase()
+              : '';
+
             const cleanSignals = ['no issues found', 'lgtm', 'looks good', 'no concerns', 'approved', 'no issues'];
-            const completionComment = context.payload.comment.body.toLowerCase();
-            const isClean = cleanSignals.some(s => completionComment.includes(s));
+            const isClean = cleanSignals.some(s => latestReview.includes(s));
 
             // Also check inline review comments from claude[bot]
             const reviewComments = await github.rest.pulls.listReviewComments({
@@ -73,9 +81,9 @@ jobs:
               return;
             }
 
-            // Count fix rounds by github-actions[bot] re-tag comments
+            // Count fix rounds by [review-fix-loop] re-tag comments (any author,
+            // since GH_PAT posts as the token owner, not github-actions[bot])
             const retagComments = comments.data.filter(c =>
-              c.user.login === 'github-actions[bot]' &&
               c.body.includes('[review-fix-loop]')
             );
             const round = retagComments.length + 1;
