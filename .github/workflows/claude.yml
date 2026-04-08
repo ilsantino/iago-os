@@ -35,7 +35,8 @@ jobs:
       # Post a signal comment AFTER the action completes.
       # The action edits its own comment to add "Claude finished", but
       # issue_comment:created already fired (with just the checklist).
-      # This new comment triggers claude-review-fix.yml via GH_PAT.
+      # This new comment triggers claude-review-fix.yml.
+      # MUST use GH_PAT — GITHUB_TOKEN comments can't trigger other workflows.
       - name: Signal review complete
         if: success() && github.event.issue.pull_request
         uses: actions/github-script@v7
