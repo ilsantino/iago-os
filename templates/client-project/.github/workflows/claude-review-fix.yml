@@ -61,8 +61,19 @@ jobs:
               ? claudeComments[claudeComments.length - 1].body.toLowerCase()
               : '';
 
-            const cleanSignals = ['no issues found', 'lgtm', 'looks good', 'no concerns', 'approved', 'no issues'];
-            const isClean = cleanSignals.some(s => latestReview.includes(s));
+            const cleanSignals = [
+              'no issues found', 'no issues', 'no findings',
+              'lgtm', 'looks good', 'no concerns', 'approved',
+              'all findings resolved', 'all findings addressed',
+              'all issues resolved', 'all issues addressed',
+              'nothing to flag', 'no actionable findings',
+            ];
+            // Check clean signals OR a PASS verdict without Critical/Important findings
+            const hasCleanSignal = cleanSignals.some(s => latestReview.includes(s));
+            const hasPassVerdict = /verdict[:\s]*\*{0,2}\s*pass\b/i.test(latestReview)
+              && !/\*{0,2}critical\*{0,2}/i.test(latestReview)
+              && !/\*{0,2}important\*{0,2}/i.test(latestReview);
+            const isClean = hasCleanSignal || hasPassVerdict;
 
             // Also check inline review comments from claude[bot]
             const reviewComments = await github.rest.pulls.listReviewComments({
@@ -134,7 +145,11 @@ jobs:
             You are a review-fix agent. Round ${{ steps.pr.outputs.round }}/5.
 
             TASK: Read the latest claude[bot] review comment on this PR, identify
-            every actionable finding (Critical, Important, Minor), and fix ALL of them.
+            every actionable finding (Critical, Important, Minor), and fix ALL of them
+            in priority order: Critical first, then Important, then Minor.
+
+            If running low on turns, ensure all Critical and Important findings are
+            fixed before attempting Minor ones. Never skip a severity tier entirely.
 
             WORKFLOW:
             1. Read review comments:
