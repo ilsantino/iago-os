@@ -161,7 +161,7 @@ Plan: $PLAN_PATH
 
 Diff:
 $DIFF" \
-  --model sonnet \
+  --model opus \
   --max-turns 25 \
   --output-format text 2>&1) || REVIEW_EXIT=$?
 
@@ -228,7 +228,7 @@ Fix build errors: $BUILD_ERRORS" \
 
 Diff:
 $DIFF" \
-    --model sonnet \
+    --model opus \
     --max-turns 25 \
     --output-format text 2>&1) || REVIEW_EXIT=$?
   log "Re-review output:"

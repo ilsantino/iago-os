@@ -157,11 +157,12 @@ See `.claude/rules/available-skills.md` for the complete catalog including conte
 ## Model Routing
 
 - **Opus:** Orchestrator + all code-writing sessions (implementation, fix, debug)
-- **Sonnet:** Review sessions, PR creation, mechanical analysis
-- **Haiku:** Reserve for simple lookups when needed
+- **Sonnet:** PR creation, Codex fallback, mechanical analysis
+- **Haiku:** PR review tag synthesis
 - **Codex (GPT-5.4):** Cross-model adversarial review via `codex review`, plus `/codex:rescue`
 
-Pipeline sessions use opus for implementation/fix, sonnet for review/PR. The
+Pipeline sessions use opus for implementation, fix, AND review. Sonnet for
+PR creation and Codex fallback only. Haiku for @claude tag synthesis. The
 orchestrator uses opus for agent dispatches that write code (fullstack, frontend,
 backend, debug, e2e profiles). Analyst profiles (review-single, review-full,
 schema) use sonnet unless security-critical.

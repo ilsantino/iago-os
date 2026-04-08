@@ -250,7 +250,7 @@ flowchart LR
     Impl --> Build[2. Build gate — tsc + vite]
     Build -->|fail| Fix[Fix — Opus]
     Fix --> Build
-    Build -->|pass| Review[3. Review — Sonnet]
+    Build -->|pass| Review[3. Review — Opus]
     Review -->|critical| Fix2[Fix — Opus]
     Fix2 --> Build
     Review -->|pass| Codex[4. Codex — GPT-5.4]
@@ -262,7 +262,7 @@ flowchart LR
 
 1. **Implement (Opus):** Writes code from the plan, constrained to Edit/Write/Read/Glob/Grep/Bash
 2. **Build gate:** `tsc --noEmit && vite build` — max 2 retries with Opus fix sessions
-3. **Review (Sonnet):** Checks diff against plan — Critical/Important/Minor findings
+3. **Review (Opus):** Checks diff against plan — Critical/Important/Minor findings
 4. **Codex adversarial (GPT-5.4):** Cross-model review for auth bypass, data loss, race conditions
 5. **Create PR (Sonnet):** Stages, commits, pushes feature branch, creates PR via `gh`
 5b. **Tag @claude:** Haiku synthesizes review request, posts on PR
@@ -386,7 +386,7 @@ Not all work needs the same model. iaGO-OS routes tasks by complexity:
 | Model | Role | Used by |
 |-------|------|---------|
 | **Opus** | Orchestrator + code-writing — planning, implementation, debugging, architecture | Main session + executor profiles (fullstack, frontend, backend, debug, e2e) |
-| **Sonnet** | Review + analysis — code review, research, schema design, infra ops | Analyst/operator profiles (review-single, review-full, research, infra, schema, content) |
+| **Sonnet** | Analysis + mechanical — PR creation, Codex fallback, research, schema design, infra ops | Analyst/operator profiles (review-single, review-full, research, infra, schema, content), pipeline PR step |
 | **Haiku** | Mechanical — formatting, simple lookups, PR review tagging | Reserved for lightweight tasks |
 | **Codex (GPT-5.4)** | Cross-model adversarial — mandatory on every plan, rescue delegation | `/codex:*` skills (falls back to Claude adversarial if Codex CLI unavailable) |
 
