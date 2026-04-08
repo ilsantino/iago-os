@@ -205,22 +205,24 @@ jobs:
           custom_instructions: |
             The review-fix loop has completed — all findings are resolved.
 
-            Write a PR summary comment for the human reviewer. Structure:
+            Write a PR summary comment for the human reviewer. Use bullet points.
+            Keep it concise — the human wants to scan quickly and decide to merge.
+
+            Structure:
 
             ## Review Summary
 
-            ### What this PR does
-            (1-2 sentences from the PR description or plan)
+            **What this PR does:** (1-2 sentences)
 
-            ### Review rounds
-            (How many rounds of review-fix happened, what was found and fixed in each)
+            **What was fixed during review:**
+            - (bullet per finding that was corrected across all rounds)
+            - (include which file and what changed)
 
-            ### Files changed
-            (List files with a one-line description of each change)
+            **Files changed:**
+            - `path/to/file.ts` — one-line description
+            - (one bullet per file)
 
-            ### Ready to merge
-            All review findings have been addressed. Review the changes above
-            and merge when ready.
+            **Verdict:** All findings resolved. Ready for human review and merge.
 
             To gather context:
             1. Read the PR description: `gh pr view ${{ github.event.issue.number }}`
