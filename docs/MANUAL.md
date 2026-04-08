@@ -272,13 +272,14 @@ After a PR gets review comments — from Claude, Codex, or a human reviewer — 
 
 What happens:
 
-1. `/iago:prfix` posts a comment tagging `@claude` on the PR with fix instructions
-2. The `claude-review-fix.yml` GitHub Action picks it up
-3. Claude Code Action reads all review findings, fixes the code, and pushes
-4. A `[claude-review-complete]` signal triggers the review-fix loop
-5. If findings remain, it loops: fix → push → re-tag → re-review (max 5 rounds)
-6. When clean, Claude posts a structured summary of all changes and fixes across all rounds
-7. Human reviews the summary and merges (or requests more changes)
+1. `/iago:prfix` tags `@claude` for a review (not fix) on the PR
+2. `claude.yml` reviews — reports ONLY actionable findings (no clean-item filler)
+3. `[claude-review-complete]` signal triggers `claude-review-fix.yml`
+4. Fix agent fixes ALL findings in priority order (Critical → Important → Minor), verifies each fix, pushes
+5. Re-tags `@claude` → re-review focuses on still-unresolved + new findings only
+6. Loop repeats until clean (max 5 rounds)
+7. When clean, Claude posts a bullet-point summary of everything that was changed and fixed
+8. Human reviews the summary and merges (or requests more changes)
 
 **Important:** This runs entirely via GitHub Actions — you don't need to stay in a session. The async loop handles everything. Both workflows skip merged/closed PRs automatically.
 

@@ -42,9 +42,9 @@ scripts/execute-pipeline.sh --plan {path} --project-dir {dir}
   |
   v
 3. REVIEW — claude -p opus, checks diff against plan (Critical/Important/Minor)
-  |  critical → fix session (opus) → rebuild → re-review (opus, max 2 rounds)
+  |  critical/fail → fix session (opus) → rebuild → re-review (opus, max 2 local rounds)
   v
-4. CODEX ADVERSARIAL — codex CLI / GPT-5.4 if available, else claude -p sonnet
+4. CODEX ADVERSARIAL — codex CLI / GPT-5.4 if available, else claude -p opus
   |  checks: auth bypass, data loss, race conditions, rollback safety
   v
 5. CREATE PR — claude -p sonnet, stages, commits, pushes, creates PR via gh
@@ -93,9 +93,13 @@ claude-review-fix.yml ── checks findings + round count
 
 | Severity | Action |
 |----------|--------|
-| Critical | Fix → rebuild → re-review. Max 2 rounds. Then STOP. |
-| Important | Logged in PR. User decides timing. |
-| Minor | Logged only. |
+| Critical | Fix first. Rebuild, re-review. |
+| Important | Fix second. Rebuild, re-review. |
+| Minor | Fix last. Rebuild, re-review. |
+
+All severities are fixed by the loop in priority order. Max 5 rounds total.
+Reviews must never dismiss findings as "acceptable" or "carry-over" — report
+with severity, and the fix loop handles prioritization.
 
 ### What the Orchestrator Does
 

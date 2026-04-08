@@ -111,7 +111,9 @@ This runs the full pipeline as separate `claude -p` sessions:
 
 Review-fix loop runs async via GitHub Action (`claude-review-fix.yml`).
 
-Critical findings trigger automatic fix → rebuild → re-review (max 2 rounds).
+Critical findings trigger automatic fix → rebuild → re-review (max 2 local rounds).
+Async loop fixes ALL severities in priority order (Critical → Important → Minor,
+max 5 rounds). Posts bullet-point summary when clean — human reviews and merges.
 If the pipeline fails, report the error to the user. Do not retry manually.
 
 ### 5. Optional verify (`--verify` flag)

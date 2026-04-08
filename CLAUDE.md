@@ -89,7 +89,7 @@ runs the script for each plan, every step is a separate `claude -p` session:
 After the pipeline completes, the review-fix loop runs **async via GitHub Actions**:
 `claude.yml` handles @claude review, `claude-review-fix.yml` auto-fixes findings and re-tags (max 5 rounds).
 
-Critical findings → fix → rebuild → re-review (max 2 rounds). Non-critical → logged.
+All findings fixed by the async review-fix loop in priority order: Critical → Important → Minor (max 5 rounds). Summary posted when clean.
 
 **To skip:** Only by using `/iago:fast` (trivial fixes, build gate only).
 

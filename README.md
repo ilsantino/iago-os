@@ -269,7 +269,7 @@ flowchart LR
 5b. **Tag @claude (Haiku):** Synthesizes review request, posts on PR — triggers async loop
 6. **Summary:** Persists result to `.iago/summaries/`
 
-Critical findings at step 3 trigger automatic fix → rebuild → re-review (max 2 rounds). Your session ends after step 6.
+Critical findings at step 3 trigger automatic fix → rebuild → re-review (max 2 local rounds). Your session ends after step 6. The async loop then fixes ALL severities in priority order (Critical → Important → Minor, max 5 rounds) and posts a bullet-point summary when clean.
 
 #### Async Review-Fix Loop (GitHub Actions — no session needed)
 
@@ -287,7 +287,7 @@ flowchart TD
     Sum --> Human["Human reviews summary\nand merges"]
 ```
 
-The loop runs entirely on GitHub Actions. Both workflows skip merged/closed PRs. Max 5 rounds — if still unresolved, posts a notice for manual review.
+The loop runs entirely on GitHub Actions. All severities are fixed in priority order (Critical → Important → Minor). Reviews report only actionable findings — no clean-item filler. Both workflows skip merged/closed PRs. Max 5 rounds — if still unresolved, posts a notice for manual review.
 
 ### Capability Modules (13)
 
