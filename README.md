@@ -149,7 +149,7 @@ These skills implement the full project lifecycle. Run them in order for structu
 |-------|-------------|-------------|------------|
 | `/brainstorming` | Socratic design exploration — asks questions, maps trade-offs, writes a spec to `docs/specs/` | Starting a new feature or architecture decision | None (interactive) |
 | `/writing-plans` | Breaks an approved spec into 2-5 min tasks organized into parallel execution waves. Every task has a verify command | After brainstorming produces a spec | None (planning only) |
-| `/subagent-driven-development` | Executes a plan by dispatching a fresh profile per task. No cross-task state leakage. Mandatory Codex adversarial review after internal review | Executing a multi-task implementation plan | Matching profile + review + `/codex:adversarial-review` |
+| `/subagent-driven-development` | Executes a plan by dispatching a fresh profile per task. No cross-task state leakage. Supports `--pipeline` for full 5-stage review isolation. Codex adversarial review with Claude fallback | Executing a multi-task implementation plan | Matching profile + review + `/codex:adversarial-review` |
 | `/code-review` | Dispatches review profile against a git diff. Produces severity-categorized findings (Critical/Important/Minor). Anti-performative-agreement rules prevent empty "LGTM" | After implementation, before merge | `review-single` or `review-full` + `/codex:adversarial-review` |
 | `/deep-research` | Multi-source research (codebase + context7 docs + web). Produces an actionable recommendation document in `docs/research/`. Use `--focus market` for market analysis and competitive research | Research question that goes beyond the codebase | `research` |
 | `/prompt-optimizer` | Analyzes, rewrites, and tests LLM prompts for client-facing features. Recommends model tier. Output to `docs/prompts/` | Building or tuning chatbot/agent/classifier prompts | None (inline) |
@@ -246,12 +246,12 @@ Both `/iago:execute` and `/iago:quick` run the same `scripts/execute-pipeline.sh
 
 ```mermaid
 flowchart LR
-    Plan[Plan file] --> Impl[1. Implement — Sonnet]
+    Plan[Plan file] --> Impl[1. Implement — Opus]
     Impl --> Build[2. Build gate — tsc + vite]
-    Build -->|fail| Fix[Fix — Sonnet]
+    Build -->|fail| Fix[Fix — Opus]
     Fix --> Build
     Build -->|pass| Review[3. Review — Sonnet]
-    Review -->|critical| Fix2[Fix — Sonnet]
+    Review -->|critical| Fix2[Fix — Opus]
     Fix2 --> Build
     Review -->|pass| Codex[4. Codex — GPT-5.4]
     Codex --> PR[5. Create PR — Sonnet]
@@ -260,8 +260,8 @@ flowchart LR
     Tag -.->|async| GHA[GitHub Action review-fix loop]
 ```
 
-1. **Implement (Sonnet):** Writes code from the plan, constrained to Edit/Write/Read/Glob/Grep/Bash
-2. **Build gate:** `tsc --noEmit && vite build` — max 2 retries with Sonnet fix sessions
+1. **Implement (Opus):** Writes code from the plan, constrained to Edit/Write/Read/Glob/Grep/Bash
+2. **Build gate:** `tsc --noEmit && vite build` — max 2 retries with Opus fix sessions
 3. **Review (Sonnet):** Checks diff against plan — Critical/Important/Minor findings
 4. **Codex adversarial (GPT-5.4):** Cross-model review for auth bypass, data loss, race conditions
 5. **Create PR (Sonnet):** Stages, commits, pushes feature branch, creates PR via `gh`
@@ -385,10 +385,10 @@ Not all work needs the same model. iaGO-OS routes tasks by complexity:
 
 | Model | Role | Used by |
 |-------|------|---------|
-| **Opus** | Orchestrator — planning, architecture, multi-file reasoning | Your main Claude Code session |
-| **Sonnet** | Worker — implementation, review, research, debugging | Default for all agent profiles |
-| **Haiku** | Mechanical — formatting, simple lookups | Reserved for lightweight tasks |
-| **Codex (GPT-5.4)** | Cross-model — mandatory adversarial review on every plan, rescue delegation | `/codex:*` skills |
+| **Opus** | Orchestrator + code-writing — planning, implementation, debugging, architecture | Main session + executor profiles (fullstack, frontend, backend, debug, e2e) |
+| **Sonnet** | Review + analysis — code review, research, schema design, infra ops | Analyst/operator profiles (review-single, review-full, research, infra, schema, content) |
+| **Haiku** | Mechanical — formatting, simple lookups, PR review tagging | Reserved for lightweight tasks |
+| **Codex (GPT-5.4)** | Cross-model adversarial — mandatory on every plan, rescue delegation | `/codex:*` skills (falls back to Claude adversarial if Codex CLI unavailable) |
 
 ## Folder Structure
 
@@ -405,7 +405,7 @@ iago-os/
       profiles/              # 12 agent profiles
     rules/                   # 8 behavioral rules (TDD, debugging, git, etc.)
   .iago/
-    hooks/                   # 9 hooks (context, safety, formatting, tracking)
+    hooks/                   # 8 hooks (context, safety, formatting, tracking)
       lib/                   # Shared utilities (stdin, flags, state-manager)
     state/                   # Runtime state (sessions, usage log)
   templates/

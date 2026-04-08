@@ -109,7 +109,7 @@ Skills that implement the iaGO delivery workflow: init, discuss, plan, execute, 
 
 **Trigger:** Small focused task outside the full multi-phase workflow.
 
-**Arguments:** `--research` dispatches researcher first. `--full-review` adds spec + quality review.
+**Arguments:** `--discuss` clarifies first. `--research` dispatches researcher first. `--verify` verifies after. Runs the full 5-stage pipeline (implement → build gate → review → codex → PR) with async GitHub Action fix loop.
 
 **Profiles:** Matching profile (fullstack/frontend/backend), `review-single`, `research` (optional).
 
@@ -288,14 +288,21 @@ General-purpose skills for design, planning, implementation, review, and researc
 
 **Trigger:** Executing a multi-task implementation plan.
 
-**Arguments:** `--full-review` uses `review-full` (two-stage gated review).
+**Arguments:**
+- `--pipeline` — run each task through `scripts/execute-pipeline.sh` for full 5-stage review isolation (implement → build gate → review → codex → PR). Recommended for production code.
+- `--full-review` — two-stage gated review via `review-full` (ignored when `--pipeline` is set).
+- `--parallel` — parallelize independent tasks within the same wave.
+- `--dry-run` — show what would be dispatched without executing.
 
-**Profiles:** Matching profile per task (fullstack/frontend/backend), `review-single` or `review-full`.
+**Profiles:** Matching profile per task (fullstack/frontend/backend), `review-single` or `review-full`. Codex adversarial review mandatory; falls back to Claude adversarial if Codex CLI unavailable.
 
 **Example:**
 ```
-> /subagent-driven-development for .iago/plans/phase-1-plan-01.md
-# Task 1 → matching profile → review → Task 2 → matching profile → review → ...
+> /subagent-driven-development .iago/plans/phase-1-plan-01.md
+# Task 1 → matching profile → review → codex → Task 2 → ...
+
+> /subagent-driven-development .iago/plans/plan.md --pipeline
+# Each task → execute-pipeline.sh (5-stage, separate sessions)
 ```
 
 ---

@@ -35,7 +35,7 @@ If you notice yourself doing any of these WITHOUT having invoked `/iago:execute`
 scripts/execute-pipeline.sh --plan {path} --project-dir {dir}
   |
   v
-1. IMPLEMENT — claude -p reads plan, writes code (sonnet, max 50 turns)
+1. IMPLEMENT — claude -p reads plan, writes code (opus, max 50 turns)
   |
   v
 2. BUILD GATE — tsc --noEmit && vite build (max 2 retries with fix sessions)

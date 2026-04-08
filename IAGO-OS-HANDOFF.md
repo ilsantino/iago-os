@@ -49,14 +49,14 @@ Redesigned the entire agent system from role-based to capability-based.
 
 **After:**
 - **3 base agents** — executor (write), analyst (read-only), operator (external data)
-- **12 capability modules** — react-19, dynamodb, lambda, cognito, tdd, security, e2e, review-spec, review-quality, content, infra, forms
+- **13 capability modules** — react-19, dynamodb, lambda, cognito, tdd, security, e2e, review-spec, review-quality, content, infra, forms, animation
 - **12 profiles** — pre-composed base + capabilities (fullstack, frontend, backend, review-single, review-full, security-audit, research, e2e, infra, schema, content, debug)
-- **Smart model routing** — auto/sonnet/opus per task based on complexity, configurable in `.iago/config.json`
+- **Hardcoded model routing** — Opus for all code-writing profiles (executor-based), Sonnet for review/analysis (analyst/operator-based)
 - **Parallel execution** — same-wave plans dispatch concurrently in `/iago:execute`
 - **Feedback loops** — `.iago/learnings/` accumulates review patterns and project conventions, injected into agent prompts
 
 **4 plans executed:**
-1. Foundation — 12 capabilities + 3 bases (9 tasks)
+1. Foundation — 13 capabilities + 3 bases (9 tasks)
 2. Profiles + Cutover — 12 profiles, 3 skill updates, 11 old agents deleted (11 tasks)
 3. Enhancements — routing config, parallel execution, learnings injection (5 tasks)
 4. Documentation — CLAUDE.md, README, ARCHITECTURE.md, templates updated (6 tasks)
@@ -77,11 +77,11 @@ Redesigned the entire agent system from role-based to capability-based.
 
 **Agent Architecture:**
 - 3 base agents: `executor.md`, `analyst.md`, `operator.md`
-- 12 capability modules in `.claude/agents/capabilities/`
+- 13 capability modules in `.claude/agents/capabilities/`
 - 12 profiles in `.claude/agents/profiles/`
 - Dispatch flow: match profile → select model → compose prompt (base + caps + learnings + task) → dispatch
 
-**Skills (31 with SKILL.md):** Consolidated from 41. 8 industry skills moved to `docs/patterns/` as reference docs, replaced by single `/industry-patterns` parameterized skill. `/article-writing` merged into `/content-engine` (`--formats blog`). `/market-research` merged into `/deep-research` (`--focus market`). `/enterprise-agent-ops` merged into `/iago:agents` (`--scope operational`).
+**Skills (33 with SKILL.md):** Consolidated from 41, then added `/iago:prfix` and `/iago:schedule`. 8 industry skills moved to `docs/patterns/` as reference docs, replaced by single `/industry-patterns` parameterized skill. `/article-writing` merged into `/content-engine` (`--formats blog`). `/market-research` merged into `/deep-research` (`--focus market`). `/enterprise-agent-ops` merged into `/iago:agents` (`--scope operational`).
 
 **Rules (8):** Unchanged. `available-skills.md` updated with new agent catalog.
 

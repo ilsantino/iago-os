@@ -54,10 +54,11 @@ Discuss → plan → execute → verify repeats per ROADMAP phase.
 |---|---|
 | **Trigger** | Plans exist for the phase |
 | **Gate** | At least one `plans/{NN}-{slug}-*.md` must exist |
-| **What Claude does** | Wave analysis, dispatch agents per plan, collect results, write summaries |
+| **What Claude does** | Wave analysis, run `scripts/execute-pipeline.sh` per plan (6-stage: implement → build gate → review → codex → PR → summary), collect results |
 | **State written** | Phase: `{NN}-{slug}`, Status: `executing` → `executed` |
-| **Output** | `.iago/summaries/{NN}-{slug}-{PP}.md` per plan, git commits |
-| **Profiles** | Matching profile per plan (fullstack/frontend/backend), `review-single` or `review-full`, ad-hoc: `debug` |
+| **Output** | `.iago/summaries/{NN}-{slug}-{PP}.md` per plan, git commits, PRs |
+| **Profiles** | Opus for implementation/fix, Sonnet for review/PR, GPT-5.4 for Codex adversarial (Claude fallback if unavailable) |
+| **Pipeline** | Each plan runs through `execute-pipeline.sh` in separate `claude -p` sessions — no context bleed. Async GitHub Action review-fix loop after PR creation (max 5 rounds) |
 
 ### 4. Verify (`/iago:verify {phase-slug}`)
 

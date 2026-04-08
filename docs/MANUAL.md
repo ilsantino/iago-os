@@ -50,11 +50,11 @@ cd ../acme-dashboard && claude
 acme-dashboard/
   .claude/
     settings.json       # Hooks wired and ready
-    skills/             # 32 skill definitions
+    skills/             # 33 skill definitions
     agents/             # 3 bases + 13 capabilities + 12 profiles
     rules/              # 8 behavioral rules
   .iago/
-    hooks/              # 9 hook scripts
+    hooks/              # 8 hook scripts
       lib/              # Shared utilities
     state/              # Runtime state (created on first session)
     plans/              # Implementation plans (empty)
@@ -139,7 +139,7 @@ Decomposes the phase into implementation plans. Each plan has 2-8 tasks. Every t
 The heavy lifter. For each plan:
 
 1. **Profile matching** — selects fullstack/frontend/backend based on file paths
-2. **Model routing** — picks Sonnet or Opus based on task complexity
+2. **Model routing** — Opus for code-writing (executor-based profiles), Sonnet for review/analysis (analyst/operator profiles)
 3. **Learnings injection** — injects patterns from previous sessions
 4. **Agent dispatch** — fresh agent per plan, no shared state
 5. **Build gate** — `tsc --noEmit` + `vite build` must pass before review
@@ -240,7 +240,7 @@ Default for `/iago:execute`. Three stages:
 
 1. **Stage 1 — Spec compliance:** Does the implementation match the plan? File paths, actions, tests.
 2. **Stage 2 — Quality review:** Performance, TypeScript strictness, maintainability, conventions. Only runs if Stage 1 finds zero Critical issues.
-3. **Stage 3 — Cross-model adversarial review:** `/codex:adversarial-review` sends the diff to GPT-5.4 targeting auth bypass, data loss, race conditions, business logic errors, and rollback safety. Mandatory on every plan.
+3. **Stage 3 — Cross-model adversarial review:** `/codex:adversarial-review` sends the diff to GPT-5.4 targeting auth bypass, data loss, race conditions, business logic errors, and rollback safety. Mandatory on every plan. If the Codex CLI is unavailable, falls back to a Claude adversarial session checking the same targets.
 
 Critical findings at any stage route back to the executor for fixes (max 2 rounds).
 
@@ -295,7 +295,7 @@ The GH_PAT is needed because GitHub's default `GITHUB_TOKEN` cannot trigger othe
 ### How Dispatch Works
 
 1. **Profile matching** — the orchestrator looks at file paths in the task. `src/` only → `frontend`. `amplify/` only → `backend`. Both → `fullstack`. Explicit `profile:` in the plan overrides this.
-2. **Model selection** — reads `.iago/config.json` routing. Auto mode: 4+ files → Opus, auth/payment → `security_critical` model, retry → upgrade. Otherwise Sonnet.
+2. **Model selection** — each profile has a hardcoded model in frontmatter. Executor-based profiles (fullstack, frontend, backend, debug, e2e) use Opus. Analyst/operator profiles (review-single, review-full, research, infra, schema, content) use Sonnet. `security-audit` always uses Opus.
 3. **Prompt composition** — concatenates: base agent template + capability modules + learnings (patterns + conventions) + task description + project context.
 4. **Dispatch** — the agent runs with only the tools its base allows. Executor can edit files. Analyst can only read. Operator can search the web.
 5. **Status reporting** — every agent ends with exactly one status: DONE, DONE_WITH_CONCERNS, NEEDS_CONTEXT, or BLOCKED.
