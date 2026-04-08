@@ -155,14 +155,16 @@ else
   DIFF="$COMBINED_DIFF"
 
 REVIEW_EXIT=0
-REVIEW_OUTPUT=$(cd "$PROJECT_DIR" && claude -p "Review this diff against the plan. Categorize findings as Critical, Important, or Minor. End with verdict: PASS, PASS_WITH_CONCERNS, or FAIL.
+REVIEW_OUTPUT=$(cd "$PROJECT_DIR" && claude -p "Review this diff against the plan. For each task in the plan, verify the diff implements it correctly. Categorize findings as Critical, Important, or Minor. End with verdict: PASS, PASS_WITH_CONCERNS, or FAIL.
 
-Plan: $PLAN_PATH
+Plan ($PLAN_PATH):
+$PLAN_CONTENT
 
 Diff:
 $DIFF" \
   --model opus \
   --max-turns 25 \
+  --allowedTools "Read Glob Grep Bash" \
   --output-format text 2>&1) || REVIEW_EXIT=$?
 
 log "Review output:"
@@ -174,7 +176,7 @@ fi
 
 # Check for critical findings
 fix_attempt=0
-while echo "$REVIEW_OUTPUT" | grep -q "Critical" && echo "$REVIEW_OUTPUT" | grep -qiE "Verdict:[[:space:]]*FAIL"; do
+while echo "$REVIEW_OUTPUT" | grep -qi "Critical" && echo "$REVIEW_OUTPUT" | grep -qiE "Verdict.*FAIL"; do
   fix_attempt=$((fix_attempt + 1))
 
   if [[ $fix_attempt -gt $MAX_FIX_RETRIES ]]; then
@@ -222,14 +224,20 @@ Fix build errors: $BUILD_ERRORS" \
 
   # Re-review — re-stage and capture full diff
   (cd "$PROJECT_DIR" && git add -A -- ':!**/.env' ':!**/.env.*' ':!**/*.pem' ':!**/*.key' ':!**/*.p12' ':!**/*.pfx')
-  DIFF=$(cd "$PROJECT_DIR" && { git diff "$PRE_IMPL_SHA"..HEAD 2>/dev/null || echo ""; } && { git diff --cached 2>/dev/null || echo ""; })
+  DIFF=$(cd "$PROJECT_DIR" && git diff "$PRE_IMPL_SHA"..HEAD 2>/dev/null || echo "")
+  STAGED_DIFF=$(cd "$PROJECT_DIR" && git diff --cached 2>/dev/null || echo "")
+  DIFF="${DIFF}${STAGED_DIFF}"
   REVIEW_EXIT=0
-  REVIEW_OUTPUT=$(cd "$PROJECT_DIR" && claude -p "Review this diff. Categorize as Critical/Important/Minor. Verdict: PASS/PASS_WITH_CONCERNS/FAIL.
+  REVIEW_OUTPUT=$(cd "$PROJECT_DIR" && claude -p "Re-review after fix round $fix_attempt. Verify critical findings are resolved. Categorize remaining findings as Critical/Important/Minor. Verdict: PASS/PASS_WITH_CONCERNS/FAIL.
+
+Plan ($PLAN_PATH):
+$PLAN_CONTENT
 
 Diff:
 $DIFF" \
     --model opus \
     --max-turns 25 \
+    --allowedTools "Read Glob Grep Bash" \
     --output-format text 2>&1) || REVIEW_EXIT=$?
   log "Re-review output:"
   echo "$REVIEW_OUTPUT"
