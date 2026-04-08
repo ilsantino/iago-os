@@ -136,6 +136,52 @@ sync_hooks() {
   fi
 }
 
+# --- Sync workflows ---
+sync_workflows() {
+  local src="$IAGO_ROOT/.github/workflows"
+  local dst="$TARGET_PATH/.github/workflows"
+
+  if [[ ! -d "$src" ]]; then
+    echo "  Skip: workflows (source not found)"
+    return
+  fi
+
+  local src_count
+  src_count=$(find "$src" -maxdepth 1 -name "claude*.yml" -type f | wc -l | tr -d ' ')
+
+  local dst_count=0
+  if [[ -d "$dst" ]]; then
+    dst_count=$(find "$dst" -maxdepth 1 -name "claude*.yml" -type f 2>/dev/null | wc -l | tr -d ' ')
+  fi
+
+  echo "  workflows (claude*.yml): $src_count source files, $dst_count in target"
+
+  if $DRY_RUN; then
+    if [[ -d "$dst" ]]; then
+      for f in "$src"/claude*.yml; do
+        local fname
+        fname=$(basename "$f")
+        if [[ -f "$dst/$fname" ]]; then
+          if ! diff -q "$f" "$dst/$fname" > /dev/null 2>&1; then
+            echo "    Would update: $fname"
+          fi
+        else
+          echo "    Would create: $fname"
+        fi
+      done
+    else
+      echo "    Would create $dst with $src_count workflow files"
+    fi
+  else
+    mkdir -p "$dst"
+    for f in "$src"/claude*.yml; do
+      cp "$f" "$dst"/
+    done
+    echo "    Synced: $src_count workflow files"
+    echo "    NOTE: Ensure GH_PAT and CLAUDE_CODE_OAUTH_TOKEN secrets are set in the target repo"
+  fi
+}
+
 # --- Execute ---
 echo "Syncing..."
 sync_dir "skills"
@@ -143,8 +189,10 @@ sync_dir "agents"
 sync_dir "rules"
 if ! $GLOBAL; then
   sync_hooks
+  sync_workflows
 else
   echo "  hooks: skipped (--global mode — hooks require .iago/hooks/ in project)"
+  echo "  workflows: skipped (--global mode — workflows require .github/ in each repo)"
 fi
 
 echo ""
