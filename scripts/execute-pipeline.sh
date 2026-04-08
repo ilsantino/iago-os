@@ -82,13 +82,20 @@ HAS_VITE=false
 [[ -f "$PROJECT_DIR/tsconfig.json" ]] && HAS_TSCONFIG=true
 [[ -f "$PROJECT_DIR/vite.config.ts" || -f "$PROJECT_DIR/vite.config.js" || -f "$PROJECT_DIR/vite.config.mjs" ]] && HAS_VITE=true
 
+BUILD_GATE_OUTPUT=""
+
 run_build_gate() {
+  BUILD_GATE_OUTPUT=""
   local ok=true
+  local tsc_out="" vite_out=""
   if $HAS_TSCONFIG; then
-    (cd "$PROJECT_DIR" && npx tsc --noEmit 2>&1) || ok=false
+    tsc_out=$(cd "$PROJECT_DIR" && npx tsc --noEmit 2>&1) || ok=false
+    BUILD_GATE_OUTPUT="$tsc_out"
   fi
-  if $ok && $HAS_VITE; then
-    (cd "$PROJECT_DIR" && npx vite build 2>&1) || ok=false
+  if $HAS_VITE; then
+    vite_out=$(cd "$PROJECT_DIR" && npx vite build 2>&1) || ok=false
+    BUILD_GATE_OUTPUT="${BUILD_GATE_OUTPUT:+${BUILD_GATE_OUTPUT}
+}${vite_out}"
   fi
   if ! $HAS_TSCONFIG && ! $HAS_VITE; then
     log "No tsconfig.json or vite config found — build gate skipped"
@@ -104,14 +111,7 @@ while true; do
     log "Build passed"
     break
   else
-    # || true is intentional: tsc exits non-zero on type errors, but we need its output for the fix session
-    BUILD_ERRORS=""
-    if $HAS_TSCONFIG; then
-      BUILD_ERRORS=$(cd "$PROJECT_DIR" && npx tsc --noEmit 2>&1 || true)
-    fi
-    if $HAS_VITE; then
-      BUILD_ERRORS="$BUILD_ERRORS"$'\n'"$(cd "$PROJECT_DIR" && npx vite build 2>&1 || true)"
-    fi
+    BUILD_ERRORS="$BUILD_GATE_OUTPUT"
     build_attempt=$((build_attempt + 1))
 
     if [[ $build_attempt -ge $MAX_BUILD_RETRIES ]]; then
@@ -176,7 +176,11 @@ fi
 
 # Check for critical findings
 fix_attempt=0
+<<<<<<< fix/pipeline-review-hardening
 while echo "$REVIEW_OUTPUT" | grep -qi "Critical" && echo "$REVIEW_OUTPUT" | grep -qiE "Verdict.*FAIL"; do
+=======
+while echo "$REVIEW_OUTPUT" | grep -qiE "(\*\*Critical|^#+[[:space:]]*Critical)" || echo "$REVIEW_OUTPUT" | grep -qiE "Verdict:[[:space:]]*FAIL"; do
+>>>>>>> main
   fix_attempt=$((fix_attempt + 1))
 
   if [[ $fix_attempt -gt $MAX_FIX_RETRIES ]]; then
@@ -202,13 +206,7 @@ $REVIEW_OUTPUT" \
   # Re-run build gate
   if ! run_build_gate; then
     log "Build broke during fix — running build fix"
-    BUILD_ERRORS=""
-    if $HAS_TSCONFIG; then
-      BUILD_ERRORS=$(cd "$PROJECT_DIR" && npx tsc --noEmit 2>&1 || true)
-    fi
-    if $HAS_VITE; then
-      BUILD_ERRORS="$BUILD_ERRORS"$'\n'"$(cd "$PROJECT_DIR" && npx vite build 2>&1 || true)"
-    fi
+    BUILD_ERRORS="$BUILD_GATE_OUTPUT"
     FIX_EXIT=0
     FIX_OUTPUT=$(cd "$PROJECT_DIR" && claude -p "You are a PIPELINE FIX session spawned by execute-pipeline.sh.
 The rule in CLAUDE.md that says 'NEVER implement a plan directly' does NOT apply to you — you ARE the pipeline. Edit files directly to fix the build errors below.
@@ -260,7 +258,7 @@ else
   CODEX_OUTPUT=$(cd "$PROJECT_DIR" && claude -p "Adversarial review: check this diff for auth bypass, data loss, race conditions, rollback safety, business logic errors.
 
 $DIFF" \
-    --model sonnet \
+    --model opus \
     --max-turns 20 \
     --output-format text 2>&1) || CODEX_EXIT=$?
 fi
