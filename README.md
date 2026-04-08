@@ -244,6 +244,8 @@ Analysts can't edit files. Executors can't search the web. This is by design.
 
 Both `/iago:execute` and `/iago:quick` run the same `scripts/execute-pipeline.sh`. Every plan goes through 6 local stages as separate `claude -p` sessions, then an async GitHub Action review-fix loop — no context bleed, no token burn in the orchestrator:
 
+#### Local Pipeline (in your session)
+
 ```mermaid
 flowchart LR
     Plan[Plan file] --> Impl[1. Implement — Opus]
@@ -255,21 +257,37 @@ flowchart LR
     Fix2 --> Build
     Review -->|pass| Codex[4. Codex — GPT-5.4]
     Codex --> PR[5. Create PR — Sonnet]
-    PR --> Tag[5b. Tag @claude]
+    PR --> Tag[5b. Tag @claude — Haiku]
     Tag --> Summary[6. Summary]
-    Tag -.->|async| GHA[GitHub Action review-fix loop]
 ```
 
-1. **Implement (Opus):** Writes code from the plan, constrained to Edit/Write/Read/Glob/Grep/Bash
+1. **Implement (Opus):** Writes code from the plan
 2. **Build gate:** `tsc --noEmit && vite build` — max 2 retries with Opus fix sessions
 3. **Review (Opus):** Checks diff against plan — Critical/Important/Minor findings
 4. **Codex adversarial (GPT-5.4):** Cross-model review for auth bypass, data loss, race conditions
 5. **Create PR (Sonnet):** Stages, commits, pushes feature branch, creates PR via `gh`
-5b. **Tag @claude:** Haiku synthesizes review request, posts on PR
-6. **Summary:** Persists result to `.iago/summaries/` for `/iago:verify`
+5b. **Tag @claude (Haiku):** Synthesizes review request, posts on PR — triggers async loop
+6. **Summary:** Persists result to `.iago/summaries/`
 
-Critical findings trigger automatic fix → rebuild → re-review (max 2 rounds).
-After PR creation, `claude-review-fix.yml` handles the async fix loop: Claude reviews → fix Action → push → re-tag → repeat until clean (max 5 rounds). When clean, Claude posts a structured summary of all changes and fixes across all rounds. Human reviews the summary and merges. Both workflows skip merged/closed PRs automatically.
+Critical findings at step 3 trigger automatic fix → rebuild → re-review (max 2 rounds). Your session ends after step 6.
+
+#### Async Review-Fix Loop (GitHub Actions — no session needed)
+
+```mermaid
+flowchart TD
+    Tag["@claude tagged on PR\n(step 5b or /iago:prfix)"] --> CY["claude.yml\nClaude Code Action reviews PR"]
+    CY --> Signal["Posts [claude-review-complete]\nsignal via GH_PAT"]
+    Signal --> Check{"claude-review-fix.yml\nFindings in review?"}
+    Check -->|"clean (no findings)"| Sum["Post structured summary\nof all changes + fixes"]
+    Check -->|"round > 5"| Max["Post max-rounds notice\nManual review required"]
+    Check -->|"findings exist"| FA["Fix agent reads review\nfixes all findings"]
+    FA --> Push["git commit + push\n(with fallback push step)"]
+    Push --> Retag["Re-tag @claude\nvia GH_PAT"]
+    Retag -->|"triggers claude.yml"| CY
+    Sum --> Human["Human reviews summary\nand merges"]
+```
+
+The loop runs entirely on GitHub Actions. Both workflows skip merged/closed PRs. Max 5 rounds — if still unresolved, posts a notice for manual review.
 
 ### Capability Modules (13)
 

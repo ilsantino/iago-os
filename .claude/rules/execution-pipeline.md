@@ -55,16 +55,38 @@ scripts/execute-pipeline.sh --plan {path} --project-dir {dir}
   v
 6. SUMMARY — write pipeline results to .iago/summaries/
 
-  ── async (GitHub Actions) ──────────────────────────────
-  claude.yml: @claude tag triggers Claude Code Action review.
-    After review completes, posts [claude-review-complete] signal via GH_PAT.
-  claude-review-fix.yml: [claude-review-complete] signal triggers fix loop.
-    Checks if review is clean → if not, fix agent fixes all findings →
-    git config + commit + push (with fallback push step) →
-    re-tags @claude via GH_PAT → claude.yml re-reviews (max 5 rounds).
-    When clean → posts structured summary of all changes/fixes for human review.
-  Both workflows skip merged/closed PRs (state == open guard).
-  Human reviews summary and merges.
+```
+
+### Async Review-Fix Loop (GitHub Actions)
+
+Triggered automatically by step 5b. Runs without a session. Both workflows
+skip merged/closed PRs (`state == open` guard).
+
+```
+@claude tagged on PR (step 5b or /iago:prfix)
+  │
+  ▼
+claude.yml ── Claude Code Action reviews PR
+  │
+  ▼
+Posts [claude-review-complete] signal (via GH_PAT)
+  │
+  ▼
+claude-review-fix.yml ── checks findings + round count
+  │
+  ├── CLEAN (no findings) ──► post summary ──► human merges
+  │
+  ├── MAX ROUNDS (>5) ────► post notice ──► manual review
+  │
+  └── FINDINGS ──► fix agent fixes all findings
+                     │
+                     ▼
+                   git commit + push (fallback push step)
+                     │
+                     ▼
+                   re-tag @claude (via GH_PAT)
+                     │
+                     └──► back to claude.yml (loops)
 ```
 
 ### Handling Findings
