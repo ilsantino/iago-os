@@ -71,6 +71,8 @@ jobs:
             ];
             // Check clean signals OR a PASS verdict without Critical/Important findings
             const hasCleanSignal = cleanSignals.some(s => latestReview.includes(s));
+            // Minor: findings intentionally not checked — per pipeline rules, Minor does
+            // not block a PASS verdict. Only Critical and Important prevent clean detection.
             const hasPassVerdict = /verdict[:\s]*\*{0,2}\s*pass\b/i.test(latestReview)
               && !/\*{0,2}critical\*{0,2}\s*:/i.test(latestReview)
               && !/\*{0,2}important\*{0,2}\s*:/i.test(latestReview);
