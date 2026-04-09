@@ -28,3 +28,4 @@
 | 2026-04-08 | fast | Compress CLAUDE.md (~19% token reduction) | ab6d5b2 |
 | 2026-04-08 | fast | Add caveman-lite output rules for orchestrator | ae528fd |
 | 2026-04-08 | fast | Add allowedTools, fix clean detection, compress prompts | f4e64e0 |
+| 2026-04-09 | quick | Review pipeline control flags + pr-review-pipeline docs | 40c3ac7 |
