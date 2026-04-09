@@ -79,6 +79,8 @@ Built into `scripts/execute-pipeline.sh`. Each step = separate `claude -p` sessi
 
 Async review-fix loop via GitHub Actions: `claude.yml` reviews, `claude-review-fix.yml` fixes + re-tags (max 5 rounds). Priority: Critical → Important → Minor. Summary posted when clean.
 
+**Control flags:** `/iago:execute` auto-tags @claude (suppress with `--no-review`). `/iago:quick` skips tagging by default (enable with `--review`). Manual trigger: `/iago:prfix`. Details in `.claude/rules/execution-pipeline.md`.
+
 **Skip:** Only via `/iago:fast` (build gate only).
 
 ## Learnings

@@ -12,6 +12,7 @@ set -euo pipefail
 
 PLAN_PATH=""
 PROJECT_DIR=""
+NO_TAG=false
 MAX_BUILD_RETRIES=2
 MAX_FIX_RETRIES=2
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -20,6 +21,7 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --plan) PLAN_PATH="$2"; shift 2 ;;
     --project-dir) PROJECT_DIR="$2"; shift 2 ;;
+    --no-tag) NO_TAG=true; shift ;;
     *) echo "Unknown arg: $1" >&2; exit 1 ;;
   esac
 done
@@ -293,6 +295,7 @@ if [[ -z "$PR_URL" ]]; then
   PR_URL=$(cd "$PROJECT_DIR" && gh pr view "$CURRENT_BRANCH" --json url -q '.url' 2>/dev/null || echo "")
 fi
 
+if [ "$NO_TAG" != "true" ]; then
 if [[ -n "$PR_URL" ]]; then
   PR_NUMBER=$(echo "$PR_URL" | grep -oE '[0-9]+$')
   log "TAGGING @claude on PR #$PR_NUMBER"
@@ -329,6 +332,9 @@ $CODEX_OUTPUT" \
   (cd "$PROJECT_DIR" && gh pr comment "$PR_NUMBER" --body "$CLAUDE_REVIEW_BODY") || log "WARNING: Failed to post @claude comment on PR #$PR_NUMBER"
 else
   log "ERROR: Could not determine PR URL — @claude review tag was NOT posted. Check PR manually."
+fi
+else
+  log "TAG SKIPPED (--no-tag)"
 fi
 
 # Review-fix loop is handled by GitHub Action (claude-review-fix.yml).
