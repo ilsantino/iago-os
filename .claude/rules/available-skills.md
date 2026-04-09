@@ -55,10 +55,15 @@ description: >-
 - `/loop` — Run a prompt or command on a recurring interval (e.g., `/loop 5m /codex:status`)
 - `/schedule` — Create, update, or run cron-scheduled remote agents (triggers)
 - `/claude-api` — Guidance for building with Claude API, Anthropic SDK, or Agent SDK
+- `/ultraplan` — Cloud planning on Opus 4.6 via Claude Code Remote (CCR). 30 min compute budget. Requires GitHub repo + Claude Code on web
+- `/powerup` — In-terminal interactive tutorials with animated demos. v2.1.90+
+- `/insights` — 30-day usage analytics → HTML report at `~/.claude/usage-data/report.html`
 
 ### MCP Servers (active)
 - `context7` — Fetch current library/framework docs (React, Tailwind, ShadCN, AWS SDK, etc.) — prefer over web search for API syntax and setup
 - `obsidian` — Read/write access to Obsidian vault (notes, tags, frontmatter, search)
+- `graphify` — Query knowledge graph (BFS/DFS traversal, node lookup, community stats)
+- `mempalace` — Semantic search over conversation history, temporal KG, agent diary. See routing table in global CLAUDE.md
 
 ### Marketplace Plugins (not installed — evaluate when needed)
 - `typescript-lsp` — Real-time TS diagnostics via language server (may replace post-edit-typecheck hook)

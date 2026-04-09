@@ -81,7 +81,33 @@ Async review-fix loop via GitHub Actions: `claude.yml` reviews, `claude-review-f
 
 **Control flags:** `/iago:execute` auto-tags @claude (suppress with `--no-review`). `/iago:quick` skips tagging by default (enable with `--review`). Manual trigger: `/iago:prfix`. Details in `.claude/rules/execution-pipeline.md`.
 
+**Terminology:** "review" in `/iago:execute` and `/iago:quick` flags means the **GitHub PR workflow** — tagging @claude on the PR to trigger the async review-fix loop via GitHub Actions. It does NOT mean the local multi-step review pipeline (steps 3-4), which always runs regardless of flags.
+
 **Skip:** Only via `/iago:fast` (build gate only).
+
+## Memory Architecture
+
+Three layers, each with distinct purpose and access pattern:
+
+| Layer | What | Access | Automation |
+|-------|------|--------|------------|
+| **MEMORY.md** | User prefs, feedback, project context | Always-loaded in context | Manual (Claude writes) |
+| **Obsidian** | Session digests, meetings, decisions, business docs | MCP (`search_notes`, `read_note`, `write_note`) | Semi-auto (session digests) |
+| **MemPalace** | Conversation history, temporal KG, agent diary | MCP (`mempalace_search`, `mempalace_kg_query`, `mempalace_kg_timeline`) | Auto (stop + pre-compact hooks) |
+
+### Retrieval Routing
+
+| Need | Tool |
+|------|------|
+| Structured notes, decisions, meetings | Obsidian MCP |
+| Entity relationships, concept links | Graphify MCP (`query_graph`, `get_node`) |
+| Past conversation recall, reasoning trails | MemPalace (`mempalace_search`) |
+| Temporal facts ("what was true when") | MemPalace KG (`mempalace_kg_query`, `mempalace_kg_timeline`) |
+| Library/framework docs | Context7 (`query-docs`) |
+
+### MemPalace Wings
+
+One wing per client/context: `iago_os`, `munet`, `din`, `sentria`, `installflow`, `santiago`, `sebas`, `business`. Bulk import via `mempalace mine` per wing. Hooks handle future sessions automatically.
 
 ## Learnings
 
