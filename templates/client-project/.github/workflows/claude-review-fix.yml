@@ -52,11 +52,11 @@ jobs:
               per_page: 100,
             });
 
-            // The trigger is [claude-review-complete] (signal comment).
-            // The actual review is in the most recent claude[bot] comment.
+            // Get most recent claude[bot] comment — the actual review.
+            // Don't filter by "Claude finished" — review comments don't
+            // contain that string, only the checklist comment does.
             const claudeComments = comments.filter(c =>
-              c.user.login === 'claude[bot]' &&
-              c.body.includes('Claude finished')
+              c.user.login === 'claude[bot]'
             );
             const latestReview = claudeComments.length > 0
               ? claudeComments[claudeComments.length - 1].body.toLowerCase()
@@ -145,42 +145,31 @@ jobs:
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          claude_args: "--max-turns 50"
+          # --allowedTools REQUIRED — Claude Code denies all tools in CI without it.
+          claude_args: '--max-turns 50 --allowedTools "Edit,Write,Read,Bash,Glob,Grep"'
           prompt: |
-            You are a review-fix agent. Round ${{ steps.pr.outputs.round }}/5.
+            Review-fix agent. Round ${{ steps.pr.outputs.round }}/5.
 
-            TASK: Read the latest claude[bot] review comment on this PR, identify
-            every actionable finding (Critical, Important, Minor), and fix ALL of them
-            in priority order: Critical first, then Important, then Minor.
+            Fix ALL findings from latest claude[bot] review. Priority: Critical → Important → Minor.
+            Low on turns → ensure Critical+Important done before Minor.
 
-            If running low on turns, ensure all Critical and Important findings are
-            fixed before attempting Minor ones. Never skip a severity tier entirely.
+            Steps:
+            1. Read review: gh api repos/${{ github.repository }}/issues/${{ github.event.issue.number }}/comments --jq '.[] | select(.user.login == "claude[bot]") | .body' | tail -1
+            2. For each finding: read file → fix → verify fix (re-read file)
+            3. Commit+push: git add -A && git commit -m "fix: review findings (round ${{ steps.pr.outputs.round }})" && git push
 
-            WORKFLOW:
-            1. Read review comments:
-               gh api repos/${{ github.repository }}/issues/${{ github.event.issue.number }}/comments --jq '.[] | select(.user.login == "claude[bot]") | .body' | tail -1
-            2. Extract each finding — look for lines with Critical, Important, or Minor
-            3. For each finding:
-               a. Read the referenced file
-               b. Apply the fix
-               c. VERIFY the fix worked — re-read the file and confirm the issue is gone
-            4. After all fixes verified, commit and push:
-               git add -A
-               git commit -m "fix: address review findings (round ${{ steps.pr.outputs.round }})"
-               git push
+            Rules:
+            - Fix every finding regardless of severity
+            - Verify each fix before moving on
+            - Same finding from previous round → different approach
+            - 2 failed attempts on one finding → explain in PR comment
+            - No @claude tags — later step handles re-tag
+            - Must commit+push even if changes small
 
-            RULES:
-            - Do NOT skip any finding regardless of severity
-            - VERIFY each fix before moving on — if the issue persists, try again
-            - If a finding was flagged in a previous round and is still present,
-              it means your previous fix didn't work. Try a DIFFERENT approach.
-            - If you cannot fix something after 2 attempts, explain why in a PR comment
-            - Do NOT post a comment tagging @claude — a later step handles that
-            - You MUST commit and push even if changes are small
-
-      # Fallback: commit and push any changes the fix agent made but didn't push
+      # Fallback: commit+push changes fix agent left uncommitted
       - name: Push remaining changes
-        if: steps.pr.outputs.skip != 'true'
+        id: fallback
+        if: always() && steps.pr.outputs.skip != 'true'
         run: |
           if [ -n "$(git status --porcelain)" ]; then
             echo "Fix agent left uncommitted changes — pushing them"
@@ -191,20 +180,24 @@ jobs:
             echo "Working tree clean — fix agent already pushed (or made no changes)"
           fi
 
-      # Re-tag @claude using PAT so the comment triggers claude.yml.
-      # Default GITHUB_TOKEN can't trigger other workflows (GitHub limitation).
+      # Re-tag @claude via PAT (GITHUB_TOKEN can't trigger other workflows).
+      # always() — fix failure must not silently kill loop. Round limit guards infinite loops.
       - name: Tag @claude for re-review
-        if: steps.pr.outputs.skip != 'true' && steps.fix.outcome == 'success'
+        if: always() && steps.pr.outputs.skip != 'true' && steps.fix.outcome != 'skipped'
         uses: actions/github-script@v7
         with:
           github-token: ${{ secrets.GH_PAT }}
           script: |
             const round = '${{ steps.pr.outputs.round }}';
+            const fixOutcome = '${{ steps.fix.outcome }}';
+            const suffix = fixOutcome === 'success'
+              ? 'Check all existing review comments and verify fixes are correct.'
+              : 'Fix agent hit issues — check if partial fixes were applied.';
             await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: context.issue.number,
-              body: `[review-fix-loop] @claude Review again. Fixes pushed for round ${round}. General pass for anything unexpected.`
+              body: `[review-fix-loop] @claude Review again. Round ${round} complete. ${suffix}`
             });
 
       # ─── Clean PR: post summary for human review ─────────────────────
@@ -221,7 +214,7 @@ jobs:
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          claude_args: "--max-turns 10"
+          claude_args: '--max-turns 10 --allowedTools "Read,Bash(gh:*),Glob,Grep"'
           prompt: |
             The review-fix loop has completed — all findings are resolved.
 
