@@ -12,6 +12,7 @@ set -euo pipefail
 
 PLAN_PATH=""
 PROJECT_DIR=""
+NO_TAG=false
 MAX_BUILD_RETRIES=2
 MAX_FIX_RETRIES=2
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -20,6 +21,7 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --plan) PLAN_PATH="$2"; shift 2 ;;
     --project-dir) PROJECT_DIR="$2"; shift 2 ;;
+    --no-tag) NO_TAG=true; shift ;;
     *) echo "Unknown arg: $1" >&2; exit 1 ;;
   esac
 done
@@ -37,6 +39,16 @@ fi
 PLAN_CONTENT=$(cat "$PROJECT_DIR/$PLAN_PATH")
 PLAN_NAME=$(basename "$PLAN_PATH" .md)
 
+# Temp directory for pipeline artifacts — avoids "Argument list too long" on
+# Windows by writing large content to files instead of inlining in claude -p.
+PIPELINE_TMP=$(mktemp -d)
+trap 'rm -rf "$PIPELINE_TMP"' EXIT
+
+PLAN_FILE="$PROJECT_DIR/$PLAN_PATH"
+DIFF_FILE="$PIPELINE_TMP/diff.txt"
+REVIEW_FILE="$PIPELINE_TMP/review.txt"
+CODEX_FILE="$PIPELINE_TMP/codex.txt"
+
 log() { echo "[$(date '+%H:%M:%S')] $1"; }
 
 # ─── Step 1: Implement ───────────────────────────────────────────────
@@ -51,9 +63,8 @@ IMPL_EXIT=0
 IMPL_OUTPUT=$(cd "$PROJECT_DIR" && claude -p "You are a PIPELINE IMPLEMENTATION session spawned by execute-pipeline.sh.
 The rule in CLAUDE.md that says 'NEVER implement a plan directly' does NOT apply to you — you ARE the pipeline. Your job is to write the code specified in the plan below. Use Edit/Write tools to create and modify files. Do not invoke any /iago: skills. Do not defer to another agent.
 
-Execute this plan. Follow every task exactly. Create all files specified. End your response with DONE or BLOCKED.
-
-$PLAN_CONTENT" \
+Read the plan file at: $PLAN_FILE
+Execute every task exactly. Create all files specified. End your response with DONE or BLOCKED." \
   --model opus \
   --max-turns 50 \
   --allowedTools "Edit Write Read Glob Grep Bash" \
@@ -153,15 +164,13 @@ if [[ -z "$COMBINED_DIFF" ]]; then
   REVIEW_EXIT=0
 else
   DIFF="$COMBINED_DIFF"
+  echo "$DIFF" > "$DIFF_FILE"
 
 REVIEW_EXIT=0
-REVIEW_OUTPUT=$(cd "$PROJECT_DIR" && claude -p "Review this diff against the plan below. Categorize findings as Critical, Important, or Minor. End with verdict: PASS, PASS_WITH_CONCERNS, or FAIL.
+REVIEW_OUTPUT=$(cd "$PROJECT_DIR" && claude -p "Review the implementation against the plan. For each task in the plan, verify the diff implements it correctly. Categorize findings as Critical, Important, or Minor. End with verdict: PASS, PASS_WITH_CONCERNS, or FAIL.
 
-Plan:
-$PLAN_CONTENT
-
-Diff:
-$DIFF" \
+Read the plan: $PLAN_FILE
+Read the diff: $DIFF_FILE" \
   --model opus \
   --max-turns 25 \
   --allowedTools "Read Glob Grep Bash" \
@@ -176,7 +185,7 @@ fi
 
 # Check for critical findings
 fix_attempt=0
-while echo "$REVIEW_OUTPUT" | grep -qiE "(\*\*Critical|^#+[[:space:]]*Critical)" || echo "$REVIEW_OUTPUT" | grep -qiE "Verdict:[[:space:]]*FAIL"; do
+while echo "$REVIEW_OUTPUT" | grep -qiE "\bCritical\b" && echo "$REVIEW_OUTPUT" | grep -qiE "Verdict\s*:?\s*\*{0,2}\s*FAIL\b"; do
   fix_attempt=$((fix_attempt + 1))
 
   if [[ $fix_attempt -gt $MAX_FIX_RETRIES ]]; then
@@ -185,13 +194,13 @@ while echo "$REVIEW_OUTPUT" | grep -qiE "(\*\*Critical|^#+[[:space:]]*Critical)"
   fi
 
   log "Critical findings — dispatching fix session (round $fix_attempt)"
+  echo "$REVIEW_OUTPUT" > "$REVIEW_FILE"
   FIX_EXIT=0
   FIX_OUTPUT=$(cd "$PROJECT_DIR" && claude -p "You are a PIPELINE FIX session spawned by execute-pipeline.sh.
 The rule in CLAUDE.md that says 'NEVER implement a plan directly' does NOT apply to you — you ARE the pipeline. Edit files directly to fix the critical findings below.
 
-Fix these critical review findings:
-
-$REVIEW_OUTPUT" \
+Read the review findings at: $REVIEW_FILE
+Fix all critical findings listed there." \
     --model opus \
     --max-turns 40 \
     --allowedTools "Edit Write Read Glob Grep Bash" \
@@ -218,15 +227,15 @@ Fix build errors: $BUILD_ERRORS" \
 
   # Re-review — re-stage and capture full diff
   (cd "$PROJECT_DIR" && git add -A -- ':!**/.env' ':!**/.env.*' ':!**/*.pem' ':!**/*.key' ':!**/*.p12' ':!**/*.pfx')
-  DIFF=$(cd "$PROJECT_DIR" && { git diff "$PRE_IMPL_SHA"..HEAD 2>/dev/null || echo ""; } && { git diff --cached 2>/dev/null || echo ""; })
+  DIFF=$(cd "$PROJECT_DIR" && git diff "$PRE_IMPL_SHA"..HEAD 2>/dev/null || echo "")
+  STAGED_DIFF=$(cd "$PROJECT_DIR" && git diff --cached 2>/dev/null || echo "")
+  DIFF="${DIFF}${STAGED_DIFF}"
+  echo "$DIFF" > "$DIFF_FILE"
   REVIEW_EXIT=0
-  REVIEW_OUTPUT=$(cd "$PROJECT_DIR" && claude -p "Re-review this diff against the plan below. Categorize findings as Critical, Important, or Minor. End with verdict: PASS, PASS_WITH_CONCERNS, or FAIL.
+  REVIEW_OUTPUT=$(cd "$PROJECT_DIR" && claude -p "Re-review after fix round $fix_attempt. Verify critical findings are resolved. Categorize remaining findings as Critical/Important/Minor. Verdict: PASS/PASS_WITH_CONCERNS/FAIL.
 
-Plan:
-$PLAN_CONTENT
-
-Diff:
-$DIFF" \
+Read the plan: $PLAN_FILE
+Read the diff: $DIFF_FILE" \
     --model opus \
     --max-turns 25 \
     --allowedTools "Read Glob Grep Bash" \
@@ -244,6 +253,7 @@ fi  # end of non-empty diff check
 # ─── Step 4: Codex adversarial review ────────────────────────────────
 log "CODEX REVIEW — $PLAN_NAME"
 DIFF=$(cd "$PROJECT_DIR" && { git diff "$PRE_IMPL_SHA"..HEAD 2>/dev/null || echo ""; } && { git diff --cached 2>/dev/null || echo ""; })
+echo "$DIFF" > "$DIFF_FILE"
 
 CODEX_EXIT=0
 if command -v codex &> /dev/null; then
@@ -251,7 +261,7 @@ if command -v codex &> /dev/null; then
 else
   CODEX_OUTPUT=$(cd "$PROJECT_DIR" && claude -p "Adversarial review: check this diff for auth bypass, data loss, race conditions, rollback safety, business logic errors.
 
-$DIFF" \
+Read the diff: $DIFF_FILE" \
     --model opus \
     --max-turns 20 \
     --output-format text 2>&1) || CODEX_EXIT=$?
@@ -291,11 +301,14 @@ if [[ -z "$PR_URL" ]]; then
   PR_URL=$(cd "$PROJECT_DIR" && gh pr view "$CURRENT_BRANCH" --json url -q '.url' 2>/dev/null || echo "")
 fi
 
+if [ "$NO_TAG" != "true" ]; then
 if [[ -n "$PR_URL" ]]; then
   PR_NUMBER=$(echo "$PR_URL" | grep -oE '[0-9]+$')
   log "TAGGING @claude on PR #$PR_NUMBER"
 
   # Use a haiku session to synthesize a direct review request from pipeline context
+  echo "$REVIEW_OUTPUT" > "$REVIEW_FILE"
+  echo "$CODEX_OUTPUT" > "$CODEX_FILE"
   TAG_EXIT=0
   CLAUDE_REVIEW_BODY=$(claude -p "Write a GitHub PR comment tagging @claude for review. Output ONLY the comment text, nothing else.
 
@@ -305,18 +318,13 @@ Rules:
 - Blank line. Watch for: one paragraph, specific concerns synthesized from context below. End with 'General pass for anything unexpected.'
 - No markdown headers, no bullet points, no 'please', no politeness. Direct and terse.
 
-Context:
-
-Plan ($PLAN_PATH):
-$PLAN_CONTENT
-
-Review findings:
-$REVIEW_OUTPUT
-
-Codex findings:
-$CODEX_OUTPUT" \
+Read these context files:
+- Plan: $PLAN_FILE
+- Review findings: $REVIEW_FILE
+- Codex findings: $CODEX_FILE" \
     --model haiku \
     --max-turns 1 \
+    --allowedTools "Read" \
     --output-format text 2>&1) || TAG_EXIT=$?
 
   if [[ $TAG_EXIT -ne 0 ]] || [[ -z "$CLAUDE_REVIEW_BODY" ]]; then
@@ -327,6 +335,9 @@ $CODEX_OUTPUT" \
   (cd "$PROJECT_DIR" && gh pr comment "$PR_NUMBER" --body "$CLAUDE_REVIEW_BODY") || log "WARNING: Failed to post @claude comment on PR #$PR_NUMBER"
 else
   log "ERROR: Could not determine PR URL — @claude review tag was NOT posted. Check PR manually."
+fi
+else
+  log "TAG SKIPPED (--no-tag)"
 fi
 
 # Review-fix loop is handled by GitHub Action (claude-review-fix.yml).

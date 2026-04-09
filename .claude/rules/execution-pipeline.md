@@ -57,6 +57,18 @@ scripts/execute-pipeline.sh --plan {path} --project-dir {dir}
 
 ```
 
+### Control Flags
+
+`--no-tag` on the pipeline script skips step 5b (@claude tagging). The PR is
+still created — only the async review-fix loop trigger is suppressed.
+
+Default behavior per skill:
+- **`/iago:execute`** — auto-review (tags @claude). Pass `--no-review` to suppress.
+- **`/iago:quick`** — no auto-review (passes `--no-tag`). Pass `--review` to enable.
+
+Manual trigger: `/iago:prfix` tags @claude on any existing PR to start the
+async loop after the fact.
+
 ### Async Review-Fix Loop (GitHub Actions)
 
 Triggered automatically by step 5b. Runs without a session. Both workflows

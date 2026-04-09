@@ -32,6 +32,10 @@ orchestrator session.
 `/iago:execute {phase-slug} --n8n` — dispatch to n8n webhook instead of local
 script. Requires `automation.n8n_webhook_url` in `.iago/config.json`.
 
+`/iago:execute {phase-slug} --no-review` — skip @claude tagging after PR
+creation. Local pipeline still runs (build gate, review, codex). You can
+manually trigger the async loop later with `/iago:prfix`.
+
 If no phase-slug provided, read STATE.md for the current active phase.
 
 ## Steps
@@ -80,8 +84,14 @@ This ensures we're on the latest main with no conflicts.
 For each plan in order:
 
 ```bash
+# Default (auto-review):
 bash "$SCRIPT" --plan {plan_path} --project-dir "$PROJECT_DIR"
+# With --no-review:
+bash "$SCRIPT" --plan {plan_path} --project-dir "$PROJECT_DIR" --no-tag
 ```
+
+If `--no-review` was passed, append `--no-tag` to the script call. This skips
+step 5b (@claude tagging) but all local pipeline stages still run.
 
 **Run this via the Bash tool.** Set timeout to 600000 (10 min). Run in background
 if the user wants to do other work, otherwise foreground.
