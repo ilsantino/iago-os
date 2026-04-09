@@ -1,7 +1,7 @@
 # State — iaGO-OS
 
 > **Phase:** hardening | **Status:** in-progress
-> **Plan:** adversarial-review-fixes | **Updated:** 2026-04-07
+> **Plan:** adversarial-review-fixes | **Updated:** 2026-04-08
 
 ## Recent Decisions
 
@@ -25,3 +25,6 @@
 | 2026-04-07 | quick | Housekeeping: ECC comments, archive research, STATE.md | 2f20a3f |
 | 2026-04-07 | quick | Harden SDD: --pipeline flag, Codex fallback | pending |
 | 2026-04-08 | quick | Fix review-fix silent no-op (custom_instructions → prompt) | [iago-os#8](https://github.com/ilsantino/iago-os/pull/8), [munet-web#19](https://github.com/bas-labs/munet-web/pull/19) |
+| 2026-04-08 | fast | Compress CLAUDE.md (~19% token reduction) | ab6d5b2 |
+| 2026-04-08 | fast | Add caveman-lite output rules for orchestrator | ae528fd |
+| 2026-04-08 | fast | Add allowedTools, fix clean detection, compress prompts | f4e64e0 |
