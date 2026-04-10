@@ -87,7 +87,7 @@ Async review-fix loop via GitHub Actions: `claude.yml` reviews, `claude-review-f
 
 ## Memory Architecture
 
-Three layers, each with distinct purpose and access pattern. MEMORY.md is always available. **Obsidian, Graphify, and MemPalace require setup** — run `scripts/setup-memory.sh` to install. See `docs/memory-stack.md` for full details. Without setup, only MEMORY.md is active; do not reference MCP tools that are not installed.
+Three layers, each with distinct purpose and access pattern:
 
 | Layer | What | Access | Automation |
 |-------|------|--------|------------|
@@ -97,8 +97,6 @@ Three layers, each with distinct purpose and access pattern. MEMORY.md is always
 | **MemPalace** | Conversation history, agent diary | MCP (`mempalace_search`, `mempalace_diary_read`) | Auto (stop hook writes diary every session) |
 
 ### Retrieval Routing
-
-Use these tools only if the corresponding MCP server is installed (check `~/.claude/settings.json` → `mcpServers`):
 
 | Need | Tool |
 |------|------|
@@ -110,7 +108,7 @@ Use these tools only if the corresponding MCP server is installed (check `~/.cla
 
 ### MemPalace Wings
 
-Wings are configured in `~/.mempalace/wing_config.json` (template at `templates/memory/wing_config.json`). Stop hook auto-writes diary entries. Bulk backfill: `mempalace mine ~/.claude/projects/{dir}/ --mode convos --wing {name}`.
+13.5K drawers across 7 wings: `iago_os`, `munet`, `din`, `sentria`, `installflow`, `santiago`, `business`. Stop hook auto-writes diary entries. Bulk backfill: `mempalace mine ~/.claude/projects/{dir}/ --mode convos --wing {name}`.
 
 ## Learnings
 
