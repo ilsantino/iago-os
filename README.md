@@ -109,7 +109,7 @@ See [docs/SETUP.md](docs/SETUP.md) for detailed instructions (Windows + macOS).
 
 ## Review Pipeline
 
-Both `/iago:execute` and `/iago:quick` run `scripts/execute-pipeline.sh`. Every plan goes through 6 stages as separate `claude -p` sessions — no context bleed, no token burn in the orchestrator.
+Both `/iago:execute` and `/iago:quick` run `scripts/execute-pipeline.sh`. Every plan goes through 7 stages as separate `claude -p` sessions — no context bleed, no token burn in the orchestrator.
 
 ### Local Pipeline
 
@@ -123,7 +123,10 @@ flowchart LR
     Review -->|critical| Fix2[Fix — Opus]
     Fix2 --> Build
     Review -->|pass| Codex[4. Codex — GPT-5.4]
-    Codex --> PR[5. Create PR — Sonnet]
+    Codex -->|findings| CdxFix[4b. Codex Fix — Opus]
+    CdxFix --> Build2[Rebuild gate]
+    Build2 --> PR[5. Create PR — Sonnet]
+    Codex -->|clean| PR
     PR --> Tag[5b. Tag @claude — Haiku]
     Tag --> Summary[6. Summary]
 ```

@@ -5,8 +5,8 @@
 The iaGO review pipeline runs in two phases:
 
 1. **Local pipeline** (`scripts/execute-pipeline.sh`) — implement → build gate →
-   review → codex adversarial → create PR → tag @claude → summary. Each step is
-   a separate `claude -p` session with fresh context.
+   review → codex adversarial → codex fix → create PR → tag @claude → summary.
+   Each step is a separate `claude -p` session with fresh context.
 
 2. **Async review-fix loop** (GitHub Actions) — triggered by the @claude tag on
    the PR. Claude Code Action reviews, posts findings, a fix workflow applies
@@ -172,11 +172,12 @@ show the PR creation step output.
 Local Pipeline (execute-pipeline.sh)
 ═══════════════════════════════════════════════════════════
 
-  IMPLEMENT ─► BUILD GATE ─► REVIEW ─► CODEX ─► CREATE PR
-  (opus)       (tsc+vite)    (opus)    (codex/   (sonnet)
-                                        opus)
-                                                    │
-                                          ┌─────────┘
+  IMPLEMENT ─► BUILD GATE ─► REVIEW ─► CODEX ─► CODEX FIX ─► CREATE PR
+  (opus)       (tsc+vite)    (opus)    (codex/   (opus)       (sonnet)
+                                        opus)    +rebuild
+                                                 if findings
+                                                                 │
+                                          ┌──────────────────────┘
                                           ▼
                                     TAG @claude ──────────┐
                                     (haiku)               │
