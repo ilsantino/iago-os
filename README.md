@@ -123,7 +123,7 @@ flowchart TD
     Plan + Adversarial"]
     Review -->|critical| Fix2[Fix — Opus]
     Fix2 --> Build
-    Review -->|pass| Codex[4. Codex — GPT-5.4]
+    Review -->|pass| Codex[4. Codex Adversarial — GPT-5.4]
     Codex -->|findings| CdxFix[4b. Codex Fix — Opus]
     CdxFix --> Rebuild[Rebuild gate]
     Rebuild --> PR[5. Create PR — Sonnet]
