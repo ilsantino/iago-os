@@ -114,7 +114,7 @@ Both `/iago:execute` and `/iago:quick` run `scripts/execute-pipeline.sh`. Every 
 ### Local Pipeline
 
 ```mermaid
-flowchart LR
+flowchart TD
     Plan[Plan file] --> Impl[1. Implement — Opus]
     Impl --> Build[2. Build gate — tsc + vite]
     Build -->|fail| Fix[Fix — Opus]
@@ -124,8 +124,8 @@ flowchart LR
     Fix2 --> Build
     Review -->|pass| Codex[4. Codex — GPT-5.4]
     Codex -->|findings| CdxFix[4b. Codex Fix — Opus]
-    CdxFix --> Build2[Rebuild gate]
-    Build2 --> PR[5. Create PR — Sonnet]
+    CdxFix --> Rebuild[Rebuild gate]
+    Rebuild --> PR[5. Create PR — Sonnet]
     Codex -->|clean| PR
     PR --> Tag[5b. Tag @claude — Haiku]
     Tag --> Summary[6. Summary]
