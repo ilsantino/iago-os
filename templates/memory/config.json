@@ -1,0 +1,42 @@
+{
+  "palace_path": "{{PALACE_PATH}}",
+  "collection_name": "mempalace_drawers",
+  "topic_wings": [
+    "architecture",
+    "clients",
+    "decisions",
+    "pipeline",
+    "business",
+    "debugging",
+    "research"
+  ],
+  "hall_keywords": {
+    "architecture": [
+      "architecture", "schema", "design", "pattern", "stack",
+      "amplify", "lambda", "dynamo", "cognito", "component"
+    ],
+    "clients": [
+      "client", "project", "deliverable", "milestone", "scope"
+    ],
+    "decisions": [
+      "decision", "chose", "decided", "approach", "trade-off",
+      "instead", "because", "rationale", "why", "constraint"
+    ],
+    "pipeline": [
+      "pipeline", "review", "deploy", "ci", "github", "pr",
+      "commit", "branch", "build", "test", "hook"
+    ],
+    "business": [
+      "proposal", "pricing", "contract", "scope", "timeline",
+      "invoice", "milestone", "deliverable", "budget"
+    ],
+    "debugging": [
+      "bug", "error", "fix", "broken", "crash", "fail",
+      "debug", "trace", "root cause", "regression"
+    ],
+    "research": [
+      "research", "evaluate", "compare", "benchmark", "option",
+      "alternative", "library", "framework", "tool", "pattern"
+    ]
+  }
+}
