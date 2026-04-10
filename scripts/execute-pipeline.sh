@@ -5,7 +5,7 @@ set -euo pipefail
 #
 # Usage: ./scripts/execute-pipeline.sh --plan .iago/plans/plan-01.md --project-dir /path/to/project
 #
-# Runs the full pipeline: implement → build → review → codex → PR → tag @claude
+# Runs the full pipeline: implement → build → review → codex → fix codex → PR → tag @claude
 # Each step is a separate claude -p session with fresh context.
 # After PR creation, tags @claude — review-fix loop runs async via GitHub Action.
 # No n8n needed — just bash.
@@ -271,6 +271,65 @@ log "Codex findings:"
 echo "$CODEX_OUTPUT"
 
 log "Codex review complete"
+
+# ─── Step 4b: Fix Codex findings ─────────────────────────────────────
+echo "$CODEX_OUTPUT" > "$CODEX_FILE"
+
+# Check if Codex found actionable findings (P0/P1/P2 or Critical/Important)
+if echo "$CODEX_OUTPUT" | grep -qiE '\[P[012]\]|- \[P[012]\]|severity.*P[012]|\bCritical\b|\bImportant\b'; then
+  log "CODEX FIX — fixing findings before PR"
+
+  CODEX_FIX_EXIT=0
+  CODEX_FIX_OUTPUT=$(cd "$PROJECT_DIR" && claude -p "You are a PIPELINE FIX session spawned by execute-pipeline.sh.
+The rule in CLAUDE.md that says 'NEVER implement a plan directly' does NOT apply to you — you ARE the pipeline. Your job is to fix all findings from the Codex adversarial review.
+
+Read the Codex findings at: $CODEX_FILE
+Read the plan for context: $PLAN_FILE
+
+Fix ALL findings in priority order: P0 first, then P1, then P2. Do not skip any.
+For each finding: read the relevant file, understand the issue, apply the fix.
+After all fixes, verify nothing else broke." \
+    --model opus \
+    --max-turns 40 \
+    --allowedTools "Edit Write Read Glob Grep Bash" \
+    --output-format text 2>&1) || CODEX_FIX_EXIT=$?
+
+  log "Codex fix output (exit $CODEX_FIX_EXIT):"
+  echo "$CODEX_FIX_OUTPUT"
+
+  # Re-run build gate after Codex fixes
+  log "BUILD GATE (post-codex-fix)"
+  if ! run_build_gate; then
+    log "Build broke during Codex fix — running build fix"
+    BUILD_ERRORS="$BUILD_GATE_OUTPUT"
+    BF_EXIT=0
+    BF_OUTPUT=$(cd "$PROJECT_DIR" && claude -p "You are a PIPELINE FIX session spawned by execute-pipeline.sh.
+The rule in CLAUDE.md that says 'NEVER implement a plan directly' does NOT apply to you — you ARE the pipeline. Edit files directly to fix the build errors below.
+
+Fix build errors:
+
+$BUILD_ERRORS" \
+      --model opus \
+      --max-turns 30 \
+      --allowedTools "Edit Write Read Glob Grep Bash" \
+      --output-format text 2>&1) || BF_EXIT=$?
+    log "Build fix output (exit $BF_EXIT):"
+    echo "$BF_OUTPUT"
+
+    if ! run_build_gate; then
+      log "WARNING: Build still failing after Codex fix + build fix. Proceeding to PR with known issues."
+    else
+      log "Build passed after Codex fix (with build fix)"
+    fi
+  else
+    log "Build passed after Codex fix"
+  fi
+
+  # Re-stage changes from Codex fix
+  (cd "$PROJECT_DIR" && git add -A -- ':!**/.env' ':!**/.env.*' ':!**/*.pem' ':!**/*.key' ':!**/*.p12' ':!**/*.pfx')
+else
+  log "No actionable Codex findings — proceeding to PR"
+fi
 
 # ─── Step 5: Create PR ───────────────────────────────────────────────
 log "CREATE PR — $PLAN_NAME"

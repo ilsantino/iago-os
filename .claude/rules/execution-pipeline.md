@@ -1,7 +1,7 @@
 ## Execution Pipeline
 
 The review pipeline is enforced by `scripts/execute-pipeline.sh`. Every plan
-goes through 6 local stages + async GitHub review-fix loop. No shortcuts.
+goes through 7 local stages + async GitHub review-fix loop. No shortcuts.
 
 ### How It Works
 
@@ -47,6 +47,9 @@ scripts/execute-pipeline.sh --plan {path} --project-dir {dir}
 4. CODEX ADVERSARIAL â€” codex CLI / GPT-5.4 if available, else claude -p opus
   |  checks: auth bypass, data loss, race conditions, rollback safety
   v
+4b. CODEX FIX â€” claude -p opus, fixes all Codex findings (P0â†’P1â†’P2)
+  |  skipped if no findings; rebuild gate after fix
+  v
 5. CREATE PR â€” claude -p sonnet, stages, commits, pushes, creates PR via gh
   |
   v
@@ -60,11 +63,11 @@ scripts/execute-pipeline.sh --plan {path} --project-dir {dir}
 ### Control Flags
 
 `--no-tag` on the pipeline script skips step 5b (@claude tagging). The PR is
-still created — only the async review-fix loop trigger is suppressed.
+still created ï¿½ only the async review-fix loop trigger is suppressed.
 
 Default behavior per skill:
-- **`/iago:execute`** — auto-review (tags @claude). Pass `--no-review` to suppress.
-- **`/iago:quick`** — no auto-review (passes `--no-tag`). Pass `--review` to enable.
+- **`/iago:execute`** ï¿½ auto-review (tags @claude). Pass `--no-review` to suppress.
+- **`/iago:quick`** ï¿½ no auto-review (passes `--no-tag`). Pass `--review` to enable.
 
 Manual trigger: `/iago:prfix` tags @claude on any existing PR to start the
 async loop after the fact.

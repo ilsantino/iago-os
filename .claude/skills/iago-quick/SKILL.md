@@ -10,7 +10,7 @@ description: >-
 
 Lightweight one-shot execution path for standalone tasks that don't warrant the
 full workflow. Produces a plan, then runs it through `scripts/execute-pipeline.sh`
-for the full pipeline (implement → build → review → codex → PR → tag @claude → summary).
+for the full pipeline (implement → build → review → codex → codex fix → PR → tag @claude → summary).
 
 ## When to Use
 
@@ -104,7 +104,7 @@ bash scripts/execute-pipeline.sh --plan {path} --project-dir {dir} --no-tag
 bash scripts/execute-pipeline.sh --plan {path} --project-dir {dir}
 ```
 
-By default, quick tasks pass `--no-tag` (no @claude tagging � PR is created but
+By default, quick tasks pass `--no-tag` (no @claude tagging � PR is created but
 the async review-fix loop is not triggered). If `--review` is passed, omit
 `--no-tag` so the full async loop runs automatically.
 
@@ -113,6 +113,7 @@ This runs the full pipeline as separate `claude -p` sessions:
 2. **Build gate** — `tsc --noEmit && vite build` (max 2 retries)
 3. **Review** — checks diff against plan (Critical/Important/Minor)
 4. **Codex adversarial** — auth bypass, data loss, race conditions
+4b. **Codex fix** — opus fixes all Codex findings, then rebuild (skipped if no findings)
 5. **Create PR** — stages, commits, pushes, creates PR via `gh`
 5b. **Tag @claude** — posts review request on PR
 6. **Summary** — writes results to `.iago/summaries/`
