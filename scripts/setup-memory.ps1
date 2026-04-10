@@ -62,4 +62,4 @@ if ($DryRun) {
 }
 
 Write-Host "Running setup via Git Bash..." -ForegroundColor Cyan
-& $GitBash @Args
+& $GitBash @BashArgs

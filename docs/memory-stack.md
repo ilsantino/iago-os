@@ -49,12 +49,9 @@ Knowledge graph + wiki over any document corpus (Obsidian vault, Google Drive ex
 
 ```bash
 # Full pipeline: extract + cluster + wiki
-python -m graphifyy extract --input ~/path/to/docs --output ~/path/to/graphify-out
-python -m graphifyy cluster --graph ~/path/to/graphify-out/graph.json
-python -m graphifyy wiki --graph ~/path/to/graphify-out/graph.json --output ~/path/to/graphify-out/wiki
-
-# Or use the iaGO skill for the full pipeline:
-# /graphify ~/path/to/docs
+python3 -m graphifyy extract --input ~/path/to/docs --output ~/path/to/graphify-out
+python3 -m graphifyy cluster --graph ~/path/to/graphify-out/graph.json
+python3 -m graphifyy wiki --graph ~/path/to/graphify-out/graph.json --output ~/path/to/graphify-out/wiki
 ```
 
 #### Scheduled Rebuilds
@@ -114,7 +111,7 @@ bash scripts/setup-memory.sh --dry-run
 
 1. Edit `~/.mempalace/wing_config.json` — replace template placeholders with actual client names and keywords
 2. Mine existing conversations: `mempalace mine ~/.claude/projects/{dir}/ --mode convos --wing {name}`
-3. Run graphify on your document corpus: `python -m graphifyy extract --input ~/docs --output ~/graphify-out`
+3. Run graphify on your document corpus: `python3 -m graphifyy extract --input ~/docs --output ~/graphify-out` (Windows: use `python`)
 
 ## Cross-Platform Notes
 
@@ -148,4 +145,4 @@ Check `~/.claude/settings.json` → `mcpServers`. The `command` should point to 
 
 1. Ensure corpus path is correct and contains readable files
 2. Check `.graphifyignore` isn't excluding everything
-3. Run with verbose: `python -m graphifyy extract --input ~/docs --output ~/out --verbose`
+3. Run with verbose: `python3 -m graphifyy extract --input ~/docs --output ~/out --verbose` (Windows: use `python`)

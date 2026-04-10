@@ -66,16 +66,13 @@ def extract_summary(transcript_path, max_lines=200):
             if fp:
                 files_changed.add(Path(fp).name)
 
-    # Derive project name from transcript directory
-    proj_name = transcript_path.parent.name
-    # Normalize common path prefixes across platforms
-    for prefix in ("C--Users-", "/Users/", "/home/"):
-        if proj_name.startswith(prefix.replace("/", "-").replace("\\", "-")):
-            # Strip the user-specific path prefix
-            parts = proj_name.split("-dev-", 1)
-            if len(parts) > 1:
-                proj_name = parts[1]
-            break
+    # Derive project name from transcript directory.
+    # The directory name encodes the project path with slashes replaced by dashes.
+    # Take the last non-empty dash-segment as the project name — works across platforms
+    # regardless of home directory structure or path conventions.
+    raw = transcript_path.parent.name
+    segments = [s for s in raw.split("-") if s]
+    proj_name = segments[-1] if segments else raw
 
     date = datetime.now().strftime("%Y-%m-%d")
 

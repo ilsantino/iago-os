@@ -21,6 +21,10 @@
       "type": "project",
       "keywords": ["proposal", "pricing", "contract", "scope", "timeline", "invoice", "milestone", "deliverable", "budget", "sales"]
     },
+    "wing_claude": {
+      "type": "agent",
+      "keywords": ["session", "diary", "claude", "tools", "commit"]
+    },
     "wing_general": {
       "type": "general",
       "keywords": []

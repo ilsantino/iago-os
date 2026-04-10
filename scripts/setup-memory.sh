@@ -88,7 +88,7 @@ fi
 
 info "Installing Python packages..."
 
-PACKAGES=("mempalace" "graphifyy" "python-docx" "openpyxl")
+PACKAGES=("mempalace" "graphifyy" "python-docx" "openpyxl")  # python-docx + openpyxl: Graphify corpus ingestion (Word/Excel document parsing)
 INSTALLED=()
 SKIPPED=()
 
@@ -140,12 +140,12 @@ for tmpl in config.json wing_config.json; do
                     # Convert to Windows-style path for JSON
                     palace_path=$(cygpath -w "$palace_path" 2>/dev/null || echo "$palace_path")
                 fi
-                # Use python for cross-platform JSON editing
-                $PYTHON_CMD -c "
-import json, sys
+                # Use python for cross-platform JSON editing (env var avoids quoting issues)
+                PALACE_PATH="$palace_path" $PYTHON_CMD -c "
+import json, os
 with open('$target', 'r') as f:
     d = json.load(f)
-d['palace_path'] = '''$palace_path'''
+d['palace_path'] = os.environ['PALACE_PATH']
 with open('$target', 'w') as f:
     json.dump(d, f, indent=2)
 "
@@ -169,7 +169,9 @@ fi
 
 info "Installing session diary script..."
 
-mkdir -p "$CLAUDE_SCRIPTS" 2>/dev/null || true
+if ! dry "mkdir -p $CLAUDE_SCRIPTS"; then
+    mkdir -p "$CLAUDE_SCRIPTS" 2>/dev/null || true
+fi
 DIARY_TARGET="$CLAUDE_SCRIPTS/session-diary.py"
 
 if [[ -f "$DIARY_TARGET" ]]; then
@@ -258,7 +260,7 @@ changed = False
 # PreToolUse hook for graphify nudge
 pre_hooks = hooks.setdefault("PreToolUse", [])
 has_graphify_hook = any(
-    "graphify" in str(h.get("hooks", [{}])[0].get("command", ""))
+    "graphify" in str(next(iter(h.get("hooks", [])), {}).get("command", ""))
     for h in pre_hooks
     if isinstance(h, dict) and "hooks" in h
 )
@@ -286,7 +288,7 @@ else:
 # Stop hook for session diary
 stop_hooks = hooks.setdefault("Stop", [])
 has_diary_hook = any(
-    "session-diary" in str(h.get("hooks", [{}])[0].get("command", ""))
+    "session-diary" in str(next(iter(h.get("hooks", [])), {}).get("command", ""))
     for h in stop_hooks
     if isinstance(h, dict) and "hooks" in h
 )
@@ -352,7 +354,7 @@ echo "    2. Edit ~/.mempalace/config.json (palace_path is set)"
 echo "    3. Mine existing conversations:"
 echo "       mempalace mine ~/.claude/projects/{dir}/ --mode convos --wing {name}"
 echo "    4. Run graphify on a document corpus:"
-echo "       python -m graphifyy extract --input ~/path/to/docs --output ~/graphify-out"
+echo "       $PYTHON_CMD -m graphifyy extract --input ~/path/to/docs --output ~/graphify-out"
 echo ""
 echo "  Docs: docs/memory-stack.md"
 echo "────────────────────────────────────────────────────────"
