@@ -30,4 +30,6 @@
 | 2026-04-08 | fast | Add allowedTools, fix clean detection, compress prompts | f4e64e0 |
 | 2026-04-09 | quick | Review pipeline control flags + pr-review-pipeline docs | 40c3ac7 |
 | 2026-04-09 | — | Memory architecture docs, skill catalog update, tag v0.1.0 | ebe89e6 |
-| 2026-04-10 | — | Graphify 0.3.27 upgrade, wiki generation, nightly rebuild, Drive integration | pending |
+| 2026-04-10 | — | Graphify 0.3.27 upgrade, wiki generation, nightly rebuild, Drive integration | cd3c275, ba70815 |
+| 2026-04-10 | quick | Memory stack addon: setup script, templates, docs | [#10](https://github.com/ilsantino/iago-os/pull/10) |
+| 2026-04-10 | fast | Fix review-fix loop clean detection (6 rounds instead of stopping) | pending |
