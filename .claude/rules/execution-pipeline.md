@@ -42,7 +42,9 @@ scripts/execute-pipeline.sh --plan {path} --project-dir {dir}
   |
   v
 3. REVIEW — claude -p opus, two-pass: plan compliance + adversarial (Critical/Important/Minor)
-  |  adversarial checks: auth bypass, data loss, races, rollback safety, business logic
+  |  reads full source files (not just diff) for context
+  |  adversarial checks: auth bypass, data loss, races, rollback safety, business logic,
+  |    React render-cycle violations, dead code, magic numbers, silent failures, i18n/UX
   |  any findings → fix session (opus, priority: Critical→Important→Minor) → rebuild → re-review (max 2 rounds)
   v
 4. CODEX ADVERSARIAL — codex CLI / GPT-5.4 if available, else claude -p opus
@@ -51,7 +53,7 @@ scripts/execute-pipeline.sh --plan {path} --project-dir {dir}
 4b. CODEX FIX — claude -p opus, fixes all Codex findings (P0→P1→P2)
   |  skipped if no findings; rebuild gate after fix
   v
-5. CREATE PR — claude -p sonnet, stages, commits, pushes, creates PR via gh
+5. CREATE PR — claude -p sonnet, stages, commits, pushes, creates PR via gh (plan embedded in PR body)
   |
   v
 5b. TAG @claude — claude -p haiku synthesizes review request, posts on PR

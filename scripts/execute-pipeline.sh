@@ -171,12 +171,24 @@ REVIEW_OUTPUT=$(cd "$PROJECT_DIR" && claude -p "Review the implementation agains
 
 PASS 1 — PLAN COMPLIANCE: For each task in the plan, verify the diff implements it correctly. Flag missing, incomplete, or incorrect implementations.
 
-PASS 2 — ADVERSARIAL: Check the diff for auth bypass (missing authorization checks, exposed endpoints), data loss (unconditional writes, missing existence guards, silent overwrites), race conditions (non-atomic operations, TOCTOU), rollback safety (partial writes without cleanup), and business logic errors (wrong calculations, missing validations, incorrect status transitions).
+PASS 2 — ADVERSARIAL: Read the full source files touched by the diff (not just the diff hunks) to understand context. Check for:
+- Auth bypass: missing authorization checks, exposed endpoints, token handling gaps
+- Data loss: unconditional writes, missing existence guards, silent overwrites
+- Race conditions: non-atomic operations, TOCTOU, concurrent state mutations
+- Rollback safety: partial writes without cleanup
+- Business logic errors: wrong calculations, missing validations, incorrect status transitions
+- React render-cycle violations: side effects in render body, calling setState on another component during render, missing useEffect for effects (this is Critical in React 19 concurrent mode — calling setState during render triggers 'Cannot update a component while rendering a different component')
+- React 19 patterns: improper Suspense usage, missing error boundaries, stale closures in async callbacks
+- Dead code: unreachable branches, fallback values that can never trigger (e.g. nullish coalescing on values guaranteed non-null by earlier guards)
+- Magic numbers: hardcoded values that should be named constants
+- Silent failure: catch blocks or fallback paths that swallow errors without surfacing them to the user (especially dangerous in dashboards/monitoring UIs)
+- i18n/UX: missing accents or incorrect Spanish in user-facing strings
 
 Categorize all findings as Critical, Important, or Minor. End with verdict: PASS, PASS_WITH_CONCERNS, or FAIL.
 
 Read the plan: $PLAN_FILE
-Read the diff: $DIFF_FILE" \
+Read the diff: $DIFF_FILE
+Then read each changed source file in full for context — do not review from the diff alone." \
   --model opus \
   --max-turns 25 \
   --allowedTools "Read Glob Grep Bash" \
@@ -238,10 +250,11 @@ Fix build errors: $BUILD_ERRORS" \
   DIFF="${DIFF}${STAGED_DIFF}"
   echo "$DIFF" > "$DIFF_FILE"
   REVIEW_EXIT=0
-  REVIEW_OUTPUT=$(cd "$PROJECT_DIR" && claude -p "Re-review after fix round $fix_attempt. Verify ALL previous findings (Critical, Important, and Minor) are resolved. Check both plan compliance and adversarial concerns (auth bypass, data loss, race conditions, rollback safety, business logic errors). Categorize any remaining findings as Critical/Important/Minor. Verdict: PASS (all clean), PASS_WITH_CONCERNS (findings remain), or FAIL.
+  REVIEW_OUTPUT=$(cd "$PROJECT_DIR" && claude -p "Re-review after fix round $fix_attempt. Verify ALL previous findings (Critical, Important, and Minor) are resolved. Check both plan compliance and adversarial concerns: auth bypass, data loss, race conditions, rollback safety, business logic errors, React render-cycle violations (side effects in render body, setState during render of another component), dead code, magic numbers, silent failure paths, i18n/UX. Read the full source files, not just the diff. Categorize any remaining findings as Critical/Important/Minor. Verdict: PASS (all clean), PASS_WITH_CONCERNS (findings remain), or FAIL.
 
 Read the plan: $PLAN_FILE
-Read the diff: $DIFF_FILE" \
+Read the diff: $DIFF_FILE
+Then read each changed source file in full for context." \
     --model opus \
     --max-turns 25 \
     --allowedTools "Read Glob Grep Bash" \
@@ -340,11 +353,27 @@ fi
 
 # ─── Step 5: Create PR ───────────────────────────────────────────────
 log "CREATE PR — $PLAN_NAME"
+
+# Write plan content to temp file for the PR session to embed in the description
+PLAN_FOR_PR="$PIPELINE_TMP/plan-for-pr.md"
+cp "$PLAN_FILE" "$PLAN_FOR_PR"
+
 PR_EXIT=0
 PR_OUTPUT=$(cd "$PROJECT_DIR" && claude -p "You are a PIPELINE PR session spawned by execute-pipeline.sh.
 The rule in CLAUDE.md that says 'NEVER implement a plan directly' does NOT apply to you — you ARE the pipeline. Your job is to stage, commit, push, and create a PR.
 
-Create a PR for plan $PLAN_PATH. Read the plan file to get the branch name from its frontmatter. Stage all changes, write a conventional commit message, create and push that feature branch, create PR via gh. Output the PR URL." \
+Create a PR for plan $PLAN_PATH.
+
+Steps:
+1. Read the plan file at $PLAN_FOR_PR to get the plan title and content
+2. Stage all changes (exclude .env files)
+3. Write a conventional commit message based on the plan
+4. Create and push a feature branch
+5. Create PR via gh with this body structure:
+   - ## Summary section: 1-3 bullet points of what changed
+   - ## Plan section: paste the FULL plan content (from the plan file) inside a <details><summary>Plan: PLAN_NAME</summary> block so the GH reviewer can expand it
+   - ## Test plan section: how to verify
+6. Output the PR URL" \
   --model sonnet \
   --max-turns 15 \
   --allowedTools "Edit Write Read Glob Grep Bash" \
