@@ -93,6 +93,7 @@ Three layers, each with distinct purpose and access pattern:
 |-------|------|--------|------------|
 | **MEMORY.md** | User prefs, feedback, project context | Always-loaded in context | Manual (Claude writes) |
 | **Obsidian** | Session digests, meetings, decisions, business docs | MCP (`search_notes`, `read_note`, `write_note`) | Semi-auto (session digests) |
+| **Graphify** | Knowledge graph + wiki over vault (incl. Drive) | MCP (`query_graph`, `get_node`) + `graphify-out/wiki/` | Auto (nightly rebuild via Task Scheduler) |
 | **MemPalace** | Conversation history, temporal KG, agent diary | MCP (`mempalace_search`, `mempalace_kg_query`, `mempalace_kg_timeline`) | Auto (stop + pre-compact hooks) |
 
 ### Retrieval Routing
@@ -100,7 +101,7 @@ Three layers, each with distinct purpose and access pattern:
 | Need | Tool |
 |------|------|
 | Structured notes, decisions, meetings | Obsidian MCP |
-| Entity relationships, concept links | Graphify MCP (`query_graph`, `get_node`) |
+| Entity relationships, community structure | Graphify MCP (`query_graph`, `get_node`) or `graphify-out/wiki/index.md` |
 | Past conversation recall, reasoning trails | MemPalace (`mempalace_search`) |
 | Temporal facts ("what was true when") | MemPalace KG (`mempalace_kg_query`, `mempalace_kg_timeline`) |
 | Library/framework docs | Context7 (`query-docs`) |

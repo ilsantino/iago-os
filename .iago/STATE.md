@@ -1,7 +1,7 @@
 # State — iaGO-OS
 
 > **Phase:** v0.1.0 released | **Status:** complete
-> **Tag:** v0.1.0 | **Updated:** 2026-04-09
+> **Tag:** v0.1.0 | **Updated:** 2026-04-10
 
 ## Recent Decisions
 
@@ -30,3 +30,4 @@
 | 2026-04-08 | fast | Add allowedTools, fix clean detection, compress prompts | f4e64e0 |
 | 2026-04-09 | quick | Review pipeline control flags + pr-review-pipeline docs | 40c3ac7 |
 | 2026-04-09 | — | Memory architecture docs, skill catalog update, tag v0.1.0 | ebe89e6 |
+| 2026-04-10 | — | Graphify 0.3.27 upgrade, wiki generation, nightly rebuild, Drive integration | pending |

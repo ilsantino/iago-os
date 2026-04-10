@@ -62,7 +62,7 @@ description: >-
 ### MCP Servers (active)
 - `context7` — Fetch current library/framework docs (React, Tailwind, ShadCN, AWS SDK, etc.) — prefer over web search for API syntax and setup
 - `obsidian` — Read/write access to Obsidian vault (notes, tags, frontmatter, search)
-- `graphify` — Query knowledge graph (BFS/DFS traversal, node lookup, community stats)
+- `graphify` — Query knowledge graph (BFS/DFS traversal, node lookup, community stats). Wiki at `graphify-out/wiki/`. Nightly rebuild via Task Scheduler. PreToolUse hook nudges graph-first search globally.
 - `mempalace` — Semantic search over conversation history, temporal KG, agent diary. See routing table in global CLAUDE.md
 
 ### Marketplace Plugins (not installed — evaluate when needed)
