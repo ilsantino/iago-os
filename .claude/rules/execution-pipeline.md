@@ -41,7 +41,8 @@ scripts/execute-pipeline.sh --plan {path} --project-dir {dir}
 2. BUILD GATE — tsc --noEmit && vite build (max 2 retries with fix sessions)
   |
   v
-3. REVIEW — claude -p opus, checks diff against plan (Critical/Important/Minor)
+3. REVIEW — claude -p opus, two-pass: plan compliance + adversarial (Critical/Important/Minor)
+  |  adversarial checks: auth bypass, data loss, races, rollback safety, business logic
   |  critical/fail → fix session (opus) → rebuild → re-review (opus, max 2 local rounds)
   v
 4. CODEX ADVERSARIAL — codex CLI / GPT-5.4 if available, else claude -p opus

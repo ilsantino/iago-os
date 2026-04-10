@@ -174,10 +174,10 @@ Local Pipeline (execute-pipeline.sh)
 
   IMPLEMENT ─► BUILD GATE ─► REVIEW ─► CODEX ─► CODEX FIX ─► CREATE PR
   (opus)       (tsc+vite)    (opus)    (codex/   (opus)       (sonnet)
-                                        opus)    +rebuild
-                                                 if findings
-                                                                 │
-                                          ┌──────────────────────┘
+                              plan +    opus)    +rebuild
+                              adv               if findings
+                                                                │
+                                          ┌─────────────────────┘
                                           ▼
                                     TAG @claude ──────────┐
                                     (haiku)               │

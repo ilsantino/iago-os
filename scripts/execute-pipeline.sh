@@ -167,7 +167,13 @@ else
   echo "$DIFF" > "$DIFF_FILE"
 
 REVIEW_EXIT=0
-REVIEW_OUTPUT=$(cd "$PROJECT_DIR" && claude -p "Review the implementation against the plan. For each task in the plan, verify the diff implements it correctly. Categorize findings as Critical, Important, or Minor. End with verdict: PASS, PASS_WITH_CONCERNS, or FAIL.
+REVIEW_OUTPUT=$(cd "$PROJECT_DIR" && claude -p "Review the implementation against the plan. Two passes in one session:
+
+PASS 1 — PLAN COMPLIANCE: For each task in the plan, verify the diff implements it correctly. Flag missing, incomplete, or incorrect implementations.
+
+PASS 2 — ADVERSARIAL: Check the diff for auth bypass (missing authorization checks, exposed endpoints), data loss (unconditional writes, missing existence guards, silent overwrites), race conditions (non-atomic operations, TOCTOU), rollback safety (partial writes without cleanup), and business logic errors (wrong calculations, missing validations, incorrect status transitions).
+
+Categorize all findings as Critical, Important, or Minor. End with verdict: PASS, PASS_WITH_CONCERNS, or FAIL.
 
 Read the plan: $PLAN_FILE
 Read the diff: $DIFF_FILE" \
@@ -232,7 +238,7 @@ Fix build errors: $BUILD_ERRORS" \
   DIFF="${DIFF}${STAGED_DIFF}"
   echo "$DIFF" > "$DIFF_FILE"
   REVIEW_EXIT=0
-  REVIEW_OUTPUT=$(cd "$PROJECT_DIR" && claude -p "Re-review after fix round $fix_attempt. Verify critical findings are resolved. Categorize remaining findings as Critical/Important/Minor. Verdict: PASS/PASS_WITH_CONCERNS/FAIL.
+  REVIEW_OUTPUT=$(cd "$PROJECT_DIR" && claude -p "Re-review after fix round $fix_attempt. Verify critical findings are resolved. Check both plan compliance and adversarial concerns (auth bypass, data loss, race conditions, rollback safety, business logic errors). Categorize remaining findings as Critical/Important/Minor. Verdict: PASS/PASS_WITH_CONCERNS/FAIL.
 
 Read the plan: $PLAN_FILE
 Read the diff: $DIFF_FILE" \

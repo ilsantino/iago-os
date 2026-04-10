@@ -111,7 +111,7 @@ the async review-fix loop is not triggered). If `--review` is passed, omit
 This runs the full pipeline as separate `claude -p` sessions:
 1. **Implement** — writes code from the plan
 2. **Build gate** — `tsc --noEmit && vite build` (max 2 retries)
-3. **Review** — checks diff against plan (Critical/Important/Minor)
+3. **Review** — two-pass: plan compliance + adversarial (auth, data loss, races, rollback)
 4. **Codex adversarial** — auth bypass, data loss, race conditions
 4b. **Codex fix** — opus fixes all Codex findings, then rebuild (skipped if no findings)
 5. **Create PR** — stages, commits, pushes, creates PR via `gh`

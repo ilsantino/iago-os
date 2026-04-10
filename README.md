@@ -119,7 +119,8 @@ flowchart TD
     Impl --> Build[2. Build gate — tsc + vite]
     Build -->|fail| Fix[Fix — Opus]
     Fix --> Build
-    Build -->|pass| Review[3. Review — Opus]
+    Build -->|pass| Review["3. Review — Opus
+    Plan + Adversarial"]
     Review -->|critical| Fix2[Fix — Opus]
     Fix2 --> Build
     Review -->|pass| Codex[4. Codex — GPT-5.4]

@@ -71,7 +71,7 @@ Built into `scripts/execute-pipeline.sh`. Each step = separate `claude -p` sessi
 
 1. **Implement** — reads plan, writes code
 2. **Build gate** — `tsc --noEmit && vite build` (max 2 retries)
-3. **Review** — checks diff against plan (Critical/Important/Minor)
+3. **Review** — two-pass: plan compliance + adversarial (auth, data loss, races, rollback)
 4. **Codex adversarial** — checks auth, data loss, races, rollback safety
 4b. **Codex fix** — opus fixes all Codex findings + rebuild (skipped if no findings)
 5. **Create PR** — stages, commits, pushes, creates PR via `gh`
