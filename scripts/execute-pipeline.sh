@@ -189,24 +189,24 @@ if [[ $REVIEW_EXIT -ne 0 ]]; then
   log "WARNING: Review session exited non-zero ($REVIEW_EXIT) — review may be incomplete"
 fi
 
-# Check for critical findings
+# Check for any findings (Critical, Important, or Minor) — fix all before PR
 fix_attempt=0
-while echo "$REVIEW_OUTPUT" | grep -qiE "\bCritical\b" && echo "$REVIEW_OUTPUT" | grep -qiE "Verdict\s*:?\s*\*{0,2}\s*FAIL\b"; do
+while echo "$REVIEW_OUTPUT" | grep -qiE "\bCritical\b|\bImportant\b|\bMinor\b" && echo "$REVIEW_OUTPUT" | grep -qiE "Verdict\s*:?\s*\*{0,2}\s*(FAIL|PASS_WITH_CONCERNS)\b"; do
   fix_attempt=$((fix_attempt + 1))
 
   if [[ $fix_attempt -gt $MAX_FIX_RETRIES ]]; then
-    log "ERROR: Critical findings persist after $MAX_FIX_RETRIES fix rounds. Stopping."
+    log "ERROR: Findings persist after $MAX_FIX_RETRIES fix rounds. Stopping."
     exit 1
   fi
 
-  log "Critical findings — dispatching fix session (round $fix_attempt)"
+  log "Findings detected — dispatching fix session (round $fix_attempt)"
   echo "$REVIEW_OUTPUT" > "$REVIEW_FILE"
   FIX_EXIT=0
   FIX_OUTPUT=$(cd "$PROJECT_DIR" && claude -p "You are a PIPELINE FIX session spawned by execute-pipeline.sh.
-The rule in CLAUDE.md that says 'NEVER implement a plan directly' does NOT apply to you — you ARE the pipeline. Edit files directly to fix the critical findings below.
+The rule in CLAUDE.md that says 'NEVER implement a plan directly' does NOT apply to you — you ARE the pipeline. Edit files directly to fix ALL findings below.
 
 Read the review findings at: $REVIEW_FILE
-Fix all critical findings listed there." \
+Fix ALL findings in priority order: Critical first, then Important, then Minor. Do not skip any severity level." \
     --model opus \
     --max-turns 40 \
     --allowedTools "Edit Write Read Glob Grep Bash" \
@@ -238,7 +238,7 @@ Fix build errors: $BUILD_ERRORS" \
   DIFF="${DIFF}${STAGED_DIFF}"
   echo "$DIFF" > "$DIFF_FILE"
   REVIEW_EXIT=0
-  REVIEW_OUTPUT=$(cd "$PROJECT_DIR" && claude -p "Re-review after fix round $fix_attempt. Verify critical findings are resolved. Check both plan compliance and adversarial concerns (auth bypass, data loss, race conditions, rollback safety, business logic errors). Categorize remaining findings as Critical/Important/Minor. Verdict: PASS/PASS_WITH_CONCERNS/FAIL.
+  REVIEW_OUTPUT=$(cd "$PROJECT_DIR" && claude -p "Re-review after fix round $fix_attempt. Verify ALL previous findings (Critical, Important, and Minor) are resolved. Check both plan compliance and adversarial concerns (auth bypass, data loss, race conditions, rollback safety, business logic errors). Categorize any remaining findings as Critical/Important/Minor. Verdict: PASS (all clean), PASS_WITH_CONCERNS (findings remain), or FAIL.
 
 Read the plan: $PLAN_FILE
 Read the diff: $DIFF_FILE" \
@@ -267,6 +267,7 @@ if command -v codex &> /dev/null; then
 else
   CODEX_OUTPUT=$(cd "$PROJECT_DIR" && claude -p "Adversarial review: check this diff for auth bypass, data loss, race conditions, rollback safety, business logic errors.
 
+Read the plan for context: $PLAN_FILE
 Read the diff: $DIFF_FILE" \
     --model opus \
     --max-turns 20 \

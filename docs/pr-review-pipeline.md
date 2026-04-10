@@ -175,7 +175,9 @@ Local Pipeline (execute-pipeline.sh)
   IMPLEMENT ─► BUILD GATE ─► REVIEW ─► CODEX ─► CODEX FIX ─► CREATE PR
   (opus)       (tsc+vite)    (opus)    (codex/   (opus)       (sonnet)
                               plan +    opus)    +rebuild
-                              adv               if findings
+                              adv      plan +    if findings
+                              fix ALL   diff
+                              locally
                                                                 │
                                           ┌─────────────────────┘
                                           ▼

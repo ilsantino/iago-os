@@ -113,6 +113,19 @@ Both `/iago:execute` and `/iago:quick` run `scripts/execute-pipeline.sh`. Every 
 
 ### Local Pipeline
 
+Each step is a fresh `claude -p` session — isolated context, no token burn in the orchestrator. All findings are fixed locally before PR creation; the async loop is a safety net, not the primary fix path.
+
+| Step | Model | What it does |
+|------|-------|-------------|
+| **1. Implement** | Opus | Reads plan file, writes all code. Max 50 turns. |
+| **2. Build gate** | — | `tsc --noEmit && vite build`. Max 2 retries with fix sessions. |
+| **3. Review** | Opus | Two-pass: plan compliance (every task verified against diff) + adversarial (auth bypass, data loss, race conditions, rollback safety, business logic). Findings fixed in priority order (Critical → Important → Minor). Max 2 fix rounds. |
+| **4. Codex adversarial** | GPT-5.4 / Opus fallback | Cross-model review with plan context. Same adversarial checklist, different model family for coverage. |
+| **4b. Codex fix** | Opus | Fixes all Codex findings (P0 → P1 → P2) + rebuild gate. Skipped if clean. |
+| **5. Create PR** | Sonnet | Stages, commits, pushes branch, creates PR via `gh`. |
+| **5b. Tag @claude** | Haiku | Synthesizes review request from pipeline context, posts on PR. Triggers async loop. |
+| **6. Summary** | — | Writes pipeline results to `.iago/summaries/`. |
+
 ```mermaid
 flowchart TD
     Plan[Plan file] --> Impl[1. Implement — Opus]
@@ -121,9 +134,11 @@ flowchart TD
     Fix --> Build
     Build -->|pass| Review["3. Review — Opus
     Plan + Adversarial"]
-    Review -->|critical| Fix2[Fix — Opus]
+    Review -->|findings| Fix2["Fix — Opus
+    Critical→Important→Minor"]
     Fix2 --> Build
-    Review -->|pass| Codex[4. Codex Adversarial — GPT-5.4]
+    Review -->|pass| Codex["4. Codex Adversarial — GPT-5.4
+    Plan + Diff"]
     Codex -->|findings| CdxFix[4b. Codex Fix — Opus]
     CdxFix --> Rebuild[Rebuild gate]
     Rebuild --> PR[5. Create PR — Sonnet]
@@ -133,6 +148,8 @@ flowchart TD
 ```
 
 ### Async Review-Fix Loop (GitHub Actions)
+
+Triggered by the @claude tag on the PR (step 5b). Two GitHub Actions workflows handle the loop — no local machine needed. `claude.yml` reviews the PR and posts findings; `claude-review-fix.yml` fixes findings, commits, pushes, and re-tags @claude. Loops until clean or max 5 rounds. `/iago:execute` tags automatically (suppress with `--no-review`); `/iago:quick` skips tagging by default (enable with `--review`). Manual trigger anytime: `/iago:prfix`.
 
 ```mermaid
 flowchart TD
@@ -146,7 +163,7 @@ flowchart TD
     Retag --> CY
 ```
 
-Runs entirely on GitHub Actions. All severities fixed in priority order (Critical > Important > Minor). Max 5 rounds.
+Humans merge — the loop never auto-merges.
 
 ---
 

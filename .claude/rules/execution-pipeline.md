@@ -43,10 +43,10 @@ scripts/execute-pipeline.sh --plan {path} --project-dir {dir}
   v
 3. REVIEW — claude -p opus, two-pass: plan compliance + adversarial (Critical/Important/Minor)
   |  adversarial checks: auth bypass, data loss, races, rollback safety, business logic
-  |  critical/fail → fix session (opus) → rebuild → re-review (opus, max 2 local rounds)
+  |  any findings → fix session (opus, priority: Critical→Important→Minor) → rebuild → re-review (max 2 rounds)
   v
 4. CODEX ADVERSARIAL — codex CLI / GPT-5.4 if available, else claude -p opus
-  |  checks: auth bypass, data loss, race conditions, rollback safety
+  |  reads plan for context; checks: auth bypass, data loss, race conditions, rollback safety
   v
 4b. CODEX FIX — claude -p opus, fixes all Codex findings (P0→P1→P2)
   |  skipped if no findings; rebuild gate after fix
@@ -107,13 +107,16 @@ claude-review-fix.yml ── checks findings + round count
 
 ### Handling Findings
 
+All severities are fixed locally before PR creation. The local fix loop
+runs in priority order (Critical → Important → Minor), max 2 rounds.
+The async GitHub loop is a safety net, not the primary fix path.
+
 | Severity | Action |
 |----------|--------|
 | Critical | Fix first. Rebuild, re-review. |
 | Important | Fix second. Rebuild, re-review. |
 | Minor | Fix last. Rebuild, re-review. |
 
-All severities are fixed by the loop in priority order. Max 5 rounds total.
 Reviews must never dismiss findings as "acceptable" or "carry-over" — report
 with severity, and the fix loop handles prioritization.
 
