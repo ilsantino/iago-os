@@ -2,7 +2,7 @@
 
 ## What This Does
 
-Runs the iaGO execute pipeline (implement → build → review → codex → PR) across
+Runs the iaGO execute pipeline (implement → build → review → codex → codex fix → PR) across
 multiple fresh Claude Code sessions. Each step gets clean context — no accumulation.
 
 Single-session problem: implement 3 plans + review + fix cycles hits 90% context fast.

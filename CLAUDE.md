@@ -51,16 +51,16 @@ Pause: `/iago:pause`. Resume automatic on next session.
 
 | Scope | Skill | Review |
 |-------|-------|--------|
-| ROADMAP phase (1+ plans) | `/iago:execute {slug}` | Automatic 3-stage |
-| Standalone plan (1-3 tasks) | `/iago:quick {desc}` | Automatic 3-stage |
-| Multi-task plan (outside ROADMAP) | `/subagent-driven-development` | Automatic 3-stage |
+| ROADMAP phase (1+ plans) | `/iago:execute {slug}` | Full 7-stage pipeline |
+| Standalone plan (1-3 tasks) | `/iago:quick {desc}` | Full 7-stage pipeline |
+| Multi-task plan (outside ROADMAP) | `/subagent-driven-development` | Full 7-stage pipeline |
 | Trivial fix (≤3 files, obvious) | `/iago:fast {desc}` | Build gate only |
 
 User says "execute plan X" or "implement this" → invoke matching skill. Not read files. Not create tasks. Invoke skill.
 
 ### execute vs quick
 
-Both run `scripts/execute-pipeline.sh` with full 3-stage review. Difference is scope:
+Both run `scripts/execute-pipeline.sh` with full review pipeline. Difference is scope:
 
 - **`/iago:execute {phase-slug}`** — all plans in ROADMAP phase. Plans exist from `/iago:plan`. Supports wave grouping + parallel dispatch.
 - **`/iago:quick {description}`** — creates lightweight plan on fly (max 3 tasks), runs pipeline on single plan. No ROADMAP needed.
@@ -82,7 +82,7 @@ Async review-fix loop via GitHub Actions: `claude.yml` reviews, `claude-review-f
 
 **Control flags:** `/iago:execute` auto-tags @claude (suppress with `--no-review`). `/iago:quick` skips tagging by default (enable with `--review`). Manual trigger: `/iago:prfix`. Details in `.claude/rules/execution-pipeline.md`.
 
-**Terminology:** "review" in `/iago:execute` and `/iago:quick` flags means the **GitHub PR workflow** — tagging @claude on the PR to trigger the async review-fix loop via GitHub Actions. It does NOT mean the local multi-step review pipeline (steps 3-4), which always runs regardless of flags.
+**Terminology:** "review" in `/iago:execute` and `/iago:quick` flags means the **GitHub PR workflow** — tagging @claude on the PR to trigger the async review-fix loop via GitHub Actions. It does NOT mean the local multi-step review pipeline (steps 3-4b), which always runs regardless of flags.
 
 **Skip:** Only via `/iago:fast` (build gate only).
 
@@ -145,7 +145,7 @@ During execution: only what plan specifies. New ideas → deferred. Auto-fix bug
 ## Rules
 
 Detailed rules in `.claude/rules/`:
-- `execution-pipeline.md` — **MANDATORY** 3-stage review, build gates, no-skip
+- `execution-pipeline.md` — **MANDATORY** review pipeline (plan+adversarial, codex, codex fix), build gates, no-skip
 - `tdd.md` — RED-GREEN-REFACTOR, rationalization prevention, 80% coverage
 - `systematic-debugging.md` — 4-phase debugging, 3-fix escalation
 - `git-workflow.md` — branching, PRs, merge strategy

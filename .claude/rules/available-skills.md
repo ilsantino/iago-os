@@ -8,7 +8,7 @@ description: >-
 ### Core Workflow
 - `/brainstorming` — Socratic design exploration, writes spec to docs/
 - `/writing-plans` — Break spec into 2-5 min tasks with verification commands
-- `/subagent-driven-development` — Execute plans with fresh subagent per task (`--pipeline` for 5-stage review isolation)
+- `/subagent-driven-development` — Execute plans with fresh subagent per task (`--pipeline` for 7-stage review isolation)
 - `/code-review` — Dispatch reviewer with severity output (Critical/Important/Minor)
 - `/deep-research` — Multi-source research with actionable recommendation
 - `/prompt-optimizer` — Optimize LLM prompts for client deliverables

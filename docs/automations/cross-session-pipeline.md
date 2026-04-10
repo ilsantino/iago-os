@@ -13,7 +13,7 @@ The fix agent carries everything. Quality degrades as context fills.
 
 ## Solution
 
-n8n orchestrates the same pipeline (`implement → build → review → codex → PR`) across
+n8n orchestrates the same pipeline (`implement → build → review → codex → codex fix → PR`) across
 independent `claude -p` invocations. Each invocation starts with a fresh context budget
 dedicated to its specific task.
 

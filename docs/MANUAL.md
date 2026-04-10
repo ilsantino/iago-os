@@ -143,7 +143,7 @@ The heavy lifter. For each plan:
 3. **Learnings injection** — injects patterns from previous sessions
 4. **Agent dispatch** — fresh agent per plan, no shared state
 5. **Build gate** — `tsc --noEmit` + `vite build` must pass before review
-6. **3-stage review** — internal review → quality review → Codex adversarial review
+6. **Review pipeline** — plan compliance + adversarial review → Codex cross-model review → Codex fix
 7. **Learnings extraction** — recurring patterns get logged for future sessions
 8. **PR creation** — branch per plan, conventional commit, PR via `gh`
 
@@ -664,7 +664,7 @@ When a phase has 3+ plans, running `/iago:execute` normally fills up the context
 /iago:execute phase-1 --pipeline
 ```
 
-Same pipeline (implement → build → review → codex → PR), but each step runs in a **separate Claude session**. No context accumulates. You can walk away.
+Same pipeline (implement → build → review → codex → codex fix → PR), but each step runs in a **separate Claude session**. No context accumulates. You can walk away.
 
 ```
 Step 1: claude -p "implement plan"    → fresh session, full context
