@@ -1,0 +1,43 @@
+# Graphify ignore file — controls which paths are excluded from graph extraction.
+# Place as .graphifyignore in the root of any document corpus you process.
+
+# Version control
+.git/
+
+# IDE / editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Obsidian internals
+.obsidian/
+.trash/
+
+# Templates (structure, not content)
+_templates/
+
+# Binary attachments (images, PDFs processed separately)
+attachments/
+assets/
+
+# Build output
+node_modules/
+dist/
+build/
+.next/
+__pycache__/
+
+# Graphify own output (prevent re-processing)
+graphify-out/
+
+# Logs and caches
+*.log
+.cache/
+.DS_Store
+Thumbs.db
+
+# Secrets and credentials
+.env
+.env.*
+credentials/

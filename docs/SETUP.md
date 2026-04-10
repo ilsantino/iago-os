@@ -122,6 +122,31 @@ Start with:
 
 This begins the interactive discovery process — Claude asks about your project vision, constraints, and phases, then produces the foundation artifacts.
 
+## Memory Stack (Optional)
+
+Adds persistent cross-session memory to Claude Code via MemPalace (semantic search over conversation history) and Graphify (knowledge graph over document corpora). Not required — iaGO-OS works without it.
+
+### Install
+
+```bash
+# macOS / Linux / Git Bash on Windows
+bash scripts/setup-memory.sh
+
+# Windows (PowerShell)
+.\scripts\setup-memory.ps1
+
+# Preview first
+bash scripts/setup-memory.sh --dry-run
+```
+
+**Requires:** Python 3.10+
+
+**What it does:** Installs Python packages, creates `~/.mempalace/` with config templates, registers MCP servers, installs Claude Code hooks (graphify search nudge + session diary).
+
+**After setup:** Edit `~/.mempalace/wing_config.json` with your client names, then mine existing conversations.
+
+**Full docs:** [docs/memory-stack.md](memory-stack.md)
+
 ## Verification Checklist
 
 After setup, verify these five things:

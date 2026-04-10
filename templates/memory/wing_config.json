@@ -1,0 +1,33 @@
+{
+  "default_wing": "wing_general",
+  "wings": {
+    "wing_{{CLIENT_1}}": {
+      "type": "project",
+      "keywords": ["{{CLIENT_1_KEYWORDS}}"]
+    },
+    "wing_{{CLIENT_2}}": {
+      "type": "project",
+      "keywords": ["{{CLIENT_2_KEYWORDS}}"]
+    },
+    "wing_{{TEAM_MEMBER_1}}": {
+      "type": "person",
+      "keywords": ["{{TEAM_MEMBER_1}}", "{{TEAM_MEMBER_1_ROLE}}"]
+    },
+    "wing_{{TEAM_MEMBER_2}}": {
+      "type": "person",
+      "keywords": ["{{TEAM_MEMBER_2}}", "{{TEAM_MEMBER_2_ROLE}}"]
+    },
+    "wing_business": {
+      "type": "project",
+      "keywords": ["proposal", "pricing", "contract", "scope", "timeline", "invoice", "milestone", "deliverable", "budget", "sales"]
+    },
+    "wing_claude": {
+      "type": "agent",
+      "keywords": ["session", "diary", "claude", "tools", "commit"]
+    },
+    "wing_general": {
+      "type": "general",
+      "keywords": []
+    }
+  }
+}
