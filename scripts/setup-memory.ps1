@@ -56,9 +56,9 @@ if ($BashScriptUnix -match '^/([A-Z])') {
     $BashScriptUnix = '/' + $Matches[1].ToLower() + $BashScriptUnix.Substring(2)
 }
 
-$Args = @($BashScriptUnix)
+$BashArgs = @($BashScriptUnix)
 if ($DryRun) {
-    $Args += "--dry-run"
+    $BashArgs += "--dry-run"
 }
 
 Write-Host "Running setup via Git Bash..." -ForegroundColor Cyan

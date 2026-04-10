@@ -92,8 +92,10 @@ PACKAGES=("mempalace" "graphifyy" "python-docx" "openpyxl")
 INSTALLED=()
 SKIPPED=()
 
+declare -A IMPORT_NAMES=( ["python-docx"]="docx" )
 for pkg in "${PACKAGES[@]}"; do
-    if $PYTHON_CMD -c "import importlib; importlib.import_module('${pkg//-/_}')" 2>/dev/null; then
+    import_name="${IMPORT_NAMES[$pkg]:-${pkg//-/_}}"
+    if $PYTHON_CMD -c "import importlib; importlib.import_module('$import_name')" 2>/dev/null; then
         SKIPPED+=("$pkg")
         skip "$pkg already installed"
     else
