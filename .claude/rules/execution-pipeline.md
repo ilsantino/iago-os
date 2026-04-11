@@ -41,10 +41,12 @@ scripts/execute-pipeline.sh --plan {path} --project-dir {dir}
 2. BUILD GATE — tsc --noEmit && vite build (max 2 retries with fix sessions)
   |
   v
-3. REVIEW — claude -p opus, two-pass: plan compliance + adversarial (Critical/Important/Minor)
+3. REVIEW — claude -p opus, two-pass: plan compliance + dynamic adversarial (Critical/Important/Minor)
   |  reads full source files (not just diff) for context
-  |  adversarial checks: auth bypass, data loss, races, rollback safety, business logic,
-  |    React render-cycle violations, dead code, magic numbers, silent failures, i18n/UX
+  |  dynamic checklist: compose_review_checks() analyzes diff paths + import patterns,
+  |    concatenates baseline.md + domain modules (react, backend, auth, api, infra, i18n)
+  |    from scripts/review-checks/. Detection is bash-native (grep), not LLM.
+  |  cross-cutting (always checked): auth bypass, data loss, races, rollback safety
   |  any findings → fix session (opus, priority: Critical→Important→Minor) → rebuild → re-review (max 2 rounds)
   v
 4. CODEX ADVERSARIAL — codex CLI / GPT-5.4 if available, else claude -p opus

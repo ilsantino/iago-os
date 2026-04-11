@@ -48,8 +48,67 @@ PLAN_FILE="$PROJECT_DIR/$PLAN_PATH"
 DIFF_FILE="$PIPELINE_TMP/diff.txt"
 REVIEW_FILE="$PIPELINE_TMP/review.txt"
 CODEX_FILE="$PIPELINE_TMP/codex.txt"
+REVIEW_CHECKS_FILE="$PIPELINE_TMP/review-checks.md"
+CHECKS_DIR="$SCRIPT_DIR/review-checks"
 
 log() { echo "[$(date '+%H:%M:%S')] $1"; }
+
+# Compose dynamic review checklist from diff content.
+# Reads the diff file, detects domains touched, concatenates matching check modules.
+compose_review_checks() {
+  local diff_file="$1"
+  local output_file="$2"
+
+  # Always start with baseline
+  cat "$CHECKS_DIR/baseline.md" > "$output_file"
+
+  # React: diff touches .tsx files
+  if grep -qE '^\+\+\+ b/.*\.tsx' "$diff_file"; then
+    echo "" >> "$output_file"
+    cat "$CHECKS_DIR/react.md" >> "$output_file"
+    log "  review-checks: +react"
+  fi
+
+  # Backend: diff touches lambda/, handler.ts, or amplify/functions/
+  if grep -qE '^\+\+\+ b/(lambda/|.*handler\.ts|amplify/functions/)' "$diff_file"; then
+    echo "" >> "$output_file"
+    cat "$CHECKS_DIR/backend.md" >> "$output_file"
+    log "  review-checks: +backend"
+  fi
+
+  # Auth: diff touches auth/, cognito files, or added lines import from auth modules
+  if grep -qE '^\+\+\+ b/(auth/|.*cognito)' "$diff_file" || \
+     grep -qE '^\+.*import .* from .*(auth|cognito)' "$diff_file"; then
+    echo "" >> "$output_file"
+    cat "$CHECKS_DIR/auth.md" >> "$output_file"
+    log "  review-checks: +auth"
+  fi
+
+  # API: diff touches lib/api/, api/, or files with API client imports
+  if grep -qE '^\+\+\+ b/(lib/api/|src/api/|api/)' "$diff_file" || \
+     grep -qE '^\+.*import .* from .*(/api/|@/api)' "$diff_file"; then
+    echo "" >> "$output_file"
+    cat "$CHECKS_DIR/api.md" >> "$output_file"
+    log "  review-checks: +api"
+  fi
+
+  # Infra: diff touches amplify/
+  if grep -qE '^\+\+\+ b/amplify/' "$diff_file"; then
+    echo "" >> "$output_file"
+    cat "$CHECKS_DIR/infra.md" >> "$output_file"
+    log "  review-checks: +infra"
+  fi
+
+  # i18n: added lines contain Spanish characters or common Spanish UI terms
+  if grep -qE '^\+.*(ción|ñ|á|é|í|ó|ú|Información|Usuario|Contraseña|Página|Búsqueda)' "$diff_file" || \
+     grep -qE '^\+.*(Iniciar sesión|Cerrar sesión|Guardar|Eliminar|Aceptar|Cancelar)' "$diff_file"; then
+    echo "" >> "$output_file"
+    cat "$CHECKS_DIR/i18n.md" >> "$output_file"
+    log "  review-checks: +i18n"
+  fi
+
+  log "  review-checks: composed $(wc -l < "$output_file") lines"
+}
 
 # ─── Step 1: Implement ───────────────────────────────────────────────
 log "IMPLEMENT — $PLAN_NAME"
@@ -166,29 +225,28 @@ else
   DIFF="$COMBINED_DIFF"
   echo "$DIFF" > "$DIFF_FILE"
 
+# Compose dynamic review checklist based on what the diff touches
+compose_review_checks "$DIFF_FILE" "$REVIEW_CHECKS_FILE"
+
 REVIEW_EXIT=0
 REVIEW_OUTPUT=$(cd "$PROJECT_DIR" && claude -p "Review the implementation against the plan. Two passes in one session:
 
 PASS 1 — PLAN COMPLIANCE: For each task in the plan, verify the diff implements it correctly. Flag missing, incomplete, or incorrect implementations.
 
-PASS 2 — ADVERSARIAL: Read the full source files touched by the diff (not just the diff hunks) to understand context. Check for:
+PASS 2 — ADVERSARIAL: Read each changed source file in FULL for context — do not review from the diff alone. Then read the review checklist and check every item against the code.
+
+Also check these cross-cutting concerns regardless of checklist:
 - Auth bypass: missing authorization checks, exposed endpoints, token handling gaps
 - Data loss: unconditional writes, missing existence guards, silent overwrites
 - Race conditions: non-atomic operations, TOCTOU, concurrent state mutations
 - Rollback safety: partial writes without cleanup
-- Business logic errors: wrong calculations, missing validations, incorrect status transitions
-- React render-cycle violations: side effects in render body, calling setState on another component during render, missing useEffect for effects (this is Critical in React 19 concurrent mode — calling setState during render triggers 'Cannot update a component while rendering a different component')
-- React 19 patterns: improper Suspense usage, missing error boundaries, stale closures in async callbacks
-- Dead code: unreachable branches, fallback values that can never trigger (e.g. nullish coalescing on values guaranteed non-null by earlier guards)
-- Magic numbers: hardcoded values that should be named constants
-- Silent failure: catch blocks or fallback paths that swallow errors without surfacing them to the user (especially dangerous in dashboards/monitoring UIs)
-- i18n/UX: missing accents or incorrect Spanish in user-facing strings
 
 Categorize all findings as Critical, Important, or Minor. End with verdict: PASS, PASS_WITH_CONCERNS, or FAIL.
 
 Read the plan: $PLAN_FILE
 Read the diff: $DIFF_FILE
-Then read each changed source file in full for context — do not review from the diff alone." \
+Read the review checklist: $REVIEW_CHECKS_FILE
+Then read each changed source file in full for context." \
   --model opus \
   --max-turns 25 \
   --allowedTools "Read Glob Grep Bash" \
@@ -249,11 +307,14 @@ Fix build errors: $BUILD_ERRORS" \
   STAGED_DIFF=$(cd "$PROJECT_DIR" && git diff --cached 2>/dev/null || echo "")
   DIFF="${DIFF}${STAGED_DIFF}"
   echo "$DIFF" > "$DIFF_FILE"
+  # Recompose checks — diff may have changed after fixes
+  compose_review_checks "$DIFF_FILE" "$REVIEW_CHECKS_FILE"
   REVIEW_EXIT=0
-  REVIEW_OUTPUT=$(cd "$PROJECT_DIR" && claude -p "Re-review after fix round $fix_attempt. Verify ALL previous findings (Critical, Important, and Minor) are resolved. Check both plan compliance and adversarial concerns: auth bypass, data loss, race conditions, rollback safety, business logic errors, React render-cycle violations (side effects in render body, setState during render of another component), dead code, magic numbers, silent failure paths, i18n/UX. Read the full source files, not just the diff. Categorize any remaining findings as Critical/Important/Minor. Verdict: PASS (all clean), PASS_WITH_CONCERNS (findings remain), or FAIL.
+  REVIEW_OUTPUT=$(cd "$PROJECT_DIR" && claude -p "Re-review after fix round $fix_attempt. Verify ALL previous findings (Critical, Important, and Minor) are resolved. Check plan compliance and all items in the review checklist. Also check cross-cutting: auth bypass, data loss, race conditions, rollback safety. Read each changed source file in FULL for context — do not review from the diff alone. Categorize any remaining findings as Critical/Important/Minor. Verdict: PASS (all clean), PASS_WITH_CONCERNS (findings remain), or FAIL.
 
 Read the plan: $PLAN_FILE
 Read the diff: $DIFF_FILE
+Read the review checklist: $REVIEW_CHECKS_FILE
 Then read each changed source file in full for context." \
     --model opus \
     --max-turns 25 \
