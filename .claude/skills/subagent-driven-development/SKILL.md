@@ -2,7 +2,7 @@
 name: subagent-driven-development
 description: >-
   Use when executing a multi-task implementation plan. Supports --pipeline for
-  full 7-stage review isolation. Not when task is trivial (single file, <5 min
+  full 8-stage review isolation. Not when task is trivial (single file, <5 min
   — use /iago:fast instead) or when executing a ROADMAP phase (use /iago:execute
   instead).
 ---
@@ -19,7 +19,7 @@ Each agent gets minimal, focused context — no cross-task state leakage.
 
 Optional flags:
 - `--pipeline` — run each task through `scripts/execute-pipeline.sh` instead of
-  in-session agents. Gives full 7-stage review isolation (implement → build gate
+  in-session agents. Gives full 8-stage review isolation (stress test → implement → build gate
   → review → codex → codex fix → PR → summary) at the cost of more API calls and slower execution.
   Recommended for production code changes; skip for config-only repos.
 - `--full-review` — two-stage review via `review-full` profile instead of

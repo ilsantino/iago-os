@@ -54,7 +54,7 @@ Discuss → plan → execute → verify repeats per ROADMAP phase.
 |---|---|
 | **Trigger** | Plans exist for the phase |
 | **Gate** | At least one `plans/{NN}-{slug}-*.md` must exist |
-| **What Claude does** | Wave analysis, run `scripts/execute-pipeline.sh` per plan (7-stage: implement → build gate → review → codex → codex fix → PR → summary), collect results |
+| **What Claude does** | Wave analysis, run `scripts/execute-pipeline.sh` per plan (8-stage: stress test → implement → build gate → review → codex → codex fix → PR → summary), collect results |
 | **State written** | Phase: `{NN}-{slug}`, Status: `executing` → `executed` |
 | **Output** | `.iago/summaries/{NN}-{slug}-{PP}.md` per plan, git commits, PRs |
 | **Profiles** | Opus for implementation/fix, Sonnet for review/PR, GPT-5.4 for Codex adversarial (Claude fallback if unavailable) |

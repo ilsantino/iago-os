@@ -5,7 +5,7 @@ set -euo pipefail
 #
 # Usage: ./scripts/execute-pipeline.sh --plan .iago/plans/plan-01.md --project-dir /path/to/project
 #
-# Runs the full pipeline: implement → build → review → codex → fix codex → PR → tag @claude
+# Runs the full pipeline: stress test → implement → build → review → codex → fix codex → PR → tag @claude
 # Each step is a separate claude -p session with fresh context.
 # After PR creation, tags @claude — review-fix loop runs async via GitHub Action.
 # No n8n needed — just bash.
@@ -48,67 +48,90 @@ PLAN_FILE="$PROJECT_DIR/$PLAN_PATH"
 DIFF_FILE="$PIPELINE_TMP/diff.txt"
 REVIEW_FILE="$PIPELINE_TMP/review.txt"
 CODEX_FILE="$PIPELINE_TMP/codex.txt"
+STRESS_FILE="$PIPELINE_TMP/stress.txt"
 REVIEW_CHECKS_FILE="$PIPELINE_TMP/review-checks.md"
 CHECKS_DIR="$SCRIPT_DIR/review-checks"
 
 log() { echo "[$(date '+%H:%M:%S')] $1"; }
 
-# Compose dynamic review checklist from diff content.
-# Reads the diff file, detects domains touched, concatenates matching check modules.
+# Compose review checklist — loads ALL domain modules.
+# The reviewer LLM decides which domains are relevant based on diff + plan.
 compose_review_checks() {
   local diff_file="$1"
   local output_file="$2"
 
-  # Always start with baseline
+  # Concatenate ALL check modules — the reviewer LLM decides which apply.
+  # Baseline first, then domain modules alphabetically.
   cat "$CHECKS_DIR/baseline.md" > "$output_file"
-
-  # React: diff touches .tsx files
-  if grep -qE '^\+\+\+ b/.*\.tsx' "$diff_file"; then
+  for module in "$CHECKS_DIR"/*.md; do
+    [[ "$(basename "$module")" == "baseline.md" ]] && continue
     echo "" >> "$output_file"
-    cat "$CHECKS_DIR/react.md" >> "$output_file"
-    log "  review-checks: +react"
-  fi
+    cat "$module" >> "$output_file"
+  done
 
-  # Backend: diff touches lambda/, handler.ts, or amplify/functions/
-  if grep -qE '^\+\+\+ b/(lambda/|.*handler\.ts|amplify/functions/)' "$diff_file"; then
-    echo "" >> "$output_file"
-    cat "$CHECKS_DIR/backend.md" >> "$output_file"
-    log "  review-checks: +backend"
-  fi
-
-  # Auth: diff touches auth/, cognito files, or added lines import from auth modules
-  if grep -qE '^\+\+\+ b/(auth/|.*cognito)' "$diff_file" || \
-     grep -qE '^\+.*import .* from .*(auth|cognito)' "$diff_file"; then
-    echo "" >> "$output_file"
-    cat "$CHECKS_DIR/auth.md" >> "$output_file"
-    log "  review-checks: +auth"
-  fi
-
-  # API: diff touches lib/api/, api/, or files with API client imports
-  if grep -qE '^\+\+\+ b/(lib/api/|src/api/|api/)' "$diff_file" || \
-     grep -qE '^\+.*import .* from .*(/api/|@/api)' "$diff_file"; then
-    echo "" >> "$output_file"
-    cat "$CHECKS_DIR/api.md" >> "$output_file"
-    log "  review-checks: +api"
-  fi
-
-  # Infra: diff touches amplify/
-  if grep -qE '^\+\+\+ b/amplify/' "$diff_file"; then
-    echo "" >> "$output_file"
-    cat "$CHECKS_DIR/infra.md" >> "$output_file"
-    log "  review-checks: +infra"
-  fi
-
-  # i18n: added lines contain Spanish characters or common Spanish UI terms
-  if grep -qE '^\+.*(ción|ñ|á|é|í|ó|ú|Información|Usuario|Contraseña|Página|Búsqueda)' "$diff_file" || \
-     grep -qE '^\+.*(Iniciar sesión|Cerrar sesión|Guardar|Eliminar|Aceptar|Cancelar)' "$diff_file"; then
-    echo "" >> "$output_file"
-    cat "$CHECKS_DIR/i18n.md" >> "$output_file"
-    log "  review-checks: +i18n"
-  fi
-
-  log "  review-checks: composed $(wc -l < "$output_file") lines"
+  log "  review-checks: all modules loaded ($(wc -l < "$output_file") lines)"
 }
+
+# ─── Step 0: Stress Test ─────────────────────────────────────────────
+# Skip if plan already has a "## Stress Test" section (tested during /iago:plan or /iago:stress)
+if grep -q '## Stress Test' "$PLAN_FILE"; then
+  log "STRESS TEST — skipped (plan already stress-tested)"
+else
+  log "STRESS TEST — $PLAN_NAME"
+
+  STRESS_EXIT=0
+  STRESS_OUTPUT=$(cd "$PROJECT_DIR" && claude -p "You are a PIPELINE STRESS TEST session. Your job is to adversarially review a PLAN — not code. Find flaws in the approach BEFORE implementation begins.
+
+Read the plan: $PLAN_FILE
+Read CLAUDE.md for project conventions.
+Read any source files referenced in the plan to understand existing code.
+
+Check these dimensions:
+
+1. PRECISION — Could two developers read this plan and write meaningfully different code? Flag vague requirements, ambiguous scope, unspecified behavior. Quote the vague line and state what's missing.
+
+2. EDGE CASES — What inputs, states, or sequences would break the proposed approach? Think about: empty/null data, concurrent access, error paths, boundary values, first-use vs returning-user, network failures.
+
+3. CONTRADICTIONS — Does the plan conflict with patterns already in the codebase, rules in CLAUDE.md, or architectural decisions? Read the relevant source files to verify.
+
+4. SIMPLER ALTERNATIVES — Is there a fundamentally different approach that achieves the same goal with less complexity, fewer files, or better alignment with existing patterns? Only flag if the alternative is clearly better, not just different.
+
+5. MISSING ACCEPTANCE CRITERIA — How would you verify the implementation works? If the plan doesn't specify, the implementer will guess. Flag gaps.
+
+Output format:
+- List findings grouped by dimension (skip dimensions with no findings)
+- For each finding: quote the relevant plan text, state the issue, suggest a fix
+- End with exactly one verdict line:
+
+VERDICT: PROCEED — no significant issues found
+VERDICT: PROCEED_WITH_NOTES — issues found but implementation can proceed with awareness
+VERDICT: BLOCK — critical flaw that would make implementation fundamentally wrong" \
+    --model opus \
+    --max-turns 15 \
+    --allowedTools "Read Glob Grep" \
+    --output-format text 2>&1) || STRESS_EXIT=$?
+
+  log "Stress test output:"
+  echo "$STRESS_OUTPUT"
+
+  # Extract verdict
+  STRESS_VERDICT=$(echo "$STRESS_OUTPUT" | grep -oE 'VERDICT: (PROCEED|PROCEED_WITH_NOTES|BLOCK)' | tail -1 | sed 's/VERDICT: //')
+
+  if [[ "$STRESS_VERDICT" == "BLOCK" ]]; then
+    log "ERROR: Stress test BLOCKED the plan. Review findings above and revise the plan."
+    exit 1
+  fi
+
+  if [[ "$STRESS_VERDICT" == "PROCEED_WITH_NOTES" ]]; then
+    log "Stress test passed with notes — forwarding to implementation session"
+    echo "$STRESS_OUTPUT" > "$STRESS_FILE"
+  fi
+
+  if [[ -z "$STRESS_VERDICT" ]]; then
+    log "WARNING: Could not extract stress test verdict — proceeding with caution"
+    echo "$STRESS_OUTPUT" > "$STRESS_FILE"
+  fi
+fi
 
 # ─── Step 1: Implement ───────────────────────────────────────────────
 log "IMPLEMENT — $PLAN_NAME"
@@ -118,11 +141,19 @@ PRE_IMPL_SHA=$(cd "$PROJECT_DIR" && git rev-parse HEAD) || {
   exit 1
 }
 
+# Build impl prompt — include stress test notes if they exist
+IMPL_STRESS_CONTEXT=""
+if [[ -f "$STRESS_FILE" ]]; then
+  IMPL_STRESS_CONTEXT="
+Read stress-test notes at: $STRESS_FILE
+These are concerns identified before implementation. Be aware of edge cases and precision issues noted there."
+fi
+
 IMPL_EXIT=0
 IMPL_OUTPUT=$(cd "$PROJECT_DIR" && claude -p "You are a PIPELINE IMPLEMENTATION session spawned by execute-pipeline.sh.
 The rule in CLAUDE.md that says 'NEVER implement a plan directly' does NOT apply to you — you ARE the pipeline. Your job is to write the code specified in the plan below. Use Edit/Write tools to create and modify files. Do not invoke any /iago: skills. Do not defer to another agent.
 
-Read the plan file at: $PLAN_FILE
+Read the plan file at: $PLAN_FILE${IMPL_STRESS_CONTEXT}
 Execute every task exactly. Create all files specified. End your response with DONE or BLOCKED." \
   --model opus \
   --max-turns 50 \
@@ -229,17 +260,19 @@ else
 compose_review_checks "$DIFF_FILE" "$REVIEW_CHECKS_FILE"
 
 REVIEW_EXIT=0
-REVIEW_OUTPUT=$(cd "$PROJECT_DIR" && claude -p "Review the implementation against the plan. Two passes in one session:
+REVIEW_OUTPUT=$(cd "$PROJECT_DIR" && claude -p "Review the implementation against the plan. Three passes in one session:
 
 PASS 1 — PLAN COMPLIANCE: For each task in the plan, verify the diff implements it correctly. Flag missing, incomplete, or incorrect implementations.
 
-PASS 2 — ADVERSARIAL: Read each changed source file in FULL for context — do not review from the diff alone. Then read the review checklist and check every item against the code.
+PASS 2 — DOMAIN ROUTING: Read the review checklist — it contains ALL domain modules (react, backend, auth, api, infra, i18n). Based on the diff and plan, identify which domains are RELEVANT to these changes. State which domains you selected and why. Skip domains that do not apply — do not force-fit checks.
 
-Also check these cross-cutting concerns regardless of checklist:
+PASS 3 — ADVERSARIAL: Read each changed source file in FULL for context — do not review from the diff alone. Apply the checks from your selected domains thoroughly. Also check these cross-cutting concerns REGARDLESS of domain selection:
 - Auth bypass: missing authorization checks, exposed endpoints, token handling gaps
 - Data loss: unconditional writes, missing existence guards, silent overwrites
 - Race conditions: non-atomic operations, TOCTOU, concurrent state mutations
 - Rollback safety: partial writes without cleanup
+
+SEVERITY FLOORS: Some checks in the modules have minimum severity levels (marked ALWAYS Critical or ALWAYS Important). You MUST NOT downgrade these below the stated floor. Other findings use your judgment.
 
 Categorize all findings as Critical, Important, or Minor. End with verdict: PASS, PASS_WITH_CONCERNS, or FAIL.
 
@@ -310,7 +343,13 @@ Fix build errors: $BUILD_ERRORS" \
   # Recompose checks — diff may have changed after fixes
   compose_review_checks "$DIFF_FILE" "$REVIEW_CHECKS_FILE"
   REVIEW_EXIT=0
-  REVIEW_OUTPUT=$(cd "$PROJECT_DIR" && claude -p "Re-review after fix round $fix_attempt. Verify ALL previous findings (Critical, Important, and Minor) are resolved. Check plan compliance and all items in the review checklist. Also check cross-cutting: auth bypass, data loss, race conditions, rollback safety. Read each changed source file in FULL for context — do not review from the diff alone. Categorize any remaining findings as Critical/Important/Minor. Verdict: PASS (all clean), PASS_WITH_CONCERNS (findings remain), or FAIL.
+  REVIEW_OUTPUT=$(cd "$PROJECT_DIR" && claude -p "Re-review after fix round $fix_attempt. Verify ALL previous findings (Critical, Important, and Minor) are resolved.
+
+DOMAIN ROUTING: The review checklist contains ALL domain modules. Based on the diff and plan, identify which domains are relevant. Apply only those checks — do not force-fit irrelevant domains.
+
+SEVERITY FLOORS: Some checks have minimum severity levels (marked ALWAYS Critical or ALWAYS Important). You MUST NOT downgrade these below the stated floor.
+
+Also check cross-cutting regardless of domain: auth bypass, data loss, race conditions, rollback safety. Read each changed source file in FULL for context — do not review from the diff alone. Categorize any remaining findings as Critical/Important/Minor. Verdict: PASS (all clean), PASS_WITH_CONCERNS (findings remain), or FAIL.
 
 Read the plan: $PLAN_FILE
 Read the diff: $DIFF_FILE
@@ -462,30 +501,30 @@ if [[ -n "$PR_URL" ]]; then
   PR_NUMBER=$(echo "$PR_URL" | grep -oE '[0-9]+$')
   log "TAGGING @claude on PR #$PR_NUMBER"
 
-  # Use a haiku session to synthesize a direct review request from pipeline context
-  echo "$REVIEW_OUTPUT" > "$REVIEW_FILE"
-  echo "$CODEX_OUTPUT" > "$CODEX_FILE"
+  # Sonnet synthesizes a context-rich review request from plan + diff
   TAG_EXIT=0
   CLAUDE_REVIEW_BODY=$(claude -p "Write a GitHub PR comment tagging @claude for review. Output ONLY the comment text, nothing else.
 
-Rules:
-- First line: @claude Review this PR thoroughly.
-- Blank line. 1-2 sentences: what this PR does. Direct, no fluff.
-- Blank line. Watch for: one paragraph, specific concerns synthesized from context below. End with 'General pass for anything unexpected.'
-- No markdown headers, no bullet points, no 'please', no politeness. Direct and terse.
+Structure (follow exactly):
+1. First line: @claude Review this PR thoroughly.
+2. Blank line. Context: 2-3 sentences summarizing what this PR implements and why (synthesize from the plan). Tell the reviewer the full plan is embedded in the PR description under the Plan section.
+3. Blank line. Focus areas: based on the diff, name the specific domains touched (auth, API, React components, backend, infra, i18n) and what patterns to watch for in each. Be concrete — 'auth token refresh flow in useAuth hook' not 'auth stuff.' Reference specific files or functions from the diff.
+4. Blank line. Edge cases: any scenarios the local pipeline could not fully verify — integration effects across modules, runtime behavior under load, UX states (empty, error, loading), concurrency.
+5. Blank line. End with: General pass for anything unexpected.
+
+No markdown headers. No bullet points. No pleasantries. Direct and terse. Keep the entire comment under 300 words.
 
 Read these context files:
 - Plan: $PLAN_FILE
-- Review findings: $REVIEW_FILE
-- Codex findings: $CODEX_FILE" \
-    --model haiku \
-    --max-turns 1 \
+- Diff: $DIFF_FILE" \
+    --model sonnet \
+    --max-turns 3 \
     --allowedTools "Read" \
     --output-format text 2>&1) || TAG_EXIT=$?
 
   if [[ $TAG_EXIT -ne 0 ]] || [[ -z "$CLAUDE_REVIEW_BODY" ]]; then
     log "WARNING: Failed to generate review comment — using fallback"
-    CLAUDE_REVIEW_BODY="@claude Review this PR thoroughly. Implements plan $PLAN_PATH. General pass for anything unexpected."
+    CLAUDE_REVIEW_BODY="@claude Review this PR thoroughly. Implements plan $PLAN_PATH. Full plan embedded in PR description under Plan section. General pass for anything unexpected."
   fi
 
   (cd "$PROJECT_DIR" && gh pr comment "$PR_NUMBER" --body "$CLAUDE_REVIEW_BODY") || log "WARNING: Failed to post @claude comment on PR #$PR_NUMBER"

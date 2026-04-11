@@ -1,4 +1,13 @@
-## Backend Checks (triggered by lambda/handler changes)
+## Backend Checks (apply when diff touches Lambda handlers, amplify/functions/, or backend domain logic)
+
+### Severity Floors
+
+| Pattern | Minimum Severity |
+|---|---|
+| Hardcoded ARNs or table names: resource identifiers as string literals instead of environment variables | ALWAYS Important |
+| Missing input validation: handler accepts external input without Zod/schema validation at the boundary | ALWAYS Important |
+
+### Checks
 
 - Thin handler pattern violations: business logic mixed into Lambda handler instead of separate domain modules
 - Hardcoded ARNs or table names: resource identifiers must come from environment variables, not string literals

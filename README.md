@@ -99,7 +99,7 @@ See [docs/SETUP.md](docs/SETUP.md) for detailed instructions (Windows + macOS).
 | | `/iago:execute` | `/iago:quick` | `/iago:fast` | `/iago:prfix` |
 |---|---|---|---|---|
 | **Plans** | Uses existing | Creates on-the-fly | None | None |
-| **Pipeline** | Full 7-stage | Full 7-stage | Build gate only | GitHub Action loop |
+| **Pipeline** | Full 8-stage | Full 8-stage | Build gate only | GitHub Action loop |
 | **Review** | Plan+adversarial + Codex + fix | Plan+adversarial + Codex + fix | None | Async (up to 5 rounds) |
 | **Scope** | Phase (2+ plans) | 1-3 tasks | ≤3 files | Existing PR |
 | **PR** | Yes (per plan) | Yes | No | Fixes existing |
@@ -259,7 +259,7 @@ Skills are reusable workflows invoked with `/skill-name`. Each one knows what to
 |-------|-------------|------------|
 | `/brainstorming` | Socratic design exploration → spec in `docs/specs/` | None (interactive) |
 | `/writing-plans` | Break spec into 2-5 min tasks with verify commands | None |
-| `/subagent-driven-development` | Execute plan with fresh profile per task. `--pipeline` for 7-stage isolation | Profile + review + Codex |
+| `/subagent-driven-development` | Execute plan with fresh profile per task. `--pipeline` for 8-stage isolation | Profile + review + Codex |
 | `/code-review` | Severity-categorized findings (Critical/Important/Minor) | `review-single` or `review-full` |
 | `/deep-research` | Multi-source research → recommendation doc. `--focus market` for competitive analysis | `research` |
 | `/prompt-optimizer` | Analyze, rewrite, test LLM prompts for client features | None |

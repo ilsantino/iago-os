@@ -51,9 +51,9 @@ Pause: `/iago:pause`. Resume automatic on next session.
 
 | Scope | Skill | Review |
 |-------|-------|--------|
-| ROADMAP phase (1+ plans) | `/iago:execute {slug}` | Full 7-stage pipeline |
-| Standalone plan (1-3 tasks) | `/iago:quick {desc}` | Full 7-stage pipeline |
-| Multi-task plan (outside ROADMAP) | `/subagent-driven-development` | Full 7-stage pipeline |
+| ROADMAP phase (1+ plans) | `/iago:execute {slug}` | Full 8-stage pipeline |
+| Standalone plan (1-3 tasks) | `/iago:quick {desc}` | Full 8-stage pipeline |
+| Multi-task plan (outside ROADMAP) | `/subagent-driven-development` | Full 8-stage pipeline |
 | Trivial fix (≤3 files, obvious) | `/iago:fast {desc}` | Build gate only |
 
 User says "execute plan X" or "implement this" → invoke matching skill. Not read files. Not create tasks. Invoke skill.
@@ -69,13 +69,14 @@ Both run `scripts/execute-pipeline.sh` with full review pipeline. Difference is 
 
 Built into `scripts/execute-pipeline.sh`. Each step = separate `claude -p` session:
 
-1. **Implement** — reads plan, writes code
+0. **Stress test** — adversarial review of the plan itself (opus); skipped if plan has `## Stress Test` section; BLOCK stops pipeline, PROCEED_WITH_NOTES forwards concerns to impl session
+1. **Implement** — reads plan + stress-test notes (if any), writes code
 2. **Build gate** — `tsc --noEmit && vite build` (max 2 retries)
-3. **Review** — two-pass: plan compliance + adversarial; fix all findings locally (Critical→Important→Minor)
+3. **Review** — three-pass: plan compliance + domain routing + adversarial; all check modules loaded, reviewer selects relevant domains; severity floors enforced; fix all findings locally (Critical→Important→Minor)
 4. **Codex adversarial** — reads plan + diff; checks auth, data loss, races, rollback safety
 4b. **Codex fix** — opus fixes all Codex findings + rebuild (skipped if no findings)
 5. **Create PR** — stages, commits, pushes, creates PR via `gh`
-5b. **Tag @claude** — haiku synthesizes review request, posts on PR
+5b. **Tag @claude** — sonnet synthesizes context-rich review request (plan + diff → domains, focus areas, edge cases), posts on PR
 6. **Summary** — writes results to `.iago/summaries/`
 
 Async review-fix loop via GitHub Actions: `claude.yml` reviews, `claude-review-fix.yml` fixes + re-tags (max 5 rounds). Priority: Critical → Important → Minor. Summary posted when clean.

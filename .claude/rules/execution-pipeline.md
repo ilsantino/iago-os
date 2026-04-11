@@ -35,17 +35,23 @@ If you notice yourself doing any of these WITHOUT having invoked `/iago:execute`
 scripts/execute-pipeline.sh --plan {path} --project-dir {dir}
   |
   v
-1. IMPLEMENT — claude -p reads plan, writes code (opus, max 50 turns)
+0. STRESS TEST — claude -p opus, adversarial review of the plan itself (max 15 turns)
+  |  reads plan + referenced source files + CLAUDE.md
+  |  checks: precision, edge cases, contradictions, simpler alternatives, missing acceptance criteria
+  |  PROCEED → continue; PROCEED_WITH_NOTES → notes forwarded to impl; BLOCK → pipeline stops
+  |  skipped if plan contains "## Stress Test" section (already tested during /iago:plan or /iago:stress)
+  v
+1. IMPLEMENT — claude -p reads plan + stress-test notes (if any), writes code (opus, max 50 turns)
   |
   v
 2. BUILD GATE — tsc --noEmit && vite build (max 2 retries with fix sessions)
   |
   v
-3. REVIEW — claude -p opus, two-pass: plan compliance + dynamic adversarial (Critical/Important/Minor)
+3. REVIEW — claude -p opus, three-pass: plan compliance + domain routing + adversarial (Critical/Important/Minor)
   |  reads full source files (not just diff) for context
-  |  dynamic checklist: compose_review_checks() analyzes diff paths + import patterns,
-  |    concatenates baseline.md + domain modules (react, backend, auth, api, infra, i18n)
-  |    from scripts/review-checks/. Detection is bash-native (grep), not LLM.
+  |  all check modules loaded (baseline + react + backend + auth + api + infra + i18n)
+  |  reviewer selects relevant domains based on diff + plan, states which and why
+  |  severity floors in modules enforced (ALWAYS Critical / ALWAYS Important — cannot downgrade)
   |  cross-cutting (always checked): auth bypass, data loss, races, rollback safety
   |  any findings → fix session (opus, priority: Critical→Important→Minor) → rebuild → re-review (max 2 rounds)
   v
@@ -58,7 +64,7 @@ scripts/execute-pipeline.sh --plan {path} --project-dir {dir}
 5. CREATE PR — claude -p sonnet, stages, commits, pushes, creates PR via gh (plan embedded in PR body)
   |
   v
-5b. TAG @claude — claude -p haiku synthesizes review request, posts on PR
+5b. TAG @claude — claude -p sonnet, context-rich review request (plan + diff → domains, focus areas, edge cases)
   |
   v
 6. SUMMARY — write pipeline results to .iago/summaries/
