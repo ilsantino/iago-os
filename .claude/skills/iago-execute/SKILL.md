@@ -96,7 +96,8 @@ step 5b (@claude tagging) but all local pipeline stages still run.
 **Run this via the Bash tool.** Set timeout to 600000 (10 min). Run in background
 if the user wants to do other work, otherwise foreground.
 
-The script handles the FULL pipeline per plan:
+The script handles the FULL 8-stage pipeline per plan:
+0. **Stress test** — adversarial plan review (skipped if plan has `## Stress Test` section from `/iago:plan` or `/iago:stress`)
 1. **Implement** — `claude -p` session reads the plan and writes code
 2. **Build gate** — `tsc --noEmit && vite build` (max 2 retries)
 3. **Review** — `claude -p` session: plan compliance + adversarial (auth, data loss, races, rollback)

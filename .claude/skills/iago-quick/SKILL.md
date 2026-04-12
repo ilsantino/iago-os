@@ -9,8 +9,9 @@ description: >-
 ## Purpose
 
 Lightweight one-shot execution path for standalone tasks that don't warrant the
-full workflow. Produces a plan, then runs it through `scripts/execute-pipeline.sh`
-for the full pipeline (implement → build → review → codex → codex fix → PR → tag @claude → summary).
+full workflow. Produces a plan (with stress test), then runs it through
+`scripts/execute-pipeline.sh` for the full 8-stage pipeline (stress test →
+implement → build → review → codex → codex fix → PR → summary).
 
 ## When to Use
 
@@ -108,7 +109,8 @@ By default, quick tasks pass `--no-tag` (no @claude tagging � PR is created bu
 the async review-fix loop is not triggered). If `--review` is passed, omit
 `--no-tag` so the full async loop runs automatically.
 
-This runs the full pipeline as separate `claude -p` sessions:
+This runs the full 8-stage pipeline as separate `claude -p` sessions:
+0. **Stress test** — adversarial plan review (skipped if plan has `## Stress Test` section)
 1. **Implement** — writes code from the plan
 2. **Build gate** — `tsc --noEmit && vite build` (max 2 retries)
 3. **Review** — two-pass: plan compliance + adversarial (auth, data loss, races, rollback)
