@@ -24,6 +24,7 @@ expected output. No placeholders.
 
 Optional flags:
 - `--research` — dispatch `research` profile to investigate codebase before planning
+- `--no-stress` — skip the stress-test step (step 7); pipeline step 0 will run it instead
 
 If no phase-slug provided, read ROADMAP.md and suggest the next `pending` or `active` phase.
 
@@ -115,7 +116,41 @@ created: {YYYY-MM-DD}
 {After all tasks: aggregate verify command + expected result.}
 ```
 
-### 7. Update STATE.md
+### 7. Stress-test each plan
+
+After writing all plan files, stress-test each one:
+
+For each plan, dispatch an `analyst` agent (opus) with read-only tools
+(`Read`, `Glob`, `Grep`). The agent reviews the PLAN across 5 dimensions:
+
+1. **PRECISION** — Vague requirements, ambiguous scope, unspecified behavior
+2. **EDGE CASES** — Inputs, states, or sequences that would break the approach
+3. **CONTRADICTIONS** — Conflicts with codebase patterns, CLAUDE.md, or architecture
+4. **SIMPLER ALTERNATIVES** — Clearly better approach (not just different)
+5. **MISSING ACCEPTANCE CRITERIA** — Gaps that force the implementer to guess
+
+Agent must end with exactly one verdict:
+- `VERDICT: PROCEED` — no significant issues
+- `VERDICT: PROCEED_WITH_NOTES` — proceed with awareness
+- `VERDICT: BLOCK` — critical flaw, plan needs revision
+
+After each stress test, append a `## Stress Test` section to the plan file
+(before `## Verification`):
+
+```markdown
+## Stress Test
+
+**Verdict:** {verdict}
+**Date:** {YYYY-MM-DD}
+
+{Findings grouped by dimension. Skip empty dimensions.}
+```
+
+If verdict is BLOCK: warn the user, but still write the plan. User decides
+whether to revise before `/iago:execute`. The pipeline's step 0 will see the
+section and skip re-testing.
+
+### 8. Update STATE.md
 
 Update via state engine:
 - Phase: `{NN}-{slug}` | Status: `planning`
@@ -127,7 +162,8 @@ After completion, display:
 1. Plan count and wave structure
 2. Task count per plan
 3. Any concerns from self-review
-4. Suggest: "Run `/iago:execute {phase-slug}` to begin implementation."
+4. Stress-test verdicts per plan (unless `--no-stress`)
+5. Suggest: "Run `/iago:execute {phase-slug}` to begin implementation."
 
 ## Boundaries
 

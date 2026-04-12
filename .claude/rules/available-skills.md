@@ -48,6 +48,7 @@ description: >-
 - `/iago:onboard` — Scan existing codebase, produce architecture map, populate PROJECT.md
 - `/iago:n8n` — Design n8n automation workflows (webhooks, Lambda, DynamoDB events)
 - `/iago:agents` — Design multi-agent architectures (Claude SDK + LangGraph)
+- `/iago:stress` — Adversarial stress-test on plan(s) before execution; embeds findings in plan file
 - `/iago:schedule` — Install trigger templates or create custom scheduled automations
 
 ### Built-in (Claude Code native)

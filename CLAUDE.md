@@ -39,7 +39,7 @@ Stack fixed — no alternatives unless asked.
 
 ## Workflow
 
-Phases: init → discuss → plan → execute → verify. See `/iago:*` skills.
+Phases: init → discuss → plan (+ stress) → execute → verify. See `/iago:*` skills.
 Quick: `/iago:fast` (trivial, ≤3 files) | `/iago:quick` (1-3 tasks, composable flags).
 Artifacts: `.iago/plans/`, `.iago/context/`, `.iago/summaries/`, `.iago/reviews/`.
 STATE.md digest — keep under 80 lines. Overflow to PROJECT.md.
@@ -159,7 +159,7 @@ Detailed rules in `.claude/rules/`:
 ## Skills
 
 Core: `/brainstorming`, `/writing-plans`, `/subagent-driven-development`, `/code-review`, `/deep-research`, `/prompt-optimizer`.
-Workflow: `/iago:init`, `/iago:discuss`, `/iago:plan`, `/iago:execute`, `/iago:verify`, `/iago:fast`, `/iago:quick`, `/iago:pause`.
+Workflow: `/iago:init`, `/iago:discuss`, `/iago:plan`, `/iago:stress`, `/iago:execute`, `/iago:verify`, `/iago:fast`, `/iago:quick`, `/iago:pause`.
 Post-review: `/iago:prfix` — fix PR review comments, push, re-review.
 Proprietary: `/iago:scaffold`, `/iago:proposal`, `/iago:onboard`, `/iago:n8n`, `/iago:agents`.
 Full catalog: `.claude/rules/available-skills.md`.
