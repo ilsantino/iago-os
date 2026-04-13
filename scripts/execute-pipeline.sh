@@ -118,6 +118,7 @@ Output format:
 ---FINDINGS START---
 1. [finding summary — one line per finding, numbered]
 ---FINDINGS END---
+Emit this block exactly once, at the end of your response. Do not use these delimiters anywhere else in your output.
 
 This block is machine-parsed. Every finding MUST appear as a numbered line inside the delimiters, even if already described above. If you have no findings, emit the delimiters with no lines between them.
 
@@ -180,13 +181,6 @@ IMPL_STRESS_CONTEXT=""
 if [[ -f "$STRESS_FINDINGS" ]]; then
   IMPL_STRESS_CONTEXT="
 MANDATORY: Read the stress-test findings at: $STRESS_FINDINGS
-These are REQUIREMENTS, not suggestions. For each finding you MUST either:
-1. Implement a fix that addresses the concern, OR
-2. Add a code comment explaining why the concern does not apply to this implementation
-Do not silently ignore any finding. The reviewer will check each one."
-elif [[ -f "$STRESS_FILE" ]]; then
-  IMPL_STRESS_CONTEXT="
-MANDATORY: Read the stress-test findings at: $STRESS_FILE
 These are REQUIREMENTS, not suggestions. For each finding you MUST either:
 1. Implement a fix that addresses the concern, OR
 2. Add a code comment explaining why the concern does not apply to this implementation
@@ -305,6 +299,17 @@ compose_review_checks "$DIFF_FILE" "$REVIEW_CHECKS_FILE"
 # NOTE: Stress test enforcement is embedded in the review prompt (not the checklist file)
 # because it requires conditional file references ($STRESS_FINDINGS / $STRESS_FILE) that
 # are pipeline-runtime values — the static checklist has no access to these paths.
+
+# Build stress enforcement block — only included when a stress file actually exists
+STRESS_ENFORCEMENT_BLOCK=""
+if [[ -f "$STRESS_FINDINGS" ]] || [[ -f "$STRESS_FILE" ]]; then
+  STRESS_ENFORCEMENT_BLOCK="
+STRESS TEST ENFORCEMENT: If a stress-test findings file exists, read it. For each finding, verify the implementation either:
+(a) addresses the concern in code, or
+(b) has a code comment justifying why it doesn't apply.
+Flag any unaddressed stress-test finding as Important."
+fi
+
 REVIEW_EXIT=0
 REVIEW_OUTPUT=$(cd "$PROJECT_DIR" && run_claude 900 -p "Review the implementation against the plan. Three passes in one session:
 
@@ -318,20 +323,14 @@ PASS 3 — ADVERSARIAL: Read each changed source file in FULL for context — do
 - Race conditions: non-atomic operations, TOCTOU, concurrent state mutations
 - Rollback safety: partial writes without cleanup
 
-SEVERITY FLOORS: Some checks in the modules have minimum severity levels (marked ALWAYS Critical or ALWAYS Important). You MUST NOT downgrade these below the stated floor. Other findings use your judgment.
-
-STRESS TEST ENFORCEMENT: If a stress-test findings file exists, read it. For each finding, verify the implementation either:
-(a) addresses the concern in code, or
-(b) has a code comment justifying why it doesn't apply.
-Flag any unaddressed stress-test finding as Important.
+SEVERITY FLOORS: Some checks in the modules have minimum severity levels (marked ALWAYS Critical or ALWAYS Important). You MUST NOT downgrade these below the stated floor. Other findings use your judgment.$STRESS_ENFORCEMENT_BLOCK
 
 Categorize all findings as Critical, Important, or Minor. End with verdict: PASS, PASS_WITH_CONCERNS, or FAIL.
 
 Read the plan: $PLAN_FILE
 Read the diff: $DIFF_FILE
 Read the review checklist: $REVIEW_CHECKS_FILE$(if [[ -f "$STRESS_FINDINGS" ]]; then echo "
-Read stress-test findings: $STRESS_FINDINGS"; elif [[ -f "$STRESS_FILE" ]]; then echo "
-Read stress-test findings: $STRESS_FILE"; fi)
+Read stress-test findings: $STRESS_FINDINGS"; fi)
 Then read each changed source file in full for context." \
   --model opus \
   --max-turns 25 \
@@ -404,18 +403,12 @@ DOMAIN ROUTING: The review checklist contains ALL domain modules. Based on the d
 
 SEVERITY FLOORS: Some checks have minimum severity levels (marked ALWAYS Critical or ALWAYS Important). You MUST NOT downgrade these below the stated floor.
 
-Also check cross-cutting regardless of domain: auth bypass, data loss, race conditions, rollback safety. Read each changed source file in FULL for context — do not review from the diff alone. Categorize any remaining findings as Critical/Important/Minor. Verdict: PASS (all clean), PASS_WITH_CONCERNS (findings remain), or FAIL.
-
-STRESS TEST ENFORCEMENT: If a stress-test findings file exists, read it. For each finding, verify the implementation either:
-(a) addresses the concern in code, or
-(b) has a code comment justifying why it doesn't apply.
-Flag any unaddressed stress-test finding as Important.
+Also check cross-cutting regardless of domain: auth bypass, data loss, race conditions, rollback safety. Read each changed source file in FULL for context — do not review from the diff alone. Categorize any remaining findings as Critical/Important/Minor. Verdict: PASS (all clean), PASS_WITH_CONCERNS (findings remain), or FAIL.$STRESS_ENFORCEMENT_BLOCK
 
 Read the plan: $PLAN_FILE
 Read the diff: $DIFF_FILE
 Read the review checklist: $REVIEW_CHECKS_FILE$(if [[ -f "$STRESS_FINDINGS" ]]; then echo "
-Read stress-test findings: $STRESS_FINDINGS"; elif [[ -f "$STRESS_FILE" ]]; then echo "
-Read stress-test findings: $STRESS_FILE"; fi)
+Read stress-test findings: $STRESS_FINDINGS"; fi)
 Then read each changed source file in full for context." \
     --model opus \
     --max-turns 25 \

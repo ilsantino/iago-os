@@ -62,8 +62,8 @@ munet-web PR #31 findings 1, 2, 4, 6 — all traceable to these two gaps.
   Flag any unaddressed stress-test finding as Important.
   ```
   Check if `$STRESS_FINDINGS` or `$STRESS_FILE` exists and conditionally add this to the review prompt (same pattern as the impl prompt).
-- **verify:** `grep -c "STRESS TEST ENFORCEMENT" scripts/execute-pipeline.sh`
-- **expected:** 1
+- **verify:** `grep -c "STRESS_ENFORCEMENT_BLOCK" scripts/execute-pipeline.sh | grep -v "^0$"`
+- **expected:** Non-zero (enforcement block defined once, injected into both review prompts)
 
 ### Task 4: Create pattern consistency review module
 - **files:** `scripts/review-checks/patterns.md`
