@@ -109,7 +109,7 @@ See [docs/SETUP.md](docs/SETUP.md) for detailed instructions (Windows + macOS).
 
 ## Review Pipeline
 
-Both `/iago:execute` and `/iago:quick` run `scripts/execute-pipeline.sh`. Every plan goes through 7 stages as separate `claude -p` sessions — no context bleed, no token burn in the orchestrator.
+Both `/iago:execute` and `/iago:quick` run `scripts/execute-pipeline.sh`. Every plan goes through 8 stages as separate `claude -p` sessions — no context bleed, no token burn in the orchestrator.
 
 ### Local Pipeline
 
@@ -117,10 +117,11 @@ Each step is a fresh `claude -p` session — isolated context, no token burn in 
 
 | Step | Model | What it does |
 |------|-------|-------------|
-| **1. Implement** | Opus | Reads plan file, writes all code. Max 50 turns. |
+| **0. Stress test** | Opus | Adversarial review of the plan itself — checks precision, edge cases, contradictions, simpler alternatives. Outputs structured findings with delimiters for reliable extraction. Skipped if plan has `## Stress Test` section. |
+| **1. Implement** | Opus | Reads plan file + stress-test findings (MANDATORY, not advisory). Max 50 turns. |
 | **2. Build gate** | — | Compile check — verifies code compiles and bundles before review. Catches type errors, broken imports, missing deps. Max 2 retries with fix sessions. Skipped for config-only repos. |
-| **3. Review** | Opus | Two-pass: plan compliance (every task verified against diff) + adversarial (auth bypass, data loss, race conditions, rollback safety, business logic). Findings fixed in priority order (Critical → Important → Minor). Max 2 fix rounds. |
-| **4. Codex adversarial** | GPT-5.4 / Opus fallback | Cross-model review with plan context. Same adversarial checklist, different model family for coverage. |
+| **3. Review** | Opus | Three-pass: plan compliance + domain routing (selects relevant check modules from 8 loaded) + adversarial (auth bypass, data loss, races, rollback). Stress test enforcement verifies each finding was addressed. Severity floors on critical checks. Max 2 fix rounds. |
+| **4. Codex adversarial** | GPT-5.4 / Opus fallback | Cross-model review with plan context. Windows: auto-detects MSYS/Cygwin and falls back to Claude adversarial (Codex sandbox blocks git). Runtime failures also fall back automatically. |
 | **4b. Codex fix** | Opus | Fixes all Codex findings (P0 → P1 → P2) + rebuild gate. Skipped if clean. |
 | **5. Create PR** | Sonnet | Stages, commits, pushes branch, creates PR via `gh`. |
 | **5b. Tag @claude** | Sonnet | Synthesizes review request from pipeline context, posts on PR. Triggers async loop. |
@@ -128,17 +129,21 @@ Each step is a fresh `claude -p` session — isolated context, no token burn in 
 
 ```mermaid
 flowchart TD
-    Plan[Plan file] --> Impl[1. Implement — Opus]
+    Plan[Plan file] --> Stress["0. Stress Test — Opus
+    Adversarial plan review"]
+    Stress -->|BLOCK| Stop[Pipeline stops]
+    Stress -->|PROCEED / notes| Impl[1. Implement — Opus]
     Impl --> Build[2. Build gate — tsc + vite]
     Build -->|fail| Fix[Fix — Opus]
     Fix --> Build
     Build -->|pass| Review["3. Review — Opus
-    Plan + Adversarial"]
+    Plan + Domain routing + Adversarial
+    + Stress enforcement"]
     Review -->|findings| Fix2["Fix — Opus
     Critical→Important→Minor"]
     Fix2 --> Build
     Review -->|pass| Codex["4. Codex Adversarial — GPT-5.4
-    Plan + Diff"]
+    (Claude fallback on Windows)"]
     Codex -->|findings| CdxFix[4b. Codex Fix — Opus]
     CdxFix --> Rebuild[Rebuild gate]
     Rebuild --> PR[5. Create PR — Sonnet]
@@ -446,7 +451,8 @@ iago-os/
     new-client.sh/.ps1        # Scaffold new project
     sync-skills.sh/.ps1       # Sync skills/agents/rules to project or globally
     setup-memory.sh/.ps1      # Install memory stack (MemPalace + Graphify)
-    execute-pipeline.sh       # Cross-session review pipeline
+    execute-pipeline.sh       # Cross-session review pipeline (8-stage)
+    review-checks/            # 8 review modules (baseline, api, auth, backend, i18n, infra, patterns, react)
     usage-report.sh/.ps1      # Usage analytics from telemetry
     validate-hooks.sh         # CI: hook validation
     validate-skills.sh        # CI: skill validation
@@ -455,7 +461,6 @@ iago-os/
     SETUP.md                  # First-time setup (Windows + macOS)
     ARCHITECTURE.md           # How it works under the hood
     WORKFLOW.md               # Workflow phases explained
-    pr-review-pipeline.md     # Review pipeline deep-dive
     automations/              # Trigger templates + pipeline specs
     patterns/                 # Industry domain reference docs
   n8n/                        # Optional: n8n visual orchestration
@@ -514,7 +519,6 @@ iaGO-OS synthesizes patterns from six open-source Claude Code configurations:
 | [Architecture](docs/ARCHITECTURE.md) | How iaGO-OS works under the hood |
 | [Skills Reference](.claude/rules/available-skills.md) | Full catalog with triggers, arguments, examples |
 | [Workflow](docs/WORKFLOW.md) | Phase flow, state transitions, artifact locations |
-| [Review Pipeline](docs/pr-review-pipeline.md) | Pipeline stages, async loop, control flags |
 | [Trigger Templates](docs/automations/trigger-templates.md) | 6 ready-to-use scheduled automations |
 | [n8n Pipeline](n8n/README.md) | Cross-session visual orchestration |
 

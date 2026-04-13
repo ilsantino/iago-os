@@ -241,15 +241,19 @@ Default for `/iago:quick`. The `review-single` profile does one pass checking:
 
 Findings are categorized: **Critical** (must fix) > **Important** (should fix) > **Minor** (log only).
 
-### Full Review (`review.mode: "full"`)
+### Pipeline Review (via `execute-pipeline.sh`)
 
-Default for `/iago:execute`. Three stages:
+Default for `/iago:execute` and `/iago:quick`. The pipeline step 3 review is a single Opus session doing three passes:
 
-1. **Stage 1 — Spec compliance:** Does the implementation match the plan? File paths, actions, tests.
-2. **Stage 2 — Quality review:** Performance, TypeScript strictness, maintainability, conventions. Only runs if Stage 1 finds zero Critical issues.
-3. **Stage 3 — Cross-model adversarial review:** `/codex:adversarial-review` sends the diff to GPT-5.4 targeting auth bypass, data loss, race conditions, business logic errors, and rollback safety. Mandatory on every plan. If the Codex CLI is unavailable, falls back to a Claude adversarial session checking the same targets.
+1. **Pass 1 — Plan compliance:** For each task in the plan, verify the diff implements it correctly. Flag missing, incomplete, or incorrect implementations.
+2. **Pass 2 — Domain routing:** All 8 review check modules are loaded (baseline, api, auth, backend, i18n, infra, patterns, react). The reviewer selects which domains are relevant based on the diff and plan, and states which and why.
+3. **Pass 3 — Adversarial:** Reads each changed source file in full (not just diff). Applies selected domain checks plus cross-cutting concerns regardless of domain: auth bypass, data loss, race conditions, rollback safety. Severity floors on critical checks (ALWAYS Critical / ALWAYS Important) cannot be downgraded.
 
-Critical findings at any stage route back to the executor for fixes (max 2 rounds).
+**Stress test enforcement:** If stress-test findings exist, the reviewer verifies each finding was addressed in code or justified with a comment. Unaddressed findings are flagged as Important.
+
+After the review, **step 4 (Codex adversarial)** sends the diff to GPT-5.4 for cross-model coverage. On Windows, Codex sandbox blocks git — the pipeline auto-detects this and falls back to a Claude adversarial session. Runtime failures also fall back automatically.
+
+Critical/Important findings at steps 3-4 route back for local fixes (max 2 rounds) before PR creation.
 
 ### Codex Integration
 
@@ -674,12 +678,12 @@ When a phase has 3+ plans, running `/iago:execute` normally fills up the context
 Same pipeline (stress test → implement → build → review → codex → codex fix → PR), but each step runs in a **separate Claude session**. No context accumulates. You can walk away.
 
 ```
-Step 0: claude -p "stress test plan"  → fresh session, adversarial plan review (skipped if already tested)
-Step 1: claude -p "implement plan"    → fresh session, full context + stress-test notes
+Step 0: claude -p "stress test plan"  → adversarial plan review (skipped if already tested)
+Step 1: claude -p "implement plan"    → full context + mandatory stress-test findings
 Step 2: tsc + vite build              → shell command, no Claude
-Step 3: claude -p "review this diff"  → fresh session, only sees the diff
-Step 4: claude -p "codex review"      → fresh session, adversarial check
-Step 5: claude -p "create PR"         → fresh session, commits + PR
+Step 3: claude -p "review this diff"  → three-pass with domain routing + stress enforcement
+Step 4: claude -p "codex review"      → cross-model (Claude fallback on Windows)
+Step 5: claude -p "create PR"         → commits + PR
 ```
 
 If the build breaks, it auto-dispatches a fix session (max 2 retries). If review finds Critical issues, same thing. You don't need to be there.
@@ -748,7 +752,9 @@ The `debug` profile gets dispatched automatically (max 2 retries). After 2 failu
 
 1. Verify Codex CLI is installed: `codex --version`
 2. Run `/codex:setup` to check authentication
-3. The adversarial review is mandatory — if it's skipping, check for BLOCKED status in the plan summary
+3. On Windows (MSYS/Cygwin/Git Bash): the pipeline auto-detects Windows and falls back to Claude adversarial — Codex sandbox blocks git on these environments. This is expected behavior, not an error.
+4. If Codex is installed but fails at runtime, the pipeline falls back to Claude adversarial automatically. Check the summary for "falling back to Claude" messages.
+5. The adversarial review is mandatory — if it's skipping entirely, check for BLOCKED status in the plan summary
 
 ### Windows path issues
 

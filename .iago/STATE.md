@@ -1,25 +1,24 @@
 # State — iaGO-OS
 
-> **Phase:** post-audit | **Status:** executing audit-05/06
-> **Tag:** v0.1.0 | **Updated:** 2026-04-12
+> **Phase:** post-audit | **Status:** audit verified
+> **Tag:** v0.1.0 | **Updated:** 2026-04-13
 
 ## Active
 
-| Plan | Status | PR |
-|------|--------|----|
-| audit-05: enforce stress findings + pattern checks | PR open, @claude tagged | [#15](https://github.com/ilsantino/iago-os/pull/15) |
-| audit-06: Codex adversarial on Windows + fallback | stacked on #15 | [#15](https://github.com/ilsantino/iago-os/pull/15) |
+No active plans. Audit phase complete.
 
 ## Known Issues
 
 | Issue | Severity | Detail |
 |-------|----------|--------|
 | macOS `timeout` in pipeline | Low | `run_claude()` uses GNU `timeout` — not available on macOS without coreutils. Sebas will hit this. Fix: detect OS, use `gtimeout` or background+sleep fallback. |
+| Local main diverged from origin/main | Minor | CRLF fix committed directly to local main; same content in PR #15 squash merge on remote. Run `git checkout main && git pull --rebase origin main` to reconcile. |
 
 ## Recent Decisions
 
 | Date | Decision | Phase |
 |------|----------|-------|
+| 2026-04-13 | Audit phase verified — all 6 plans merged (PRs #11-#15) | audit |
 | 2026-04-12 | Remove lgtm/approved from clean signals, add summary loop guard | audit |
 | 2026-04-07 | Adversarial review → 4x iago:quick runs (not SDD) | hardening |
 | 2026-04-07 | Pipeline build gate: skip when no tsconfig/vite | hardening |
@@ -27,7 +26,7 @@
 
 ## Completed (v0.1.0 + audit cycle)
 
-<details><summary>Audit phase (2026-04-12)</summary>
+<details><summary>Audit phase (2026-04-12 → 2026-04-13, verified)</summary>
 
 | Date | Mode | Description | Ref |
 |------|------|-------------|-----|
@@ -36,6 +35,9 @@
 | 2026-04-12 | execute | audit-03: config conflicts, CI gaps, stress test docs | [#13](https://github.com/ilsantino/iago-os/pull/13) |
 | 2026-04-12 | execute | audit-04: stale docs, dead state, memory-stack cleanup | [#14](https://github.com/ilsantino/iago-os/pull/14) |
 | 2026-04-12 | fast | Fix review-fix loop clean detection | 6128c30 |
+| 2026-04-12 | execute | audit-05: enforce stress findings + pattern checks | [#15](https://github.com/ilsantino/iago-os/pull/15) |
+| 2026-04-12 | execute | audit-06: Codex adversarial on Windows + fallback | [#15](https://github.com/ilsantino/iago-os/pull/15) |
+| 2026-04-13 | verify | Audit phase verified — all checks passed | `.iago/reviews/audit-phase.md` |
 
 </details>
 
