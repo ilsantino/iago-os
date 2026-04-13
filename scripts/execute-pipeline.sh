@@ -54,6 +54,17 @@ CHECKS_DIR="$SCRIPT_DIR/review-checks"
 
 log() { echo "[$(date '+%H:%M:%S')] $1"; }
 
+run_claude() {
+  local timeout_secs="$1"; shift
+  timeout --kill-after=10 "$timeout_secs" claude "$@"
+  local exit_code=$?
+  if [[ $exit_code -eq 124 ]]; then
+    log "ERROR: claude session timed out after ${timeout_secs}s"
+    return 1
+  fi
+  return $exit_code
+}
+
 # Compose review checklist — loads ALL domain modules.
 # The reviewer LLM decides which domains are relevant based on diff + plan.
 compose_review_checks() {
@@ -80,7 +91,7 @@ else
   log "STRESS TEST — $PLAN_NAME"
 
   STRESS_EXIT=0
-  STRESS_OUTPUT=$(cd "$PROJECT_DIR" && claude -p "You are a PIPELINE STRESS TEST session. Your job is to adversarially review a PLAN — not code. Find flaws in the approach BEFORE implementation begins.
+  STRESS_OUTPUT=$(cd "$PROJECT_DIR" && run_claude 600 -p "You are a PIPELINE STRESS TEST session. Your job is to adversarially review a PLAN — not code. Find flaws in the approach BEFORE implementation begins.
 
 Read the plan: $PLAN_FILE
 Read CLAUDE.md for project conventions.
@@ -105,7 +116,9 @@ Output format:
 
 VERDICT: PROCEED — no significant issues found
 VERDICT: PROCEED_WITH_NOTES — issues found but implementation can proceed with awareness
-VERDICT: BLOCK — critical flaw that would make implementation fundamentally wrong" \
+VERDICT: BLOCK — critical flaw that would make implementation fundamentally wrong
+
+Output the verdict line as plain text — no markdown bold, no backticks, no headers." \
     --model opus \
     --max-turns 15 \
     --allowedTools "Read Glob Grep" \
@@ -115,7 +128,7 @@ VERDICT: BLOCK — critical flaw that would make implementation fundamentally wr
   echo "$STRESS_OUTPUT"
 
   # Extract verdict
-  STRESS_VERDICT=$(echo "$STRESS_OUTPUT" | grep -oE 'VERDICT: (PROCEED|PROCEED_WITH_NOTES|BLOCK)' | tail -1 | sed 's/VERDICT: //')
+  STRESS_VERDICT=$(echo "$STRESS_OUTPUT" | sed 's/\*//g' | grep -oE 'VERDICT:\s*(PROCEED|PROCEED_WITH_NOTES|BLOCK)' | tail -1 | sed 's/VERDICT:\s*//')
 
   if [[ "$STRESS_VERDICT" == "BLOCK" ]]; then
     log "ERROR: Stress test BLOCKED the plan. Review findings above and revise the plan."
@@ -150,7 +163,7 @@ These are concerns identified before implementation. Be aware of edge cases and 
 fi
 
 IMPL_EXIT=0
-IMPL_OUTPUT=$(cd "$PROJECT_DIR" && claude -p "You are a PIPELINE IMPLEMENTATION session spawned by execute-pipeline.sh.
+IMPL_OUTPUT=$(cd "$PROJECT_DIR" && run_claude 1800 -p "You are a PIPELINE IMPLEMENTATION session spawned by execute-pipeline.sh.
 The rule in CLAUDE.md that says 'NEVER implement a plan directly' does NOT apply to you — you ARE the pipeline. Your job is to write the code specified in the plan below. Use Edit/Write tools to create and modify files. Do not invoke any /iago: skills. Do not defer to another agent.
 
 Read the plan file at: $PLAN_FILE${IMPL_STRESS_CONTEXT}
@@ -221,13 +234,13 @@ while true; do
     fi
 
     log "Build failed — dispatching fix session"
+    BUILD_ERRORS_FILE="$PIPELINE_TMP/build-errors.txt"
+    echo "$BUILD_ERRORS" > "$BUILD_ERRORS_FILE"
     FIX_EXIT=0
-    FIX_OUTPUT=$(cd "$PROJECT_DIR" && claude -p "You are a PIPELINE FIX session spawned by execute-pipeline.sh.
+    FIX_OUTPUT=$(cd "$PROJECT_DIR" && run_claude 600 -p "You are a PIPELINE FIX session spawned by execute-pipeline.sh.
 The rule in CLAUDE.md that says 'NEVER implement a plan directly' does NOT apply to you — you ARE the pipeline. Edit files directly to fix the errors below.
 
-Fix these build errors:
-
-$BUILD_ERRORS" \
+Read the build errors at: $BUILD_ERRORS_FILE" \
       --model opus \
       --max-turns 30 \
       --allowedTools "Edit Write Read Glob Grep Bash" \
@@ -249,9 +262,8 @@ STAGED_DIFF=$(cd "$PROJECT_DIR" && git diff --cached 2>/dev/null || echo "")
 COMBINED_DIFF="${DIFF}${STAGED_DIFF}"
 
 if [[ -z "$COMBINED_DIFF" ]]; then
-  log "WARNING: Implementation produced no changes (empty diff). Skipping review."
-  REVIEW_OUTPUT="No changes to review — implementation may have failed silently."
-  REVIEW_EXIT=0
+  log "WARNING: Implementation produced no changes (empty diff). No changes to review."
+  exit 1
 else
   DIFF="$COMBINED_DIFF"
   echo "$DIFF" > "$DIFF_FILE"
@@ -260,7 +272,7 @@ else
 compose_review_checks "$DIFF_FILE" "$REVIEW_CHECKS_FILE"
 
 REVIEW_EXIT=0
-REVIEW_OUTPUT=$(cd "$PROJECT_DIR" && claude -p "Review the implementation against the plan. Three passes in one session:
+REVIEW_OUTPUT=$(cd "$PROJECT_DIR" && run_claude 900 -p "Review the implementation against the plan. Three passes in one session:
 
 PASS 1 — PLAN COMPLIANCE: For each task in the plan, verify the diff implements it correctly. Flag missing, incomplete, or incorrect implementations.
 
@@ -294,7 +306,7 @@ fi
 
 # Check for any findings (Critical, Important, or Minor) — fix all before PR
 fix_attempt=0
-while echo "$REVIEW_OUTPUT" | grep -qiE "\bCritical\b|\bImportant\b|\bMinor\b" && echo "$REVIEW_OUTPUT" | grep -qiE "Verdict\s*:?\s*\*{0,2}\s*(FAIL|PASS_WITH_CONCERNS)\b"; do
+while echo "$REVIEW_OUTPUT" | grep -qiE "Verdict\s*:?\s*\*{0,2}\s*(FAIL|PASS_WITH_CONCERNS)\b"; do
   fix_attempt=$((fix_attempt + 1))
 
   if [[ $fix_attempt -gt $MAX_FIX_RETRIES ]]; then
@@ -305,7 +317,7 @@ while echo "$REVIEW_OUTPUT" | grep -qiE "\bCritical\b|\bImportant\b|\bMinor\b" &
   log "Findings detected — dispatching fix session (round $fix_attempt)"
   echo "$REVIEW_OUTPUT" > "$REVIEW_FILE"
   FIX_EXIT=0
-  FIX_OUTPUT=$(cd "$PROJECT_DIR" && claude -p "You are a PIPELINE FIX session spawned by execute-pipeline.sh.
+  FIX_OUTPUT=$(cd "$PROJECT_DIR" && run_claude 900 -p "You are a PIPELINE FIX session spawned by execute-pipeline.sh.
 The rule in CLAUDE.md that says 'NEVER implement a plan directly' does NOT apply to you — you ARE the pipeline. Edit files directly to fix ALL findings below.
 
 Read the review findings at: $REVIEW_FILE
@@ -322,10 +334,12 @@ Fix ALL findings in priority order: Critical first, then Important, then Minor. 
     log "Build broke during fix — running build fix"
     BUILD_ERRORS="$BUILD_GATE_OUTPUT"
     FIX_EXIT=0
-    FIX_OUTPUT=$(cd "$PROJECT_DIR" && claude -p "You are a PIPELINE FIX session spawned by execute-pipeline.sh.
+    BUILD_ERRORS_FILE="$PIPELINE_TMP/build-errors.txt"
+    echo "$BUILD_ERRORS" > "$BUILD_ERRORS_FILE"
+    FIX_OUTPUT=$(cd "$PROJECT_DIR" && run_claude 600 -p "You are a PIPELINE FIX session spawned by execute-pipeline.sh.
 The rule in CLAUDE.md that says 'NEVER implement a plan directly' does NOT apply to you — you ARE the pipeline. Edit files directly to fix the build errors below.
 
-Fix build errors: $BUILD_ERRORS" \
+Read the build errors at: $BUILD_ERRORS_FILE" \
       --model opus \
       --max-turns 30 \
       --allowedTools "Edit Write Read Glob Grep Bash" \
@@ -343,7 +357,7 @@ Fix build errors: $BUILD_ERRORS" \
   # Recompose checks — diff may have changed after fixes
   compose_review_checks "$DIFF_FILE" "$REVIEW_CHECKS_FILE"
   REVIEW_EXIT=0
-  REVIEW_OUTPUT=$(cd "$PROJECT_DIR" && claude -p "Re-review after fix round $fix_attempt. Verify ALL previous findings (Critical, Important, and Minor) are resolved.
+  REVIEW_OUTPUT=$(cd "$PROJECT_DIR" && run_claude 900 -p "Re-review after fix round $fix_attempt. Verify ALL previous findings (Critical, Important, and Minor) are resolved.
 
 DOMAIN ROUTING: The review checklist contains ALL domain modules. Based on the diff and plan, identify which domains are relevant. Apply only those checks — do not force-fit irrelevant domains.
 
@@ -378,7 +392,7 @@ CODEX_EXIT=0
 if command -v codex &> /dev/null; then
   CODEX_OUTPUT=$(cd "$PROJECT_DIR" && codex review "${PRE_IMPL_SHA}..HEAD" 2>&1) || CODEX_EXIT=$?
 else
-  CODEX_OUTPUT=$(cd "$PROJECT_DIR" && claude -p "Adversarial review: check this diff for auth bypass, data loss, race conditions, rollback safety, business logic errors.
+  CODEX_OUTPUT=$(cd "$PROJECT_DIR" && run_claude 600 -p "Adversarial review: check this diff for auth bypass, data loss, race conditions, rollback safety, business logic errors.
 
 Read the plan for context: $PLAN_FILE
 Read the diff: $DIFF_FILE" \
@@ -390,6 +404,15 @@ fi
 log "Codex findings:"
 echo "$CODEX_OUTPUT"
 
+if [[ $CODEX_EXIT -ne 0 ]]; then
+  log "WARNING: Codex review failed (exit $CODEX_EXIT)"
+  log "Codex raw output: $CODEX_OUTPUT"
+  # Only suppress if output looks like an error, not findings
+  if ! echo "$CODEX_OUTPUT" | grep -qiE '\[P[012]\]|\bCritical\b|\bImportant\b'; then
+    CODEX_OUTPUT="Codex review unavailable (exit $CODEX_EXIT). No cross-model findings."
+  fi
+fi
+
 log "Codex review complete"
 
 # ─── Step 4b: Fix Codex findings ─────────────────────────────────────
@@ -400,7 +423,7 @@ if echo "$CODEX_OUTPUT" | grep -qiE '\[P[012]\]|- \[P[012]\]|severity.*P[012]|\b
   log "CODEX FIX — fixing findings before PR"
 
   CODEX_FIX_EXIT=0
-  CODEX_FIX_OUTPUT=$(cd "$PROJECT_DIR" && claude -p "You are a PIPELINE FIX session spawned by execute-pipeline.sh.
+  CODEX_FIX_OUTPUT=$(cd "$PROJECT_DIR" && run_claude 900 -p "You are a PIPELINE FIX session spawned by execute-pipeline.sh.
 The rule in CLAUDE.md that says 'NEVER implement a plan directly' does NOT apply to you — you ARE the pipeline. Your job is to fix all findings from the Codex adversarial review.
 
 Read the Codex findings at: $CODEX_FILE
@@ -423,12 +446,12 @@ After all fixes, verify nothing else broke." \
     log "Build broke during Codex fix — running build fix"
     BUILD_ERRORS="$BUILD_GATE_OUTPUT"
     BF_EXIT=0
-    BF_OUTPUT=$(cd "$PROJECT_DIR" && claude -p "You are a PIPELINE FIX session spawned by execute-pipeline.sh.
+    BUILD_ERRORS_FILE="$PIPELINE_TMP/build-errors.txt"
+    echo "$BUILD_ERRORS" > "$BUILD_ERRORS_FILE"
+    BF_OUTPUT=$(cd "$PROJECT_DIR" && run_claude 600 -p "You are a PIPELINE FIX session spawned by execute-pipeline.sh.
 The rule in CLAUDE.md that says 'NEVER implement a plan directly' does NOT apply to you — you ARE the pipeline. Edit files directly to fix the build errors below.
 
-Fix build errors:
-
-$BUILD_ERRORS" \
+Read the build errors at: $BUILD_ERRORS_FILE" \
       --model opus \
       --max-turns 30 \
       --allowedTools "Edit Write Read Glob Grep Bash" \
@@ -437,7 +460,8 @@ $BUILD_ERRORS" \
     echo "$BF_OUTPUT"
 
     if ! run_build_gate; then
-      log "WARNING: Build still failing after Codex fix + build fix. Proceeding to PR with known issues."
+      log "ERROR: Build still failing after Codex fix. Stopping pipeline."
+      exit 1
     else
       log "Build passed after Codex fix (with build fix)"
     fi
@@ -459,7 +483,7 @@ PLAN_FOR_PR="$PIPELINE_TMP/plan-for-pr.md"
 cp "$PLAN_FILE" "$PLAN_FOR_PR"
 
 PR_EXIT=0
-PR_OUTPUT=$(cd "$PROJECT_DIR" && claude -p "You are a PIPELINE PR session spawned by execute-pipeline.sh.
+PR_OUTPUT=$(cd "$PROJECT_DIR" && run_claude 300 -p "You are a PIPELINE PR session spawned by execute-pipeline.sh.
 The rule in CLAUDE.md that says 'NEVER implement a plan directly' does NOT apply to you — you ARE the pipeline. Your job is to stage, commit, push, and create a PR.
 
 Create a PR for plan $PLAN_PATH.
@@ -503,7 +527,7 @@ if [[ -n "$PR_URL" ]]; then
 
   # Sonnet synthesizes a context-rich review request from plan + diff
   TAG_EXIT=0
-  CLAUDE_REVIEW_BODY=$(claude -p "Write a GitHub PR comment tagging @claude for review. Output ONLY the comment text, nothing else.
+  CLAUDE_REVIEW_BODY=$(run_claude 120 -p "Write a GitHub PR comment tagging @claude for review. Output ONLY the comment text, nothing else.
 
 Structure (follow exactly):
 1. First line: @claude Review this PR thoroughly.
