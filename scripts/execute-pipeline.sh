@@ -56,7 +56,7 @@ log() { echo "[$(date '+%H:%M:%S')] $1"; }
 
 run_claude() {
   local timeout_secs="$1"; shift
-  timeout --kill-after=10 "$timeout_secs" claude "$@"
+  timeout "$timeout_secs" claude "$@"
   local exit_code=$?
   if [[ $exit_code -eq 124 ]]; then
     log "ERROR: claude session timed out after ${timeout_secs}s"
@@ -527,7 +527,7 @@ if [[ -n "$PR_URL" ]]; then
 
   # Sonnet synthesizes a context-rich review request from plan + diff
   TAG_EXIT=0
-  CLAUDE_REVIEW_BODY=$(run_claude 120 -p "Write a GitHub PR comment tagging @claude for review. Output ONLY the comment text, nothing else.
+  CLAUDE_REVIEW_BODY=$(cd "$PROJECT_DIR" && run_claude 120 -p "Write a GitHub PR comment tagging @claude for review. Output ONLY the comment text, nothing else.
 
 Structure (follow exactly):
 1. First line: @claude Review this PR thoroughly.
