@@ -49,6 +49,7 @@ DIFF_FILE="$PIPELINE_TMP/diff.txt"
 REVIEW_FILE="$PIPELINE_TMP/review.txt"
 CODEX_FILE="$PIPELINE_TMP/codex.txt"
 STRESS_FILE="$PIPELINE_TMP/stress.txt"
+STRESS_FINDINGS="$PIPELINE_TMP/stress-findings.txt"
 REVIEW_CHECKS_FILE="$PIPELINE_TMP/review-checks.md"
 CHECKS_DIR="$SCRIPT_DIR/review-checks"
 
@@ -112,6 +113,15 @@ Check these dimensions:
 Output format:
 - List findings grouped by dimension (skip dimensions with no findings)
 - For each finding: quote the relevant plan text, state the issue, suggest a fix
+- After all findings, emit a structured block with these exact delimiters (exactly once, at the end of your response):
+
+---FINDINGS START---
+1. [finding summary — one line per finding, numbered]
+---FINDINGS END---
+Emit this block exactly once, at the end of your response. Do not use these delimiters anywhere else in your output.
+
+This block is machine-parsed. Every finding MUST appear as a numbered line inside the delimiters, even if already described above. If you have no findings, emit the delimiters with no lines between them.
+
 - End with exactly one verdict line:
 
 VERDICT: PROCEED — no significant issues found
@@ -144,6 +154,18 @@ Output the verdict line as plain text — no markdown bold, no backticks, no hea
     log "WARNING: Could not extract stress test verdict — proceeding with caution"
     echo "$STRESS_OUTPUT" > "$STRESS_FILE"
   fi
+
+  # Extract structured findings between delimiters into a separate file
+  if [[ -f "$STRESS_FILE" ]]; then
+    EXTRACTED=$(sed -n '/^[[:space:]]*---FINDINGS START---[[:space:]]*$/,/^[[:space:]]*---FINDINGS END---[[:space:]]*$/{ /---FINDINGS/d; p; }' "$STRESS_FILE")
+    if [[ -n "$EXTRACTED" ]]; then
+      echo "$EXTRACTED" > "$STRESS_FINDINGS"
+      log "Stress findings extracted ($(wc -l < "$STRESS_FINDINGS") lines)"
+    else
+      log "WARNING: Could not extract structured findings (delimiters not found) — using full stress output"
+      cp "$STRESS_FILE" "$STRESS_FINDINGS"
+    fi
+  fi
 fi
 
 # ─── Step 1: Implement ───────────────────────────────────────────────
@@ -156,10 +178,13 @@ PRE_IMPL_SHA=$(cd "$PROJECT_DIR" && git rev-parse HEAD) || {
 
 # Build impl prompt — include stress test notes if they exist
 IMPL_STRESS_CONTEXT=""
-if [[ -f "$STRESS_FILE" ]]; then
+if [[ -f "$STRESS_FINDINGS" ]]; then
   IMPL_STRESS_CONTEXT="
-Read stress-test notes at: $STRESS_FILE
-These are concerns identified before implementation. Be aware of edge cases and precision issues noted there."
+MANDATORY: Read the stress-test findings at: $STRESS_FINDINGS
+These are REQUIREMENTS, not suggestions. For each finding you MUST either:
+1. Implement a fix that addresses the concern, OR
+2. Add a code comment explaining why the concern does not apply to this implementation
+Do not silently ignore any finding. The reviewer will check each one."
 fi
 
 IMPL_EXIT=0
@@ -271,6 +296,20 @@ else
 # Compose dynamic review checklist based on what the diff touches
 compose_review_checks "$DIFF_FILE" "$REVIEW_CHECKS_FILE"
 
+# NOTE: Stress test enforcement is embedded in the review prompt (not the checklist file)
+# because it requires conditional file references ($STRESS_FINDINGS / $STRESS_FILE) that
+# are pipeline-runtime values — the static checklist has no access to these paths.
+
+# Build stress enforcement block — only included when a stress file actually exists
+STRESS_ENFORCEMENT_BLOCK=""
+if [[ -f "$STRESS_FINDINGS" ]] || [[ -f "$STRESS_FILE" ]]; then
+  STRESS_ENFORCEMENT_BLOCK="
+STRESS TEST ENFORCEMENT: If a stress-test findings file exists, read it. For each finding, verify the implementation either:
+(a) addresses the concern in code, or
+(b) has a code comment justifying why it doesn't apply.
+Flag any unaddressed stress-test finding as Important."
+fi
+
 REVIEW_EXIT=0
 REVIEW_OUTPUT=$(cd "$PROJECT_DIR" && run_claude 900 -p "Review the implementation against the plan. Three passes in one session:
 
@@ -284,13 +323,14 @@ PASS 3 — ADVERSARIAL: Read each changed source file in FULL for context — do
 - Race conditions: non-atomic operations, TOCTOU, concurrent state mutations
 - Rollback safety: partial writes without cleanup
 
-SEVERITY FLOORS: Some checks in the modules have minimum severity levels (marked ALWAYS Critical or ALWAYS Important). You MUST NOT downgrade these below the stated floor. Other findings use your judgment.
+SEVERITY FLOORS: Some checks in the modules have minimum severity levels (marked ALWAYS Critical or ALWAYS Important). You MUST NOT downgrade these below the stated floor. Other findings use your judgment.$STRESS_ENFORCEMENT_BLOCK
 
 Categorize all findings as Critical, Important, or Minor. End with verdict: PASS, PASS_WITH_CONCERNS, or FAIL.
 
 Read the plan: $PLAN_FILE
 Read the diff: $DIFF_FILE
-Read the review checklist: $REVIEW_CHECKS_FILE
+Read the review checklist: $REVIEW_CHECKS_FILE$(if [[ -f "$STRESS_FINDINGS" ]]; then echo "
+Read stress-test findings: $STRESS_FINDINGS"; fi)
 Then read each changed source file in full for context." \
   --model opus \
   --max-turns 25 \
@@ -363,11 +403,12 @@ DOMAIN ROUTING: The review checklist contains ALL domain modules. Based on the d
 
 SEVERITY FLOORS: Some checks have minimum severity levels (marked ALWAYS Critical or ALWAYS Important). You MUST NOT downgrade these below the stated floor.
 
-Also check cross-cutting regardless of domain: auth bypass, data loss, race conditions, rollback safety. Read each changed source file in FULL for context — do not review from the diff alone. Categorize any remaining findings as Critical/Important/Minor. Verdict: PASS (all clean), PASS_WITH_CONCERNS (findings remain), or FAIL.
+Also check cross-cutting regardless of domain: auth bypass, data loss, race conditions, rollback safety. Read each changed source file in FULL for context — do not review from the diff alone. Categorize any remaining findings as Critical/Important/Minor. Verdict: PASS (all clean), PASS_WITH_CONCERNS (findings remain), or FAIL.$STRESS_ENFORCEMENT_BLOCK
 
 Read the plan: $PLAN_FILE
 Read the diff: $DIFF_FILE
-Read the review checklist: $REVIEW_CHECKS_FILE
+Read the review checklist: $REVIEW_CHECKS_FILE$(if [[ -f "$STRESS_FINDINGS" ]]; then echo "
+Read stress-test findings: $STRESS_FINDINGS"; fi)
 Then read each changed source file in full for context." \
     --model opus \
     --max-turns 25 \
@@ -388,29 +429,53 @@ log "CODEX REVIEW — $PLAN_NAME"
 DIFF=$(cd "$PROJECT_DIR" && { git diff "$PRE_IMPL_SHA"..HEAD 2>/dev/null || echo ""; } && { git diff --cached 2>/dev/null || echo ""; })
 echo "$DIFF" > "$DIFF_FILE"
 
-CODEX_EXIT=0
-if command -v codex &> /dev/null; then
-  CODEX_OUTPUT=$(cd "$PROJECT_DIR" && codex review "${PRE_IMPL_SHA}..HEAD" 2>&1) || CODEX_EXIT=$?
-else
-  CODEX_OUTPUT=$(cd "$PROJECT_DIR" && run_claude 600 -p "Adversarial review: check this diff for auth bypass, data loss, race conditions, rollback safety, business logic errors.
+# Claude adversarial fallback — shared by all non-Codex paths
+run_claude_adversarial() {
+  run_claude 600 -p "Adversarial review: check this diff for auth bypass, data loss, race conditions, rollback safety, business logic errors.
 
 Read the plan for context: $PLAN_FILE
 Read the diff: $DIFF_FILE" \
     --model opus \
     --max-turns 20 \
-    --output-format text 2>&1) || CODEX_EXIT=$?
+    --allowedTools "Read Glob Grep" \
+    --output-format text 2>&1
+}
+
+CODEX_EXIT=0
+CODEX_OUTPUT=""
+USED_CODEX=false
+
+# Windows: Codex sandbox blocks git on MSYS/Cygwin — skip to Claude fallback
+if [[ "$OSTYPE" == "msys" || "$OSTYPE" == "cygwin" ]] || [[ "$(uname -s)" == MINGW* ]]; then
+  log "Codex sandbox blocks git on Windows — using Claude adversarial"
+elif command -v codex &> /dev/null; then
+  CODEX_OUTPUT=$(cd "$PROJECT_DIR" && codex review "${PRE_IMPL_SHA}..HEAD" 2>&1) || CODEX_EXIT=$?
+  USED_CODEX=true
+fi
+
+# Fallback: Claude adversarial if Codex not used or failed at runtime
+if [[ "$USED_CODEX" != "true" ]]; then
+  CODEX_OUTPUT=$(cd "$PROJECT_DIR" && run_claude_adversarial) || CODEX_EXIT=$?
+elif [[ $CODEX_EXIT -ne 0 ]]; then
+  log "WARNING: Codex review failed (exit $CODEX_EXIT)"
+  log "Codex raw output: $CODEX_OUTPUT"
+  # If output contains actual findings, keep them despite non-zero exit
+  if echo "$CODEX_OUTPUT" | grep -qiE '\[P[012]\]|\bCritical\b|\bImportant\b'; then
+    log "Codex failed but produced findings — keeping findings"
+    CODEX_EXIT=0
+  else
+    log "No findings in Codex output — falling back to Claude adversarial"
+    CODEX_EXIT=0
+    CODEX_OUTPUT=$(cd "$PROJECT_DIR" && run_claude_adversarial) || CODEX_EXIT=$?
+  fi
 fi
 
 log "Codex findings:"
 echo "$CODEX_OUTPUT"
 
 if [[ $CODEX_EXIT -ne 0 ]]; then
-  log "WARNING: Codex review failed (exit $CODEX_EXIT)"
-  log "Codex raw output: $CODEX_OUTPUT"
-  # Only suppress if output looks like an error, not findings
-  if ! echo "$CODEX_OUTPUT" | grep -qiE '\[P[012]\]|\bCritical\b|\bImportant\b'; then
-    CODEX_OUTPUT="Codex review unavailable (exit $CODEX_EXIT). No cross-model findings."
-  fi
+  log "WARNING: Adversarial review failed (exit $CODEX_EXIT)"
+  CODEX_OUTPUT="Adversarial review unavailable (exit $CODEX_EXIT). No cross-model findings."
 fi
 
 log "Codex review complete"
