@@ -52,7 +52,7 @@ iaGO-OS is not a framework, not an SDK, and not a SaaS product. It's a set of fi
                                                                animation
 ```
 
-**Optional addon:** [Memory Stack](#memory-stack-optional) adds persistent cross-session memory via MemPalace (conversation recall) + Graphify (knowledge graphs).
+**Optional addon:** [Memory Architecture](CLAUDE.md) adds persistent cross-session memory via MemPalace (conversation recall) + Graphify (knowledge graphs).
 
 ---
 
@@ -382,7 +382,7 @@ Documents change → nightly rebuild → Graphify re-indexes → wiki updates
 Next session → Claude checks graph first → searches MemPalace for context
 ```
 
-Full architecture, retrieval routing, cross-platform notes, and troubleshooting: **[docs/memory-stack.md](docs/memory-stack.md)**
+Full architecture, retrieval routing, and cross-platform notes: see the **Memory Architecture** section in [CLAUDE.md](CLAUDE.md).
 
 ---
 
@@ -455,7 +455,6 @@ iago-os/
     SETUP.md                  # First-time setup (Windows + macOS)
     ARCHITECTURE.md           # How it works under the hood
     WORKFLOW.md               # Workflow phases explained
-    memory-stack.md           # Memory stack architecture + setup
     pr-review-pipeline.md     # Review pipeline deep-dive
     automations/              # Trigger templates + pipeline specs
     patterns/                 # Industry domain reference docs
@@ -515,7 +514,6 @@ iaGO-OS synthesizes patterns from six open-source Claude Code configurations:
 | [Architecture](docs/ARCHITECTURE.md) | How iaGO-OS works under the hood |
 | [Skills Reference](.claude/rules/available-skills.md) | Full catalog with triggers, arguments, examples |
 | [Workflow](docs/WORKFLOW.md) | Phase flow, state transitions, artifact locations |
-| [Memory Stack](docs/memory-stack.md) | MemPalace + Graphify architecture, setup, troubleshooting |
 | [Review Pipeline](docs/pr-review-pipeline.md) | Pipeline stages, async loop, control flags |
 | [Trigger Templates](docs/automations/trigger-templates.md) | 6 ready-to-use scheduled automations |
 | [n8n Pipeline](n8n/README.md) | Cross-session visual orchestration |

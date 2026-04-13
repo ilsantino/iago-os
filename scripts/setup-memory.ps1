@@ -44,7 +44,7 @@ if (-not $GitBash) {
     Write-Host "  1. pip install mempalace graphifyy python-docx openpyxl"
     Write-Host "  2. Copy templates/memory/*.json to ~/.mempalace/"
     Write-Host "  3. Copy templates/memory/session-diary.py to ~/.claude/scripts/"
-    Write-Host "  4. See docs/memory-stack.md for MCP server + hook registration"
+    Write-Host "  4. See Memory Architecture section in CLAUDE.md for MCP server + hook registration"
     Write-Host ""
     exit 1
 }

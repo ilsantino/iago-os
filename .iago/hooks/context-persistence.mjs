@@ -1,11 +1,11 @@
 // iaGO-OS — Context Persistence hook
 // Events: SessionStart, PreCompact, Stop (dispatched via CLI arg)
-// Manages session snapshots, HANDOFF.json recovery, and cost logging.
+// Manages session snapshots and HANDOFF.json recovery.
 
 import { readInput } from "./lib/stdin.mjs";
 import { isDisabled } from "./lib/flags.mjs";
-import { readTranscript, getTokenUsage, extractDecisions, getFilesModified } from "./lib/transcript.mjs";
-import { readFileSync, writeFileSync, readdirSync, unlinkSync, mkdirSync, existsSync, appendFileSync, statSync } from "fs";
+import { extractDecisions, getFilesModified } from "./lib/transcript.mjs";
+import { readFileSync, writeFileSync, readdirSync, unlinkSync, mkdirSync, existsSync, statSync } from "fs";
 import { join } from "path";
 import { execSync } from "child_process";
 
@@ -16,7 +16,6 @@ const STATE_DIR = join(PROJECT_DIR, ".iago", "state");
 const SESSIONS_DIR = join(STATE_DIR, "sessions");
 const HANDOFF_PATH = join(STATE_DIR, "HANDOFF.json");
 const CLIENT_PATH = join(STATE_DIR, "active-client.json");
-const COSTS_PATH = join(STATE_DIR, "costs.jsonl");
 const MAX_SESSIONS = 10;
 
 function ensureDirs() {
@@ -42,10 +41,6 @@ function getClient() {
   return { client: "internal", project: "unknown" };
 }
 
-function getOperator() {
-  return process.env.USER || process.env.USERNAME || "unknown";
-}
-
 function listSessions() {
   try {
     return readdirSync(SESSIONS_DIR)
@@ -61,7 +56,8 @@ function listSessions() {
 
 function pruneSessions() {
   const sessions = listSessions();
-  for (const s of sessions.slice(MAX_SESSIONS)) {
+  // Keep MAX_SESSIONS - 1 to leave room for the incoming session
+  for (const s of sessions.slice(MAX_SESSIONS - 1)) {
     try { unlinkSync(s.path); } catch { /* ignore */ }
   }
 }
@@ -145,7 +141,6 @@ async function preCompact(input) {
 
   const sessionId = getSessionId(input);
   const clientInfo = getClient();
-  const usage = getTokenUsage();
   const decisions = extractDecisions();
   const filesModified = getFilesModified();
 
@@ -162,10 +157,6 @@ async function preCompact(input) {
     tools_used: {},
     key_decisions: decisions,
     current_task: input.current_task || "",
-    total_tokens: {
-      input: usage.inputTokens,
-      output: usage.outputTokens,
-    },
     last_compaction: new Date().toISOString(),
   };
 
@@ -191,7 +182,6 @@ async function stop(input) {
 
   const sessionId = getSessionId(input);
   const clientInfo = getClient();
-  const usage = getTokenUsage();
   const snapshotPath = join(SESSIONS_DIR, `${sessionId}.json`);
 
   // Update existing snapshot or create new one
@@ -210,36 +200,8 @@ async function stop(input) {
 
   snapshot.end_time = new Date().toISOString();
   snapshot.outcome = "completed";
-  snapshot.total_tokens = {
-    input: usage.inputTokens,
-    output: usage.outputTokens,
-  };
 
   writeFileSync(snapshotPath, JSON.stringify(snapshot, null, 2));
-
-  // Append to costs.jsonl
-  const startTime = snapshot.start_time ? new Date(snapshot.start_time).getTime() : Date.now();
-  const costEntry = {
-    timestamp: snapshot.end_time,
-    session_id: sessionId,
-    client: clientInfo.client || "internal",
-    project: clientInfo.project || "unknown",
-    model: input.model || "unknown",
-    input_tokens: usage.inputTokens,
-    output_tokens: usage.outputTokens,
-    cache_read_tokens: usage.cacheReadTokens,
-    cache_creation_tokens: usage.cacheCreationTokens,
-    session_duration_ms: Date.now() - startTime,
-    compaction_count: snapshot.compaction_count || 0,
-    git_branch: snapshot.git_branch || "unknown",
-    tools_used: snapshot.tools_used || {},
-    files_modified_count: (snapshot.files_modified || []).length,
-    operator: getOperator(),
-  };
-
-  try {
-    appendFileSync(COSTS_PATH, JSON.stringify(costEntry) + "\n");
-  } catch { /* non-fatal */ }
 }
 
 // === Dispatch ===

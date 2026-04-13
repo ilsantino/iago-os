@@ -1,3 +1,7 @@
+> **Status:** SUPERSEDED by `scripts/execute-pipeline.sh`
+> The bash pipeline handles all stages without n8n. This doc is retained
+> as reference for the n8n approach if needed in future.
+
 # iaGO-OS x n8n — Cross-Session Orchestration
 
 ## What This Does

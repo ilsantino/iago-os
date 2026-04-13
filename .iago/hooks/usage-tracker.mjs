@@ -84,6 +84,8 @@ async function postToolUse(input) {
   }
 
   // Track Agent dispatches
+  // Agent type is logged as-is from Claude Code (e.g. "Explore", "general-purpose",
+  // "frontend"). These are valid subagent types — not iaGO profile names.
   if (toolName === "Agent") {
     const agentType = toolInput.subagent_type || "general-purpose";
 

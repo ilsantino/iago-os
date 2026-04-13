@@ -145,7 +145,7 @@ bash scripts/setup-memory.sh --dry-run
 
 **After setup:** Edit `~/.mempalace/wing_config.json` with your client names, then mine existing conversations.
 
-**Full docs:** [docs/memory-stack.md](memory-stack.md)
+**Full docs:** See the **Memory Architecture** section in [CLAUDE.md](../CLAUDE.md).
 
 ## Verification Checklist
 
