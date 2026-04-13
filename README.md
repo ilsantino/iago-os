@@ -118,7 +118,7 @@ Each step is a fresh `claude -p` session — isolated context, no token burn in 
 | Step | Model | What it does |
 |------|-------|-------------|
 | **1. Implement** | Opus | Reads plan file, writes all code. Max 50 turns. |
-| **2. Build gate** | — | `tsc --noEmit && vite build`. Max 2 retries with fix sessions. |
+| **2. Build gate** | — | Compile check — verifies code compiles and bundles before review. Catches type errors, broken imports, missing deps. Max 2 retries with fix sessions. Skipped for config-only repos. |
 | **3. Review** | Opus | Two-pass: plan compliance (every task verified against diff) + adversarial (auth bypass, data loss, race conditions, rollback safety, business logic). Findings fixed in priority order (Critical → Important → Minor). Max 2 fix rounds. |
 | **4. Codex adversarial** | GPT-5.4 / Opus fallback | Cross-model review with plan context. Same adversarial checklist, different model family for coverage. |
 | **4b. Codex fix** | Opus | Fixes all Codex findings (P0 → P1 → P2) + rebuild gate. Skipped if clean. |
