@@ -49,6 +49,7 @@ DIFF_FILE="$PIPELINE_TMP/diff.txt"
 REVIEW_FILE="$PIPELINE_TMP/review.txt"
 CODEX_FILE="$PIPELINE_TMP/codex.txt"
 STRESS_FILE="$PIPELINE_TMP/stress.txt"
+STRESS_FINDINGS="$PIPELINE_TMP/stress-findings.txt"
 REVIEW_CHECKS_FILE="$PIPELINE_TMP/review-checks.md"
 CHECKS_DIR="$SCRIPT_DIR/review-checks"
 
@@ -112,6 +113,14 @@ Check these dimensions:
 Output format:
 - List findings grouped by dimension (skip dimensions with no findings)
 - For each finding: quote the relevant plan text, state the issue, suggest a fix
+- After all findings, emit a structured block with these exact delimiters:
+
+---FINDINGS START---
+1. [finding summary — one line per finding, numbered]
+---FINDINGS END---
+
+This block is machine-parsed. Every finding MUST appear as a numbered line inside the delimiters, even if already described above. If you have no findings, emit the delimiters with no lines between them.
+
 - End with exactly one verdict line:
 
 VERDICT: PROCEED — no significant issues found
@@ -144,6 +153,18 @@ Output the verdict line as plain text — no markdown bold, no backticks, no hea
     log "WARNING: Could not extract stress test verdict — proceeding with caution"
     echo "$STRESS_OUTPUT" > "$STRESS_FILE"
   fi
+
+  # Extract structured findings between delimiters into a separate file
+  if [[ -f "$STRESS_FILE" ]]; then
+    EXTRACTED=$(sed -n '/^---FINDINGS START---$/,/^---FINDINGS END---$/{ /^---FINDINGS/d; p; }' "$STRESS_FILE")
+    if [[ -n "$EXTRACTED" ]]; then
+      echo "$EXTRACTED" > "$STRESS_FINDINGS"
+      log "Stress findings extracted ($(wc -l < "$STRESS_FINDINGS") lines)"
+    else
+      log "WARNING: Could not extract structured findings (delimiters not found) — using full stress output"
+      cp "$STRESS_FILE" "$STRESS_FINDINGS"
+    fi
+  fi
 fi
 
 # ─── Step 1: Implement ───────────────────────────────────────────────
@@ -156,10 +177,20 @@ PRE_IMPL_SHA=$(cd "$PROJECT_DIR" && git rev-parse HEAD) || {
 
 # Build impl prompt — include stress test notes if they exist
 IMPL_STRESS_CONTEXT=""
-if [[ -f "$STRESS_FILE" ]]; then
+if [[ -f "$STRESS_FINDINGS" ]]; then
   IMPL_STRESS_CONTEXT="
-Read stress-test notes at: $STRESS_FILE
-These are concerns identified before implementation. Be aware of edge cases and precision issues noted there."
+MANDATORY: Read the stress-test findings at: $STRESS_FINDINGS
+These are REQUIREMENTS, not suggestions. For each finding you MUST either:
+1. Implement a fix that addresses the concern, OR
+2. Add a code comment explaining why the concern does not apply to this implementation
+Do not silently ignore any finding. The reviewer will check each one."
+elif [[ -f "$STRESS_FILE" ]]; then
+  IMPL_STRESS_CONTEXT="
+MANDATORY: Read the stress-test findings at: $STRESS_FILE
+These are REQUIREMENTS, not suggestions. For each finding you MUST either:
+1. Implement a fix that addresses the concern, OR
+2. Add a code comment explaining why the concern does not apply to this implementation
+Do not silently ignore any finding. The reviewer will check each one."
 fi
 
 IMPL_EXIT=0
@@ -286,11 +317,18 @@ PASS 3 — ADVERSARIAL: Read each changed source file in FULL for context — do
 
 SEVERITY FLOORS: Some checks in the modules have minimum severity levels (marked ALWAYS Critical or ALWAYS Important). You MUST NOT downgrade these below the stated floor. Other findings use your judgment.
 
+STRESS TEST ENFORCEMENT: If a stress-test findings file exists, read it. For each finding, verify the implementation either:
+(a) addresses the concern in code, or
+(b) has a code comment justifying why it doesn't apply.
+Flag any unaddressed stress-test finding as Important.
+
 Categorize all findings as Critical, Important, or Minor. End with verdict: PASS, PASS_WITH_CONCERNS, or FAIL.
 
 Read the plan: $PLAN_FILE
 Read the diff: $DIFF_FILE
-Read the review checklist: $REVIEW_CHECKS_FILE
+Read the review checklist: $REVIEW_CHECKS_FILE$(if [[ -f "$STRESS_FINDINGS" ]]; then echo "
+Read stress-test findings: $STRESS_FINDINGS"; elif [[ -f "$STRESS_FILE" ]]; then echo "
+Read stress-test findings: $STRESS_FILE"; fi)
 Then read each changed source file in full for context." \
   --model opus \
   --max-turns 25 \
