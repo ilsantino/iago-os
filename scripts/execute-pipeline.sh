@@ -185,6 +185,13 @@ These are REQUIREMENTS, not suggestions. For each finding you MUST either:
 1. Implement a fix that addresses the concern, OR
 2. Add a code comment explaining why the concern does not apply to this implementation
 Do not silently ignore any finding. The reviewer will check each one."
+elif [[ -f "$STRESS_FILE" ]]; then
+  IMPL_STRESS_CONTEXT="
+MANDATORY: Read the stress-test findings at: $STRESS_FILE
+These are REQUIREMENTS, not suggestions. For each finding you MUST either:
+1. Implement a fix that addresses the concern, OR
+2. Add a code comment explaining why the concern does not apply to this implementation
+Do not silently ignore any finding. The reviewer will check each one."
 fi
 
 IMPL_EXIT=0
@@ -330,7 +337,8 @@ Categorize all findings as Critical, Important, or Minor. End with verdict: PASS
 Read the plan: $PLAN_FILE
 Read the diff: $DIFF_FILE
 Read the review checklist: $REVIEW_CHECKS_FILE$(if [[ -f "$STRESS_FINDINGS" ]]; then echo "
-Read stress-test findings: $STRESS_FINDINGS"; fi)
+Read stress-test findings: $STRESS_FINDINGS"; elif [[ -f "$STRESS_FILE" ]]; then echo "
+Read stress-test findings: $STRESS_FILE"; fi)
 Then read each changed source file in full for context." \
   --model opus \
   --max-turns 25 \
@@ -408,7 +416,8 @@ Also check cross-cutting regardless of domain: auth bypass, data loss, race cond
 Read the plan: $PLAN_FILE
 Read the diff: $DIFF_FILE
 Read the review checklist: $REVIEW_CHECKS_FILE$(if [[ -f "$STRESS_FINDINGS" ]]; then echo "
-Read stress-test findings: $STRESS_FINDINGS"; fi)
+Read stress-test findings: $STRESS_FINDINGS"; elif [[ -f "$STRESS_FILE" ]]; then echo "
+Read stress-test findings: $STRESS_FILE"; fi)
 Then read each changed source file in full for context." \
     --model opus \
     --max-turns 25 \
