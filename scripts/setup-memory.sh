@@ -356,5 +356,5 @@ echo "       mempalace mine ~/.claude/projects/{dir}/ --mode convos --wing {name
 echo "    4. Run graphify on a document corpus:"
 echo "       $PYTHON_CMD -m graphifyy extract --input ~/path/to/docs --output ~/graphify-out"
 echo ""
-echo "  Docs: docs/memory-stack.md"
+echo "  Docs: See Memory Architecture section in CLAUDE.md"
 echo "────────────────────────────────────────────────────────"
