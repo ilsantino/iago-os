@@ -437,7 +437,7 @@ Read the plan for context: $PLAN_FILE
 Read the diff: $DIFF_FILE" \
     --model opus \
     --max-turns 20 \
-    --allowedTools "Read Glob Grep Bash" \
+    --allowedTools "Read Glob Grep" \
     --output-format text 2>&1
 }
 
