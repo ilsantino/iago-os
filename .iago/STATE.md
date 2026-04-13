@@ -5,26 +5,36 @@
 
 ## Active
 
-| Item | Status | Ref |
-|------|--------|-----|
-| audit-01 pipeline critical fixes | Merged | [#11](https://github.com/ilsantino/iago-os/pull/11) |
-| audit-02 broken refs + dead links | PR created, async review | [#12](https://github.com/ilsantino/iago-os/pull/12) |
-| audit-03 config + CI + docs gaps | PR created, async review | [#13](https://github.com/ilsantino/iago-os/pull/13) |
-| audit-04 stale docs + dead state | PR created, async review | [#14](https://github.com/ilsantino/iago-os/pull/14) |
+None.
+
+## Known Issues
+
+| Issue | Severity | Detail |
+|-------|----------|--------|
+| macOS `timeout` in pipeline | Low | `run_claude()` uses GNU `timeout` — not available on macOS without coreutils. Sebas will hit this. Fix: detect OS, use `gtimeout` or background+sleep fallback. |
 
 ## Recent Decisions
 
 | Date | Decision | Phase |
 |------|----------|-------|
+| 2026-04-12 | Remove lgtm/approved from clean signals, add summary loop guard | audit |
 | 2026-04-07 | Adversarial review → 4x iago:quick runs (not SDD) | hardening |
 | 2026-04-07 | Pipeline build gate: skip when no tsconfig/vite | hardening |
 | 2026-04-07 | PreToolUse hooks fail-closed, PostToolUse stay fail-open | hardening |
 
-## Blockers
+## Completed (v0.1.0 + audit cycle)
 
-None.
+<details><summary>Audit phase (2026-04-12)</summary>
 
-## Completed (v0.1.0 cycle)
+| Date | Mode | Description | Ref |
+|------|------|-------------|-----|
+| 2026-04-12 | execute | audit-01: 8 critical pipeline fixes | [#11](https://github.com/ilsantino/iago-os/pull/11) |
+| 2026-04-12 | execute | audit-02: broken refs, dead links, model claims, pattern renames | [#12](https://github.com/ilsantino/iago-os/pull/12) |
+| 2026-04-12 | execute | audit-03: config conflicts, CI gaps, stress test docs | [#13](https://github.com/ilsantino/iago-os/pull/13) |
+| 2026-04-12 | execute | audit-04: stale docs, dead state, memory-stack cleanup | [#14](https://github.com/ilsantino/iago-os/pull/14) |
+| 2026-04-12 | fast | Fix review-fix loop clean detection | 6128c30 |
+
+</details>
 
 <details><summary>Quick tasks archive (2026-04-07 → 2026-04-10)</summary>
 
@@ -42,6 +52,5 @@ None.
 | 2026-04-09 | — | Memory architecture docs, skill catalog update, tag v0.1.0 | ebe89e6 |
 | 2026-04-10 | — | Graphify 0.3.27 upgrade, wiki generation, nightly rebuild | cd3c275 |
 | 2026-04-10 | quick | Memory stack addon: setup script, templates, docs | [#10](https://github.com/ilsantino/iago-os/pull/10) |
-| 2026-04-12 | quick | audit-01: 8 critical pipeline fixes | [#11](https://github.com/ilsantino/iago-os/pull/11) |
 
 </details>
