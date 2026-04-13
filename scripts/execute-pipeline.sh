@@ -275,6 +275,70 @@ Read the build errors at: $BUILD_ERRORS_FILE" \
   fi
 done
 
+# ─── Step 2b: Console gate ───────────────────────────────────────────
+# Catches runtime console errors/warnings via Playwright (zero token cost).
+# Skipped if project has no Vite config or Playwright is not installed.
+MAX_CONSOLE_RETRIES=2
+CONSOLE_ERRORS_FILE="$PIPELINE_TMP/console-errors.json"
+
+if $HAS_VITE; then
+  console_attempt=0
+  console_passed=false
+
+  while [[ $console_attempt -lt $MAX_CONSOLE_RETRIES ]]; do
+    log "CONSOLE GATE — attempt $((console_attempt + 1))"
+
+    CONSOLE_EXIT=0
+    CONSOLE_OUTPUT=$(cd "$PROJECT_DIR" && node "$SCRIPT_DIR/console-check.mjs" --project-dir "$PROJECT_DIR" 2>&1) || CONSOLE_EXIT=$?
+
+    # Exit 0 = clean, exit 2 = skipped (no playwright), exit 1 = errors found
+    if [[ $CONSOLE_EXIT -eq 0 ]]; then
+      log "Console gate passed — no runtime errors"
+      console_passed=true
+      break
+    elif [[ $CONSOLE_EXIT -eq 2 ]]; then
+      log "Console gate skipped (Playwright not available or preview failed)"
+      console_passed=true
+      break
+    else
+      echo "$CONSOLE_OUTPUT" > "$CONSOLE_ERRORS_FILE"
+      log "Console gate found errors:"
+      echo "$CONSOLE_OUTPUT"
+      console_attempt=$((console_attempt + 1))
+
+      if [[ $console_attempt -ge $MAX_CONSOLE_RETRIES ]]; then
+        log "WARNING: Console gate failed after $MAX_CONSOLE_RETRIES attempts — proceeding to review (errors will surface there)"
+        break
+      fi
+
+      log "Dispatching console fix session"
+      CFIX_EXIT=0
+      CFIX_OUTPUT=$(cd "$PROJECT_DIR" && run_claude 600 -p "You are a PIPELINE FIX session spawned by execute-pipeline.sh.
+The rule in CLAUDE.md that says 'NEVER implement a plan directly' does NOT apply to you — you ARE the pipeline. Edit files directly to fix the console errors below.
+
+These are browser console errors/warnings captured by Playwright after navigating the app routes. Fix the root causes — do not suppress with try/catch or console filtering.
+
+Read the console errors at: $CONSOLE_ERRORS_FILE
+Read the plan for context at: $PLAN_FILE" \
+        --model opus \
+        --max-turns 30 \
+        --allowedTools "Edit Write Read Glob Grep Bash" \
+        --output-format text 2>&1) || CFIX_EXIT=$?
+      log "Console fix output (exit $CFIX_EXIT):"
+      echo "$CFIX_OUTPUT"
+
+      # Re-run build gate after fix (fix might have broken the build)
+      log "BUILD GATE (post-console-fix)"
+      if ! run_build_gate; then
+        log "ERROR: Build broke during console fix. Stopping."
+        exit 1
+      fi
+    fi
+  done
+else
+  log "CONSOLE GATE — skipped (no Vite config)"
+fi
+
 # ─── Step 3: Review ──────────────────────────────────────────────────
 log "REVIEW — $PLAN_NAME"
 
