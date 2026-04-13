@@ -30,4 +30,4 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: bash -n scripts/new-client.sh scripts/sync-skills.sh scripts/usage-report.sh scripts/validate-hooks.sh scripts/validate-skills.sh
+      - run: bash -n scripts/execute-pipeline.sh scripts/new-client.sh scripts/sync-skills.sh scripts/usage-report.sh scripts/validate-hooks.sh scripts/validate-skills.sh
