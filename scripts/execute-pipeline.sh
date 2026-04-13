@@ -436,29 +436,53 @@ log "CODEX REVIEW — $PLAN_NAME"
 DIFF=$(cd "$PROJECT_DIR" && { git diff "$PRE_IMPL_SHA"..HEAD 2>/dev/null || echo ""; } && { git diff --cached 2>/dev/null || echo ""; })
 echo "$DIFF" > "$DIFF_FILE"
 
-CODEX_EXIT=0
-if command -v codex &> /dev/null; then
-  CODEX_OUTPUT=$(cd "$PROJECT_DIR" && codex review "${PRE_IMPL_SHA}..HEAD" 2>&1) || CODEX_EXIT=$?
-else
-  CODEX_OUTPUT=$(cd "$PROJECT_DIR" && run_claude 600 -p "Adversarial review: check this diff for auth bypass, data loss, race conditions, rollback safety, business logic errors.
+# Claude adversarial fallback — shared by all non-Codex paths
+run_claude_adversarial() {
+  run_claude 600 -p "Adversarial review: check this diff for auth bypass, data loss, race conditions, rollback safety, business logic errors.
 
 Read the plan for context: $PLAN_FILE
 Read the diff: $DIFF_FILE" \
     --model opus \
     --max-turns 20 \
-    --output-format text 2>&1) || CODEX_EXIT=$?
+    --allowedTools "Read Glob Grep Bash" \
+    --output-format text 2>&1
+}
+
+CODEX_EXIT=0
+CODEX_OUTPUT=""
+USED_CODEX=false
+
+# Windows: Codex sandbox blocks git on MSYS/Cygwin — skip to Claude fallback
+if [[ "$OSTYPE" == "msys" || "$OSTYPE" == "cygwin" ]] || [[ "$(uname -s)" == MINGW* ]]; then
+  log "Codex sandbox blocks git on Windows — using Claude adversarial"
+elif command -v codex &> /dev/null; then
+  CODEX_OUTPUT=$(cd "$PROJECT_DIR" && codex review "${PRE_IMPL_SHA}..HEAD" 2>&1) || CODEX_EXIT=$?
+  USED_CODEX=true
+fi
+
+# Fallback: Claude adversarial if Codex not used or failed at runtime
+if [[ "$USED_CODEX" != "true" ]]; then
+  CODEX_OUTPUT=$(cd "$PROJECT_DIR" && run_claude_adversarial) || CODEX_EXIT=$?
+elif [[ $CODEX_EXIT -ne 0 ]]; then
+  log "WARNING: Codex review failed (exit $CODEX_EXIT)"
+  log "Codex raw output: $CODEX_OUTPUT"
+  # If output contains actual findings, keep them despite non-zero exit
+  if echo "$CODEX_OUTPUT" | grep -qiE '\[P[012]\]|\bCritical\b|\bImportant\b'; then
+    log "Codex failed but produced findings — keeping findings"
+    CODEX_EXIT=0
+  else
+    log "No findings in Codex output — falling back to Claude adversarial"
+    CODEX_EXIT=0
+    CODEX_OUTPUT=$(cd "$PROJECT_DIR" && run_claude_adversarial) || CODEX_EXIT=$?
+  fi
 fi
 
 log "Codex findings:"
 echo "$CODEX_OUTPUT"
 
 if [[ $CODEX_EXIT -ne 0 ]]; then
-  log "WARNING: Codex review failed (exit $CODEX_EXIT)"
-  log "Codex raw output: $CODEX_OUTPUT"
-  # Only suppress if output looks like an error, not findings
-  if ! echo "$CODEX_OUTPUT" | grep -qiE '\[P[012]\]|\bCritical\b|\bImportant\b'; then
-    CODEX_OUTPUT="Codex review unavailable (exit $CODEX_EXIT). No cross-model findings."
-  fi
+  log "WARNING: Adversarial review failed (exit $CODEX_EXIT)"
+  CODEX_OUTPUT="Adversarial review unavailable (exit $CODEX_EXIT). No cross-model findings."
 fi
 
 log "Codex review complete"
