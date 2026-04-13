@@ -50,7 +50,7 @@ cd ../acme-dashboard && claude
 acme-dashboard/
   .claude/
     settings.json       # Hooks wired and ready
-    skills/             # 33 skill definitions
+    skills/             # 34 skill definitions
     agents/             # 3 bases + 13 capabilities + 12 profiles
     rules/              # 8 behavioral rules
   .iago/
@@ -138,8 +138,15 @@ Decomposes the phase into implementation plans. Each plan has 2-8 tasks. Every t
 
 The heavy lifter. For each plan:
 
+0. **Stress test (stage 0)** — Opus adversarial review of the plan itself (max 15 turns). Checks for precision gaps, edge cases, contradictions, simpler alternatives, and missing acceptance criteria. Outcomes:
+   - **PROCEED** — plan is solid, continue to implementation
+   - **PROCEED_WITH_NOTES** — concerns are forwarded to the implementation session
+   - **BLOCK** — pipeline stops, plan needs revision before execution
+
+   Skipped if the plan already contains a `## Stress Test` section (added by `/iago:plan` or `/iago:stress`).
+
 1. **Profile matching** — selects fullstack/frontend/backend based on file paths
-2. **Model routing** — Opus for implementation, fix, and review. Sonnet for PR creation and Codex fallback. Haiku for @claude tag synthesis
+2. **Model routing** — Opus for implementation, fix, and review. Sonnet for PR creation, Codex fallback, and @claude tag synthesis
 3. **Learnings injection** — injects patterns from previous sessions
 4. **Agent dispatch** — fresh agent per plan, no shared state
 5. **Build gate** — `tsc --noEmit` + `vite build` must pass before review
@@ -664,10 +671,11 @@ When a phase has 3+ plans, running `/iago:execute` normally fills up the context
 /iago:execute phase-1 --pipeline
 ```
 
-Same pipeline (implement → build → review → codex → codex fix → PR), but each step runs in a **separate Claude session**. No context accumulates. You can walk away.
+Same pipeline (stress test → implement → build → review → codex → codex fix → PR), but each step runs in a **separate Claude session**. No context accumulates. You can walk away.
 
 ```
-Step 1: claude -p "implement plan"    → fresh session, full context
+Step 0: claude -p "stress test plan"  → fresh session, adversarial plan review (skipped if already tested)
+Step 1: claude -p "implement plan"    → fresh session, full context + stress-test notes
 Step 2: tsc + vite build              → shell command, no Claude
 Step 3: claude -p "review this diff"  → fresh session, only sees the diff
 Step 4: claude -p "codex review"      → fresh session, adversarial check
