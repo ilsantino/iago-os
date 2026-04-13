@@ -204,7 +204,7 @@ This data feeds into the future iaGO Dashboard (see `docs/IAGO-DASHBOARD.md`) �
 | Pipeline implementation + fix | Opus | All code-writing `claude -p` sessions in the pipeline |
 | Review/analysis profiles (analyst/operator-based) | Sonnet | review-single, review-full, research, infra, schema, content |
 | Pipeline PR creation + Codex fallback | Sonnet | Mechanical git/gh operations, fallback adversarial |
-| Pipeline @claude tag | Haiku | Lightweight review request synthesis |
+| Pipeline @claude tag | Sonnet | Lightweight review request synthesis |
 | Cross-model review | GPT-5.4 (Codex) | Mandatory adversarial review on every plan (falls back to Claude adversarial if Codex CLI unavailable) |
 
-**Agent model routing** is hardcoded per profile in frontmatter (`model: opus` or `model: sonnet`). **Pipeline model routing** is hardcoded in `scripts/execute-pipeline.sh` — opus for all substantive sessions (implement, fix, review), sonnet for mechanical (PR creation, Codex fallback), haiku for tag synthesis. Codex adversarial review uses GPT-5.4 when available; SDD and code-review skills automatically fall back to a Claude adversarial session if the Codex CLI is not installed.
+**Agent model routing** is hardcoded per profile in frontmatter (`model: opus` or `model: sonnet`). **Pipeline model routing** is hardcoded in `scripts/execute-pipeline.sh` — opus for all substantive sessions (implement, fix, review), sonnet for mechanical (PR creation, Codex fallback, @claude tag synthesis). Codex adversarial review uses GPT-5.4 when available; SDD and code-review skills automatically fall back to a Claude adversarial session if the Codex CLI is not installed.
