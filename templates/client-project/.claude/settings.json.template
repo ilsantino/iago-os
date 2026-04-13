@@ -45,15 +45,6 @@
     ],
     "PostToolUse": [
       {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node \"$CLAUDE_PROJECT_DIR/.iago/hooks/context-monitor.mjs\"",
-            "timeout": 2000
-          }
-        ]
-      },
-      {
         "matcher": "Skill|Agent",
         "hooks": [
           {

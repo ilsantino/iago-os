@@ -89,7 +89,7 @@ Async review-fix loop via GitHub Actions: `claude.yml` reviews, `claude-review-f
 
 ## Memory Architecture
 
-Three layers, each with distinct purpose and access pattern:
+Four layers, each with distinct purpose and access pattern:
 
 | Layer | What | Access | Automation |
 |-------|------|--------|------------|
@@ -189,8 +189,7 @@ Pipeline agents excluded — they use plan-spec output format, not caveman.
 ## Model Routing
 
 - **Opus:** Orchestrator + all code-writing sessions (impl, fix, debug)
-- **Sonnet:** PR creation, Codex fallback, mechanical analysis
-- **Haiku:** PR review tag synthesis
+- **Sonnet:** PR creation, @claude tag synthesis, Codex fallback, mechanical analysis
 - **Codex (GPT-5.4):** Cross-model adversarial review, `/codex:rescue`
 
-Pipeline: opus for impl/fix/review. Sonnet for PR creation + Codex fallback. Haiku for @claude tags. Orchestrator uses opus for code-writing agent dispatches. Analyst profiles use sonnet unless security-critical.
+Pipeline: opus for impl/fix/review. Sonnet for PR creation + @claude tags + Codex fallback. Orchestrator uses opus for code-writing agent dispatches. Analyst profiles use sonnet unless security-critical.

@@ -3,7 +3,7 @@
 <div align="center">
 
 <img src="https://img.shields.io/badge/Claude_Code-config_layer-7C3AED?style=for-the-badge&logo=anthropic&logoColor=white" alt="Claude Code">
-<img src="https://img.shields.io/badge/Skills-33-blue?style=for-the-badge" alt="Skills">
+<img src="https://img.shields.io/badge/Skills-34-blue?style=for-the-badge" alt="Skills">
 <img src="https://img.shields.io/badge/Agent_Profiles-12-green?style=for-the-badge" alt="Agent Profiles">
 <img src="https://img.shields.io/badge/Memory_Stack-opt--in-orange?style=for-the-badge" alt="Memory Stack">
 <img src="https://img.shields.io/badge/Platform-Windows_%7C_macOS-lightgrey?style=for-the-badge" alt="Platform">
@@ -35,7 +35,7 @@ iaGO-OS is not a framework, not an SDK, and not a SaaS product. It's a set of fi
 ## What's Inside
 
 ```
- 33 Skills          12 Agent Profiles       8 Hooks            13 Capabilities
+ 34 Skills          12 Agent Profiles       8 Hooks            13 Capabilities
  ─────────          ────────────────        ──────             ───────────────
  Workflow (9)       fullstack               context-persist    react-19
  Setup (6)          frontend                usage-tracker      dynamodb
@@ -123,7 +123,7 @@ Each step is a fresh `claude -p` session — isolated context, no token burn in 
 | **4. Codex adversarial** | GPT-5.4 / Opus fallback | Cross-model review with plan context. Same adversarial checklist, different model family for coverage. |
 | **4b. Codex fix** | Opus | Fixes all Codex findings (P0 → P1 → P2) + rebuild gate. Skipped if clean. |
 | **5. Create PR** | Sonnet | Stages, commits, pushes branch, creates PR via `gh`. |
-| **5b. Tag @claude** | Haiku | Synthesizes review request from pipeline context, posts on PR. Triggers async loop. |
+| **5b. Tag @claude** | Sonnet | Synthesizes review request from pipeline context, posts on PR. Triggers async loop. |
 | **6. Summary** | — | Writes pipeline results to `.iago/summaries/`. |
 
 ```mermaid
@@ -143,7 +143,7 @@ flowchart TD
     CdxFix --> Rebuild[Rebuild gate]
     Rebuild --> PR[5. Create PR — Sonnet]
     Codex -->|clean| PR
-    PR --> Tag[5b. Tag @claude — Haiku]
+    PR --> Tag[5b. Tag @claude — Sonnet]
     Tag --> Summary[6. Summary]
 ```
 
@@ -217,14 +217,13 @@ flowchart TD
 | Model | Role | Used by |
 |-------|------|---------|
 | **Opus** | Planning, implementation, debugging | Orchestrator + executor profiles |
-| **Sonnet** | Analysis, PR creation, research | Analyst/operator profiles, pipeline PR step |
-| **Haiku** | Lightweight mechanical tasks | PR review tagging |
+| **Sonnet** | Analysis, PR creation, @claude tags, research | Analyst/operator profiles, pipeline PR + tagging |
 | **Codex (GPT-5.4)** | Cross-model adversarial review | `/codex:*` skills (falls back to Claude if unavailable) |
 
 ---
 
 <details>
-<summary><h2>Skills (33)</h2></summary>
+<summary><h2>Skills (34)</h2></summary>
 
 Skills are reusable workflows invoked with `/skill-name`. Each one knows what to do, which profiles to dispatch, and what evidence to collect.
 
@@ -291,7 +290,7 @@ Skills are reusable workflows invoked with `/skill-name`. Each one knows what to
 | `/healthcare-phi-compliance` | HIPAA encryption, access controls, audit logging |
 | `/industry-patterns` | 8 domains via `--domain`: logistics, carrier, customs, energy, inventory, production, quality, returns |
 
-Full reference: [docs/SKILLS.md](docs/SKILLS.md)
+Full reference: [.claude/rules/available-skills.md](.claude/rules/available-skills.md)
 
 </details>
 
@@ -429,7 +428,7 @@ GPT-5.4 via Codex CLI for a second opinion from a different model family. Instal
 iago-os/
   .claude/
     settings.json             # Hook wiring
-    skills/                   # 33 skill definitions
+    skills/                   # 34 skill definitions
     agents/                   # 3 bases + 13 capabilities + 12 profiles
     rules/                    # 8 behavioral rules (TDD, debugging, git, etc.)
   .iago/
@@ -455,7 +454,6 @@ iago-os/
     MANUAL.md                 # Complete usage manual
     SETUP.md                  # First-time setup (Windows + macOS)
     ARCHITECTURE.md           # How it works under the hood
-    SKILLS.md                 # Full skill reference catalog
     WORKFLOW.md               # Workflow phases explained
     memory-stack.md           # Memory stack architecture + setup
     pr-review-pipeline.md     # Review pipeline deep-dive
@@ -515,7 +513,7 @@ iaGO-OS synthesizes patterns from six open-source Claude Code configurations:
 | **[Usage Manual](docs/MANUAL.md)** | Complete how-to: workflow walkthrough, every mode, configuration, multi-client |
 | [Setup Guide](docs/SETUP.md) | First-time installation (Windows + macOS) |
 | [Architecture](docs/ARCHITECTURE.md) | How iaGO-OS works under the hood |
-| [Skills Reference](docs/SKILLS.md) | Full catalog with triggers, arguments, examples |
+| [Skills Reference](.claude/rules/available-skills.md) | Full catalog with triggers, arguments, examples |
 | [Workflow](docs/WORKFLOW.md) | Phase flow, state transitions, artifact locations |
 | [Memory Stack](docs/memory-stack.md) | MemPalace + Graphify architecture, setup, troubleshooting |
 | [Review Pipeline](docs/pr-review-pipeline.md) | Pipeline stages, async loop, control flags |
