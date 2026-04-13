@@ -518,12 +518,12 @@ Domain-specific pattern libraries. These provide DynamoDB schemas, API patterns,
 |-------|-----------------|
 | `/healthcare-phi-compliance` | HIPAA-compliant DynamoDB, Cognito, Lambda, SES patterns for PHI |
 | `/industry-patterns --domain logistics` | Shipment lifecycle, route optimization, warehouse operations, carrier APIs |
-| `/industry-patterns --domain carrier-management` | Carrier profiles, rate tables, performance scorecards |
+| `/industry-patterns --domain carrier` | Carrier profiles, rate tables, performance scorecards |
 | `/industry-patterns --domain customs` | Tariff classification, duty calculation, export controls, denied party screening |
 | `/industry-patterns --domain energy` | Meter data ingestion, grid events, energy trading, demand response programs |
 | `/industry-patterns --domain inventory` | Stock tracking, reorder points, multi-location transfers, cycle counting |
-| `/industry-patterns --domain production-scheduling` | Work orders, resource allocation, shift planning, capacity constraints |
-| `/industry-patterns --domain quality-nonconformance` | Inspections, defect classification, CAPA workflows, root cause analysis |
+| `/industry-patterns --domain production` | Work orders, resource allocation, shift planning, capacity constraints |
+| `/industry-patterns --domain quality` | Inspections, defect classification, CAPA workflows, root cause analysis |
 | `/industry-patterns --domain returns` | RMA creation, return shipping, disposition, refund processing |
 
 Full DynamoDB schemas and API pattern reference docs live in `docs/patterns/`.

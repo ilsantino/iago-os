@@ -8,7 +8,7 @@ description: >-
 ## Purpose
 
 Execute plans for a phase via the cross-session pipeline script. Each plan goes
-through: implement → build gate → review → codex adversarial → codex fix → PR. Every step
+through: stress test → implement → build gate → review → codex adversarial → codex fix → PR. Every step
 is a separate `claude -p` session with fresh context — no token burn in the
 orchestrator session.
 
@@ -104,7 +104,7 @@ The script handles the FULL 8-stage pipeline per plan:
 4. **Codex adversarial** — `codex review` or `claude -p` adversarial check
 4b. **Codex fix** — `claude -p` opus fixes all Codex findings, then rebuild (skipped if no findings)
 5. **Create PR** — `claude -p` session stages, commits, pushes, creates PR via `gh`
-5b. **Tag @claude** — haiku synthesizes review request, posts on PR
+5b. **Tag @claude** — sonnet synthesizes review request, posts on PR
 6. **Summary** — write pipeline results to `.iago/summaries/`
 
 After the script completes, the review-fix loop runs async via GitHub Actions

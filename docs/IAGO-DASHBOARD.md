@@ -107,7 +107,7 @@ The JSONL schema is designed to be forward-compatible with DynamoDB items.
 
 ## Entry point when ready
 
-Start with `docs/ARCHITECTURE.md` and `docs/SKILLS.md` in iaGO-OS —
+Start with `docs/ARCHITECTURE.md` and `.claude/rules/available-skills.md` in iaGO-OS —
 the dashboard is a UI layer on top of what's already documented there.
 
 First prompt to Claude Code when starting: read those two docs plus

@@ -69,6 +69,6 @@ Advisory — provides data models, event patterns, and integration strategies.
 - Advisory patterns only — does not create infrastructure
 - DynamoDB single-table design only — no relational modeling
 - Does not integrate with specific carrier APIs — provides webhook patterns
-- Does not cover carrier management — use `/carrier-relationship-management`
-- Does not cover returns — use `/returns-reverse-logistics`
+- Does not cover carrier management — use `/industry-patterns --domain carrier`
+- Does not cover returns — use `/industry-patterns --domain returns`
 - Does not dispatch agents
