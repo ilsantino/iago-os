@@ -1,11 +1,14 @@
 # State — iaGO-OS
 
-> **Phase:** post-audit | **Status:** clean
+> **Phase:** post-audit | **Status:** executing audit-05/06
 > **Tag:** v0.1.0 | **Updated:** 2026-04-12
 
 ## Active
 
-None.
+| Plan | Status | PR |
+|------|--------|----|
+| audit-05: enforce stress findings + pattern checks | PR open, @claude tagged | [#15](https://github.com/ilsantino/iago-os/pull/15) |
+| audit-06: Codex adversarial on Windows + fallback | stacked on #15 | [#15](https://github.com/ilsantino/iago-os/pull/15) |
 
 ## Known Issues
 
