@@ -64,17 +64,20 @@ jobs:
 
             const cleanSignals = [
               'no issues found', 'no issues', 'no findings',
-              'lgtm', 'looks good', 'no concerns', 'approved',
+              'no concerns', 'nothing to flag', 'no actionable findings',
               'all findings resolved', 'all findings addressed',
               'all issues resolved', 'all issues addressed',
-              'nothing to flag', 'no actionable findings',
               'all fixes verified', 'all fixes look correct',
               'all changes look correct', 'everything is addressed',
               'all items addressed', 'no remaining findings',
-              'no remaining issues', 'clean',
+              'no remaining issues',
             ];
-            // Check clean signals OR a PASS verdict without Critical/Important findings
-            const hasCleanSignal = cleanSignals.some(s => latestReview.includes(s));
+            // Removed 'lgtm', 'looks good', 'approved', 'clean' — too broad.
+            // "LGTM with minor notes" falsely triggered clean detection.
+            // Also gate on no active findings (severity labels with numbers/dashes).
+            const hasActiveFinding = /\b(critical|important|minor)\s*[\-—:#\d(]/i.test(latestReview);
+            const hasCleanSignal = cleanSignals.some(s => latestReview.includes(s))
+              && !hasActiveFinding;
             const hasPassVerdict = /verdict[:\s]*\*{0,2}\s*pass\b/i.test(latestReview)
               && !/\*{0,2}critical\*{0,2}\s*:/i.test(latestReview)
               && !/\*{0,2}important\*{0,2}\s*:/i.test(latestReview);
@@ -84,6 +87,17 @@ jobs:
               && !(/\*{0,2}critical\*{0,2}/i.test(latestReview))
               && !(/\*{0,2}important\*{0,2}/i.test(latestReview));
             const isClean = hasCleanSignal || hasPassVerdict || allChecked;
+
+            // Loop guard: if a summary was already posted, don't post another.
+            // Prevents summary→signal→summary infinite loops.
+            const summaryAlreadyPosted = claudeComments.some(c =>
+              c.body.toLowerCase().includes('## review summary')
+            );
+            if (summaryAlreadyPosted && isClean) {
+              core.info('Summary already posted and review is clean — stopping loop');
+              core.setOutput('skip', 'true');
+              return;
+            }
 
             // Also check inline review comments from claude[bot]
             const reviewComments = await github.paginate(github.rest.pulls.listReviewComments, {

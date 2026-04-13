@@ -7,7 +7,10 @@
 
 | Item | Status | Ref |
 |------|--------|-----|
-| audit-01 pipeline critical fixes | PR review passed, ready to merge | [#11](https://github.com/ilsantino/iago-os/pull/11) |
+| audit-01 pipeline critical fixes | Merged | [#11](https://github.com/ilsantino/iago-os/pull/11) |
+| audit-02 broken refs + dead links | PR created, async review | [#12](https://github.com/ilsantino/iago-os/pull/12) |
+| audit-03 config + CI + docs gaps | PR created, async review | [#13](https://github.com/ilsantino/iago-os/pull/13) |
+| audit-04 stale docs + dead state | PR created, async review | [#14](https://github.com/ilsantino/iago-os/pull/14) |
 
 ## Recent Decisions
 
