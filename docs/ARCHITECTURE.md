@@ -33,7 +33,7 @@ iaGO-OS is built in six layers, each building on the one below:
 │  Rules                              │  TDD, debugging, git workflow,
 │  (.claude/rules/)                   │  React/Vite, AWS/Amplify, E2E, MCP
 ├─────────────────────────────────────┤
-│  Skills                             │  33 reusable workflows
+│  Skills                             │  34 reusable workflows
 │  (.claude/skills/)                  │  (init, plan, execute, verify, ...)
 ├─────────────────────────────────────┤
 │  Agents                             │  3 base agents + 13 capability modules + 12 profiles
@@ -204,7 +204,25 @@ This data feeds into the future iaGO Dashboard (see `docs/IAGO-DASHBOARD.md`) �
 | Pipeline implementation + fix | Opus | All code-writing `claude -p` sessions in the pipeline |
 | Review/analysis profiles (analyst/operator-based) | Sonnet | review-single, review-full, research, infra, schema, content |
 | Pipeline PR creation + Codex fallback | Sonnet | Mechanical git/gh operations, fallback adversarial |
-| Pipeline @claude tag | Haiku | Lightweight review request synthesis |
+| Pipeline @claude tag | Sonnet | Context-rich review request synthesis |
 | Cross-model review | GPT-5.4 (Codex) | Mandatory adversarial review on every plan (falls back to Claude adversarial if Codex CLI unavailable) |
 
-**Agent model routing** is hardcoded per profile in frontmatter (`model: opus` or `model: sonnet`). **Pipeline model routing** is hardcoded in `scripts/execute-pipeline.sh` — opus for all substantive sessions (implement, fix, review), sonnet for mechanical (PR creation, Codex fallback), haiku for tag synthesis. Codex adversarial review uses GPT-5.4 when available; SDD and code-review skills automatically fall back to a Claude adversarial session if the Codex CLI is not installed.
+**Agent model routing** is hardcoded per profile in frontmatter (`model: opus` or `model: sonnet`). **Pipeline model routing** is hardcoded in `scripts/execute-pipeline.sh` — opus for all substantive sessions (implement, fix, review, stress test), sonnet for mechanical (PR creation, Codex fallback, tag synthesis). Codex adversarial review uses GPT-5.4 when available; SDD and code-review skills automatically fall back to a Claude adversarial session if the Codex CLI is not installed.
+
+## Execution Pipeline Stages
+
+Each plan passes through these stages in `scripts/execute-pipeline.sh`:
+
+| Stage | Name | Model | Purpose |
+|-------|------|-------|---------|
+| 0 | Stress test | Opus | Adversarial review of the plan itself — checks precision, edge cases, contradictions, simpler alternatives. Skipped if plan has `## Stress Test` section. |
+| 1 | Implement | Opus | Reads plan + stress-test notes, writes code |
+| 2 | Build gate | — | `tsc --noEmit && vite build` (max 2 retries with fix sessions) |
+| 3 | Review | Opus | Three-pass: plan compliance + domain routing + adversarial |
+| 4 | Codex adversarial | GPT-5.4 | Cross-model review targeting auth, data loss, races, rollback |
+| 4b | Codex fix | Opus | Fix all Codex findings (skipped if none) |
+| 5 | Create PR | Sonnet | Stage, commit, push, create PR via `gh` |
+| 5b | Tag @claude | Sonnet | Context-rich review request on the PR |
+| 6 | Summary | — | Write results to `.iago/summaries/` |
+
+Critical/Important findings at stages 3–4 route back for local fixes (max 2 rounds) before PR creation. The async GitHub review-fix loop (stage 5b → `claude.yml` → `claude-review-fix.yml`) is a safety net, not the primary fix path.
