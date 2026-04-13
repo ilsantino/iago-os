@@ -113,7 +113,7 @@ Check these dimensions:
 Output format:
 - List findings grouped by dimension (skip dimensions with no findings)
 - For each finding: quote the relevant plan text, state the issue, suggest a fix
-- After all findings, emit a structured block with these exact delimiters:
+- After all findings, emit a structured block with these exact delimiters (exactly once, at the end of your response):
 
 ---FINDINGS START---
 1. [finding summary — one line per finding, numbered]

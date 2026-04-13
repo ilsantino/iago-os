@@ -5,13 +5,13 @@ For each modified file, identify the established patterns in the existing (unmod
 ### Response validation — ALWAYS Important
 If existing functions in the same file validate API responses (schema checks, null guards, status code checks), new functions MUST validate responses the same way. A new function that skips response validation when siblings validate is a consistency bug, not a style choice.
 
-### Type casting
+### Type casting — ALWAYS Important
 If existing code uses type guards (`is` functions, `instanceof`, discriminated unions) to narrow types, new code in the same file must not use bare `as` casts to bypass the type system. Flag bare `as` casts where a type guard pattern already exists in the file.
 
-### Error handling
+### Error handling — ALWAYS Important
 If existing functions in the file use try/catch with structured error handling (logging, re-throwing typed errors, user-facing messages), new functions must follow the same pattern. A new function that silently ignores errors or uses a different error handling shape is a deviation.
 
-### Naming conventions
+### Naming conventions — ALWAYS Important
 If existing functions, variables, or types in the file follow a naming convention (verb-first for functions, prefixed interfaces, consistent casing), new additions must match. Flag naming deviations with the existing pattern and the deviation.
 
 ### How to report deviations
