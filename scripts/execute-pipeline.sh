@@ -156,7 +156,7 @@ Output the verdict line as plain text — no markdown bold, no backticks, no hea
 
   # Extract structured findings between delimiters into a separate file
   if [[ -f "$STRESS_FILE" ]]; then
-    EXTRACTED=$(sed -n '/^---FINDINGS START---$/,/^---FINDINGS END---$/{ /^---FINDINGS/d; p; }' "$STRESS_FILE")
+    EXTRACTED=$(sed -n '/^[[:space:]]*---FINDINGS START---[[:space:]]*$/,/^[[:space:]]*---FINDINGS END---[[:space:]]*$/{ /---FINDINGS/d; p; }' "$STRESS_FILE")
     if [[ -n "$EXTRACTED" ]]; then
       echo "$EXTRACTED" > "$STRESS_FINDINGS"
       log "Stress findings extracted ($(wc -l < "$STRESS_FINDINGS") lines)"
@@ -302,6 +302,9 @@ else
 # Compose dynamic review checklist based on what the diff touches
 compose_review_checks "$DIFF_FILE" "$REVIEW_CHECKS_FILE"
 
+# NOTE: Stress test enforcement is embedded in the review prompt (not the checklist file)
+# because it requires conditional file references ($STRESS_FINDINGS / $STRESS_FILE) that
+# are pipeline-runtime values — the static checklist has no access to these paths.
 REVIEW_EXIT=0
 REVIEW_OUTPUT=$(cd "$PROJECT_DIR" && run_claude 900 -p "Review the implementation against the plan. Three passes in one session:
 
@@ -403,9 +406,16 @@ SEVERITY FLOORS: Some checks have minimum severity levels (marked ALWAYS Critica
 
 Also check cross-cutting regardless of domain: auth bypass, data loss, race conditions, rollback safety. Read each changed source file in FULL for context — do not review from the diff alone. Categorize any remaining findings as Critical/Important/Minor. Verdict: PASS (all clean), PASS_WITH_CONCERNS (findings remain), or FAIL.
 
+STRESS TEST ENFORCEMENT: If a stress-test findings file exists, read it. For each finding, verify the implementation either:
+(a) addresses the concern in code, or
+(b) has a code comment justifying why it doesn't apply.
+Flag any unaddressed stress-test finding as Important.
+
 Read the plan: $PLAN_FILE
 Read the diff: $DIFF_FILE
-Read the review checklist: $REVIEW_CHECKS_FILE
+Read the review checklist: $REVIEW_CHECKS_FILE$(if [[ -f "$STRESS_FINDINGS" ]]; then echo "
+Read stress-test findings: $STRESS_FINDINGS"; elif [[ -f "$STRESS_FILE" ]]; then echo "
+Read stress-test findings: $STRESS_FILE"; fi)
 Then read each changed source file in full for context." \
     --model opus \
     --max-turns 25 \
