@@ -72,6 +72,20 @@ ls ~/.claude/rules | wc -l                   # Should be 8
 (Get-ChildItem ~/.claude/rules).Count                     # Should be 8
 ```
 
+## GitHub Pipeline (PR Review-Fix Loop)
+
+The iaGO pipeline creates PRs and tags @claude for async review. This requires
+two GitHub secrets on each client repo. **Without this, the review-fix loop
+will not work.**
+
+See **[GITHUB-PIPELINE.md](GITHUB-PIPELINE.md)** for the full step-by-step guide.
+
+Quick version:
+1. Get `CLAUDE_CODE_OAUTH_TOKEN` from [Anthropic Console](https://console.anthropic.com) → Settings → Claude Code
+2. Create `GH_PAT` at [github.com/settings/tokens](https://github.com/settings/tokens?type=beta) (needs `Contents`, `Issues`, `Pull requests` read+write)
+3. Add both as secrets on the repo: `https://github.com/bas-labs/{repo}/settings/secrets/actions`
+4. Workflow files are auto-included by `new-client.sh`. For existing repos, copy from `templates/client-project/.github/workflows/`
+
 ## Scaffold Your First Project
 
 ### macOS / Linux
