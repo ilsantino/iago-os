@@ -28,7 +28,7 @@ This token lets the GitHub Action run Claude Code on your behalf.
 2. Sign in with the account that has your Claude Max or Team subscription
 3. Navigate to **Settings → Claude Code**
 4. Under **OAuth tokens**, click **Create token**
-5. Name it something like `github-actions-bas-labs`
+5. Name it something like `github-actions-"orgname"`
 6. Copy the token — you won't see it again
 
 ### Option B: From Claude Code CLI
