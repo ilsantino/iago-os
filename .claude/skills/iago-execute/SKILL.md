@@ -42,10 +42,14 @@ If no phase-slug provided, read STATE.md for the current active phase.
 
 ### 1. Load plans
 
-Read all `.iago/plans/{NN}-{slug}-*.md` files for the target phase.
-Sort by plan ID (alphabetical — 02a before 02b before 02c).
+Read plan files from the target folder:
+- **Phase plans:** `.iago/plans/{NN}-{slug}/*.md` (e.g., `.iago/plans/01-auth/01-cognito-setup.md`)
+- **Feature plans:** `.iago/plans/feature-{slug}/*.md` (e.g., `.iago/plans/feature-payment/01-stripe.md`)
+- **Legacy flat plans:** `.iago/plans/{NN}-{slug}-*.md` (backwards compatible)
 
-If `--plan` flag is set, filter to only that plan.
+Sort by filename (alphabetical — `01-` before `02-`).
+
+If `--plan` flag is set, filter to only that plan file.
 
 Display the plan list and ask for confirmation:
 ```

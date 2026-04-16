@@ -40,6 +40,7 @@ Stack fixed — no alternatives unless asked.
 ## Workflow
 
 Phases: init → discuss → plan (+ stress) → execute → verify. See `/iago:*` skills.
+Plan modes: `/iago:plan {slug}` (ROADMAP phase) | `/iago:plan --feature "desc"` or `--feature file.md/.pdf` (standalone feature).
 Quick: `/iago:fast` (trivial, ≤3 files) | `/iago:quick` (1-3 tasks, composable flags).
 Artifacts: `.iago/plans/`, `.iago/context/`, `.iago/summaries/`, `.iago/reviews/`.
 STATE.md digest — keep under 80 lines. Overflow to PROJECT.md.
