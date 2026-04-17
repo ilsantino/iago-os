@@ -87,7 +87,7 @@ Every plan goes through these stages in `scripts/execute-pipeline.sh`:
 | `/iago:execute` | Run plans through 8-stage pipeline | Plans exist, ready to implement | No plans yet (run `/iago:plan` first) |
 | `/iago:quick` | Lightweight plan + pipeline, one shot | 1-3 tasks, clear scope, standalone | Part of a ROADMAP phase |
 | `/iago:fast` | Inline fix, build gate only | <=3 file edits, obvious change | Scope unclear or >3 files |
-| `/iago:stress` | Adversarial stress-test on plan(s) | Want to stress-test before execution | Already running `/iago:plan` (it includes stress test) |
+| `/iago:stress` | Adversarial stress-test on plan(s). `--deep` for council-style multi-lens (5 reviewers + peer review) | Want to stress-test before execution | Already running `/iago:plan` (it includes stress test) |
 | `/iago:verify` | Verify completed phase against goals | Phase executed, PRs merged | Plans not executed yet |
 | `/iago:prfix` | Tag @claude on PR for async review-fix | PR exists, needs review | Already tagged (don't double-tag) |
 
@@ -98,6 +98,7 @@ Every plan goes through these stages in `scripts/execute-pipeline.sh`:
 | `/brainstorming` | Socratic exploration, writes spec | Feature idea, no spec yet | Spec already exists (use `/iago:plan --feature path`) |
 | `/writing-plans` | Break spec into tasks (non-pipeline) | Spec exists, want in-session execution | Want pipeline review (use `/iago:plan --feature`) |
 | `/deep-research` | Multi-source research | Need to investigate beyond codebase | Answer is in the codebase (just search) |
+| `/council` | 5-advisor council (Karpathy LLM Council) with peer review + synthesis | Business/strategic decisions with genuine uncertainty | Factual lookups, creation tasks, one-right-answer questions |
 | `/santa-method` | Structured problem decomposition | Complex, ambiguous problem | Requirements already clear |
 | `/code-review` | Dispatch reviewer on completed work | Implementation done, needs review | Still implementing or using pipeline (pipeline reviews automatically) |
 
