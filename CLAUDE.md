@@ -82,7 +82,7 @@ Built into `scripts/execute-pipeline.sh`. Each step = separate `claude -p` sessi
 
 Async review-fix loop via GitHub Actions: `claude.yml` reviews, `claude-review-fix.yml` fixes + re-tags (max 5 rounds). Priority: Critical → Important → Minor. Summary posted when clean.
 
-**Control flags:** `/iago:execute` auto-tags @claude (suppress with `--no-review`). `/iago:quick` skips tagging by default (enable with `--review`). Manual trigger: `/iago:prfix`. Details in `.claude/rules/execution-pipeline.md`.
+**Control flags:** Both `/iago:execute` and `/iago:quick` auto-tag @claude by default (suppress with `--no-review` or `--no-tag` respectively). Manual trigger: `/iago:prfix`. Details in `.claude/rules/execution-pipeline.md`.
 
 **Terminology:** "review" in `/iago:execute` and `/iago:quick` flags means the **GitHub PR workflow** — tagging @claude on the PR to trigger the async review-fix loop via GitHub Actions. It does NOT mean the local multi-step review pipeline (steps 3-4b), which always runs regardless of flags.
 

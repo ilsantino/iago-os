@@ -34,7 +34,7 @@ Optional flags (composable):
 - `--discuss` — run a brief discuss step before planning
 - `--research` — dispatch `research` profile before planning
 - `--verify` — run verification after execution
-- `--review` — tag @claude on PR for async review-fix loop. Default: off (PR created but not auto-reviewed)
+- `--no-tag` — skip @claude tagging on PR (PR created but async review-fix loop not triggered). Default: auto-tag (same as `/iago:execute`)
 
 ## Preconditions
 
@@ -99,15 +99,15 @@ Determine the project directory (repo root or client project dir).
 
 Run:
 ```bash
-# Default (no auto-review):
-bash scripts/execute-pipeline.sh --plan {path} --project-dir {dir} --no-tag
-# With --review:
+# Default (auto-tag, same as /iago:execute):
 bash scripts/execute-pipeline.sh --plan {path} --project-dir {dir}
+# With --no-tag:
+bash scripts/execute-pipeline.sh --plan {path} --project-dir {dir} --no-tag
 ```
 
-By default, quick tasks pass `--no-tag` (no @claude tagging � PR is created but
-the async review-fix loop is not triggered). If `--review` is passed, omit
-`--no-tag` so the full async loop runs automatically.
+By default, quick tasks auto-tag @claude (same behavior as `/iago:execute`).
+If `--no-tag` is passed, the PR is created but the async review-fix loop is
+not triggered.
 
 This runs the full 8-stage pipeline as separate `claude -p` sessions:
 0. **Stress test** — adversarial plan review (skipped if plan has `## Stress Test` section)

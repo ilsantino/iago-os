@@ -77,8 +77,8 @@ scripts/execute-pipeline.sh --plan {path} --project-dir {dir}
 still created � only the async review-fix loop trigger is suppressed.
 
 Default behavior per skill:
-- **`/iago:execute`** � auto-review (tags @claude). Pass `--no-review` to suppress.
-- **`/iago:quick`** � no auto-review (passes `--no-tag`). Pass `--review` to enable.
+- **`/iago:execute`** — auto-review (tags @claude). Pass `--no-review` to suppress.
+- **`/iago:quick`** — auto-review (tags @claude). Pass `--no-tag` to suppress.
 
 Manual trigger: `/iago:prfix` tags @claude on any existing PR to start the
 async loop after the fact.
