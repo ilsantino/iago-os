@@ -85,7 +85,7 @@ compose_review_checks() {
 }
 
 # ─── Step 0: Stress Test ─────────────────────────────────────────────
-# Skip if plan already has a "## Stress Test" section (tested during /iago:plan or /iago:stress)
+# Skip if plan already has a "## Stress Test" section (tested during /iago-plan or /iago-stress)
 if grep -q '## Stress Test' "$PLAN_FILE"; then
   log "STRESS TEST — skipped (plan already stress-tested)"
 else
@@ -189,7 +189,7 @@ fi
 
 IMPL_EXIT=0
 IMPL_OUTPUT=$(cd "$PROJECT_DIR" && run_claude 1800 -p "You are a PIPELINE IMPLEMENTATION session spawned by execute-pipeline.sh.
-The rule in CLAUDE.md that says 'NEVER implement a plan directly' does NOT apply to you — you ARE the pipeline. Your job is to write the code specified in the plan below. Use Edit/Write tools to create and modify files. Do not invoke any /iago: skills. Do not defer to another agent.
+The rule in CLAUDE.md that says 'NEVER implement a plan directly' does NOT apply to you — you ARE the pipeline. Your job is to write the code specified in the plan below. Use Edit/Write tools to create and modify files. Do not invoke any /iago- skills. Do not defer to another agent.
 
 Read the plan file at: $PLAN_FILE${IMPL_STRESS_CONTEXT}
 Execute every task exactly. Create all files specified. End your response with DONE or BLOCKED." \

@@ -39,12 +39,12 @@ Stack fixed — no alternatives unless asked.
 
 ## Workflow
 
-Phases: init → discuss → plan (+ stress) → execute → verify. See `/iago:*` skills.
-Plan modes: `/iago:plan {slug}` (ROADMAP phase) | `/iago:plan --feature "desc"` or `--feature file.md/.pdf` (standalone feature).
-Quick: `/iago:fast` (trivial, ≤3 files) | `/iago:quick` (1-3 tasks, composable flags).
+Phases: init → discuss → plan (+ stress) → execute → verify. See `/iago-*` skills.
+Plan modes: `/iago-plan {slug}` (ROADMAP phase) | `/iago-plan --feature "desc"` or `--feature file.md/.pdf` (standalone feature).
+Quick: `/iago-fast` (trivial, ≤3 files) | `/iago-quick` (1-3 tasks, composable flags).
 Artifacts: `.iago/plans/`, `.iago/context/`, `.iago/summaries/`, `.iago/reviews/`.
 STATE.md digest — keep under 80 lines. Overflow to PROJECT.md.
-Pause: `/iago:pause`. Resume automatic on next session.
+Pause: `/iago-pause`. Resume automatic on next session.
 
 ## Execution Path
 
@@ -52,10 +52,10 @@ Pause: `/iago:pause`. Resume automatic on next session.
 
 | Scope | Skill | Review |
 |-------|-------|--------|
-| ROADMAP phase (1+ plans) | `/iago:execute {slug}` | Full 8-stage pipeline |
-| Standalone plan (1-3 tasks) | `/iago:quick {desc}` | Full 8-stage pipeline |
+| ROADMAP phase (1+ plans) | `/iago-execute {slug}` | Full 8-stage pipeline |
+| Standalone plan (1-3 tasks) | `/iago-quick {desc}` | Full 8-stage pipeline |
 | Multi-task plan (outside ROADMAP) | `/subagent-driven-development` | Full 8-stage pipeline |
-| Trivial fix (≤3 files, obvious) | `/iago:fast {desc}` | Build gate only |
+| Trivial fix (≤3 files, obvious) | `/iago-fast {desc}` | Build gate only |
 
 User says "execute plan X" or "implement this" → invoke matching skill. Not read files. Not create tasks. Invoke skill.
 
@@ -63,8 +63,8 @@ User says "execute plan X" or "implement this" → invoke matching skill. Not re
 
 Both run `scripts/execute-pipeline.sh` with full review pipeline. Difference is scope:
 
-- **`/iago:execute {phase-slug}`** — all plans in ROADMAP phase. Plans exist from `/iago:plan`. Supports wave grouping + parallel dispatch.
-- **`/iago:quick {description}`** — creates lightweight plan on fly (max 3 tasks), runs pipeline on single plan. No ROADMAP needed.
+- **`/iago-execute {phase-slug}`** — all plans in ROADMAP phase. Plans exist from `/iago-plan`. Supports wave grouping + parallel dispatch.
+- **`/iago-quick {description}`** — creates lightweight plan on fly (max 3 tasks), runs pipeline on single plan. No ROADMAP needed.
 
 ## Review Pipeline
 
@@ -82,11 +82,11 @@ Built into `scripts/execute-pipeline.sh`. Each step = separate `claude -p` sessi
 
 Async review-fix loop via GitHub Actions: `claude.yml` reviews, `claude-review-fix.yml` fixes + re-tags (max 5 rounds). Priority: Critical → Important → Minor. Summary posted when clean.
 
-**Control flags:** Both `/iago:execute` and `/iago:quick` auto-tag @claude by default (suppress with `--no-review` or `--no-tag` respectively). Manual trigger: `/iago:prfix`. Details in `.claude/rules/execution-pipeline.md`.
+**Control flags:** Both `/iago-execute` and `/iago-quick` auto-tag @claude by default (suppress with `--no-review` or `--no-tag` respectively). Manual trigger: `/iago-prfix`. Details in `.claude/rules/execution-pipeline.md`.
 
-**Terminology:** "review" in `/iago:execute` and `/iago:quick` flags means the **GitHub PR workflow** — tagging @claude on the PR to trigger the async review-fix loop via GitHub Actions. It does NOT mean the local multi-step review pipeline (steps 3-4b), which always runs regardless of flags.
+**Terminology:** "review" in `/iago-execute` and `/iago-quick` flags means the **GitHub PR workflow** — tagging @claude on the PR to trigger the async review-fix loop via GitHub Actions. It does NOT mean the local multi-step review pipeline (steps 3-4b), which always runs regardless of flags.
 
-**Skip:** Only via `/iago:fast` (build gate only).
+**Skip:** Only via `/iago-fast` (build gate only).
 
 ## Memory Architecture
 
@@ -160,9 +160,9 @@ Detailed rules in `.claude/rules/`:
 ## Skills
 
 Core: `/brainstorming`, `/writing-plans`, `/subagent-driven-development`, `/code-review`, `/deep-research`, `/prompt-optimizer`.
-Workflow: `/iago:init`, `/iago:discuss`, `/iago:plan`, `/iago:stress`, `/iago:execute`, `/iago:verify`, `/iago:fast`, `/iago:quick`, `/iago:pause`.
-Post-review: `/iago:prfix` — fix PR review comments, push, re-review.
-Proprietary: `/iago:scaffold`, `/iago:proposal`, `/iago:onboard`, `/iago:n8n`, `/iago:agents`.
+Workflow: `/iago-init`, `/iago-discuss`, `/iago-plan`, `/iago-stress`, `/iago-execute`, `/iago-verify`, `/iago-fast`, `/iago-quick`, `/iago-pause`.
+Post-review: `/iago-prfix` — fix PR review comments, push, re-review.
+Proprietary: `/iago-scaffold`, `/iago-proposal`, `/iago-onboard`, `/iago-n8n`, `/iago-agents`.
 Full catalog: `.claude/rules/available-skills.md`.
 
 ## Agents

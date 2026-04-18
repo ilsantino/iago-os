@@ -2,7 +2,7 @@
 name: iago-execute
 description: >-
   Use when executing implementation plans for a ROADMAP phase.
-  Not when no plans exist for the phase (run /iago:plan first).
+  Not when no plans exist for the phase (run /iago-plan first).
 ---
 
 ## Purpose
@@ -16,7 +16,7 @@ orchestrator session.
 
 - `.iago/PROJECT.md` must exist.
 - At least one `.iago/plans/{NN}-{slug}-*.md` must exist for the target phase.
-  If not, STOP: "No plans found. Run `/iago:plan {slug}` first."
+  If not, STOP: "No plans found. Run `/iago-plan {slug}` first."
 - `scripts/execute-pipeline.sh` must exist in the iago-os root.
 - When invoking from a client project directory, set `IAGO_OS_ROOT` to the
   iago-os installation path (e.g., `export IAGO_OS_ROOT=~/dev/iago-os`).
@@ -24,17 +24,17 @@ orchestrator session.
 
 ## Arguments
 
-`/iago:execute {phase-slug}` — execute all plans for the phase.
+`/iago-execute {phase-slug}` — execute all plans for the phase.
 
-`/iago:execute {phase-slug} --plan {plan-id}` — execute a single plan only
+`/iago-execute {phase-slug} --plan {plan-id}` — execute a single plan only
 (e.g., `--plan 02b`). Useful for re-running a failed plan.
 
-`/iago:execute {phase-slug} --n8n` — dispatch to n8n webhook instead of local
+`/iago-execute {phase-slug} --n8n` — dispatch to n8n webhook instead of local
 script. Requires `automation.n8n_webhook_url` in `.iago/config.json`.
 
-`/iago:execute {phase-slug} --no-review` — skip @claude tagging after PR
+`/iago-execute {phase-slug} --no-review` — skip @claude tagging after PR
 creation. Local pipeline still runs (build gate, review, codex). You can
-manually trigger the async loop later with `/iago:prfix`.
+manually trigger the async loop later with `/iago-prfix`.
 
 If no phase-slug provided, read STATE.md for the current active phase.
 
@@ -101,7 +101,7 @@ step 5b (@claude tagging) but all local pipeline stages still run.
 if the user wants to do other work, otherwise foreground.
 
 The script handles the FULL 8-stage pipeline per plan:
-0. **Stress test** — adversarial plan review (skipped if plan has `## Stress Test` section from `/iago:plan` or `/iago:stress`)
+0. **Stress test** — adversarial plan review (skipped if plan has `## Stress Test` section from `/iago-plan` or `/iago-stress`)
 1. **Implement** — `claude -p` session reads the plan and writes code
 2. **Build gate** — `tsc --noEmit && vite build` (max 2 retries)
 3. **Review** — `claude -p` session: plan compliance + adversarial (auth, data loss, races, rollback)
@@ -135,7 +135,7 @@ PRs created:
   ...
 
 Next: Review the PRs on GitHub, merge in order, then run
-`/iago:verify {slug}` to verify the phase.
+`/iago-verify {slug}` to verify the phase.
 ```
 
 Update STATE.md:

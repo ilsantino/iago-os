@@ -71,7 +71,7 @@ Toggle the workflow to Active. It is now listening for webhook POSTs at:
 Inside Claude Code:
 
 ```
-/iago:execute phase-1 --n8n
+/iago-execute phase-1 --n8n
 ```
 
 Or trigger manually via curl:
@@ -118,7 +118,7 @@ Fix Build (max 2)         Review (fresh session, only diff + plan)
 
 ## `.iago/config.json` Setup
 
-Add the webhook URL so `/iago:execute --n8n` knows where to POST:
+Add the webhook URL so `/iago-execute --n8n` knows where to POST:
 
 ```json
 {

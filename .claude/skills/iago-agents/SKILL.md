@@ -16,7 +16,7 @@ monitoring, runbooks, and operational concerns.
 
 ## Arguments
 
-`/iago:agents {description}` — what the multi-agent system should accomplish.
+`/iago-agents {description}` — what the multi-agent system should accomplish.
 
 Optional flags:
 - `--pattern {router|pipeline|hierarchical|collaborative}` — orchestration pattern
@@ -142,12 +142,12 @@ Display:
 
 **Customer support triage system:**
 ```
-/iago:agents Customer support system that classifies tickets, drafts responses, escalates complex issues --pattern router
+/iago-agents Customer support system that classifies tickets, drafts responses, escalates complex issues --pattern router
 ```
 
 **Document processing pipeline:**
 ```
-/iago:agents Extract data from uploaded PDFs, validate against DynamoDB records, generate summary report --pattern pipeline
+/iago-agents Extract data from uploaded PDFs, validate against DynamoDB records, generate summary report --pattern pipeline
 ```
 
 ## Boundaries

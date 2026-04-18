@@ -3,7 +3,7 @@ name: iago-schedule
 description: >-
   Use when setting up automated triggers for a project — nightly reviews, usage
   digests, build health monitors. Not when running one-off commands (just run them)
-  or when designing n8n workflows (use /iago:n8n).
+  or when designing n8n workflows (use /iago-n8n).
 ---
 
 ## Purpose
@@ -14,10 +14,10 @@ Install trigger templates or create custom scheduled automations using Claude Co
 
 ## Arguments
 
-- `/iago:schedule {template-name}` — install from template library
-- `/iago:schedule list` — show active triggers
-- `/iago:schedule create "{cron}" "{prompt}"` — create a custom trigger
-- `/iago:schedule remove {trigger-id}` — remove a trigger
+- `/iago-schedule {template-name}` — install from template library
+- `/iago-schedule list` — show active triggers
+- `/iago-schedule create "{cron}" "{prompt}"` — create a custom trigger
+- `/iago-schedule remove {trigger-id}` — remove a trigger
 
 **Available template names:** `nightly-review`, `usage-digest`, `stale-handoff`, `dependency-audit`, `learnings-promotion`, `build-health`
 
@@ -57,7 +57,7 @@ Confirm deletion. If the ID is not found, list active triggers to help the user 
 
 ## Boundaries
 
-- Does **not** design automation workflows (that is `/iago:n8n`)
+- Does **not** design automation workflows (that is `/iago-n8n`)
 - Does **not** execute prompts directly (triggers execute on schedule, not immediately)
 - Does **not** manage n8n, Lambda, or EventBridge schedules — this skill is Claude Code trigger system only
 

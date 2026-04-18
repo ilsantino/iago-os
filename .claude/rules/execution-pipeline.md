@@ -5,23 +5,23 @@ goes through 7 local stages + async GitHub review-fix loop. No shortcuts.
 
 ### How It Works
 
-`/iago:execute {slug}` runs the pipeline script for each plan in the phase.
+`/iago-execute {slug}` runs the pipeline script for each plan in the phase.
 Each step is a fresh Claude session — no context bleed, no token burn in the
 orchestrator.
 
-The only way to skip the pipeline is `/iago:fast` (trivial fixes, ≤3 files).
+The only way to skip the pipeline is `/iago-fast` (trivial fixes, ≤3 files).
 
 ### Rule: Skill Invocation Is Required
 
 When a plan exists that requires code changes:
 
-1. **Invoke `/iago:execute`** — it runs the script. The pipeline is automatic.
+1. **Invoke `/iago-execute`** — it runs the script. The pipeline is automatic.
 2. **Do NOT read the plan and implement it yourself.** That bypasses the pipeline.
-3. **`/iago:fast`** is the only path that skips review.
+3. **`/iago-fast`** is the only path that skips review.
 
 ### Detecting the Violation
 
-If you notice yourself doing any of these WITHOUT having invoked `/iago:execute`:
+If you notice yourself doing any of these WITHOUT having invoked `/iago-execute`:
 - Reading a plan file and decomposing it into tasks
 - Creating TaskCreate items based on a plan
 - Calling Edit/Write on files referenced in a plan
@@ -39,7 +39,7 @@ scripts/execute-pipeline.sh --plan {path} --project-dir {dir}
   |  reads plan + referenced source files + CLAUDE.md
   |  checks: precision, edge cases, contradictions, simpler alternatives, missing acceptance criteria
   |  PROCEED → continue; PROCEED_WITH_NOTES → notes forwarded to impl; BLOCK → pipeline stops
-  |  skipped if plan contains "## Stress Test" section (already tested during /iago:plan or /iago:stress)
+  |  skipped if plan contains "## Stress Test" section (already tested during /iago-plan or /iago-stress)
   v
 1. IMPLEMENT — claude -p reads plan + stress-test notes (if any), writes code (opus, max 50 turns)
   |
@@ -77,10 +77,10 @@ scripts/execute-pipeline.sh --plan {path} --project-dir {dir}
 still created � only the async review-fix loop trigger is suppressed.
 
 Default behavior per skill:
-- **`/iago:execute`** — auto-review (tags @claude). Pass `--no-review` to suppress.
-- **`/iago:quick`** — auto-review (tags @claude). Pass `--no-tag` to suppress.
+- **`/iago-execute`** — auto-review (tags @claude). Pass `--no-review` to suppress.
+- **`/iago-quick`** — auto-review (tags @claude). Pass `--no-tag` to suppress.
 
-Manual trigger: `/iago:prfix` tags @claude on any existing PR to start the
+Manual trigger: `/iago-prfix` tags @claude on any existing PR to start the
 async loop after the fact.
 
 ### Async Review-Fix Loop (GitHub Actions)
@@ -89,7 +89,7 @@ Triggered automatically by step 5b. Runs without a session. Both workflows
 skip merged/closed PRs (`state == open` guard).
 
 ```
-@claude tagged on PR (step 5b or /iago:prfix)
+@claude tagged on PR (step 5b or /iago-prfix)
   │
   ▼
 claude.yml ── Claude Code Action reviews PR
@@ -138,7 +138,7 @@ The orchestrator (main session) does NOT:
 - Dispatch agents for implementation or review
 
 The orchestrator DOES:
-- Invoke `/iago:execute` (which runs the script)
+- Invoke `/iago-execute` (which runs the script)
 - Report results to the user
 - Update STATE.md after completion
 - Escalate if the script fails

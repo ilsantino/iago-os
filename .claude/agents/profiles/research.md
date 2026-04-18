@@ -14,7 +14,7 @@ capabilities: dynamic
 Dispatch this profile when:
 - Task type is research or investigation
 - User invokes `/deep-research`
-- `/iago:onboard --deep` needs codebase analysis
+- `/iago-onboard --deep` needs codebase analysis
 
 ## Dynamic Capability Selection
 

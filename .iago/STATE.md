@@ -24,7 +24,7 @@ No active plans. Audit phase complete.
 |------|----------|-------|
 | 2026-04-13 | Audit phase verified — all 6 plans merged (PRs #11-#15) | audit |
 | 2026-04-12 | Remove lgtm/approved from clean signals, add summary loop guard | audit |
-| 2026-04-07 | Adversarial review → 4x iago:quick runs (not SDD) | hardening |
+| 2026-04-07 | Adversarial review → 4x iago-quick runs (not SDD) | hardening |
 | 2026-04-07 | Pipeline build gate: skip when no tsconfig/vite | hardening |
 | 2026-04-07 | PreToolUse hooks fail-closed, PostToolUse stay fail-open | hardening |
 

@@ -99,4 +99,4 @@ Write-Host ""
 Write-Host "Next steps:" -ForegroundColor Cyan
 Write-Host "  cd $Path"
 Write-Host "  claude  # start Claude Code"
-Write-Host "  /iago:init  # gather vision and set up roadmap"
+Write-Host "  /iago-init  # gather vision and set up roadmap"

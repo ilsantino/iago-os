@@ -68,7 +68,7 @@ acme-dashboard/
 
 ### Verify the Setup
 
-Inside Claude Code, type `/iago:` — you should see autocomplete suggestions. The session-start hook will report "First iaGO session. No prior context."
+Inside Claude Code, type `/iago-` — you should see autocomplete suggestions. The session-start hook will report "First iaGO session. No prior context."
 
 ---
 
@@ -79,7 +79,7 @@ Every project follows five phases. Each phase produces artifacts that feed the n
 ### Phase 1: Init
 
 ```
-> /iago:init
+> /iago-init
 ```
 
 Claude asks 3-5 discovery questions about your project: what you're building, who the client is, constraints, and the first 2-5 phases.
@@ -91,14 +91,14 @@ Claude asks 3-5 discovery questions about your project: what you're building, wh
 - `.iago/config.json` — Review mode, model routing
 
 **Tips:**
-- Be specific about success criteria — `/iago:verify` checks against these literally
-- If onboarding an existing codebase, use `/iago:onboard` first to scan the repo
+- Be specific about success criteria — `/iago-verify` checks against these literally
+- If onboarding an existing codebase, use `/iago-onboard` first to scan the repo
 - Init blocks if PROJECT.md already exists — it's a one-time bootstrap
 
 ### Phase 2: Discuss
 
 ```
-> /iago:discuss phase 1
+> /iago-discuss phase 1
 ```
 
 Claude surfaces 3-5 ambiguities in the phase: decisions that need to be made, unclear requirements, and trade-offs. Records everything as a context artifact.
@@ -107,13 +107,13 @@ Claude surfaces 3-5 ambiguities in the phase: decisions that need to be made, un
 
 **Tips:**
 - This is interactive — Claude asks, you answer, it captures decisions
-- Skip with `--skip-discuss` flag on `/iago:plan` if requirements are already crystal clear
+- Skip with `--skip-discuss` flag on `/iago-plan` if requirements are already crystal clear
 - Deferred items get logged — they don't disappear
 
 ### Phase 3: Plan
 
 ```
-> /iago:plan phase 1
+> /iago-plan phase 1
 ```
 
 Decomposes the phase into implementation plans. Each plan has 2-8 tasks. Every task has a verification command that proves it works.
@@ -133,7 +133,7 @@ Decomposes the phase into implementation plans. Each plan has 2-8 tasks. Every t
 ### Phase 4: Execute
 
 ```
-> /iago:execute phase 1
+> /iago-execute phase 1
 ```
 
 The heavy lifter. For each plan:
@@ -143,7 +143,7 @@ The heavy lifter. For each plan:
    - **PROCEED_WITH_NOTES** — concerns are forwarded to the implementation session
    - **BLOCK** — pipeline stops, plan needs revision before execution
 
-   Skipped if the plan already contains a `## Stress Test` section (added by `/iago:plan` or `/iago:stress`).
+   Skipped if the plan already contains a `## Stress Test` section (added by `/iago-plan` or `/iago-stress`).
 
 1. **Profile matching** — selects fullstack/frontend/backend based on file paths
 2. **Model routing** — Opus for implementation, fix, and review. Sonnet for PR creation, Codex fallback, and @claude tag synthesis
@@ -170,7 +170,7 @@ The heavy lifter. For each plan:
 ### Phase 5: Verify
 
 ```
-> /iago:verify phase 1
+> /iago-verify phase 1
 ```
 
 Goal-backward verification. Reads every success criterion from ROADMAP.md and checks it against evidence:
@@ -192,13 +192,13 @@ If human needed: lists what requires manual testing.
 
 Not every task needs the full pipeline.
 
-### `/iago:quick` — Small Standalone Tasks
+### `/iago-quick` — Small Standalone Tasks
 
 For 1-3 task work that's not part of a ROADMAP phase.
 
 ```
-> /iago:quick Add a loading spinner to the dashboard page
-> /iago:quick --research --verify Fix the DynamoDB query timeout
+> /iago-quick Add a loading spinner to the dashboard page
+> /iago-quick --research --verify Fix the DynamoDB query timeout
 ```
 
 **Flags (composable):**
@@ -208,22 +208,22 @@ For 1-3 task work that's not part of a ROADMAP phase.
 
 **Flow:** lightweight plan → matching profile → review-single → done
 
-### `/iago:fast` — Trivial Fixes
+### `/iago-fast` — Trivial Fixes
 
 For obvious changes to 3 files or fewer. No planning, no agents, no review.
 
 ```
-> /iago:fast Fix the typo in the login button label
-> /iago:fast Update the copyright year in the footer
+> /iago-fast Fix the typo in the login button label
+> /iago-fast Update the copyright year in the footer
 ```
 
 **Flow:** inline edit → atomic commit → STATE.md log
 
-**Redirects to `/iago:quick`** if you try to touch more than 3 files or the scope is unclear.
+**Redirects to `/iago-quick`** if you try to touch more than 3 files or the scope is unclear.
 
-### Post-Review Fixes (`/iago:prfix`)
+### Post-Review Fixes (`/iago-prfix`)
 
-When a PR has review comments that need fixing, `/iago:prfix` dispatches the GitHub Action review-fix loop. See the Code Review Pipeline section for details.
+When a PR has review comments that need fixing, `/iago-prfix` dispatches the GitHub Action review-fix loop. See the Code Review Pipeline section for details.
 
 ---
 
@@ -233,7 +233,7 @@ Every implementation goes through review. The depth depends on the config.
 
 ### Single-Pass Review (`review.mode: "single"`)
 
-Default for `/iago:quick`. The `review-single` profile does one pass checking:
+Default for `/iago-quick`. The `review-single` profile does one pass checking:
 - Security (OWASP + AWS)
 - Correctness (logic errors, missing error handling)
 - Stack compliance (React 19 patterns, DynamoDB conventions, TS strict)
@@ -243,7 +243,7 @@ Findings are categorized: **Critical** (must fix) > **Important** (should fix) >
 
 ### Pipeline Review (via `execute-pipeline.sh`)
 
-Default for `/iago:execute` and `/iago:quick`. The pipeline step 3 review is a single Opus session doing three passes:
+Default for `/iago-execute` and `/iago-quick`. The pipeline step 3 review is a single Opus session doing three passes:
 
 1. **Pass 1 — Plan compliance:** For each task in the plan, verify the diff implements it correctly. Flag missing, incomplete, or incorrect implementations.
 2. **Pass 2 — Domain routing:** All 8 review check modules are loaded (baseline, api, auth, backend, i18n, infra, patterns, react). The reviewer selects which domains are relevant based on the diff and plan, and states which and why.
@@ -271,19 +271,19 @@ Requires the Codex CLI: `npm install -g @openai/codex`. Run `/codex:setup` to ve
 
 ---
 
-### Post-Review: Fixing PR Comments (`/iago:prfix`)
+### Post-Review: Fixing PR Comments (`/iago-prfix`)
 
-After a PR gets review comments — from Claude, Codex, or a human reviewer — use `/iago:prfix` to fix them automatically.
+After a PR gets review comments — from Claude, Codex, or a human reviewer — use `/iago-prfix` to fix them automatically.
 
 ```
-> /iago:prfix              # Fix comments on current branch's PR
-> /iago:prfix 16           # Fix a specific PR by number
-> /iago:prfix --all        # Fix all open PRs with unresolved comments
+> /iago-prfix              # Fix comments on current branch's PR
+> /iago-prfix 16           # Fix a specific PR by number
+> /iago-prfix --all        # Fix all open PRs with unresolved comments
 ```
 
 What happens:
 
-1. `/iago:prfix` tags `@claude` for a review (not fix) on the PR
+1. `/iago-prfix` tags `@claude` for a review (not fix) on the PR
 2. `claude.yml` reviews — reports ONLY actionable findings (no clean-item filler)
 3. `[claude-review-complete]` signal triggers `claude-review-fix.yml`
 4. Fix agent fixes ALL findings in priority order (Critical → Important → Minor), verifies each fix, pushes
@@ -575,7 +575,7 @@ Each hook checks `isDisabled("hookname")` on startup.
 ### Pause and Resume
 
 ```
-> /iago:pause
+> /iago-pause
 ```
 
 Writes `.iago/state/HANDOFF.json` with:
@@ -589,7 +589,7 @@ Writes `.iago/state/HANDOFF.json` with:
 
 ### Recovery Hierarchy
 
-1. **HANDOFF.json** — manual pause via `/iago:pause` (highest precision)
+1. **HANDOFF.json** — manual pause via `/iago-pause` (highest precision)
 2. **Session snapshot** — automatic save on context compression ("what was I doing?")
 3. **Interrupted session detection** — crash recovery from incomplete snapshots
 
@@ -619,12 +619,12 @@ Use RemoteTrigger for anything you want running unattended. Session cron is for 
 Six ready-to-use templates cover the most common recurring tasks:
 
 ```
-> /iago:schedule nightly-review         # 10:43pm weeknights — code review against main
-> /iago:schedule usage-digest           # 9:17am Monday — skill + agent usage summary
-> /iago:schedule stale-handoff          # 8:23am daily — warn if HANDOFF.json > 3 days old
-> /iago:schedule dependency-audit       # 10:41am Saturday — npm audit, critical/high vulns
-> /iago:schedule learnings-promotion    # 9:07am Friday — find patterns qualifying for CLAUDE.md
-> /iago:schedule build-health           # Every 6 hours — tsc + biome check
+> /iago-schedule nightly-review         # 10:43pm weeknights — code review against main
+> /iago-schedule usage-digest           # 9:17am Monday — skill + agent usage summary
+> /iago-schedule stale-handoff          # 8:23am daily — warn if HANDOFF.json > 3 days old
+> /iago-schedule dependency-audit       # 10:41am Saturday — npm audit, critical/high vulns
+> /iago-schedule learnings-promotion    # 9:07am Friday — find patterns qualifying for CLAUDE.md
+> /iago-schedule build-health           # Every 6 hours — tsc + biome check
 ```
 
 The skill reads the template from `docs/automations/trigger-templates.md`, resolves `$PROJECT_DIR` to the current working directory, and calls RemoteTrigger create. If RemoteTrigger auth fails, it falls back to session cron with a 7-day expiry warning.
@@ -632,7 +632,7 @@ The skill reads the template from `docs/automations/trigger-templates.md`, resol
 ### Create a Custom Trigger
 
 ```
-> /iago:schedule create "43 22 * * 1-5" "Run /code-review --against main for today's commits."
+> /iago-schedule create "43 22 * * 1-5" "Run /code-review --against main for today's commits."
 ```
 
 Five-field cron expression (minute hour day month weekday), then the prompt in quotes.
@@ -640,7 +640,7 @@ Five-field cron expression (minute hour day month weekday), then the prompt in q
 ### List Active Triggers
 
 ```
-> /iago:schedule list
+> /iago-schedule list
 ```
 
 Shows trigger IDs, schedules, and first 60 characters of the prompt.
@@ -648,7 +648,7 @@ Shows trigger IDs, schedules, and first 60 characters of the prompt.
 ### Remove a Trigger
 
 ```
-> /iago:schedule remove {trigger-id}
+> /iago-schedule remove {trigger-id}
 ```
 
 Use the ID from `list`. For session cron jobs, this calls CronDelete instead of RemoteTrigger delete.
@@ -659,7 +659,7 @@ Full library with cron expressions, prompt text, and RemoteTrigger API bodies: [
 
 ### RemoteTrigger Auth
 
-Persistent triggers require RemoteTrigger authentication. If `/iago:schedule` reports an auth failure, run `/schedule` setup from the Claude Code command palette or authenticate via Claude Code settings before retrying.
+Persistent triggers require RemoteTrigger authentication. If `/iago-schedule` reports an auth failure, run `/schedule` setup from the Claude Code command palette or authenticate via Claude Code settings before retrying.
 
 ---
 
@@ -667,12 +667,12 @@ Persistent triggers require RemoteTrigger authentication. If `/iago:schedule` re
 
 ### The Problem
 
-When a phase has 3+ plans, running `/iago:execute` normally fills up the context window. The review agent carries all the implementation conversation. Quality drops. You might need to start a new session and re-explain everything.
+When a phase has 3+ plans, running `/iago-execute` normally fills up the context window. The review agent carries all the implementation conversation. Quality drops. You might need to start a new session and re-explain everything.
 
 ### The Solution: `--pipeline`
 
 ```
-/iago:execute phase-1 --pipeline
+/iago-execute phase-1 --pipeline
 ```
 
 Same pipeline (stress test → implement → build → review → codex → codex fix → PR), but each step runs in a **separate Claude session**. No context accumulates. You can walk away.
@@ -700,9 +700,9 @@ You can also just add `--pipeline` yourself anytime.
 
 | Command | When | You need to be there? |
 |---------|------|----------------------|
-| `/iago:execute phase` | 1-2 plans, quick work | Yes — you're watching |
-| `/iago:execute phase --pipeline` | 3+ plans, or you want to leave | No — walk away |
-| `/iago:execute phase --n8n` | Same as pipeline + visual dashboard + Slack | No — plus monitoring |
+| `/iago-execute phase` | 1-2 plans, quick work | Yes — you're watching |
+| `/iago-execute phase --pipeline` | 3+ plans, or you want to leave | No — walk away |
+| `/iago-execute phase --n8n` | Same as pipeline + visual dashboard + Slack | No — plus monitoring |
 
 ### n8n (Optional Upgrade)
 

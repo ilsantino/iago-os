@@ -49,7 +49,7 @@ opening a terminal.
 
 ### 4. Command interface
 
-- Trigger iaGO-OS skills from UI (equivalent to typing /iago:init in terminal)
+- Trigger iaGO-OS skills from UI (equivalent to typing /iago-init in terminal)
 - Works by writing to a watched file that hooks pick up — no separate
   backend required for v1
 

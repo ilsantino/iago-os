@@ -16,13 +16,16 @@ section in the plan file, so the pipeline's step 0 auto-skips — no double work
 ## Arguments
 
 ```
-/iago:stress {plan-path}           — stress-test a single plan
-/iago:stress {phase-slug}          — stress-test all plans in a phase
-/iago:stress {plan-path} --force   — re-stress-test even if section exists
+/iago-stress {plan-path}           — stress-test a single plan
+/iago-stress {phase-slug}          — stress-test all plans in a phase
+/iago-stress {plan-path} --force   — re-stress-test even if section exists
+/iago-stress {plan-path} --deep    — council-style multi-lens stress test (5 reviewers + peer review + synthesis)
 ```
 
 If argument looks like a file path (contains `/` or `.md`), treat as single plan.
 Otherwise, treat as phase slug and glob `.iago/plans/{slug}-*.md`.
+
+`--deep` and `--force` are composable.
 
 ## Steps
 
@@ -32,7 +35,9 @@ Otherwise, treat as phase slug and glob `.iago/plans/{slug}-*.md`.
 - **Phase slug:** Glob `.iago/plans/{NN}-{slug}-*.md`. If no matches, STOP: "No plans found for phase {slug}"
 - For each plan, check if `## Stress Test` section already exists. Skip unless `--force`.
 
-### 2. Stress-test each plan
+### 2. Stress-test each plan (standard mode — default)
+
+If `--deep` is NOT set, use the standard single-pass approach:
 
 For each plan file, dispatch an `analyst` agent (opus) with read-only tools
 (`Read`, `Glob`, `Grep`). The agent reviews the PLAN — not code.
@@ -66,11 +71,104 @@ VERDICT: PROCEED_WITH_NOTES — issues found but implementation can proceed with
 VERDICT: BLOCK — critical flaw that would make implementation fundamentally wrong
 ```
 
+### 2b. Council-style stress test (`--deep` flag)
+
+If `--deep` IS set, run a council-style multi-lens stress test per plan.
+This is the heavy-duty path — 5 independent reviewers + anonymous peer review +
+chairman synthesis. Use for high-stakes plans where being wrong is expensive.
+
+**Phase A — Convene 5 reviewers (parallel)**
+
+Spawn 5 `analyst` agents simultaneously. Each gets the plan file, CLAUDE.md,
+and relevant source files. Each owns ONE lens:
+
+| # | Reviewer | Lens |
+|---|----------|------|
+| 1 | **Security/Auth** | Auth bypass, data exposure, injection, token handling, permission gaps. Assumes attacker perspective. |
+| 2 | **Failure Modes** | Edge cases, race conditions, rollback safety, error paths, cascading failures. What breaks under stress? |
+| 3 | **Simplicity** | YAGNI, over-engineering, unnecessary abstractions, simpler alternatives. Is the plan doing too much? |
+| 4 | **Consumer** | API ergonomics, DX, caller assumptions, unclear interfaces. How would someone consuming this code feel? |
+| 5 | **Feasibility** | Ambiguous instructions, missing details, contradictions with codebase. Can this be built exactly as written? |
+
+Each reviewer prompt:
+
+```
+You are the {Reviewer Name} on a plan stress-test council.
+
+Your lens: {reviewer description}
+
+Review this plan:
+---
+{plan content}
+---
+
+Project context:
+{CLAUDE.md relevant sections}
+
+Source files referenced by the plan:
+{read and include relevant source files}
+
+Analyze the plan ONLY through your assigned lens. Be direct and specific.
+Don't hedge. Quote specific lines from the plan when flagging issues.
+Other reviewers cover the angles you're not covering.
+
+For each finding, assign severity:
+- **BLOCK** — implementation would be fundamentally wrong
+- **IMPORTANT** — significant issue that should be fixed before execution
+- **NOTE** — worth knowing but won't derail implementation
+
+Keep your response between 200-400 words. Findings only, no filler.
+End with: FINDINGS: {count} (B:{blocks} I:{important} N:{notes})
+```
+
+**Phase B — Anonymous peer review (parallel)**
+
+Collect all 5 reviewer responses. Anonymize as Review A-E (randomize mapping).
+Spawn 5 new `analyst` agents. Each sees all 5 anonymized reviews and answers:
+
+1. Which review caught the most critical issue? Why?
+2. Which review has a blind spot — what did it miss within its own lens?
+3. What did ALL reviews miss that could bite the implementation?
+
+Keep under 150 words per peer review.
+
+**Phase C — Chairman synthesis**
+
+One `analyst` agent (opus) gets: plan, all 5 de-anonymized reviews, all 5 peer
+reviews. Produces:
+
+```
+## Deep Stress Test
+
+**Verdict:** {PROCEED | PROCEED_WITH_NOTES | BLOCK}
+**Date:** {YYYY-MM-DD}
+**Mode:** council (5 reviewers + peer review)
+
+### Consensus Findings
+{Issues multiple reviewers flagged independently — highest confidence}
+
+### Contested Findings
+{Disagreements between reviewers — present both sides}
+
+### Blind Spots Caught
+{Issues only surfaced through peer review}
+
+### Consolidated Findings
+{All unique findings, deduplicated, ordered by severity: BLOCK → IMPORTANT → NOTE}
+{For each: severity, source reviewer, description}
+```
+
+The chairman ends with the same verdict format:
+```
+VERDICT: PROCEED | PROCEED_WITH_NOTES | BLOCK
+```
+
 ### 3. Embed results in plan
 
-After each stress test completes, append a `## Stress Test` section to the
-plan file (before `## Verification` if it exists, otherwise at the end):
+After each stress test completes (standard or deep), append a `## Stress Test`
+section to the plan file (before `## Verification` if it exists, otherwise at end).
 
+**Standard mode:**
 ```markdown
 ## Stress Test
 
@@ -79,6 +177,10 @@ plan file (before `## Verification` if it exists, otherwise at the end):
 
 {Agent findings, grouped by dimension. Skip dimensions with no findings.}
 ```
+
+**Deep mode:**
+Use the chairman's full output (Consensus, Contested, Blind Spots, Consolidated).
+The pipeline's step 0 recognizes `## Stress Test` regardless of mode — no double work.
 
 ### 4. Report
 
@@ -92,12 +194,12 @@ Display a summary table:
 ```
 
 For BLOCK verdicts, quote the critical finding and suggest: "Revise the plan
-before running `/iago:execute`."
+before running `/iago-execute`."
 
 For PROCEED_WITH_NOTES, note: "Findings embedded in plan — implementation
 session will see them."
 
-For all PROCEED, suggest: "Plans are clean. Run `/iago:execute {slug}` when ready."
+For all PROCEED, suggest: "Plans are clean. Run `/iago-execute {slug}` when ready."
 
 ## Boundaries
 

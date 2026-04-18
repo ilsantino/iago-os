@@ -120,7 +120,7 @@ Repeat for each repo that needs the review-fix loop.
 
 ## Step 3: Add Workflow Files
 
-If you scaffolded the project with `/iago:scaffold` or `new-client.sh`, the
+If you scaffolded the project with `/iago-scaffold` or `new-client.sh`, the
 workflow files are already there. Otherwise, copy them manually:
 
 ```bash

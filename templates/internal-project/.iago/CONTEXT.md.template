@@ -1,6 +1,6 @@
 # Context — {{PROJECT_NAME}}
 
-Discussion artifacts are produced by `/iago:discuss` and stored in `.iago/context/`.
+Discussion artifacts are produced by `/iago-discuss` and stored in `.iago/context/`.
 
 Each context file follows the naming convention `{NN}-{slug}.md` where NN is the
 two-digit phase number and slug is the kebab-case phase name.

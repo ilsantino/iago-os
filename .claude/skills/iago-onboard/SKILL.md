@@ -3,7 +3,7 @@ name: iago-onboard
 description: >-
   Use when onboarding an existing codebase into the iaGO workflow (scan structure,
   identify patterns, produce architecture map, populate PROJECT.md). Not when
-  starting a new project from scratch (use /iago:scaffold + /iago:init instead).
+  starting a new project from scratch (use /iago-scaffold + /iago-init instead).
 ---
 
 ## Purpose
@@ -14,7 +14,7 @@ full iaGO workflow on a project that wasn't built with it.
 
 ## Arguments
 
-`/iago:onboard` — run in the root of the target codebase.
+`/iago-onboard` — run in the root of the target codebase.
 
 Optional flags:
 - `--deep` — dispatch `research` profile for thorough multi-pass analysis
@@ -23,9 +23,9 @@ Optional flags:
 ## Preconditions
 
 - Must be run in a directory with source code (`package.json`, `src/`, or similar).
-  If empty directory, redirect to `/iago:scaffold`.
+  If empty directory, redirect to `/iago-scaffold`.
 - `.iago/PROJECT.md` must NOT exist (unless `--skip-init`). If it does, STOP and
-  inform: "Already onboarded. Use `/iago:discuss` to plan next steps."
+  inform: "Already onboarded. Use `/iago-discuss` to plan next steps."
 
 ## Steps
 
@@ -107,7 +107,7 @@ Save the full analysis to `.iago/context/00-onboard.md` for future reference.
 ### 6. Identify next steps
 
 Based on the analysis, suggest:
-- If stack matches iaGO default → "Run `/iago:init` to set up phases."
+- If stack matches iaGO default → "Run `/iago-init` to set up phases."
 - If stack differs → list what needs migration and what can stay
 - If significant tech debt → suggest a cleanup phase in the roadmap
 
@@ -124,13 +124,13 @@ Display:
 
 **Standard onboard:**
 ```
-/iago:onboard
+/iago-onboard
 ```
 Scans codebase, writes `.iago/PROJECT.md` and `.iago/context/00-onboard.md`.
 
 **Analysis only (no .iago/ changes):**
 ```
-/iago:onboard --skip-init
+/iago-onboard --skip-init
 ```
 Produces analysis artifact only — useful for evaluating a codebase before committing.
 

@@ -3,7 +3,7 @@ name: subagent-driven-development
 description: >-
   Use when executing a multi-task implementation plan. Supports --pipeline for
   full 8-stage review isolation. Not when task is trivial (single file, <5 min
-  — use /iago:fast instead) or when executing a ROADMAP phase (use /iago:execute
+  — use /iago-fast instead) or when executing a ROADMAP phase (use /iago-execute
   instead).
 ---
 

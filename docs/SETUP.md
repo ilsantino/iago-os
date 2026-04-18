@@ -131,7 +131,7 @@ Claude Code will load the hooks automatically. The session-start hook will repor
 Start with:
 
 ```
-> /iago:init
+> /iago-init
 ```
 
 This begins the interactive discovery process — Claude asks about your project vision, constraints, and phases, then produces the foundation artifacts.
@@ -165,7 +165,7 @@ bash scripts/setup-memory.sh --dry-run
 
 After setup, verify these five things:
 
-1. **Skills are discoverable:** Inside Claude Code, type `/iago:` — you should see autocomplete suggestions for init, plan, execute, etc.
+1. **Skills are discoverable:** Inside Claude Code, type `/iago-` — you should see autocomplete suggestions for init, plan, execute, etc.
 
 2. **Hooks are wired:** Check that `.claude/settings.json` exists in your project and references `.iago/hooks/`.
 

@@ -3,7 +3,7 @@ name: iago-scaffold
 description: >-
   Use when starting a new client project that needs a full project directory with
   the iaGO stack (React 19 + Vite + TS + Tailwind + ShadCN + AWS Amplify Gen 2).
-  Not when bootstrapping .iago/ for an existing codebase (use /iago:onboard instead)
+  Not when bootstrapping .iago/ for an existing codebase (use /iago-onboard instead)
   or when .iago/PROJECT.md already exists.
 ---
 
@@ -11,17 +11,17 @@ description: >-
 
 Scaffold a new client project directory from the iaGO template, configure the
 stack, initialize git, and bootstrap the `.iago/` workflow state — ready for
-`/iago:init` to gather vision and produce the roadmap.
+`/iago-init` to gather vision and produce the roadmap.
 
 ## Preconditions
 
 - Target directory must not already contain a `package.json` or `.iago/PROJECT.md`.
-  If either exists, STOP and suggest `/iago:onboard` or `/iago:init` instead.
+  If either exists, STOP and suggest `/iago-onboard` or `/iago-init` instead.
 - `templates/client-project/` must exist in the iaGO-OS repo.
 
 ## Arguments
 
-`/iago:scaffold {project-name}` — kebab-case project name (e.g., `acme-dashboard`).
+`/iago-scaffold {project-name}` — kebab-case project name (e.g., `acme-dashboard`).
 
 Optional flags:
 - `--dir {path}` — target directory (default: `../{project-name}` relative to iaGO-OS)
@@ -39,7 +39,7 @@ This includes the `.iago/` skeleton with default config, state templates, and ho
 
 Update the template's `package.json`:
 - `name`: `{project-name}`
-- `description`: empty (filled during `/iago:init`)
+- `description`: empty (filled during `/iago-init`)
 - Verify all dependencies match the iaGO stack:
   - React 19, Vite, TypeScript (strict), TailwindCSS 4, ShadCN/UI
   - Vitest, Playwright, Biome
@@ -103,25 +103,25 @@ Display:
 1. Project location (absolute path)
 2. Stack summary (versions of key deps)
 3. What was skipped (if any flags used)
-4. Suggest: "Run `/iago:init` in the new project to set up the roadmap."
+4. Suggest: "Run `/iago-init` in the new project to set up the roadmap."
 
 ## Examples
 
 **New client project:**
 ```
-/iago:scaffold acme-dashboard
+/iago-scaffold acme-dashboard
 ```
 Creates `../acme-dashboard/` with full stack, git initialized, deps installed.
 
 **Frontend-only project:**
 ```
-/iago:scaffold acme-landing --skip-amplify
+/iago-scaffold acme-landing --skip-amplify
 ```
 Same but without `amplify/` directory or AWS dependencies.
 
 ## Boundaries
 
-- Does not gather project vision or create ROADMAP.md — that's `/iago:init`
+- Does not gather project vision or create ROADMAP.md — that's `/iago-init`
 - Does not modify the iaGO-OS repo itself — only creates a new project directory
 - Does not deploy anything — local scaffold only
 - Does not dispatch any agents — orchestrator handles everything inline

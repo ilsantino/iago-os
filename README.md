@@ -75,19 +75,19 @@ cd ../my-app && claude
 Inside Claude Code:
 
 ```
-> /iago:init                    # Discovery → PROJECT.md + ROADMAP.md
-> /iago:discuss phase 1         # Clarify ambiguities → context artifact
-> /iago:plan phase 1            # Decompose → plan files with verify commands
-> /iago:execute phase 1         # Dispatch agents → build → review → PR
-> /iago:verify phase 1          # Goal verification → ship or re-plan
+> /iago-init                    # Discovery → PROJECT.md + ROADMAP.md
+> /iago-discuss phase 1         # Clarify ambiguities → context artifact
+> /iago-plan phase 1            # Decompose → plan files with verify commands
+> /iago-execute phase 1         # Dispatch agents → build → review → PR
+> /iago-verify phase 1          # Goal verification → ship or re-plan
 ```
 
 Bypass modes:
 
 ```
-> /iago:quick Add email validation to the form    # 1-3 tasks, full pipeline
-> /iago:fast Fix the typo in the login button      # Inline, no agents
-> /iago:prfix                                      # Auto-fix PR review comments
+> /iago-quick Add email validation to the form    # 1-3 tasks, full pipeline
+> /iago-fast Fix the typo in the login button      # Inline, no agents
+> /iago-prfix                                      # Auto-fix PR review comments
 ```
 
 See [docs/SETUP.md](docs/SETUP.md) for detailed instructions (Windows + macOS).
@@ -96,7 +96,7 @@ See [docs/SETUP.md](docs/SETUP.md) for detailed instructions (Windows + macOS).
 
 ## Choosing the Right Mode
 
-| | `/iago:execute` | `/iago:quick` | `/iago:fast` | `/iago:prfix` |
+| | `/iago-execute` | `/iago-quick` | `/iago-fast` | `/iago-prfix` |
 |---|---|---|---|---|
 | **Plans** | Uses existing | Creates on-the-fly | None | None |
 | **Pipeline** | Full 8-stage | Full 8-stage | Build gate only | GitHub Action loop |
@@ -109,7 +109,7 @@ See [docs/SETUP.md](docs/SETUP.md) for detailed instructions (Windows + macOS).
 
 ## Review Pipeline
 
-Both `/iago:execute` and `/iago:quick` run `scripts/execute-pipeline.sh`. Every plan goes through 8 stages as separate `claude -p` sessions — no context bleed, no token burn in the orchestrator.
+Both `/iago-execute` and `/iago-quick` run `scripts/execute-pipeline.sh`. Every plan goes through 8 stages as separate `claude -p` sessions — no context bleed, no token burn in the orchestrator.
 
 ### Local Pipeline
 
@@ -154,7 +154,7 @@ flowchart TD
 
 ### Async Review-Fix Loop (GitHub Actions)
 
-Triggered by the @claude tag on the PR (step 5b). Two GitHub Actions workflows handle the loop — no local machine needed. `claude.yml` reviews the PR and posts findings; `claude-review-fix.yml` fixes findings, commits, pushes, and re-tags @claude. Loops until clean or max 5 rounds. `/iago:execute` tags automatically (suppress with `--no-review`); `/iago:quick` skips tagging by default (enable with `--review`). Manual trigger anytime: `/iago:prfix`.
+Triggered by the @claude tag on the PR (step 5b). Two GitHub Actions workflows handle the loop — no local machine needed. `claude.yml` reviews the PR and posts findings; `claude-review-fix.yml` fixes findings, commits, pushes, and re-tags @claude. Loops until clean or max 5 rounds. `/iago-execute` tags automatically (suppress with `--no-review`); `/iago-quick` skips tagging by default (enable with `--review`). Manual trigger anytime: `/iago-prfix`.
 
 ```mermaid
 flowchart TD
@@ -236,26 +236,26 @@ Skills are reusable workflows invoked with `/skill-name`. Each one knows what to
 
 | Skill | What it does | Dispatches |
 |-------|-------------|------------|
-| `/iago:init` | Interactive discovery → PROJECT.md, ROADMAP.md, STATE.md | `research` (optional) |
-| `/iago:discuss` | Surfaces ambiguities in a phase, records decisions | None (interactive) |
-| `/iago:plan` | Decomposes phase into plans with verify commands | `research` (optional) |
-| `/iago:execute` | Full pipeline: agent dispatch → build → review → PR | Profile + review + Codex |
-| `/iago:verify` | Goal-backward verification, opens PR if passed | None |
-| `/iago:quick` | One-shot: plan + full pipeline. Flags: `--discuss`, `--research`, `--verify` | Pipeline (same as execute) |
-| `/iago:fast` | Inline edit + atomic commit. No agents, no review | None |
-| `/iago:prfix` | Fixes PR review comments, pushes, re-tags for re-review | Matching profile per fix |
-| `/iago:pause` | Writes HANDOFF.json for session resume | None |
+| `/iago-init` | Interactive discovery → PROJECT.md, ROADMAP.md, STATE.md | `research` (optional) |
+| `/iago-discuss` | Surfaces ambiguities in a phase, records decisions | None (interactive) |
+| `/iago-plan` | Decomposes phase into plans with verify commands | `research` (optional) |
+| `/iago-execute` | Full pipeline: agent dispatch → build → review → PR | Profile + review + Codex |
+| `/iago-verify` | Goal-backward verification, opens PR if passed | None |
+| `/iago-quick` | One-shot: plan + full pipeline. Flags: `--discuss`, `--research`, `--verify` | Pipeline (same as execute) |
+| `/iago-fast` | Inline edit + atomic commit. No agents, no review | None |
+| `/iago-prfix` | Fixes PR review comments, pushes, re-tags for re-review | Matching profile per fix |
+| `/iago-pause` | Writes HANDOFF.json for session resume | None |
 
 ### Workflow — Project Setup
 
 | Skill | What it does |
 |-------|-------------|
-| `/iago:scaffold` | New project from iaGO template (React 19 + Vite + TS + Tailwind + ShadCN + Amplify Gen 2) |
-| `/iago:proposal` | Client proposal: scope, timeline, cost, tech approach |
-| `/iago:onboard` | Scan existing codebase → architecture map → PROJECT.md |
-| `/iago:n8n` | Design n8n automation workflow specs |
-| `/iago:agents` | Design multi-agent architectures (Claude SDK + LangGraph) |
-| `/iago:schedule` | Install recurring automation triggers from templates |
+| `/iago-scaffold` | New project from iaGO template (React 19 + Vite + TS + Tailwind + ShadCN + Amplify Gen 2) |
+| `/iago-proposal` | Client proposal: scope, timeline, cost, tech approach |
+| `/iago-onboard` | Scan existing codebase → architecture map → PROJECT.md |
+| `/iago-n8n` | Design n8n automation workflow specs |
+| `/iago-agents` | Design multi-agent architectures (Claude SDK + LangGraph) |
+| `/iago-schedule` | Install recurring automation triggers from templates |
 
 ### Core — Design, Plan, Build, Review, Research
 
@@ -330,7 +330,7 @@ Automatic behaviors wired in `.claude/settings.json`. Fire on Claude Code lifecy
 
 | Hook | Fires on | What it does |
 |------|----------|-------------|
-| `context-persistence` | Session start, pre-compact, stop | Saves/restores session state. Loads HANDOFF.json from `/iago:pause` |
+| `context-persistence` | Session start, pre-compact, stop | Saves/restores session state. Loads HANDOFF.json from `/iago-pause` |
 | `usage-tracker` | After skill/agent use, stop | Logs invocations to `.iago/state/usage-log.jsonl` |
 
 ### Safety & Quality

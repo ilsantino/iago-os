@@ -1,10 +1,10 @@
 ---
 name: iago-plan
 description: >-
-  Use when creating implementation plans. Two modes: (1) /iago:plan {phase-slug}
-  for ROADMAP phases, (2) /iago:plan --feature "description" or --feature path/to/file
+  Use when creating implementation plans. Two modes: (1) /iago-plan {phase-slug}
+  for ROADMAP phases, (2) /iago-plan --feature "description" or --feature path/to/file
   for standalone features from a prompt, spec, PDF, or markdown file. Not when task
-  is trivial (use /iago:fast) or 1-3 tasks max (use /iago:quick).
+  is trivial (use /iago-fast) or 1-3 tasks max (use /iago-quick).
 ---
 
 ## Purpose
@@ -20,16 +20,16 @@ Works in two modes:
 
 ### Phase mode (default)
 
-`/iago:plan {phase-slug}`
+`/iago-plan {phase-slug}`
 
 Plans a phase from ROADMAP.md. Requires `.iago/PROJECT.md` and `.iago/ROADMAP.md`.
 If no slug provided, suggests the next `pending` or `active` phase from ROADMAP.md.
 
 ### Feature mode
 
-`/iago:plan --feature "add user dashboard with role-based views"`
-`/iago:plan --feature docs/specs/auth-flow.md`
-`/iago:plan --feature path/to/client-requirements.pdf`
+`/iago-plan --feature "add user dashboard with role-based views"`
+`/iago-plan --feature docs/specs/auth-flow.md`
+`/iago-plan --feature path/to/client-requirements.pdf`
 
 Plans a standalone feature. Input is either:
 - **Inline prompt** — a quoted description of what to build
@@ -40,10 +40,10 @@ No ROADMAP.md required. Uses CLAUDE.md + PROJECT.md (if exists) for context.
 ## Preconditions
 
 **Phase mode:**
-- `.iago/PROJECT.md` must exist. If not, STOP: "Run `/iago:init` first."
+- `.iago/PROJECT.md` must exist. If not, STOP: "Run `/iago-init` first."
 - `.iago/ROADMAP.md` must exist and contain the target phase.
 - `.iago/context/{NN}-{slug}.md` should exist (soft gate). If missing, warn:
-  "No context artifact for this phase. Run `/iago:discuss {slug}` first, or continue without it."
+  "No context artifact for this phase. Run `/iago-discuss {slug}` first, or continue without it."
 
 **Feature mode:**
 - `.iago/PROJECT.md` should exist (soft gate). If missing, use CLAUDE.md as context.
@@ -54,9 +54,9 @@ No ROADMAP.md required. Uses CLAUDE.md + PROJECT.md (if exists) for context.
 
 ## Arguments
 
-`/iago:plan {phase-slug}` — phase mode
-`/iago:plan --feature "description"` — feature mode with inline prompt
-`/iago:plan --feature path/to/file` — feature mode with file input
+`/iago-plan {phase-slug}` — phase mode
+`/iago-plan --feature "description"` — feature mode with inline prompt
+`/iago-plan --feature path/to/file` — feature mode with file input
 
 Optional flags (all modes):
 - `--research` — dispatch `research` profile to investigate codebase before planning
@@ -226,7 +226,7 @@ After each stress test, append a `## Stress Test` section to the plan file
 ```
 
 If verdict is BLOCK: warn the user, but still write the plan. User decides
-whether to revise before `/iago:execute`. The pipeline's step 0 will see the
+whether to revise before `/iago-execute`. The pipeline's step 0 will see the
 section and skip re-testing.
 
 ### 8. Update STATE.md
@@ -249,8 +249,8 @@ After completion, display:
 2. Task count per plan
 3. Any concerns from self-review
 4. Stress-test verdicts per plan (unless `--no-stress`)
-5. **Phase mode:** "Run `/iago:execute {phase-slug}` to begin implementation."
-6. **Feature mode:** "Run `/iago:execute feature-{slug}` to begin implementation."
+5. **Phase mode:** "Run `/iago-execute {phase-slug}` to begin implementation."
+6. **Feature mode:** "Run `/iago-execute feature-{slug}` to begin implementation."
 
 ## Boundaries
 

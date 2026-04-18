@@ -2,7 +2,7 @@
 name: iago-verify
 description: >-
   Use when verifying a completed ROADMAP phase against its goals and success criteria.
-  Not when plan summaries don't exist for the phase (run /iago:execute first).
+  Not when plan summaries don't exist for the phase (run /iago-execute first).
 ---
 
 ## Purpose
@@ -16,11 +16,11 @@ Produce a verification report. If passed, create a PR and advance to the next ph
 - `.iago/ROADMAP.md` must exist with the target phase.
 - Plans for the phase must have been executed. Check for evidence in any of:
   `.iago/summaries/`, `.iago/reviews/`, git log (PRs/commits for the phase branch).
-  If no evidence exists for any plan, STOP: "Not all plans have been executed. Run `/iago:execute {slug}` first."
+  If no evidence exists for any plan, STOP: "Not all plans have been executed. Run `/iago-execute {slug}` first."
 
 ## Arguments
 
-`/iago:verify {phase-slug}`
+`/iago-verify {phase-slug}`
 
 If no phase-slug provided, read STATE.md for the current phase (should be status `executed`).
 
@@ -132,7 +132,7 @@ verified: {YYYY-MM-DD}
 
 - Phase status → `verified` (if passed) or `verifying` (if gaps/human needed)
 - Log verdict as a decision entry
-- If passed: suggest "Next phase: `{next-pending-slug}`. Run `/iago:discuss {slug}` to begin."
+- If passed: suggest "Next phase: `{next-pending-slug}`. Run `/iago-discuss {slug}` to begin."
 
 ## Output
 

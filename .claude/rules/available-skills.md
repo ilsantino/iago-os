@@ -7,27 +7,27 @@ description: >-
 
 | I want to... | Run this | Example |
 |---|---|---|
-| **Build a feature** (have requirements) | `/iago:plan --feature` | `/iago:plan --feature "add user dashboard with role-based views"` |
-| **Build from a doc** (PDF, MD, spec) | `/iago:plan --feature path` | `/iago:plan --feature docs/specs/auth-flow.md` |
-| **Execute existing plans** | `/iago:execute` | `/iago:execute 01-auth` or `/iago:execute feature-payment` |
-| **Small fix** (1-3 tasks, clear scope) | `/iago:quick` | `/iago:quick "fix login redirect after signup"` |
-| **Trivial fix** (<=3 files, obvious) | `/iago:fast` | `/iago:fast "update API base URL env var"` |
+| **Build a feature** (have requirements) | `/iago-plan --feature` | `/iago-plan --feature "add user dashboard with role-based views"` |
+| **Build from a doc** (PDF, MD, spec) | `/iago-plan --feature path` | `/iago-plan --feature docs/specs/auth-flow.md` |
+| **Execute existing plans** | `/iago-execute` | `/iago-execute 01-auth` or `/iago-execute feature-payment` |
+| **Small fix** (1-3 tasks, clear scope) | `/iago-quick` | `/iago-quick "fix login redirect after signup"` |
+| **Trivial fix** (<=3 files, obvious) | `/iago-fast` | `/iago-fast "update API base URL env var"` |
 | **Explore a feature idea** (no spec yet) | `/brainstorming` | `/brainstorming user-dashboard` |
 | **Research something** | `/deep-research` | `/deep-research "DynamoDB TTL patterns"` |
-| **Fix PR review comments** | `/iago:prfix` | `/iago:prfix` |
+| **Fix PR review comments** | `/iago-prfix` | `/iago-prfix` |
 | **Debug a stuck issue** | `/codex:rescue` | `/codex:rescue "auth middleware fails on refresh"` |
-| **Start a new client project** | `/iago:scaffold` then `/iago:init` | `/iago:scaffold client-name` |
-| **Onboard existing codebase** | `/iago:onboard` | `/iago:onboard` |
+| **Start a new client project** | `/iago-scaffold` then `/iago-init` | `/iago-scaffold client-name` |
+| **Onboard existing codebase** | `/iago-onboard` | `/iago-onboard` |
 
 ## Size Your Task
 
 Not sure which skill? Use task size:
 
 ```
-Trivial (<=3 files, obvious)     → /iago:fast
-Small (1-3 tasks, clear scope)   → /iago:quick
-Medium (4-8 tasks, one feature)  → /iago:plan --feature → /iago:execute
-Large (multi-feature, phased)    → /iago:init → /iago:plan → /iago:execute
+Trivial (<=3 files, obvious)     → /iago-fast
+Small (1-3 tasks, clear scope)   → /iago-quick
+Medium (4-8 tasks, one feature)  → /iago-plan --feature → /iago-execute
+Large (multi-feature, phased)    → /iago-init → /iago-plan → /iago-execute
 ```
 
 ## Delivery Pipeline (the full workflow)
@@ -35,24 +35,24 @@ Large (multi-feature, phased)    → /iago:init → /iago:plan → /iago:execute
 For large, phased projects with a ROADMAP:
 
 ```
-/iago:init          Create .iago/, PROJECT.md, ROADMAP.md, STATE.md
+/iago-init          Create .iago/, PROJECT.md, ROADMAP.md, STATE.md
        |
-/iago:discuss       Clarify gray areas for a phase (interactive Q&A)
+/iago-discuss       Clarify gray areas for a phase (interactive Q&A)
        |
-/iago:plan          Break phase into plans with tasks + stress test
+/iago-plan          Break phase into plans with tasks + stress test
        |
-/iago:execute       Run plans through 8-stage pipeline (implement → build → review → PR)
+/iago-execute       Run plans through 8-stage pipeline (implement → build → review → PR)
        |
-/iago:verify        Verify phase against success criteria
+/iago-verify        Verify phase against success criteria
 ```
 
 For standalone features (no ROADMAP needed):
 
 ```
-/iago:plan --feature "description"     Plan from a prompt
-/iago:plan --feature path/to/file      Plan from a PDF, MD, or spec file
+/iago-plan --feature "description"     Plan from a prompt
+/iago-plan --feature path/to/file      Plan from a PDF, MD, or spec file
        |
-/iago:execute feature-{slug}           Run through pipeline
+/iago-execute feature-{slug}           Run through pipeline
 ```
 
 Flags that work across the pipeline:
@@ -83,20 +83,20 @@ Every plan goes through these stages in `scripts/execute-pipeline.sh`:
 
 | Skill | What | When to use | When NOT to use |
 |-------|------|-------------|-----------------|
-| `/iago:plan` | Create implementation plans (2-8 tasks each) | Have requirements and need a plan | Trivial fix (use `/iago:fast`) or 1-3 tasks (use `/iago:quick`) |
-| `/iago:execute` | Run plans through 8-stage pipeline | Plans exist, ready to implement | No plans yet (run `/iago:plan` first) |
-| `/iago:quick` | Lightweight plan + pipeline, one shot | 1-3 tasks, clear scope, standalone | Part of a ROADMAP phase |
-| `/iago:fast` | Inline fix, build gate only | <=3 file edits, obvious change | Scope unclear or >3 files |
-| `/iago:stress` | Adversarial stress-test on plan(s). `--deep` for council-style multi-lens (5 reviewers + peer review) | Want to stress-test before execution | Already running `/iago:plan` (it includes stress test) |
-| `/iago:verify` | Verify completed phase against goals | Phase executed, PRs merged | Plans not executed yet |
-| `/iago:prfix` | Tag @claude on PR for async review-fix | PR exists, needs review | Already tagged (don't double-tag) |
+| `/iago-plan` | Create implementation plans (2-8 tasks each) | Have requirements and need a plan | Trivial fix (use `/iago-fast`) or 1-3 tasks (use `/iago-quick`) |
+| `/iago-execute` | Run plans through 8-stage pipeline | Plans exist, ready to implement | No plans yet (run `/iago-plan` first) |
+| `/iago-quick` | Lightweight plan + pipeline, one shot | 1-3 tasks, clear scope, standalone | Part of a ROADMAP phase |
+| `/iago-fast` | Inline fix, build gate only | <=3 file edits, obvious change | Scope unclear or >3 files |
+| `/iago-stress` | Adversarial stress-test on plan(s). `--deep` for council-style multi-lens (5 reviewers + peer review) | Want to stress-test before execution | Already running `/iago-plan` (it includes stress test) |
+| `/iago-verify` | Verify completed phase against goals | Phase executed, PRs merged | Plans not executed yet |
+| `/iago-prfix` | Tag @claude on PR for async review-fix | PR exists, needs review | Already tagged (don't double-tag) |
 
 ### Design and Research
 
 | Skill | What | When to use | When NOT to use |
 |-------|------|-------------|-----------------|
-| `/brainstorming` | Socratic exploration, writes spec | Feature idea, no spec yet | Spec already exists (use `/iago:plan --feature path`) |
-| `/writing-plans` | Break spec into tasks (non-pipeline) | Spec exists, want in-session execution | Want pipeline review (use `/iago:plan --feature`) |
+| `/brainstorming` | Socratic exploration, writes spec | Feature idea, no spec yet | Spec already exists (use `/iago-plan --feature path`) |
+| `/writing-plans` | Break spec into tasks (non-pipeline) | Spec exists, want in-session execution | Want pipeline review (use `/iago-plan --feature`) |
 | `/deep-research` | Multi-source research | Need to investigate beyond codebase | Answer is in the codebase (just search) |
 | `/council` | 5-advisor council (Karpathy LLM Council) with peer review + synthesis | Business/strategic decisions with genuine uncertainty | Factual lookups, creation tasks, one-right-answer questions |
 | `/santa-method` | Structured problem decomposition | Complex, ambiguous problem | Requirements already clear |
@@ -106,11 +106,11 @@ Every plan goes through these stages in `scripts/execute-pipeline.sh`:
 
 | Skill | What | When to use | When NOT to use |
 |-------|------|-------------|-----------------|
-| `/iago:init` | Bootstrap .iago/ with PROJECT/ROADMAP/STATE | Starting a new project in iaGO workflow | PROJECT.md already exists |
-| `/iago:scaffold` | Full project directory (React 19 + Vite + AWS) | New client project needs codebase | Existing codebase (use `/iago:onboard`) |
-| `/iago:onboard` | Scan codebase, produce architecture map | Existing codebase, new to iaGO workflow | New project (use `/iago:scaffold`) |
-| `/iago:discuss` | Clarify gray areas for a ROADMAP phase | Before planning a ROADMAP phase | Feature mode (use `--discuss` flag on `/iago:plan`) |
-| `/iago:pause` | Save session state for later resume | Switching context, ending day | Work is complete (use `/iago:verify`) |
+| `/iago-init` | Bootstrap .iago/ with PROJECT/ROADMAP/STATE | Starting a new project in iaGO workflow | PROJECT.md already exists |
+| `/iago-scaffold` | Full project directory (React 19 + Vite + AWS) | New client project needs codebase | Existing codebase (use `/iago-onboard`) |
+| `/iago-onboard` | Scan codebase, produce architecture map | Existing codebase, new to iaGO workflow | New project (use `/iago-scaffold`) |
+| `/iago-discuss` | Clarify gray areas for a ROADMAP phase | Before planning a ROADMAP phase | Feature mode (use `--discuss` flag on `/iago-plan`) |
+| `/iago-pause` | Save session state for later resume | Switching context, ending day | Work is complete (use `/iago-verify`) |
 
 ### Content and Business
 
@@ -119,7 +119,7 @@ Every plan goes through these stages in `scripts/execute-pipeline.sh`:
 | `/content-engine` | Articles, blog posts, multi-format output | Written content needed | Investor materials (use `/investor-materials`) |
 | `/investor-materials` | Pitch decks, one-pagers | Investor-facing documents | Market research (use `/deep-research --focus market`) |
 | `/investor-outreach` | Investor emails, outreach sequences | Drafting investor comms | Creating pitch materials (use `/investor-materials`) |
-| `/iago:proposal` | Client proposal (scope, timeline, cost) | New client engagement | Project already initiated |
+| `/iago-proposal` | Client proposal (scope, timeline, cost) | New client engagement | Project already initiated |
 | `/frontend-slides` | Presentation slides from code/data | Need slide deck | Static documents (use `/content-engine`) |
 | `/visa-doc-translate` | Visa document translation | Immigration documents | General translation |
 
@@ -127,9 +127,9 @@ Every plan goes through these stages in `scripts/execute-pipeline.sh`:
 
 | Skill | What | When to use | When NOT to use |
 |-------|------|-------------|-----------------|
-| `/iago:n8n` | Design n8n workflows | Webhook/Lambda/DynamoDB automations | Building workflows directly (this produces designs) |
-| `/iago:agents` | Design multi-agent architectures | Client agent deliverables | Configuring iaGO's own agents |
-| `/iago:schedule` | Set up scheduled triggers | Recurring automated tasks | One-off commands (just run them) |
+| `/iago-n8n` | Design n8n workflows | Webhook/Lambda/DynamoDB automations | Building workflows directly (this produces designs) |
+| `/iago-agents` | Design multi-agent architectures | Client agent deliverables | Configuring iaGO's own agents |
+| `/iago-schedule` | Set up scheduled triggers | Recurring automated tasks | One-off commands (just run them) |
 | `/prompt-optimizer` | Optimize LLM prompts | Client chatbots, agents, extraction | Writing CLAUDE.md rules or skill files |
 
 ### Specialized

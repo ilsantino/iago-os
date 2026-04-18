@@ -24,17 +24,17 @@ implement → build → review → codex → codex fix → PR → summary).
 | Ad-hoc fix or small feature | Yes | No |
 
 If >3 tasks or unclear scope, redirect to the full workflow.
-If ≤3 file edits and trivially obvious, use `/iago:fast` instead.
+If ≤3 file edits and trivially obvious, use `/iago-fast` instead.
 
 ## Arguments
 
-`/iago:quick {description}` — describe what needs to be done.
+`/iago-quick {description}` — describe what needs to be done.
 
 Optional flags (composable):
 - `--discuss` — run a brief discuss step before planning
 - `--research` — dispatch `research` profile before planning
 - `--verify` — run verification after execution
-- `--no-tag` — skip @claude tagging on PR (PR created but async review-fix loop not triggered). Default: auto-tag (same as `/iago:execute`)
+- `--no-tag` — skip @claude tagging on PR (PR created but async review-fix loop not triggered). Default: auto-tag (same as `/iago-execute`)
 
 ## Preconditions
 
@@ -99,13 +99,13 @@ Determine the project directory (repo root or client project dir).
 
 Run:
 ```bash
-# Default (auto-tag, same as /iago:execute):
+# Default (auto-tag, same as /iago-execute):
 bash scripts/execute-pipeline.sh --plan {path} --project-dir {dir}
 # With --no-tag:
 bash scripts/execute-pipeline.sh --plan {path} --project-dir {dir} --no-tag
 ```
 
-By default, quick tasks auto-tag @claude (same behavior as `/iago:execute`).
+By default, quick tasks auto-tag @claude (same behavior as `/iago-execute`).
 If `--no-tag` is passed, the PR is created but the async review-fix loop is
 not triggered.
 

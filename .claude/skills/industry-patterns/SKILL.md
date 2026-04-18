@@ -59,7 +59,7 @@ Based on the loaded patterns and the user's current task:
 
 1. Summary of loaded patterns
 2. Recommendations for current task
-3. Suggested next step (implementation via `/iago:quick` or full workflow)
+3. Suggested next step (implementation via `/iago-quick` or full workflow)
 
 ## Boundaries
 

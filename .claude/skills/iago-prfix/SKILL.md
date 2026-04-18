@@ -13,10 +13,10 @@ the automated fix → build → push → re-review loop (max 5 rounds).
 
 ## Arguments
 
-`/iago:prfix` — fix all comments on the current branch's PR.
+`/iago-prfix` — fix all comments on the current branch's PR.
 
 Optional:
-- `{pr-number}` — target a specific PR (e.g., `/iago:prfix 42`).
+- `{pr-number}` — target a specific PR (e.g., `/iago-prfix 42`).
 - `{pr-number} {pr-number} ...` — fix multiple PRs sequentially.
 - `--all` — find and fix all open PRs with unresolved review comments.
 

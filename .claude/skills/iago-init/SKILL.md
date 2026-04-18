@@ -14,7 +14,7 @@ ROADMAP.md, STATE.md, and config.json.
 ## Preconditions
 
 - `.iago/PROJECT.md` must NOT exist. If it does, STOP and inform the user:
-  "Project already initialized. Use /iago:discuss to clarify a phase."
+  "Project already initialized. Use /iago-discuss to clarify a phase."
 
 ## Steps
 
@@ -116,7 +116,7 @@ Log initialization as a decision:
 After completion, display:
 1. Summary of what was created
 2. Phase list from ROADMAP.md
-3. Suggest: "Run `/iago:discuss {first-phase-slug}` to clarify the first phase."
+3. Suggest: "Run `/iago-discuss {first-phase-slug}` to clarify the first phase."
 
 ## Boundaries
 

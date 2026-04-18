@@ -14,7 +14,7 @@ flow diagrams — ready for implementation in n8n's visual editor.
 
 ## Arguments
 
-`/iago:n8n {description}` — what the automation should accomplish.
+`/iago-n8n {description}` — what the automation should accomplish.
 
 Optional flags:
 - `--triggers {webhook|schedule|dynamo|ses|manual}` — comma-separated trigger types
@@ -111,12 +111,12 @@ Display:
 
 **Webhook-triggered order processing:**
 ```
-/iago:n8n Process incoming orders via webhook, validate, store in DynamoDB, send confirmation via SES
+/iago-n8n Process incoming orders via webhook, validate, store in DynamoDB, send confirmation via SES
 ```
 
 **Scheduled report generation:**
 ```
-/iago:n8n Generate weekly usage report from DynamoDB, format as PDF, email to stakeholders --triggers schedule
+/iago-n8n Generate weekly usage report from DynamoDB, format as PDF, email to stakeholders --triggers schedule
 ```
 
 ## Boundaries

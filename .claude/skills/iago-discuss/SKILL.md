@@ -2,25 +2,25 @@
 name: iago-discuss
 description: >-
   Use when clarifying gray areas for a specific ROADMAP phase before planning.
-  Not when PROJECT.md doesn't exist (run /iago:init first) or when planning has already started for the phase.
+  Not when PROJECT.md doesn't exist (run /iago-init first) or when planning has already started for the phase.
 ---
 
 ## Purpose
 
 Clarify implementation details and surface decisions for a specific phase from
 ROADMAP.md. The user is the visionary; Claude is the builder. The output is a
-context artifact that feeds into `/iago:plan`.
+context artifact that feeds into `/iago-plan`.
 
 ## Preconditions
 
-- `.iago/PROJECT.md` must exist. If not, STOP: "Run `/iago:init` first."
+- `.iago/PROJECT.md` must exist. If not, STOP: "Run `/iago-init` first."
 - `.iago/ROADMAP.md` must exist and contain the target phase.
 - If `.iago/context/{NN}-{slug}.md` already exists for this phase, warn the user
   and ask whether to append or replace.
 
 ## Arguments
 
-`/iago:discuss {phase-slug}`
+`/iago-discuss {phase-slug}`
 
 If no phase-slug is provided, read ROADMAP.md and suggest the next `pending` phase.
 
@@ -103,7 +103,7 @@ Update via state engine:
 After completion, display:
 1. Summary of decisions made
 2. Any deferred items
-3. Suggest: "Run `/iago:plan {phase-slug}` to create implementation plans."
+3. Suggest: "Run `/iago-plan {phase-slug}` to create implementation plans."
 
 ## Boundaries
 

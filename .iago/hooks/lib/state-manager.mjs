@@ -44,11 +44,11 @@ const DEFAULT_PROJECT = `# Project
 
 ## Vision
 
-(Set during /iago:init)
+(Set during /iago-init)
 
 ## Constraints
 
-(Set during /iago:init)
+(Set during /iago-init)
 
 ## Architecture Decisions
 
@@ -59,7 +59,7 @@ const DEFAULT_ROADMAP = `# Roadmap
 
 ## Phases
 
-(Set during /iago:init)
+(Set during /iago-init)
 
 ## Status
 

@@ -1,6 +1,6 @@
 # Trigger Templates
 
-Ready-to-use scheduled automation templates for iaGO-OS projects. Install via `/iago:schedule {template-name}` or create custom triggers with `/iago:schedule create`.
+Ready-to-use scheduled automation templates for iaGO-OS projects. Install via `/iago-schedule {template-name}` or create custom triggers with `/iago-schedule create`.
 
 ---
 
@@ -171,4 +171,4 @@ Use RemoteTrigger for any automation you want to run unattended. Use session cro
 
 ### Variable Substitution
 
-Replace `$PROJECT_DIR` with the absolute path to your project directory when calling the RemoteTrigger API directly. When using `/iago:schedule`, the skill resolves this automatically from the current working directory.
+Replace `$PROJECT_DIR` with the absolute path to your project directory when calling the RemoteTrigger API directly. When using `/iago-schedule`, the skill resolves this automatically from the current working directory.

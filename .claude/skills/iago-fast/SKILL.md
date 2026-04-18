@@ -3,7 +3,7 @@ name: iago-fast
 description: >-
   Use when executing a trivial inline task (≤3 file edits, no new deps, obvious fix).
   Not when scope is unclear, >3 files are affected, or task is part of a ROADMAP phase
-  (use /iago:quick or the full workflow instead).
+  (use /iago-quick or the full workflow instead).
 ---
 
 ## Purpose
@@ -20,12 +20,12 @@ ALL of these must be true:
 - Not part of a ROADMAP phase
 
 If ANY condition fails, redirect:
-- Unclear scope or >3 files → `/iago:quick`
-- Part of a ROADMAP phase → full workflow (`/iago:plan` → `/iago:execute`)
+- Unclear scope or >3 files → `/iago-quick`
+- Part of a ROADMAP phase → full workflow (`/iago-plan` → `/iago-execute`)
 
 ## Arguments
 
-`/iago:fast {description}` — one-sentence description of the change.
+`/iago-fast {description}` — one-sentence description of the change.
 
 ## Preconditions
 
@@ -37,7 +37,7 @@ If ANY condition fails, redirect:
 ### 1. Validate scope
 
 Read the user's description. Confirm ≤3 files will be touched and the change is obvious.
-If not, redirect to `/iago:quick` with explanation.
+If not, redirect to `/iago-quick` with explanation.
 
 ### 2. Execute inline
 

@@ -3,7 +3,7 @@ name: code-review
 description: >-
   Use when implementation is complete and needs review before merge.
   Not when still implementing (finish first) or when reviewing as part of
-  /iago:execute or /subagent-driven-development (those dispatch review internally).
+  /iago-execute or /subagent-driven-development (those dispatch review internally).
 ---
 
 
@@ -136,6 +136,6 @@ Display structured review:
 
 - Read-only — does not modify code, does not fix findings
 - Does not commit or merge — that's the user's or workflow's decision
-- Does not re-run tests — verification is separate (`/iago:verify`)
+- Does not re-run tests — verification is separate (`/iago-verify`)
 - Single dispatch by default — do not chain multiple review rounds unless `--full`
 - If the dispatched profile returns BLOCKED, report and suggest manual review

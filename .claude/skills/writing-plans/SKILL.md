@@ -3,7 +3,7 @@ name: writing-plans
 description: >-
   Use when you have an approved spec and need to plan implementation.
   Not when spec is still in discussion (use /brainstorming first) or when
-  planning a ROADMAP phase (use /iago:plan instead).
+  planning a ROADMAP phase (use /iago-plan instead).
 ---
 
 

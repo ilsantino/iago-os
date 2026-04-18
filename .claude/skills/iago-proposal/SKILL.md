@@ -2,7 +2,7 @@
 name: iago-proposal
 description: >-
   Use when generating a client proposal (scope, timeline, cost, tech approach).
-  Not when the project is already initiated (use /iago:plan for phase planning)
+  Not when the project is already initiated (use /iago-plan for phase planning)
   or when writing internal documentation.
 ---
 
@@ -14,7 +14,7 @@ profile for prose quality.
 
 ## Arguments
 
-`/iago:proposal {client-name}` — the client or project this proposal targets.
+`/iago-proposal {client-name}` — the client or project this proposal targets.
 
 Optional flags:
 - `--type {poc|mvp|production}` — engagement type (default: `mvp`)
@@ -114,11 +114,11 @@ Display:
 2. Scope summary (in-scope count, out-of-scope count)
 3. Timeline summary (total weeks, phase count)
 4. Cost range
-5. Suggest: "Review and customize before sending. Run `/iago:scaffold` to start the project."
+5. Suggest: "Review and customize before sending. Run `/iago-scaffold` to start the project."
 
 ## Boundaries
 
-- Does not create project directories or initialize `.iago/` — that's `/iago:scaffold` + `/iago:init`
+- Does not create project directories or initialize `.iago/` — that's `/iago-scaffold` + `/iago-init`
 - Does not commit proposals to git automatically — user decides when to commit
 - Does not send proposals to clients — local document only
 - Cost estimates are rough order-of-magnitude — always label as estimates

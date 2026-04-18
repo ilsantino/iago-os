@@ -17,7 +17,7 @@ capabilities:
 
 Dispatch this profile when:
 - `review.mode` is "single" in `.iago/config.json`
-- Skill is `/iago:quick` — default review profile for lightweight workflow
+- Skill is `/iago-quick` — default review profile for lightweight workflow
 - Skill is `/code-review` — default review profile for on-demand reviews
 - Task type is review and no mode is specified (fallback to single)
 

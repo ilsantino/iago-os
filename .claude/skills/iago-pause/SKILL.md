@@ -2,7 +2,7 @@
 name: iago-pause
 description: >-
   Use when pausing work mid-session to resume later (switching context, ending day,
-  hitting a blocker). Not when work is complete (use /iago:verify instead) or when
+  hitting a blocker). Not when work is complete (use /iago-verify instead) or when
   no .iago/ directory exists.
 ---
 

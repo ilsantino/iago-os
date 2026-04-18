@@ -17,7 +17,7 @@ capabilities:
 
 Dispatch this profile when:
 - `review.mode` is "full" in `.iago/config.json`
-- Skill is `/iago:execute` — default review profile for plan-driven execution
+- Skill is `/iago-execute` — default review profile for plan-driven execution
 - Task is a post-implementation review following a plan task with multiple files
 
 ## Mode
