@@ -194,7 +194,7 @@ The rule in CLAUDE.md that says 'NEVER implement a plan directly' does NOT apply
 Read the plan file at: $PLAN_FILE${IMPL_STRESS_CONTEXT}
 Execute every task exactly. Create all files specified. End your response with DONE or BLOCKED." \
   --model opus \
-  --max-turns 50 \
+  --max-turns "${IAGO_IMPL_MAX_TURNS:-80}" \
   --allowedTools "Edit Write Read Glob Grep Bash" \
   --output-format text 2>&1) || IMPL_EXIT=$?
 
