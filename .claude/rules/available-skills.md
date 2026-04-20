@@ -176,7 +176,7 @@ Every plan goes through these stages in `scripts/execute-pipeline.sh`:
 | `obsidian` | Read/write Obsidian vault | Notes, meetings, decisions, session digests |
 | `graphify` | Knowledge graph over vault | Entity relationships, community structure (check before raw search) |
 | `mempalace` | Conversation history + KG | Past reasoning, conversation recall, agent diary |
-| `markitdown` | Convert documents to markdown (DOCX, PPTX, XLSX, EPub, YouTube, large PDFs) | Ingesting client briefs, RFPs, financial models, meeting transcripts, research PDFs beyond Claude's 20-page native PDF limit. Tool: `convert_to_markdown(uri)` accepts `file://`, `http(s)://`, `data:` URIs |
+| `markitdown` | Document → markdown conversion (DOCX, PPTX, XLSX, EPub, YouTube, large PDFs) | Ingesting client files Claude can't read natively — briefs, RFPs, financial models, meeting DOCX, PDFs >20 pages |
 
 ## Agent Architecture
 

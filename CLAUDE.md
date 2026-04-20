@@ -98,7 +98,7 @@ Five layers, each with distinct purpose and access pattern:
 | **Obsidian** | Session digests, meetings, decisions, business docs | MCP (`search_notes`, `read_note`, `write_note`) | Semi-auto (session digests) |
 | **Graphify** | Knowledge graph + wiki over vault (incl. Drive) | MCP (`query_graph`, `get_node`) + `graphify-out/wiki/` | Auto (nightly rebuild via Task Scheduler) |
 | **MemPalace** | Conversation history, agent diary | MCP (`mempalace_search`, `mempalace_diary_read`) | Auto (stop hook writes diary every session) |
-| **MarkItDown** | Upstream document conversion (DOCX/PPTX/XLSX/EPub/YouTube/large PDFs → markdown) | MCP tool `convert_to_markdown(uri)` — accepts `file://`, `http(s)://`, `data:` URIs | Manual (producer, not storage) |
+| **MarkItDown** | Upstream document conversion (DOCX/PPTX/XLSX/EPub/YouTube/large PDFs → markdown) | MCP (`convert_to_markdown`) | Manual (producer, not storage) |
 
 ### Retrieval Routing
 
@@ -109,6 +109,7 @@ Five layers, each with distinct purpose and access pattern:
 | Past conversation recall, reasoning trails | MemPalace (`mempalace_search`) |
 | Cross-session agent continuity | MemPalace diary (`mempalace_diary_read`) |
 | Library/framework docs | Context7 (`query-docs`) |
+| Document ingestion (DOCX, XLSX, large PDFs) | MarkItDown MCP (`convert_to_markdown`) |
 
 ### MemPalace Wings
 
