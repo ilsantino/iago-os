@@ -90,7 +90,7 @@ Async review-fix loop via GitHub Actions: `claude.yml` reviews, `claude-review-f
 
 ## Memory Architecture
 
-Four layers, each with distinct purpose and access pattern:
+Five layers, each with distinct purpose and access pattern:
 
 | Layer | What | Access | Automation |
 |-------|------|--------|------------|
@@ -98,6 +98,7 @@ Four layers, each with distinct purpose and access pattern:
 | **Obsidian** | Session digests, meetings, decisions, business docs | MCP (`search_notes`, `read_note`, `write_note`) | Semi-auto (session digests) |
 | **Graphify** | Knowledge graph + wiki over vault (incl. Drive) | MCP (`query_graph`, `get_node`) + `graphify-out/wiki/` | Auto (nightly rebuild via Task Scheduler) |
 | **MemPalace** | Conversation history, agent diary | MCP (`mempalace_search`, `mempalace_diary_read`) | Auto (stop hook writes diary every session) |
+| **MarkItDown** | Upstream document conversion (DOCX/PPTX/XLSX/EPub/YouTube/large PDFs → markdown) | MCP tool `convert_to_markdown(uri)` — accepts `file://`, `http(s)://`, `data:` URIs | Manual (producer, not storage) |
 
 ### Retrieval Routing
 
