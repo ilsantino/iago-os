@@ -121,7 +121,7 @@ Each step is a fresh `claude -p` session — isolated context, no token burn in 
 | **1. Implement** | Opus | Reads plan file + stress-test findings (MANDATORY, not advisory). Max 50 turns. |
 | **2. Build gate** | — | Compile check — verifies code compiles and bundles before review. Catches type errors, broken imports, missing deps. Max 2 retries with fix sessions. Skipped for config-only repos. |
 | **3. Review** | Opus | Three-pass: plan compliance + domain routing (selects relevant check modules from 8 loaded) + adversarial (auth bypass, data loss, races, rollback). Stress test enforcement verifies each finding was addressed. Severity floors on critical checks. Max 2 fix rounds. |
-| **4. Codex adversarial** | GPT-5.4 / Opus fallback | Cross-model review with plan context. Windows: auto-detects MSYS/Cygwin and falls back to Claude adversarial (Codex sandbox blocks git). Runtime failures also fall back automatically. |
+| **4. Codex adversarial** | GPT-5.4 / Opus fallback | Cross-model review with plan context. Invokes `codex-companion adversarial-review` (bypasses the Codex agent sandbox, runs identically on Windows / Mac / Linux). Falls back to Claude Opus adversarial when the companion plugin isn't installed or fails at runtime. |
 | **4b. Codex fix** | Opus | Fixes all Codex findings (P0 → P1 → P2) + rebuild gate. Skipped if clean. |
 | **5. Create PR** | Sonnet | Stages, commits, pushes branch, creates PR via `gh`. |
 | **5b. Tag @claude** | Sonnet | Synthesizes review request from pipeline context, posts on PR. Triggers async loop. |
@@ -142,8 +142,7 @@ flowchart TD
     Review -->|findings| Fix2["Fix — Opus
     Critical→Important→Minor"]
     Fix2 --> Build
-    Review -->|pass| Codex["4. Codex Adversarial — GPT-5.4
-    (Claude fallback on Windows)"]
+    Review -->|pass| Codex["4. Codex Adversarial — GPT-5.4"]
     Codex -->|findings| CdxFix[4b. Codex Fix — Opus]
     CdxFix --> Rebuild[Rebuild gate]
     Rebuild --> PR[5. Create PR — Sonnet]

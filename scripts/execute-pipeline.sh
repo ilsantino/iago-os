@@ -536,14 +536,30 @@ Read the diff: $DIFF_FILE" \
     --output-format text 2>&1
 }
 
+# Resolve codex-companion path — prefer stable marketplace, fall back to versioned cache
+CODEX_COMPANION=""
+_companion_stable="$HOME/.claude/plugins/marketplaces/openai-codex/plugins/codex/scripts/codex-companion.mjs"
+if [[ -f "$_companion_stable" ]]; then
+  CODEX_COMPANION="$_companion_stable"
+else
+  for _companion_cached in "$HOME"/.claude/plugins/cache/openai-codex/codex/*/scripts/codex-companion.mjs; do
+    if [[ -f "$_companion_cached" ]]; then
+      CODEX_COMPANION="$_companion_cached"
+      break
+    fi
+  done
+fi
+
 CODEX_EXIT=0
 CODEX_OUTPUT=""
 USED_CODEX=false
 
-# Windows: Codex sandbox blocks git on MSYS/Cygwin — skip to Claude fallback
-if [[ "$OSTYPE" == "msys" || "$OSTYPE" == "cygwin" ]] || [[ "$(uname -s)" == MINGW* ]]; then
-  log "Codex sandbox blocks git on Windows — using Claude adversarial"
+if command -v node &> /dev/null && [[ -n "$CODEX_COMPANION" ]]; then
+  log "Running codex-companion adversarial-review (GPT-5.4)"
+  CODEX_OUTPUT=$(cd "$PROJECT_DIR" && node "$CODEX_COMPANION" adversarial-review --base "$PRE_IMPL_SHA" --wait 2>&1) || CODEX_EXIT=$?
+  USED_CODEX=true
 elif command -v codex &> /dev/null; then
+  log "Running codex review (GPT-5.4) — companion plugin not found, using raw CLI"
   CODEX_OUTPUT=$(cd "$PROJECT_DIR" && codex review "${PRE_IMPL_SHA}..HEAD" 2>&1) || CODEX_EXIT=$?
   USED_CODEX=true
 fi
@@ -555,7 +571,7 @@ elif [[ $CODEX_EXIT -ne 0 ]]; then
   log "WARNING: Codex review failed (exit $CODEX_EXIT)"
   log "Codex raw output: $CODEX_OUTPUT"
   # If output contains actual findings, keep them despite non-zero exit
-  if echo "$CODEX_OUTPUT" | grep -qiE '\[P[012]\]|\bCritical\b|\bImportant\b'; then
+  if echo "$CODEX_OUTPUT" | grep -qiE '\[P[012]\]|\bCritical\b|\bImportant\b|\[high\]|\[medium\]|needs-attention'; then
     log "Codex failed but produced findings — keeping findings"
     CODEX_EXIT=0
   else
@@ -579,7 +595,7 @@ log "Codex review complete"
 echo "$CODEX_OUTPUT" > "$CODEX_FILE"
 
 # Check if Codex found actionable findings (P0/P1/P2 or Critical/Important)
-if echo "$CODEX_OUTPUT" | grep -qiE '\[P[012]\]|- \[P[012]\]|severity.*P[012]|\bCritical\b|\bImportant\b'; then
+if echo "$CODEX_OUTPUT" | grep -qiE '\[P[012]\]|- \[P[012]\]|severity.*P[012]|\bCritical\b|\bImportant\b|\[high\]|\[medium\]|needs-attention'; then
   log "CODEX FIX — fixing findings before PR"
 
   CODEX_FIX_EXIT=0
