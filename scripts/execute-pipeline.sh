@@ -42,7 +42,38 @@ PLAN_NAME=$(basename "$PLAN_PATH" .md)
 # Temp directory for pipeline artifacts — avoids "Argument list too long" on
 # Windows by writing large content to files instead of inlining in claude -p.
 PIPELINE_TMP=$(mktemp -d)
-trap 'rm -rf "$PIPELINE_TMP"' EXIT
+LOCK_DIR=""
+trap 'rm -rf "$PIPELINE_TMP"; [[ -n "${LOCK_DIR:-}" && -f "${LOCK_DIR}/pid" && "$(cat "${LOCK_DIR}/pid" 2>/dev/null)" == "$$" ]] && rm -rf "$LOCK_DIR"' EXIT
+
+# ─── Per-project pipeline lock ───────────────────────────────────────
+# Prevents concurrent pipelines on the same project-dir — use a separate
+# worktree for parallel work (see iago-wt shell helper). Lock is a
+# directory (atomic mkdir) holding the owner PID; liveness-checked on
+# collision so crashed pipelines don't block retries.
+LOCK_DIR="$PROJECT_DIR/.iago/state/.pipeline.lock.d"
+mkdir -p "$PROJECT_DIR/.iago/state"
+if ! mkdir "$LOCK_DIR" 2>/dev/null; then
+  LOCK_PID=$(cat "$LOCK_DIR/pid" 2>/dev/null || echo "")
+  LOCK_PLAN=$(cat "$LOCK_DIR/plan" 2>/dev/null || echo "unknown")
+  LOCK_STARTED=$(cat "$LOCK_DIR/started" 2>/dev/null || echo "unknown")
+  if [[ -n "$LOCK_PID" ]] && kill -0 "$LOCK_PID" 2>/dev/null; then
+    echo "ERROR: Another pipeline is already running in this project-dir." >&2
+    echo "  Holder PID:  $LOCK_PID" >&2
+    echo "  Plan:        $LOCK_PLAN" >&2
+    echo "  Started:     $LOCK_STARTED" >&2
+    echo "  Project-dir: $PROJECT_DIR" >&2
+    echo "" >&2
+    echo "Use an isolated worktree for parallel work (iago-wt <slug>)." >&2
+    LOCK_DIR=""  # don't let EXIT trap clean up someone else's lock
+    exit 1
+  fi
+  echo "WARNING: Removing stale pipeline lock (PID $LOCK_PID not running)" >&2
+  rm -rf "$LOCK_DIR"
+  mkdir "$LOCK_DIR" || { echo "ERROR: Lock acquisition failed after stale cleanup" >&2; LOCK_DIR=""; exit 1; }
+fi
+echo "$$" > "$LOCK_DIR/pid"
+echo "$PLAN_PATH" > "$LOCK_DIR/plan"
+date -u +%Y-%m-%dT%H:%M:%SZ > "$LOCK_DIR/started"
 
 PLAN_FILE="$PROJECT_DIR/$PLAN_PATH"
 DIFF_FILE="$PIPELINE_TMP/diff.txt"
@@ -194,7 +225,7 @@ The rule in CLAUDE.md that says 'NEVER implement a plan directly' does NOT apply
 Read the plan file at: $PLAN_FILE${IMPL_STRESS_CONTEXT}
 Execute every task exactly. Create all files specified. End your response with DONE or BLOCKED." \
   --model opus \
-  --max-turns 50 \
+  --max-turns "${IAGO_IMPL_MAX_TURNS:-80}" \
   --allowedTools "Edit Write Read Glob Grep Bash" \
   --output-format text 2>&1) || IMPL_EXIT=$?
 
@@ -397,7 +428,7 @@ Read the review checklist: $REVIEW_CHECKS_FILE$(if [[ -f "$STRESS_FINDINGS" ]]; 
 Read stress-test findings: $STRESS_FINDINGS"; fi)
 Then read each changed source file in full for context." \
   --model opus \
-  --max-turns 25 \
+  --max-turns "${IAGO_REVIEW_MAX_TURNS:-35}" \
   --allowedTools "Read Glob Grep Bash" \
   --output-format text 2>&1) || REVIEW_EXIT=$?
 
@@ -612,7 +643,7 @@ PLAN_FOR_PR="$PIPELINE_TMP/plan-for-pr.md"
 cp "$PLAN_FILE" "$PLAN_FOR_PR"
 
 PR_EXIT=0
-PR_OUTPUT=$(cd "$PROJECT_DIR" && run_claude 300 -p "You are a PIPELINE PR session spawned by execute-pipeline.sh.
+PR_OUTPUT=$(cd "$PROJECT_DIR" && run_claude "${IAGO_PR_TIMEOUT:-600}" -p "You are a PIPELINE PR session spawned by execute-pipeline.sh.
 The rule in CLAUDE.md that says 'NEVER implement a plan directly' does NOT apply to you — you ARE the pipeline. Your job is to stage, commit, push, and create a PR.
 
 Create a PR for plan $PLAN_PATH.

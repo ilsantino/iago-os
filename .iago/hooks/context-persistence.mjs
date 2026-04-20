@@ -5,7 +5,7 @@
 import { readInput } from "./lib/stdin.mjs";
 import { isDisabled } from "./lib/flags.mjs";
 import { extractDecisions, getFilesModified } from "./lib/transcript.mjs";
-import { readFileSync, writeFileSync, readdirSync, unlinkSync, mkdirSync, existsSync, statSync } from "fs";
+import { readFileSync, writeFileSync, readdirSync, renameSync, mkdirSync, existsSync, statSync } from "fs";
 import { join } from "path";
 import { execSync } from "child_process";
 
@@ -14,12 +14,34 @@ if (isDisabled("context-persistence")) process.exit(0);
 const PROJECT_DIR = process.env.CLAUDE_PROJECT_DIR || process.cwd();
 const STATE_DIR = join(PROJECT_DIR, ".iago", "state");
 const SESSIONS_DIR = join(STATE_DIR, "sessions");
-const HANDOFF_PATH = join(STATE_DIR, "HANDOFF.json");
+const HANDOFF_ARCHIVE_DIR = join(STATE_DIR, "handoffs", "archive");
 const CLIENT_PATH = join(STATE_DIR, "active-client.json");
 const MAX_SESSIONS = 10;
 
 function ensureDirs() {
   if (!existsSync(SESSIONS_DIR)) mkdirSync(SESSIONS_DIR, { recursive: true });
+}
+
+function findLatestHandoff() {
+  if (!existsSync(STATE_DIR)) return null;
+  try {
+    const matches = readdirSync(STATE_DIR)
+      .filter((f) => /^HANDOFF-.+\.json$/.test(f))
+      .map((f) => ({
+        name: f,
+        path: join(STATE_DIR, f),
+        mtime: statSync(join(STATE_DIR, f)).mtimeMs,
+      }))
+      .sort((a, b) => b.mtime - a.mtime);
+    return matches[0] || null;
+  } catch { return null; }
+}
+
+function archiveHandoff(handoffPath, name) {
+  try {
+    if (!existsSync(HANDOFF_ARCHIVE_DIR)) mkdirSync(HANDOFF_ARCHIVE_DIR, { recursive: true });
+    renameSync(handoffPath, join(HANDOFF_ARCHIVE_DIR, name));
+  } catch { /* ignore — better to leave file than crash hook */ }
 }
 
 function getSessionId(input) {
@@ -69,10 +91,11 @@ async function sessionStart(input) {
 
   const output = [];
 
-  // Check for HANDOFF.json first (highest priority)
-  if (existsSync(HANDOFF_PATH)) {
+  // Check for most recent HANDOFF-*.json first (highest priority)
+  const latestHandoff = findLatestHandoff();
+  if (latestHandoff) {
     try {
-      const handoff = JSON.parse(readFileSync(HANDOFF_PATH, "utf8"));
+      const handoff = JSON.parse(readFileSync(latestHandoff.path, "utf8"));
 
       // Stale warning: >7 days
       if (handoff.paused_at) {
@@ -83,7 +106,7 @@ async function sessionStart(input) {
         }
       }
 
-      output.push("## Resumed from HANDOFF.json");
+      output.push(`## Resumed from ${latestHandoff.name}`);
       if (handoff.client) output.push(`Client: ${handoff.client}`);
       if (handoff.project) output.push(`Project: ${handoff.project}`);
       if (handoff.current_task) output.push(`Task: ${handoff.current_task}`);
@@ -99,8 +122,8 @@ async function sessionStart(input) {
         output.push(`Uncommitted: ${handoff.uncommitted_files.join(", ")}`);
       }
 
-      // Delete after loading
-      try { unlinkSync(HANDOFF_PATH); } catch { /* ignore */ }
+      // Archive after loading (preserves history; allows manual recovery)
+      archiveHandoff(latestHandoff.path, latestHandoff.name);
 
       process.stdout.write(JSON.stringify({ hookSpecificOutput: output.join("\n") }));
       return;

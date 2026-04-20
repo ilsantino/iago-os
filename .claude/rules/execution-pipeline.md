@@ -49,7 +49,7 @@ scripts/execute-pipeline.sh --plan {path} --project-dir {dir}
   v
 3. REVIEW — claude -p opus, three-pass: plan compliance + domain routing + adversarial (Critical/Important/Minor)
   |  reads full source files (not just diff) for context
-  |  all check modules loaded (baseline + react + backend + auth + api + infra + i18n)
+  |  all check modules loaded (baseline + amplify + api + auth + backend + data-integrity + i18n + infra + react)
   |  reviewer selects relevant domains based on diff + plan, states which and why
   |  severity floors in modules enforced (ALWAYS Critical / ALWAYS Important — cannot downgrade)
   |  cross-cutting (always checked): auth bypass, data loss, races, rollback safety
