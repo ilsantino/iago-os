@@ -15,6 +15,10 @@ on:
   issue_comment:
     types: [created]
 
+concurrency:
+  group: claude-review-fix-${{ github.event.issue.number }}
+  cancel-in-progress: false
+
 jobs:
   fix:
     # Trigger on the signal comment posted by claude.yml after review completes.
