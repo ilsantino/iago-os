@@ -542,13 +542,16 @@ _companion_stable="$HOME/.claude/plugins/marketplaces/openai-codex/plugins/codex
 if [[ -f "$_companion_stable" ]]; then
   CODEX_COMPANION="$_companion_stable"
 else
-  # Sort in reverse to prefer the newest (highest) version directory
+  # Sort in reverse to prefer the newest (highest) version directory.
+  # sort -V (version sort) is GNU coreutils only; fall back to -r on macOS/BSD sort.
+  _sort_version_flag="-rV"
+  sort -V /dev/null 2>/dev/null || _sort_version_flag="-r"
   while IFS= read -r _companion_cached; do
     if [[ -f "$_companion_cached" ]]; then
       CODEX_COMPANION="$_companion_cached"
       break
     fi
-  done < <(printf '%s\n' "$HOME"/.claude/plugins/cache/openai-codex/codex/*/scripts/codex-companion.mjs | sort -rV)
+  done < <(printf '%s\n' "$HOME"/.claude/plugins/cache/openai-codex/codex/*/scripts/codex-companion.mjs | sort "$_sort_version_flag")
 fi
 
 CODEX_EXIT=0
