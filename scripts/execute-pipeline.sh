@@ -606,9 +606,9 @@ echo "$CODEX_OUTPUT" > "$CODEX_FILE"
 # Check if Codex found actionable findings.
 # When Claude fallback ran, skip \bCritical\b|\bImportant\b — prose like "No Critical issues found"
 # would spuriously trigger a fix session reading clean output (false positive, ~40 wasted turns).
-_codex_word_patterns='\bCritical\b|\bImportant\b'
+_codex_word_patterns='\bCritical\b|\bImportant\b|\[high\]|\[medium\]'
 _has_findings=false
-if echo "$CODEX_OUTPUT" | grep -qiE '\[P[012]\]|- \[P[012]\]|severity.*P[012]|\[high\]|\[medium\]|^Verdict: needs-attention'; then
+if echo "$CODEX_OUTPUT" | grep -qiE '\[P[012]\]|- \[P[012]\]|severity.*P[012]|^Verdict: needs-attention'; then
   _has_findings=true
 elif [[ "$USED_CLAUDE_FALLBACK" != "true" ]] && echo "$CODEX_OUTPUT" | grep -qiE "$_codex_word_patterns"; then
   _has_findings=true
