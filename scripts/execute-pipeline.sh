@@ -13,6 +13,7 @@ set -euo pipefail
 PLAN_PATH=""
 PROJECT_DIR=""
 NO_TAG=false
+NO_PR=false
 MAX_BUILD_RETRIES=2
 MAX_FIX_RETRIES=2
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -22,6 +23,7 @@ while [[ $# -gt 0 ]]; do
     --plan) PLAN_PATH="$2"; shift 2 ;;
     --project-dir) PROJECT_DIR="$2"; shift 2 ;;
     --no-tag) NO_TAG=true; shift ;;
+    --no-pr) NO_PR=true; NO_TAG=true; shift ;;
     *) echo "Unknown arg: $1" >&2; exit 1 ;;
   esac
 done
@@ -669,15 +671,36 @@ else
   log "No actionable Codex findings — proceeding to PR"
 fi
 
-# ─── Step 5: Create PR ───────────────────────────────────────────────
-log "CREATE PR — $PLAN_NAME"
+# ─── Step 5: Create PR (or stacked commit if --no-pr) ─────────────────
+if [[ "$NO_PR" == "true" ]]; then
+  log "STACKED COMMIT — $PLAN_NAME (no PR, staying on current branch)"
+  # Stage, commit locally, do NOT push, do NOT create PR. Commits accumulate on the
+  # current branch for a later plan in the stack to push as a combined PR.
+  (cd "$PROJECT_DIR" && git add -A -- ':!**/.env' ':!**/.env.*' ':!**/*.pem' ':!**/*.key' ':!**/*.p12' ':!**/*.pfx')
+  # Only commit if there are staged changes
+  if ! (cd "$PROJECT_DIR" && git diff --cached --quiet); then
+    STACK_COMMIT_MSG="feat($PLAN_NAME): implement $PLAN_NAME
 
-# Write plan content to temp file for the PR session to embed in the description
-PLAN_FOR_PR="$PIPELINE_TMP/plan-for-pr.md"
-cp "$PLAN_FILE" "$PLAN_FOR_PR"
+Stacked commit from execute-pipeline.sh --no-pr (pipeline stages 0-4b ran clean)."
+    (cd "$PROJECT_DIR" && git commit -m "$STACK_COMMIT_MSG") || {
+      log "ERROR: Stacked commit failed for $PLAN_NAME. Pipeline stopping."
+      exit 1
+    }
+    log "Stacked commit created: $(cd "$PROJECT_DIR" && git rev-parse --short HEAD)"
+  else
+    log "WARNING: No staged changes to commit for $PLAN_NAME (plan produced no diff?)"
+  fi
+  PR_URL=""
+  PR_EXIT=0
+else
+  log "CREATE PR — $PLAN_NAME"
 
-PR_EXIT=0
-PR_OUTPUT=$(cd "$PROJECT_DIR" && run_claude "${IAGO_PR_TIMEOUT:-600}" -p "You are a PIPELINE PR session spawned by execute-pipeline.sh.
+  # Write plan content to temp file for the PR session to embed in the description
+  PLAN_FOR_PR="$PIPELINE_TMP/plan-for-pr.md"
+  cp "$PLAN_FILE" "$PLAN_FOR_PR"
+
+  PR_EXIT=0
+  PR_OUTPUT=$(cd "$PROJECT_DIR" && run_claude "${IAGO_PR_TIMEOUT:-600}" -p "You are a PIPELINE PR session spawned by execute-pipeline.sh.
 The rule in CLAUDE.md that says 'NEVER implement a plan directly' does NOT apply to you — you ARE the pipeline. Your job is to stage, commit, push, and create a PR.
 
 Create a PR for plan $PLAN_PATH.
@@ -692,26 +715,29 @@ Steps:
    - ## Plan section: paste the FULL plan content (from the plan file) inside a <details><summary>Plan: PLAN_NAME</summary> block so the GH reviewer can expand it
    - ## Test plan section: how to verify
 6. Output the PR URL" \
-  --model sonnet \
-  --max-turns 15 \
-  --allowedTools "Edit Write Read Glob Grep Bash" \
-  --output-format text 2>&1) || PR_EXIT=$?
-log "PR creation output:"
-echo "$PR_OUTPUT"
+    --model sonnet \
+    --max-turns 15 \
+    --allowedTools "Edit Write Read Glob Grep Bash" \
+    --output-format text 2>&1) || PR_EXIT=$?
+  log "PR creation output:"
+  echo "$PR_OUTPUT"
 
-if [[ $PR_EXIT -ne 0 ]]; then
-  log "ERROR: PR creation failed (exit $PR_EXIT). Pipeline stopping."
-  exit 1
+  if [[ $PR_EXIT -ne 0 ]]; then
+    log "ERROR: PR creation failed (exit $PR_EXIT). Pipeline stopping."
+    exit 1
+  fi
 fi
 
 # ─── Step 5b: Tag @claude for PR review ─────────────────────────────
-PR_URL=$(echo "$PR_OUTPUT" | grep -oE 'https://github\.com/[^ ]+/pull/[0-9]+' | head -1)
+if [[ "$NO_PR" != "true" ]]; then
+  PR_URL=$(echo "$PR_OUTPUT" | grep -oE 'https://github\.com/[^ ]+/pull/[0-9]+' | head -1)
 
-# Fallback: if URL extraction failed, query gh for the PR by current branch
-if [[ -z "$PR_URL" ]]; then
-  log "WARNING: Could not extract PR URL from session output — querying gh"
-  CURRENT_BRANCH=$(cd "$PROJECT_DIR" && git branch --show-current)
-  PR_URL=$(cd "$PROJECT_DIR" && gh pr view "$CURRENT_BRANCH" --json url -q '.url' 2>/dev/null || echo "")
+  # Fallback: if URL extraction failed, query gh for the PR by current branch
+  if [[ -z "$PR_URL" ]]; then
+    log "WARNING: Could not extract PR URL from session output — querying gh"
+    CURRENT_BRANCH=$(cd "$PROJECT_DIR" && git branch --show-current)
+    PR_URL=$(cd "$PROJECT_DIR" && gh pr view "$CURRENT_BRANCH" --json url -q '.url' 2>/dev/null || echo "")
+  fi
 fi
 
 if [ "$NO_TAG" != "true" ]; then
