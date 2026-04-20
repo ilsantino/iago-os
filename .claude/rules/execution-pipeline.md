@@ -55,7 +55,8 @@ scripts/execute-pipeline.sh --plan {path} --project-dir {dir}
   |  cross-cutting (always checked): auth bypass, data loss, races, rollback safety
   |  any findings → fix session (opus, priority: Critical→Important→Minor) → rebuild → re-review (max 2 rounds)
   v
-4. CODEX ADVERSARIAL — codex CLI / GPT-5.4 if available, else claude -p opus
+4. CODEX ADVERSARIAL — codex-companion adversarial-review (GPT-5.4) → raw codex CLI → claude -p opus
+  |  companion bypasses the Codex agent sandbox (app-server turn API), runs on Windows/Mac/Linux
   |  reads plan for context; checks: auth bypass, data loss, race conditions, rollback safety
   v
 4b. CODEX FIX — claude -p opus, fixes all Codex findings (P0→P1→P2)
