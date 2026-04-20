@@ -554,6 +554,7 @@ fi
 CODEX_EXIT=0
 CODEX_OUTPUT=""
 USED_CODEX=false
+USED_CLAUDE_FALLBACK=false
 
 if command -v node &> /dev/null && [[ -n "$CODEX_COMPANION" ]]; then
   log "Running codex-companion adversarial-review (GPT-5.4)"
@@ -568,6 +569,7 @@ fi
 # Fallback: Claude adversarial if Codex not used or failed at runtime
 if [[ "$USED_CODEX" != "true" ]]; then
   CODEX_OUTPUT=$(cd "$PROJECT_DIR" && run_claude_adversarial) || CODEX_EXIT=$?
+  USED_CLAUDE_FALLBACK=true
 elif [[ $CODEX_EXIT -ne 0 ]]; then
   log "WARNING: Codex review failed (exit $CODEX_EXIT)"
   log "Codex raw output: $CODEX_OUTPUT"
@@ -579,6 +581,7 @@ elif [[ $CODEX_EXIT -ne 0 ]]; then
     log "No findings in Codex output — falling back to Claude adversarial"
     CODEX_EXIT=0
     CODEX_OUTPUT=$(cd "$PROJECT_DIR" && run_claude_adversarial) || CODEX_EXIT=$?
+    USED_CLAUDE_FALLBACK=true
   fi
 fi
 
@@ -595,8 +598,17 @@ log "Codex review complete"
 # ─── Step 4b: Fix Codex findings ─────────────────────────────────────
 echo "$CODEX_OUTPUT" > "$CODEX_FILE"
 
-# Check if Codex found actionable findings (P0/P1/P2 or Critical/Important)
-if echo "$CODEX_OUTPUT" | grep -qiE '\[P[012]\]|- \[P[012]\]|severity.*P[012]|\bCritical\b|\bImportant\b|\[high\]|\[medium\]|^Verdict: needs-attention'; then
+# Check if Codex found actionable findings.
+# When Claude fallback ran, skip \bCritical\b|\bImportant\b — prose like "No Critical issues found"
+# would spuriously trigger a fix session reading clean output (false positive, ~40 wasted turns).
+_codex_word_patterns='\bCritical\b|\bImportant\b'
+_has_findings=false
+if echo "$CODEX_OUTPUT" | grep -qiE '\[P[012]\]|- \[P[012]\]|severity.*P[012]|\[high\]|\[medium\]|^Verdict: needs-attention'; then
+  _has_findings=true
+elif [[ "$USED_CLAUDE_FALLBACK" != "true" ]] && echo "$CODEX_OUTPUT" | grep -qiE "$_codex_word_patterns"; then
+  _has_findings=true
+fi
+if [[ "$_has_findings" == "true" ]]; then
   log "CODEX FIX — fixing findings before PR"
 
   CODEX_FIX_EXIT=0
