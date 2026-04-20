@@ -542,12 +542,13 @@ _companion_stable="$HOME/.claude/plugins/marketplaces/openai-codex/plugins/codex
 if [[ -f "$_companion_stable" ]]; then
   CODEX_COMPANION="$_companion_stable"
 else
-  for _companion_cached in "$HOME"/.claude/plugins/cache/openai-codex/codex/*/scripts/codex-companion.mjs; do
+  # Sort in reverse to prefer the newest (highest) version directory
+  while IFS= read -r _companion_cached; do
     if [[ -f "$_companion_cached" ]]; then
       CODEX_COMPANION="$_companion_cached"
       break
     fi
-  done
+  done < <(printf '%s\n' "$HOME"/.claude/plugins/cache/openai-codex/codex/*/scripts/codex-companion.mjs | sort -rV)
 fi
 
 CODEX_EXIT=0
@@ -571,7 +572,7 @@ elif [[ $CODEX_EXIT -ne 0 ]]; then
   log "WARNING: Codex review failed (exit $CODEX_EXIT)"
   log "Codex raw output: $CODEX_OUTPUT"
   # If output contains actual findings, keep them despite non-zero exit
-  if echo "$CODEX_OUTPUT" | grep -qiE '\[P[012]\]|\bCritical\b|\bImportant\b|\[high\]|\[medium\]|needs-attention'; then
+  if echo "$CODEX_OUTPUT" | grep -qiE '\[P[012]\]|\bCritical\b|\bImportant\b|\[high\]|\[medium\]|^Verdict: needs-attention'; then
     log "Codex failed but produced findings — keeping findings"
     CODEX_EXIT=0
   else
@@ -595,7 +596,7 @@ log "Codex review complete"
 echo "$CODEX_OUTPUT" > "$CODEX_FILE"
 
 # Check if Codex found actionable findings (P0/P1/P2 or Critical/Important)
-if echo "$CODEX_OUTPUT" | grep -qiE '\[P[012]\]|- \[P[012]\]|severity.*P[012]|\bCritical\b|\bImportant\b|\[high\]|\[medium\]|needs-attention'; then
+if echo "$CODEX_OUTPUT" | grep -qiE '\[P[012]\]|- \[P[012]\]|severity.*P[012]|\bCritical\b|\bImportant\b|\[high\]|\[medium\]|^Verdict: needs-attention'; then
   log "CODEX FIX — fixing findings before PR"
 
   CODEX_FIX_EXIT=0
