@@ -576,8 +576,10 @@ if [[ "$USED_CODEX" != "true" ]]; then
 elif [[ $CODEX_EXIT -ne 0 ]]; then
   log "WARNING: Codex review failed (exit $CODEX_EXIT)"
   log "Codex raw output: $CODEX_OUTPUT"
-  # If output contains actual findings, keep them despite non-zero exit
-  if echo "$CODEX_OUTPUT" | grep -qiE '\[P[012]\]|\bCritical\b|\bImportant\b|\[high\]|\[medium\]|^Verdict: needs-attention'; then
+  # If output contains structured findings, keep them despite non-zero exit.
+  # Omit \bCritical\b|\bImportant\b here — prose like "Critical: module not found"
+  # in a crash trace would be misread as findings. Codex uses structured markers.
+  if echo "$CODEX_OUTPUT" | grep -qiE '\[P[012]\]|\[high\]|\[medium\]|^Verdict: needs-attention'; then
     log "Codex failed but produced findings — keeping findings"
     CODEX_EXIT=0
   else
