@@ -75,7 +75,16 @@ Matches the pattern of `graphify` and `mempalace` entries (both `python -m modul
 ```bash
 brew install pipx && pipx install markitdown-mcp
 ```
-Same `python -m markitdown_mcp` in his `.claude.json` mcpServers.
+pipx installs an isolated virtualenv — `python -m markitdown_mcp` won't work. Use the pipx-managed entry point in his `.claude.json` mcpServers:
+```json
+"markitdown": {
+  "type": "stdio",
+  "command": "markitdown-mcp",
+  "args": [],
+  "env": {}
+}
+```
+(`pipx install` places `markitdown-mcp` on PATH via `~/.local/bin/`.)
 
 ### Memory layer mapping
 | Layer | Role | Interaction with markitdown |
@@ -93,11 +102,11 @@ Tested on: `DIN - DEMO 3.docx` (Gemini meeting notes, Spanish), `MUNET_Modelo_Fi
 
 | Format | UTF-8 | Structure | Verdict |
 |---|---|---|---|
-| DOCX | ✅ clean (emojis + Spanish accents preserved with `-o` flag) | ✅ headings, bullets, anchor links preserved | Production-quality |
+| DOCX | ✅ clean (MCP path: UTF-8 via JSON transport; CLI on Windows: requires `-o` flag, not `>` redirect) | ✅ headings, bullets, anchor links preserved | Production-quality |
 | XLSX | ✅ clean | ⚠️ empty cells serialize as `NaN`, first row not auto-promoted to headers (`Unnamed: 1`) | Usable — Claude parses through the noise |
 | PDF | ✅ clean | ⚠️ headings duplicated on adjacent lines (pdfminer layout quirk) | Usable — content preserved, noisy but parseable |
 
-**Critical finding:** stdout redirection on Windows (`markitdown file.docx > out.md`) breaks encoding to CP1252. The MCP server uses the Python API directly (not shell pipes) so MCP calls return clean UTF-8. CLI usage must use `markitdown -o out.md file.docx` (file-output flag, not redirect).
+**CLI caveat (Windows only):** stdout redirection (`markitdown file.docx > out.md`) breaks encoding to CP1252. MCP calls are unaffected — the server uses the Python API directly over JSON, which is always UTF-8. CLI usage must use `markitdown -o out.md file.docx` (file-output flag, not redirect).
 
 ## Open Items
 
