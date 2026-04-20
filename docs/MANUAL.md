@@ -251,7 +251,7 @@ Default for `/iago-execute` and `/iago-quick`. The pipeline step 3 review is a s
 
 **Stress test enforcement:** If stress-test findings exist, the reviewer verifies each finding was addressed in code or justified with a comment. Unaddressed findings are flagged as Important.
 
-After the review, **step 4 (Codex adversarial)** sends the diff to GPT-5.4 for cross-model coverage. On Windows, Codex sandbox blocks git — the pipeline auto-detects this and falls back to a Claude adversarial session. Runtime failures also fall back automatically.
+After the review, **step 4 (Codex adversarial)** sends the diff to GPT-5.4 for cross-model coverage. The pipeline invokes `codex-companion adversarial-review`, which uses the Codex app-server turn API and runs identically on Windows, Mac, and Linux. When the companion plugin isn't installed or errors at runtime, the pipeline falls back to a Claude adversarial session automatically.
 
 Critical/Important findings at steps 3-4 route back for local fixes (max 2 rounds) before PR creation.
 
@@ -682,7 +682,7 @@ Step 0: claude -p "stress test plan"  → adversarial plan review (skipped if al
 Step 1: claude -p "implement plan"    → full context + mandatory stress-test findings
 Step 2: tsc + vite build              → shell command, no Claude
 Step 3: claude -p "review this diff"  → three-pass with domain routing + stress enforcement
-Step 4: claude -p "codex review"      → cross-model (Claude fallback on Windows)
+Step 4: codex-companion adversarial-review → cross-model GPT-5.4 (Claude fallback if companion missing)
 Step 5: claude -p "create PR"         → commits + PR
 ```
 
@@ -750,10 +750,10 @@ The `debug` profile gets dispatched automatically (max 2 retries). After 2 failu
 
 ### Codex review not running
 
-1. Verify Codex CLI is installed: `codex --version`
-2. Run `/codex:setup` to check authentication
-3. On Windows (MSYS/Cygwin/Git Bash): the pipeline auto-detects Windows and falls back to Claude adversarial — Codex sandbox blocks git on these environments. This is expected behavior, not an error.
-4. If Codex is installed but fails at runtime, the pipeline falls back to Claude adversarial automatically. Check the summary for "falling back to Claude" messages.
+1. Verify the openai-codex plugin is installed — the pipeline looks for `codex-companion.mjs` under `~/.claude/plugins/marketplaces/openai-codex/plugins/codex/scripts/` (preferred) or `~/.claude/plugins/cache/openai-codex/codex/*/scripts/` (fallback)
+2. Verify Node.js is on `PATH`: `node --version` (the companion runs via `node <path>`)
+3. Run `/codex:setup` to check Codex subscription authentication
+4. If the companion is absent, the pipeline falls back to Claude Opus adversarial on all platforms — this is expected, not an error. Check the summary for fallback messages.
 5. The adversarial review is mandatory — if it's skipping entirely, check for BLOCKED status in the plan summary
 
 ### Windows path issues
