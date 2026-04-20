@@ -15,6 +15,7 @@ Amplify Gen 2 specific failure modes. Distilled from `/amplify-bug-bounty` (200+
 | Cross-stack IAM grant via `userPool.grantX(fn)` / `bucket.grantX(fn)` / `table.grantX(fn)` where the function lives in a different stack than the resource — exports the resource, creates cycle risk | ALWAYS Important |
 | Lambda `function URL` with `authType: NONE` and no header-based secret verification — public unauthenticated endpoint | ALWAYS Critical |
 | S3 path with `allow.authenticated` and no `{entity_id}` scoping on user-private data — any signed-in user can read any other user's files | ALWAYS Critical |
+| Cognito trigger Lambda (postConfirmation, customEmailSender, etc.) defined without an explicit `addPermission` granting `cognito-idp.amazonaws.com` as principal — trigger silently never fires | ALWAYS Important |
 
 ### Checks
 
@@ -33,5 +34,6 @@ Amplify Gen 2 specific failure modes. Distilled from `/amplify-bug-bounty` (200+
 - **S3 user-private path without `{entity_id}`.** `allow.authenticated.to(["read", "write"])` on a path like `uploads/*` lets every signed-in user read every other user's files. Use `entity_id`-scoped paths (`uploads/{entity_id}/*`) for user-private data.
 - **S3 path token misuse.** `{entity_id}` expands per-caller — using it inside a non-owner rule (group, authenticated) means the path fragment is effectively ignored and the rule applies broadly. Owner-only rules can use `{entity_id}`; group rules cannot rely on it for scoping.
 - **Lambda function URL `authType: NONE`.** Public unauthenticated endpoint. Either change to `authType: AWS_IAM` and sign requests, or implement header-based secret verification inside the handler. Never expose business logic on an open URL.
+- **Cognito trigger Lambda missing `addPermission`.** A Lambda wired as a Cognito trigger (`postConfirmation`, `preSignUp`, `customEmailSender`, etc.) requires an explicit `addPermission` call granting `cognito-idp.amazonaws.com` as the principal with the User Pool ARN as the source. Without it, Cognito cannot invoke the function — sign-up succeeds in Cognito but the trigger (group assignment, welcome email, audit log) silently never executes. The failure produces no error in the Cognito console.
 - **Hardcoded ARNs / table names / endpoints in Lambda.** Resource identifiers must come from environment variables injected by `backend.ts` via `addEnvironment`. String literals break across sandbox / branch / prod and across deploys when resources are recreated.
 - **Secrets passed via `addEnvironment` plaintext.** Secret values written through `addEnvironment(K, plaintextSecret)` end up in the CloudFormation template and CloudTrail logs. Use `secret('NAME')` and reference via the secret-handling pattern; never inline.
