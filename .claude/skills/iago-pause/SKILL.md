@@ -9,11 +9,15 @@ description: >-
 ## Purpose
 
 Capture the current workflow position, progress, and next action into a structured
-HANDOFF.json file so the next session can resume without re-discovery.
+handoff file so the next session can resume without re-discovery. Each pause writes
+its own timestamped, slugged file — handoffs never overwrite each other.
 
 ## Preconditions
 
 - `.iago/` directory must exist. If not, there's nothing to pause.
+- Resolve the `.iago/` location by walking up from the current working directory to
+  find the nearest ancestor containing `.iago/state/`. This prevents nested-path
+  bugs when the orchestrator's cwd is inside a client subdir.
 
 ## Steps
 
@@ -63,9 +67,25 @@ Rules:
 - `key_decisions` captures decisions made this session that aren't in STATE.md yet
 - `uncommitted_files` from `git status` — warns the next session about WIP
 
-### 3. Write HANDOFF.json
+### 3. Write the handoff file
 
-Write to `.iago/state/HANDOFF.json`.
+Write to `.iago/state/HANDOFF-{YYYYMMDD-HHMM}-{slug}.json`.
+
+- `{YYYYMMDD-HHMM}` — current local date+time, e.g. `20260420-1530`. Provides
+  chronological sort and human-readable recency.
+- `{slug}` — content hint derived from current git branch
+  (`git branch --show-current`), sanitized:
+  - lowercase
+  - non-alphanumerics collapsed to single hyphens
+  - leading/trailing hyphens stripped
+  - max 40 chars (truncate, then strip trailing hyphen)
+  - if the branch is empty, detached HEAD, or all stripped away, use `adhoc`
+
+Example: branch `feat/bug-bounty-promotion` paused at 2026-04-20 15:30 →
+`HANDOFF-20260420-1530-feat-bug-bounty-promotion.json`.
+
+Never overwrite an existing handoff file. If the exact filename already exists
+(same minute, same slug — rare), append `-2`, `-3`, ... until unique.
 
 ### 4. Update STATE.md
 
@@ -75,26 +95,32 @@ Log a decision: "Session paused — {reason if given}".
 ## Output
 
 Display:
-1. Workflow position (phase / plan / task)
-2. Completed vs remaining task count
-3. Next action summary
-4. Any blockers
-5. Remind: "Resume is automatic — HANDOFF.json will be loaded on next session start."
+1. Handoff filename written (so the user can find/inspect it)
+2. Workflow position (phase / plan / task)
+3. Completed vs remaining task count
+4. Next action summary
+5. Any blockers
+6. Remind: "Resume is automatic — the most recent handoff will be loaded on next session start."
 
 ## Resume Behavior
 
 Resume is NOT a separate skill. The `SessionStart` hook:
-1. Detects `.iago/state/HANDOFF.json`
-2. Injects its contents via `hookSpecificOutput`
-3. Deletes the file after loading
+1. Globs `.iago/state/HANDOFF-*.json`
+2. Picks the most recent by file mtime
+3. Injects its contents via `hookSpecificOutput`
+4. Moves the file to `.iago/state/handoffs/archive/` (preserves history; no overwrites)
 
-If HANDOFF.json is >7 days old, the SessionStart hook logs an informational warning
-that context may be stale.
+Older handoffs in `.iago/state/` are ignored on the next resume — only the latest
+loads. They sit alongside until the next pause; archive them manually if cluttered.
+
+If the loaded handoff is >7 days old, the SessionStart hook logs an informational
+warning that context may be stale.
 
 ## Boundaries
 
-- Only writes to `.iago/state/HANDOFF.json` and updates STATE.md
+- Only writes to `.iago/state/HANDOFF-*.json` and updates STATE.md
 - Does not commit code — if there are uncommitted changes, they stay uncommitted
 - Does not modify plans, summaries, or context artifacts
 - Does not trigger any agents
 - Does not advance or revert workflow state — just snapshots it
+- Does not delete or archive prior handoff files — that's the SessionStart hook's job
