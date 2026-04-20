@@ -18,6 +18,8 @@ description: >-
 | **Debug a stuck issue** | `/codex:rescue` | `/codex:rescue "auth middleware fails on refresh"` |
 | **Start a new client project** | `/iago-scaffold` then `/iago-init` | `/iago-scaffold client-name` |
 | **Onboard existing codebase** | `/iago-onboard` | `/iago-onboard` |
+| **Deep audit Amplify repo** | `/amplify-bug-bounty` | `/amplify-bug-bounty` (pre-launch, post-incident, periodic) |
+| **Deep audit React frontend** | `/frontend-bug-bounty` | `/frontend-bug-bounty` (pre-launch, post-incident, periodic) |
 
 ## Size Your Task
 
@@ -143,6 +145,15 @@ Every plan goes through these stages in `scripts/execute-pipeline.sh`:
 | `/healthcare-phi-compliance` | HIPAA/PHI compliance | Healthcare features with PHI |
 | `/liquid-glass-design` | Glassmorphism UI effects | Design calls for glass effects |
 | `/agent-payment-x402` | Agent-to-agent payment (x402) | Agent payment flows, not Stripe/PayPal |
+
+### Audit / Bug Bounty (on-demand deep sweeps)
+
+The pipeline already runs the highest-leverage rules from these skills on every plan via `scripts/review-checks/data-integrity.md` and `scripts/review-checks/amplify.md`. Use the full skills for periodic deep sweeps — new client onboarding, pre-launch hardening, post-incident audits — not as a per-plan gate.
+
+| Skill | What | When to use | When NOT to use |
+|-------|------|-------------|-----------------|
+| `/amplify-bug-bounty` | Full Amplify Gen 2 audit (~200 rules): CFN cycles, AppSync auth, multi-tenancy, IAM, Cognito, S3 | Pre-launch on any Amplify Gen 2 client, post-incident audit, periodic (monthly) sweep | Per-plan gate — pipeline already runs critical rules |
+| `/frontend-bug-bounty` | Full React 19 + Vite + TS + Tailwind audit (~280 rules incl. Section Q data correctness) | Pre-launch on any React client, post-incident audit, periodic sweep | Per-plan gate — pipeline already runs critical Section Q rules |
 
 ### Codex (cross-model)
 
