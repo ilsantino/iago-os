@@ -89,13 +89,33 @@ CHECKS_DIR="$SCRIPT_DIR/review-checks"
 log() { echo "[$(date '+%H:%M:%S')] $1"; }
 
 run_claude() {
+  # Windows claude.exe spawns child processes that hold pipe FDs open even
+  # after the parent is SIGKILL'd. `timeout` alone deadlocks callers using
+  # $(run_claude ...). Redirect to a file, poll, then taskkill //T the tree.
   local timeout_secs="$1"; shift
-  timeout "$timeout_secs" claude "$@"
-  local exit_code=$?
-  if [[ $exit_code -eq 124 ]]; then
-    log "ERROR: claude session timed out after ${timeout_secs}s"
+  local out="$PIPELINE_TMP/claude-$$-$RANDOM.out"
+  claude "$@" > "$out" 2>&1 &
+  local pid=$!
+  local waited=0
+  while kill -0 "$pid" 2>/dev/null && (( waited < timeout_secs )); do
+    sleep 5
+    waited=$((waited + 5))
+  done
+  if kill -0 "$pid" 2>/dev/null; then
+    log "ERROR: claude session exceeded ${timeout_secs}s; tree-killing PID $pid"
+    if command -v taskkill >/dev/null 2>&1; then
+      taskkill //F //T //PID "$pid" >/dev/null 2>&1 || true
+    fi
+    kill -9 "$pid" 2>/dev/null || true
+    sleep 2
+    cat "$out" 2>/dev/null || true
+    rm -f "$out"
     return 1
   fi
+  wait "$pid"
+  local exit_code=$?
+  cat "$out" 2>/dev/null || true
+  rm -f "$out"
   return $exit_code
 }
 
