@@ -5,7 +5,8 @@ MCP server that extracts YouTube transcripts via `youtube-transcript-api`. Drop-
 ## Install
 
 ```bash
-pip install -e ~/dev/iago-os/mcp-servers/youtube-transcript
+# from the repo root
+pip install -e mcp-servers/youtube-transcript
 ```
 
 ## Tool
@@ -37,6 +38,7 @@ All errors inherit from `TranscriptError`.
 | `TranscriptsDisabledError` | Creator has disabled captions for the video |
 | `VideoUnavailableError` | Private, removed, or region-locked video |
 | `LanguageNotFoundError` | No transcript available in the requested language (includes list of available langs in message) |
+| `TranscriptBackendError` | Upstream service failure (rate-limit, transport, library skew) — retryable, unlike the other four |
 
 ## MCP registration
 

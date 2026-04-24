@@ -102,6 +102,7 @@ def fetch_transcript(video_id: str, language: str) -> list[dict]:
         VideoUnavailable,
     )
 
+    language = language.strip().lower()
     language_chain = [
         language,
         f"{language}-US",

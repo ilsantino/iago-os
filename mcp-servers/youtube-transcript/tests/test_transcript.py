@@ -7,11 +7,26 @@ import pytest
 
 from mcp_youtube_transcript.transcript import (
     InvalidURLError,
+    LanguageNotFoundError,
     TranscriptBackendError,
+    TranscriptsDisabledError,
+    VideoUnavailableError,
     cues_to_markdown,
     extract_video_id,
     fetch_transcript,
 )
+
+
+class _FakeTranscriptsDisabled(Exception):
+    pass
+
+
+class _FakeVideoUnavailable(Exception):
+    pass
+
+
+class _FakeNoTranscriptFound(Exception):
+    pass
 
 
 class TestExtractVideoId:
@@ -154,19 +169,11 @@ def _install_fake_youtube_transcript_api(
     *,
     list_raises: BaseException | None = None,
     fetch_raises: BaseException | None = None,
+    find_transcript_raises: BaseException | None = None,
 ) -> None:
     """Stub the youtube_transcript_api package so fetch_transcript can be unit-tested
     without any network access.
     """
-
-    class TranscriptsDisabled(Exception):
-        pass
-
-    class VideoUnavailable(Exception):
-        pass
-
-    class NoTranscriptFound(Exception):
-        pass
 
     class _FakeTranscript:
         language_code = "en"
@@ -181,6 +188,8 @@ def _install_fake_youtube_transcript_api(
             return iter([_FakeTranscript()])
 
         def find_transcript(self, _languages):
+            if find_transcript_raises is not None:
+                raise find_transcript_raises
             return _FakeTranscript()
 
     class _FakeApi:
@@ -192,9 +201,9 @@ def _install_fake_youtube_transcript_api(
     pkg = types.ModuleType("youtube_transcript_api")
     pkg.YouTubeTranscriptApi = _FakeApi
     errors = types.ModuleType("youtube_transcript_api._errors")
-    errors.TranscriptsDisabled = TranscriptsDisabled
-    errors.VideoUnavailable = VideoUnavailable
-    errors.NoTranscriptFound = NoTranscriptFound
+    errors.TranscriptsDisabled = _FakeTranscriptsDisabled
+    errors.VideoUnavailable = _FakeVideoUnavailable
+    errors.NoTranscriptFound = _FakeNoTranscriptFound
 
     monkeypatch.setitem(sys.modules, "youtube_transcript_api", pkg)
     monkeypatch.setitem(sys.modules, "youtube_transcript_api._errors", errors)
@@ -236,3 +245,30 @@ class TestFetchTranscriptErrorMapping:
         _install_fake_youtube_transcript_api(monkeypatch)
         cues = fetch_transcript("aaaaaaaaaaa", "en")
         assert cues == [{"text": "hi", "start": 0.0, "duration": 1.0}]
+
+    def test_transcripts_disabled_maps_to_domain_error(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _install_fake_youtube_transcript_api(
+            monkeypatch, list_raises=_FakeTranscriptsDisabled("captions off")
+        )
+        with pytest.raises(TranscriptsDisabledError):
+            fetch_transcript("aaaaaaaaaaa", "en")
+
+    def test_video_unavailable_maps_to_domain_error(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _install_fake_youtube_transcript_api(
+            monkeypatch, list_raises=_FakeVideoUnavailable("video gone")
+        )
+        with pytest.raises(VideoUnavailableError):
+            fetch_transcript("aaaaaaaaaaa", "en")
+
+    def test_no_transcript_found_maps_to_language_not_found(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _install_fake_youtube_transcript_api(
+            monkeypatch, find_transcript_raises=_FakeNoTranscriptFound("no lang")
+        )
+        with pytest.raises(LanguageNotFoundError):
+            fetch_transcript("aaaaaaaaaaa", "en")
