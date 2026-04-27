@@ -103,20 +103,28 @@ const readyPromise = new Promise((resolve, reject) => {
 });
 
 // ── Cleanup helper ──────────────────────────────────────────────────
+// On Windows with `shell: true`, preview.pid points to cmd.exe — the vite
+// node process is a grandchild. `preview.kill()` only reaps cmd, leaving
+// vite holding files. taskkill /T walks the tree and kills everything.
 function cleanup() {
-  if (preview && !preview.killed) {
-    preview.kill("SIGTERM");
-    // On Windows, SIGTERM may not work — force kill after 2s
-    setTimeout(() => {
-      if (!preview.killed) {
-        try { process.kill(preview.pid, "SIGKILL"); } catch { /* already dead */ }
-      }
-    }, 2000);
+  if (!preview || preview.killed) return;
+  if (process.platform === "win32") {
+    try { execSync(`taskkill /T /F /PID ${preview.pid}`, { stdio: "ignore" }); }
+    catch { /* already dead */ }
+    return;
   }
+  preview.kill("SIGTERM");
+  setTimeout(() => {
+    if (!preview.killed) {
+      try { process.kill(preview.pid, "SIGKILL"); } catch { /* already dead */ }
+    }
+  }, 2000);
 }
 
+process.on("exit", cleanup);
 process.on("SIGINT", () => { cleanup(); process.exit(130); });
 process.on("SIGTERM", () => { cleanup(); process.exit(143); });
+process.on("uncaughtException", (err) => { cleanup(); console.error(err); process.exit(2); });
 
 // ── Run checks ──────────────────────────────────────────────────────
 async function run() {

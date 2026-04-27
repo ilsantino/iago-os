@@ -13,6 +13,9 @@ No active plans. Audit phase complete.
 | 2026-04-20 | quick | Real Codex adversarial on Windows via codex-companion | [#18](https://github.com/ilsantino/iago-os/pull/18) |
 | 2026-04-20 | fast | Add concurrency guards to claude.yml + claude-review-fix.yml (stop parallel loops) | f47cc2c |
 | 2026-04-23 | plan | Feature plan + stress test for `mcp-youtube-transcript` Python MCP | 1 plan / 7 tasks — PROCEED_WITH_NOTES |
+| 2026-04-27 | execute | youtube-transcript MCP shipped — Python MCP via youtube-transcript-api, registered globally | [#19](https://github.com/ilsantino/iago-os/pull/19) merged, 33 tests passing |
+| 2026-04-27 | plan | Feature plan + stress test for `feature-pipeline-speed-wedges` (5 wedges + measurement protocol) | 6 plans / 41 tasks — first round: 5 PROCEED_WITH_NOTES + 1 BLOCK (plan 03). Revised + re-stress-tested: all 6 PROCEED_WITH_NOTES with critical findings addressed inline. Ready for Path 2 (ship plan 01 first). |
+| 2026-04-27 | quick | Codex CLI 0.118→0.125, plugin v1.0.2→v1.0.4, `~/.codex/config.toml` pinned to gpt-5.5; align stale GPT-5.4 refs to config.toml | [#20](https://github.com/ilsantino/iago-os/pull/20) merged |
 
 ## Known Issues
 
