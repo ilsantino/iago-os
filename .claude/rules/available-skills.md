@@ -159,9 +159,9 @@ The pipeline already runs the highest-leverage rules from these skills on every 
 
 | Skill | What |
 |-------|------|
-| `/codex:rescue` | Delegate debugging or implementation to GPT-5.4 (`--write` for fixes) |
+| `/codex:rescue` | Delegate debugging or implementation to GPT-5.5 (`--write` for fixes) |
 | `/codex:adversarial-review` | Cross-model review (auth, data loss, races, business logic) |
-| `/codex:review` | GPT-5.4 read-only code review against git changes |
+| `/codex:review` | GPT-5.5 read-only code review against git changes |
 | `/codex:status` | Show active/recent Codex background jobs |
 | `/codex:result` | Retrieve output from finished Codex job |
 | `/codex:cancel` | Cancel active background Codex job |
