@@ -12,6 +12,7 @@ No active plans. Audit phase complete.
 | 2026-04-13 | fast | Add console gate (step 2b) — Playwright runtime error check | ec00081 |
 | 2026-04-20 | quick | Real Codex adversarial on Windows via codex-companion | [#18](https://github.com/ilsantino/iago-os/pull/18) |
 | 2026-04-20 | fast | Add concurrency guards to claude.yml + claude-review-fix.yml (stop parallel loops) | f47cc2c |
+| 2026-04-23 | plan | Feature plan + stress test for `mcp-youtube-transcript` Python MCP | 1 plan / 7 tasks — PROCEED_WITH_NOTES |
 
 ## Known Issues
 
