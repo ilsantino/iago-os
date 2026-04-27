@@ -1,0 +1,174 @@
+[10:03:42] STRESS TEST — skipped (plan already stress-tested)
+[10:03:42] IMPLEMENT — 02-viewer-indice-wiring
+[10:19:48] Implementation complete
+[10:19:49] BUILD GATE — attempt 1
+[10:20:03] Build passed
+[10:20:03] CONSOLE GATE — attempt 1
+[10:20:22] Console gate skipped (Playwright not available or preview failed)
+[10:20:22] REVIEW — 02-viewer-indice-wiring
+warning: in the working copy of 'src/pages/MapaPage.tsx', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src/components/mapa/IndiceItem.tsx', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src/components/mapa/IndiceMapa.tsx', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src/components/mapa/IndiceSection.tsx', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src/components/mapa/PlanoViewer.tsx', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src/components/mapa/index.ts', LF will be replaced by CRLF the next time Git touches it
+[10:20:23]   review-checks: all modules loaded (209 lines)
+[10:24:56] Review output:
+# Review: `feature-mapa-museo/02-viewer-indice-wiring`
+
+## Pass 1 — Plan Compliance
+
+All 6 tasks implemented. Files match the plan's file list. Verified spot-checks:
+
+- **Task 1 (IndiceItem):** button + badge + nombre + ubicacionTexto with `min-w-0 flex-1 truncate` + `flex-shrink-0` — ✅
+- **Task 2 (IndiceSection):** stagger variants 0.03, `useReducedMotion` gating, diacritic-stripping `slugifyTitulo` exported — ✅
+- **Task 3 (IndiceMapa):** `<Accordion multiple defaultValue={...}>`, `md:columns-2 md:gap-8`, `break-inside-avoid`, `AnimatePresence mode="wait"` at 0.3s — ✅
+- **Task 4 (PlanoViewer):** base-ui `Tabs.Root` + `onValueChange` adapter, image with `touchAction`, `Modal size="full" className="max-w-[90vw]..."`, `triggerRef` + focus restore via `requestAnimationFrame` → `handleClose` — ✅ (confirmed `className` is applied AFTER `sizeClasses[size]` in `cn()`, so `max-w-[90vw]` wins via tailwind-merge)
+- **Task 5 (MapaPage):** `useState<MapaTab>("espacio-munet")`, stacked `max-w-4xl` column, hero/info/CTA preserved — ✅
+- **Task 6 (a11y):** 11 numero strings `01`–`11` in `mapa.ts`, no hardcoded zone names in components — ✅
+
+## Pass 2 — Domain Routing
+
+**Selected:** Baseline, React, i18n, Pattern Consistency.
+
+**Skipped (no diff surface):** Amplify Gen 2, API, Auth, Backend, Data Integrity, Infra — the diff is pure presentation, no API/mutations/data-fetching/aggregates/backend.
+
+## Pass 3 — Adversarial Findings
+
+### Important
+
+**1. `Tabs.Panel` missing — broken `aria-controls` relationship** *(React — a11y)*
+`PlanoViewer` renders `Tabs.Root` + `Tabs.List` + `Tabs.Tab` (lines 39–68) but **no `Tabs.Panel`**. base-ui stamps `aria-controls` on each `Tabs.Tab` pointing to the panel whose `value` matches. With no panel rendered, `aria-controls` dangles — screen readers cannot associate the image region as the tab panel, and automated a11y scans will flag it. The plan requires "full accessibility" and Lighthouse a11y ≥ 95. Fix: wrap the image region in a single `<Tabs.Panel value={activeTab} keepMounted>` inside `Tabs.Root`, or render three `Tabs.Panel` (one per id). Moving `Tabs.Root` to wrap the entire viewer is cleaner than splitting state.
+
+### Minor
+
+**2. Sliding tab indicator math assumes equal-width tabs** *(PlanoViewer lines 59–66)*
+Indicator uses `width: calc((100% - 8px) / 3)` and `translateX(calc(${activeIndex * 100}% + 4px))`. "Espacio MUNET" is ~60% wider than "Nivel 1"/"Nivel 2", but the math gives each tab 1/3 of the list. The green pill will be narrower than "Espacio MUNET" at idx=0 and misaligned at idx=1/2. Either add `flex-1` to each `Tabs.Tab` to force equal widths, or measure tab offsets via refs. Visual only — no functional bug.
+
+**3. `<h3>` inside `<button>` — inverted WAI-ARIA accordion pattern** *(IndiceSection line 40)*
+AccordionTrigger renders `<button><h3>{seccion.titulo}</h3></button>`. The WAI-ARIA accordion pattern expects the heading element to contain the button, not the reverse (`<h3><button>…</button></h3>`). The plan's phrasing ("`<h3>`-style label") was stylistic. Replace the `<h3>` with `<span className="... text-sm font-semibold uppercase tracking-wide text-munet-green">` or move heading semantics to `AccordionPrimitive.Header`.
+
+**4. `transform group-hover:translate-x-[2px]` is self-referential** *(IndiceItem line 11)*
+The button has `group` and `group-hover:translate-x-[2px]` on the same element. It works (group applies to the element itself in Tailwind), but the idiomatic form is `hover:translate-x-[2px]`. `group-hover` implies a descendant is reacting to an ancestor hover. Readability nit.
+
+**5. `cn()` helper not used for className composition in `PlanoViewer`** *(lines 53, 61–65)*
+Repo convention is `cn()` (see button.tsx, modal.tsx, accordion.tsx). PlanoViewer uses template literals with ternaries. Not a bug, but a deviation from the established pattern.
+
+**6. Double `break-inside-avoid`** *(IndiceMapa line 30 wrapper + IndiceSection line 38 AccordionItem)*
+Both wrapper `<div>` and `AccordionItem` carry `break-inside-avoid`. One is sufficient. Harmless.
+
+### Cross-Cutting (all N/A for this diff)
+
+- Auth bypass: no endpoints/tokens touched
+- Data loss: no writes
+- Race conditions: no async state
+- Rollback safety: pure UI, nothing to roll back
+
+## Verdict
+
+**PASS_WITH_CONCERNS**
+
+Finding #1 (`Tabs.Panel` missing) should be addressed before merge — it directly contradicts the acceptance criterion of "full accessibility / Lighthouse ≥ 95". The rest are polish items.
+[10:24:56] Review passed
+[10:24:56] CODEX REVIEW — 02-viewer-indice-wiring
+[10:24:56] Running codex-companion adversarial-review (GPT-5.4)
+[10:27:11] Codex findings:
+(node:34740) [DEP0190] DeprecationWarning: Passing args to a child process with shell option true can lead to security vulnerabilities, as the arguments are not escaped, only concatenated.
+(Use `node --trace-deprecation ...` to show where the warning was created)
+[codex] Starting Codex task thread.
+[codex] Thread ready (019db602-6952-76c1-9674-9833d0025893).
+[codex] Turn started (019db602-6cb1-7562-add7-aae685e85010).
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git status --short'
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git rev-parse --sh...
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git diff --stat 70...
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git diff --name-on...
+[codex] Command declined: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git rev-parse --sh... (exit -1)
+[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git diff --stat 70... (exit 0)
+[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git status --short' (exit 0)
+[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git diff --name-on... (exit 0)
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git diff --cached ...
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git diff --cached ...
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git diff --cached ...
+[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git diff --cached ... (exit 0)
+[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git diff --cached ... (exit 0)
+[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git diff --cached ... (exit 0)
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'Get-Content -Path ...
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'Get-Content -Path ...
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'Get-Content -Path ...
+[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'Get-Content -Path ... (exit 0)
+[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'Get-Content -Path ... (exit 0)
+[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'Get-Content -Path ... (exit 0)
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'rg -n "mapa-(nivel...
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command "rg -n \"Modal\\(|<...
+[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'rg -n "mapa-(nivel... (exit 0)
+[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command "rg -n \"Modal\\(|<... (exit 0)
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command '$i=0; Get-Content ...
+[codex] Command declined: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command '$i=0; Get-Content ... (exit -1)
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command '$i=0; Get-Content ...
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command '$i=0; Get-Content ...
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command '$i=0; Get-Content ...
+[codex] Command declined: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command '$i=0; Get-Content ... (exit -1)
+[codex] Command declined: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command '$i=0; Get-Content ... (exit -1)
+[codex] Command declined: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command '$i=0; Get-Content ... (exit -1)
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'rg -n "." src/comp...
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'rg -n "." src/comp...
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'rg -n "." src/page...
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'rg -n "." src/comp...
+[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'rg -n "." src/comp... (exit 0)
+[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'rg -n "." src/comp... (exit 0)
+[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'rg -n "." src/comp... (exit 0)
+[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'rg -n "." src/page... (exit 0)
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'rg -n "namespace T...
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command "rg -n \"Tabs\\.Pan...
+[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'rg -n "namespace T... (exit 0)
+[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command "rg -n \"Tabs\\.Pan... (exit 0)
+[codex] Assistant message captured: {"verdict":"needs-attention","summary":"No-ship: this introduces an accessibility regression ...
+[codex] Turn completion inferred after the main thread finished and subagent work drained.
+# Codex Adversarial Review
+
+Target: branch diff against 70d974c2ea060b3b7f7e7aaf073b7a0e672db664
+Verdict: needs-attention
+
+No-ship: this introduces an accessibility regression in the new tabbed map UI and replaces the old static index with dead buttons that advertise interaction but execute nothing.
+
+Findings:
+- [high] Tabbed map controls are not bound to any tab panels, so assistive tech has no programmatic relationship between the selected tab and the content that changes (src/components/mapa/PlanoViewer.tsx:39-115)
+  `PlanoViewer` renders `Tabs.Root`, `Tabs.List`, and `Tabs.Tab`, but no `Tabs.Panel` at all. The map image and fullscreen content are rendered as ordinary elements later in the component, outside any tab panel semantics. Inference: Base UI expects tabs to control mounted panels, and without them the selected tab has no associated `tabpanel` for screen readers or keyboard users. The visible floor changes, but that state change is not exposed through the tabs pattern, which is a user-facing accessibility regression on a public page.
+  Recommendation: Render each floor's content inside `Tabs.Panel` elements keyed by the same values as the tabs, or otherwise provide an explicit accessible relationship (`aria-labelledby`/live region) so the selected tab is tied to the displayed map and index.
+- [medium] Every index entry is now a focusable button with an explicitly empty click handler (src/components/mapa/IndiceItem.tsx:9-14)
+  Each zone in the index is rendered as a `<button>` even though the handler body contains only a TODO comment and performs no action. That means keyboard and screen-reader users encounter a list of controls that announce as interactive but do nothing when activated. This is a regression from the previous static list markup and creates a misleading UI on the main navigation surface for the map.
+  Recommendation: Do not ship these as buttons until they have real behavior. Revert them to non-interactive list content, or implement the promised selection/highlight behavior and expose the state change accessibly.
+
+Next steps:
+- Convert the floor switcher to a complete tabs pattern with `Tabs.Panel` content for each floor and verify screen-reader behavior.
+- Remove or fully implement the zone-item button interaction before release.
+[10:27:11] Codex review complete
+[10:27:11] CODEX FIX — fixing findings before PR
+[10:31:39] Codex fix output (exit 0):
+Build green. Both findings fixed:
+
+- **[high] Tabs.Panel missing** — `PlanoViewer.tsx` now renders a `Tabs.Panel` per floor inside `Tabs.Root`, each containing its image + fullscreen trigger + caption. Base UI auto-wires `role="tabpanel"` + `aria-labelledby`, restoring the programmatic tab↔panel relationship for assistive tech. `triggerRef` binds only to the active panel's button so focus restore after modal close still works.
+- **[medium] Empty-handler buttons** — `IndiceItem.tsx` now renders a non-interactive `<div>` (no `<button>`, no empty handler, no hover/focus affordances). The list is semantically content-only until real hotspot behavior lands.
+
+Type-check clean, `vite build` exits 0 in 11s.
+SessionEnd hook [node "${CLAUDE_PLUGIN_ROOT}/scripts/session-lifecycle-hook.mjs" SessionEnd] failed: Hook cancelled
+[10:31:39] BUILD GATE (post-codex-fix)
+[10:31:59] Build passed after Codex fix
+warning: in the working copy of 'src/components/mapa/IndiceItem.tsx', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src/components/mapa/PlanoViewer.tsx', LF will be replaced by CRLF the next time Git touches it
+[10:31:59] CREATE PR — 02-viewer-indice-wiring
+[10:35:21] PR creation output:
+PR created: **https://github.com/bas-labs/munet-web/pull/72**
+
+6 files committed on `feat/mapa-viewer-indice-wiring`:
+- `src/components/mapa/IndiceItem.tsx` — leaf row component
+- `src/components/mapa/IndiceSection.tsx` — accordion section with stagger animation
+- `src/components/mapa/IndiceMapa.tsx` — per-tab index router with AnimatePresence
+- `src/components/mapa/PlanoViewer.tsx` — tabbed viewer with fullscreen modal
+- `src/components/mapa/index.ts` — barrel export
+- `src/pages/MapaPage.tsx` — wired with shared `activeTab` state
+[10:35:21] TAGGING @claude on PR #72
+https://github.com/bas-labs/munet-web/pull/72#issuecomment-4298076164
+[10:36:19] SUMMARY — 02-viewer-indice-wiring
+[10:36:20] Summary written to .iago/summaries/02-viewer-indice-wiring.md
+[10:36:20] PIPELINE COMPLETE — 02-viewer-indice-wiring
