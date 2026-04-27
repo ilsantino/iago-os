@@ -582,11 +582,11 @@ USED_CODEX=false
 USED_CLAUDE_FALLBACK=false
 
 if command -v node &> /dev/null && [[ -n "$CODEX_COMPANION" ]]; then
-  log "Running codex-companion adversarial-review (GPT-5.4)"
+  log "Running codex-companion adversarial-review (model from ~/.codex/config.toml)"
   CODEX_OUTPUT=$(cd "$PROJECT_DIR" && node "$CODEX_COMPANION" adversarial-review --base "$PRE_IMPL_SHA" --wait 2>&1) || CODEX_EXIT=$?
   USED_CODEX=true
 elif command -v codex &> /dev/null; then
-  log "Running codex review (GPT-5.4) — companion plugin not found, using raw CLI"
+  log "Running codex review (model from ~/.codex/config.toml) — companion plugin not found, using raw CLI"
   CODEX_OUTPUT=$(cd "$PROJECT_DIR" && codex review "${PRE_IMPL_SHA}..HEAD" 2>&1) || CODEX_EXIT=$?
   USED_CODEX=true
 fi

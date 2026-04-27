@@ -194,6 +194,6 @@ Pipeline agents excluded — they use plan-spec output format, not caveman.
 
 - **Opus:** Orchestrator + all code-writing sessions (impl, fix, debug)
 - **Sonnet:** PR creation, @claude tag synthesis, Codex fallback, mechanical analysis
-- **Codex (GPT-5.4):** Cross-model adversarial review, `/codex:rescue`
+- **Codex (GPT-5.5):** Cross-model adversarial review, `/codex:rescue` — model pinned in `~/.codex/config.toml` (each operator must create their own; no machine-level default in repo)
 
 Pipeline: opus for impl/fix/review. Sonnet for PR creation + @claude tags + Codex fallback. Orchestrator uses opus for code-writing agent dispatches. Analyst profiles use sonnet unless security-critical.
