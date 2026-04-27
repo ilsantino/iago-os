@@ -442,7 +442,11 @@ PASS 3 — ADVERSARIAL: Read each changed source file in FULL for context — do
 
 SEVERITY FLOORS: Some checks in the modules have minimum severity levels (marked ALWAYS Critical or ALWAYS Important). You MUST NOT downgrade these below the stated floor. Other findings use your judgment.$STRESS_ENFORCEMENT_BLOCK
 
-Categorize all findings as Critical, Important, or Minor. End with verdict: PASS, PASS_WITH_CONCERNS, or FAIL.
+Categorize all findings as Critical, Important, or Minor.
+
+End your output with exactly one line in this format:
+Verdict: <PASS|PASS_WITH_CONCERNS|FAIL>
+No markdown, no headers, no asterisks, no surrounding text on that line. The pipeline parser depends on this exact single-line format.
 
 Read the plan: $PLAN_FILE
 Read the diff: $DIFF_FILE
@@ -461,9 +465,13 @@ if [[ $REVIEW_EXIT -ne 0 ]]; then
   log "WARNING: Review session exited non-zero ($REVIEW_EXIT) — review may be incomplete"
 fi
 
-# Check for any findings (Critical, Important, or Minor) — fix all before PR
+# Check for any findings (Critical, Important, or Minor) — fix all before PR.
+# Use grep -z so the entire output is treated as one record. Newlines no longer
+# act as line delimiters, which lets the regex match both the single-line
+# canonical form (`Verdict: FAIL`) and legacy markdown forms where the header
+# and verdict token land on separate lines (`## Verdict\n\n**FAIL**`).
 fix_attempt=0
-while echo "$REVIEW_OUTPUT" | grep -qiE "Verdict\s*:?\s*\*{0,2}\s*(FAIL|PASS_WITH_CONCERNS)\b"; do
+while echo "$REVIEW_OUTPUT" | grep -qziE "Verdict\s*:?\s*\*{0,2}\s*(FAIL|PASS_WITH_CONCERNS)\b"; do
   fix_attempt=$((fix_attempt + 1))
 
   if [[ $fix_attempt -gt $MAX_FIX_RETRIES ]]; then
@@ -520,7 +528,11 @@ DOMAIN ROUTING: The review checklist contains ALL domain modules. Based on the d
 
 SEVERITY FLOORS: Some checks have minimum severity levels (marked ALWAYS Critical or ALWAYS Important). You MUST NOT downgrade these below the stated floor.
 
-Also check cross-cutting regardless of domain: auth bypass, data loss, race conditions, rollback safety. Read each changed source file in FULL for context — do not review from the diff alone. Categorize any remaining findings as Critical/Important/Minor. Verdict: PASS (all clean), PASS_WITH_CONCERNS (findings remain), or FAIL.$STRESS_ENFORCEMENT_BLOCK
+Also check cross-cutting regardless of domain: auth bypass, data loss, race conditions, rollback safety. Read each changed source file in FULL for context — do not review from the diff alone. Categorize any remaining findings as Critical/Important/Minor.$STRESS_ENFORCEMENT_BLOCK
+
+End your output with exactly one line in this format:
+Verdict: <PASS|PASS_WITH_CONCERNS|FAIL>
+No markdown, no headers, no asterisks, no surrounding text on that line. The pipeline parser depends on this exact single-line format.
 
 Read the plan: $PLAN_FILE
 Read the diff: $DIFF_FILE
@@ -583,12 +595,31 @@ USED_CLAUDE_FALLBACK=false
 
 if command -v node &> /dev/null && [[ -n "$CODEX_COMPANION" ]]; then
   log "Running codex-companion adversarial-review (model from ~/.codex/config.toml)"
-  CODEX_OUTPUT=$(cd "$PROJECT_DIR" && node "$CODEX_COMPANION" adversarial-review --base "$PRE_IMPL_SHA" --wait 2>&1) || CODEX_EXIT=$?
+  # Pass --cwd explicitly in addition to the bash `cd`. The companion spawns a
+  # task-worker child via PowerShell on Windows; depending on how the child
+  # shell inherits cwd, process.cwd() inside the worker can drift back to the
+  # parent repo (iago-os), making `git diff <PRE_IMPL_SHA>..HEAD` see zero
+  # changes and Codex return spurious "No changed files" approvals.
+  CODEX_OUTPUT=$(cd "$PROJECT_DIR" && node "$CODEX_COMPANION" adversarial-review --cwd "$PROJECT_DIR" --base "$PRE_IMPL_SHA" --wait 2>&1) || CODEX_EXIT=$?
   USED_CODEX=true
 elif command -v codex &> /dev/null; then
   log "Running codex review (model from ~/.codex/config.toml) — companion plugin not found, using raw CLI"
   CODEX_OUTPUT=$(cd "$PROJECT_DIR" && codex review "${PRE_IMPL_SHA}..HEAD" 2>&1) || CODEX_EXIT=$?
   USED_CODEX=true
+fi
+
+# Sanity check: when Codex returns "no changed files" while the project-dir
+# diff is actually non-empty, we know the cwd plumbing failed (Codex ran git
+# in the wrong repo). Demote to non-zero exit so the existing failure path
+# below picks up and runs the Claude adversarial fallback.
+if [[ "$USED_CODEX" == "true" ]] && [[ $CODEX_EXIT -eq 0 ]]; then
+  _project_diff_files=$(cd "$PROJECT_DIR" && git diff --name-only "$PRE_IMPL_SHA"..HEAD 2>/dev/null || echo "")
+  if [[ -n "$_project_diff_files" ]] && echo "$CODEX_OUTPUT" | grep -qiE 'no[[:space:]]+changed[[:space:]]+files|no[[:space:]]+files[[:space:]]+changed'; then
+    log "WARNING: Codex reported 'no changed files' but git diff $PRE_IMPL_SHA..HEAD in $PROJECT_DIR is non-empty:"
+    echo "$_project_diff_files" | sed 's/^/  /'
+    log "Treating as Codex failure (cwd misfire); failure path will run Claude adversarial fallback."
+    CODEX_EXIT=99
+  fi
 fi
 
 # Fallback: Claude adversarial if Codex not used or failed at runtime
@@ -826,7 +857,7 @@ pr: ${PR_URL:-"(none)"}
 
 - **Implement:** exit $IMPL_EXIT
 - **Build gate:** passed
-- **Review:** $(echo "$REVIEW_OUTPUT" | grep -oE 'Verdict:[[:space:]]*(PASS|PASS_WITH_CONCERNS|FAIL)' | head -1 || echo "completed")
+- **Review:** $(echo "$REVIEW_OUTPUT" | tr '\n' ' ' | grep -oiE 'Verdict[^A-Za-z]+(PASS_WITH_CONCERNS|PASS|FAIL)' | head -1 | grep -oE '(PASS_WITH_CONCERNS|PASS|FAIL)' | head -1 || echo "completed")
 - **Codex:** exit $CODEX_EXIT
 - **PR:** ${PR_URL:-"(not created)"}
 
