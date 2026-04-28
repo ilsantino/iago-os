@@ -23,3 +23,4 @@ clients/
 
 # Hook/scheduler runtime locks (machine-specific)
 .claude/*.lock
+.iago/state/pipeline-runs/
