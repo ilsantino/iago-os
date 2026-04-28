@@ -140,6 +140,9 @@ assert "par: slow-both returns 0" "$C"
 # Sequential would land near 4000ms+. Parallel should stay under 3500ms.
 if (( WALL < 3500 )); then C=true; else C=false; fi
 assert "par: wall=${WALL}ms is concurrent (max), not sequential (sum)" "$C"
+# Verify timing globals captured non-zero values (guards against tsc_start never recorded)
+[[ "$BUILD_GATE_TSC_MS" -gt 0 && "$BUILD_GATE_VITE_MS" -gt 0 ]] && C=true || C=false
+assert "par: slow-both TSC_MS and VITE_MS both non-zero (timing recorded)" "$C"
 rm -rf "$S"
 
 # ── Case 7: tsc fails fast, vite long-running — survivor MUST be killed ─
@@ -194,6 +197,19 @@ EXIT=0; run_build_gate || EXIT=$?
 assert "par: vite-only returns 0" "$C"
 [[ "$BUILD_GATE_OUTPUT" == *"# --- vite build ---"* && "$BUILD_GATE_OUTPUT" != *"# --- tsc --noEmit ---"* ]] && C=true || C=false
 assert "par: vite-only output omits tsc label" "$C"
+rm -rf "$S"
+
+# ── Case 10: only tsc present (parallel) ──────────────────────────
+S=$(mk_scratch)
+PROJECT_DIR="$S"; PIPELINE_TMP="$S"
+HAS_TSCONFIG=true; HAS_VITE=false
+IAGO_PARALLEL_BUILD=1
+IAGO_BUILD_GATE_TSC_CMD="echo tsc-only"
+EXIT=0; run_build_gate || EXIT=$?
+[[ $EXIT -eq 0 ]] && C=true || C=false
+assert "par: tsc-only returns 0" "$C"
+[[ "$BUILD_GATE_OUTPUT" == *"# --- tsc --noEmit ---"* && "$BUILD_GATE_OUTPUT" != *"# --- vite build ---"* ]] && C=true || C=false
+assert "par: tsc-only output omits vite label" "$C"
 rm -rf "$S"
 
 echo

@@ -29,10 +29,18 @@
 #
 # Returns 0 if both required commands succeed; non-zero otherwise.
 
+# Cache ms-support detection once at source time to avoid double-probing date
+# on every timing call. Aligns with pipeline-telemetry.sh's __PIPELINE_HAVE_MS.
+if date -u +%s%3N 2>/dev/null | grep -qE '^[0-9]+$'; then
+  __BUILD_GATE_HAVE_MS=1
+else
+  __BUILD_GATE_HAVE_MS=0
+fi
+
 # Millisecond timestamp helper. Falls back to second resolution if the date
 # implementation lacks %3N (rare; Git Bash on Windows has it).
 __build_gate_now_ms() {
-  if date -u +%s%3N 2>/dev/null | grep -qE '^[0-9]+$'; then
+  if [[ "$__BUILD_GATE_HAVE_MS" -eq 1 ]]; then
     date -u +%s%3N
   else
     echo "$(($(date -u +%s) * 1000))"
@@ -42,12 +50,24 @@ __build_gate_now_ms() {
 # Best-effort kill of a process tree. Used to reap a survivor when the parallel
 # gate decides the build has already failed; without this the next retry would
 # stack a fresh vite N+2 on top of vite N+1 still consuming memory.
+#
+# On Windows, taskkill //T kills the entire process tree.
+# On Linux/macOS, background subshells share the parent's process group
+# (non-interactive bash does not assign new pgids), so kill -- -$pgid would
+# kill our own process. Instead we walk the tree bottom-up via pgrep -P,
+# which is available on macOS 10.3+ and all modern Linux distros.
 __build_gate_kill_tree() {
   local pid="$1"
   [[ -z "$pid" ]] && return 0
   kill -0 "$pid" 2>/dev/null || return 0
   if command -v taskkill >/dev/null 2>&1; then
     taskkill //F //T //PID "$pid" >/dev/null 2>&1 || true
+  else
+    # Recurse into children first (bottom-up) so no grandchild outlives its parent.
+    local child
+    while IFS= read -r child; do
+      [[ -n "$child" ]] && __build_gate_kill_tree "$child"
+    done < <(pgrep -P "$pid" 2>/dev/null || true)
   fi
   kill -9 "$pid" 2>/dev/null || true
 }
@@ -79,6 +99,11 @@ run_build_gate() {
   local tsc_start=0 tsc_end=0 vite_start=0 vite_end=0
 
   if [[ "${IAGO_PARALLEL_BUILD:-0}" == "1" ]]; then
+    # Warn and degrade gracefully on bash < 5.1 — wait -n -p is unreliable there.
+    if [[ "${BASH_VERSINFO[0]}" -lt 5 || \
+        ( "${BASH_VERSINFO[0]}" -eq 5 && "${BASH_VERSINFO[1]}" -lt 1 ) ]]; then
+      echo "WARNING: IAGO_PARALLEL_BUILD=1 requires bash 5.1+; detected ${BASH_VERSION}. Falling back to sequential." >&2
+    fi
     BUILD_GATE_MODE="parallel"
     local tsc_pid="" vite_pid=""
 
