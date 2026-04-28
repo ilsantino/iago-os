@@ -100,7 +100,7 @@ cat > "$RUNS_DIR/20260101-000001-incomplete.ndjson" <<'EOF'
 {"type":"stage_start","stage":"implement","ts":"2026-01-01T00:00:01Z"}
 EOF
 
-if cd "$TMP3" && node "$AGGREGATOR" --last 1 >/dev/null 2>&1; then
+if (cd "$TMP3" && node "$AGGREGATOR" --last 1 >/dev/null 2>&1); then
   nope "no-complete-runs: aggregator should exit non-zero but exited 0"
 else
   ok "no-complete-runs: aggregator exits non-zero when no complete runs"
