@@ -69,6 +69,7 @@ pipeline_init() {
   RUN_FILE="$runs_dir/${RUN_ID}.ndjson"
   RUN_STARTED_AT=$(__pipeline_now_ms)
   STAGE_START_MS=0
+  STAGE_EXTRAS=""
   CURRENT_STAGE=""
   LAST_RUN_TIMED_OUT_FILE="${PIPELINE_TMP:-/tmp}/.pipeline-last-timed-out"
   __pipeline_write_timed_out false
@@ -82,11 +83,25 @@ stage_start() {
   __pipeline_write_timed_out false
   CURRENT_STAGE="$stage"
   STAGE_START_MS=$(__pipeline_now_ms)
+  STAGE_EXTRAS=""
   printf '{"type":"stage_start","stage":"%s","ts":"%s"}\n' \
     "$stage" "$(__pipeline_now_iso)" >> "$RUN_FILE"
 }
 
-# Mark stage end. Reads timed_out signal, writes duration_ms.
+# Attach a numeric extra field to the current stage. Appended to stage_end.
+# Plan 06 uses this for tsc_duration_ms / vite_duration_ms; future stages can
+# add their own keys without changing the helper signature.
+# Caller passes a raw JSON value (number, true/false, or "quoted string"); the
+# helper does not quote — keeps the door open for non-numeric extras.
+stage_extra() {
+  [[ -z "${RUN_FILE:-}" ]] && return 0
+  local key="$1"
+  local val="$2"
+  STAGE_EXTRAS="${STAGE_EXTRAS},\"${key}\":${val}"
+}
+
+# Mark stage end. Reads timed_out signal, writes duration_ms, appends any
+# extras attached via stage_extra during the stage.
 # exit_code may be a number or the literal "skipped".
 stage_end() {
   [[ -z "${RUN_FILE:-}" ]] && return 0
@@ -96,9 +111,10 @@ stage_end() {
   now=$(__pipeline_now_ms)
   duration=$(( now - ${STAGE_START_MS:-$now} ))
   timed_out=$(__pipeline_read_timed_out)
-  printf '{"type":"stage_end","stage":"%s","exit":"%s","duration_ms":%s,"timed_out":%s,"ts":"%s"}\n' \
-    "$stage" "$exit_code" "$duration" "$timed_out" "$(__pipeline_now_iso)" >> "$RUN_FILE"
+  printf '{"type":"stage_end","stage":"%s","exit":"%s","duration_ms":%s,"timed_out":%s%s,"ts":"%s"}\n' \
+    "$stage" "$exit_code" "$duration" "$timed_out" "${STAGE_EXTRAS:-}" "$(__pipeline_now_iso)" >> "$RUN_FILE"
   CURRENT_STAGE=""
+  STAGE_EXTRAS=""
 }
 
 # Final record. Called from EXIT trap with pipeline-level exit code.

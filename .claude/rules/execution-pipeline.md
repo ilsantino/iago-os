@@ -85,6 +85,29 @@ scripts/execute-pipeline.sh --plan {path} --project-dir {dir}
 
 ```
 
+### Build gate concurrency (`IAGO_PARALLEL_BUILD`)
+
+The build gate (step 2) runs `tsc --noEmit` and `vite build`. Default is
+sequential. Set `IAGO_PARALLEL_BUILD=1` to run them concurrently — the gate
+then waits on both, kills the survivor if either fails (so retries don't stack
+fresh vite processes on top of one still consuming RAM), and assembles a
+labeled `# --- tsc --noEmit ---` / `# --- vite build ---` block for the fix
+session regardless of which leg failed.
+
+Default-off rationale: two concurrent TypeScript processes (explicit `tsc` plus
+vite's internal one) on a 16GB Windows machine can press memory hard. The flag
+IS the mitigation — once a memory-pressure run on a 16GB box documents safe
+headroom, the default may flip. Until then, parallel mode is opt-in.
+
+Telemetry: build_gate stage_end records carry `tsc_duration_ms`,
+`vite_duration_ms`, and `build_gate_mode` extras so wedge effectiveness can be
+measured offline (see `scripts/lib/pipeline-telemetry.sh`).
+
+CI must exercise BOTH `IAGO_PARALLEL_BUILD=0` and `IAGO_PARALLEL_BUILD=1` on
+every change to `scripts/lib/build-gate.sh` — the parallel path is otherwise
+silently default-off and prone to bitrot. `scripts/test-build-gate.sh` runs
+both modes against stubbed commands.
+
 ### Control Flags
 
 `--no-tag` on the pipeline script skips step 5b (@claude tagging). The PR is

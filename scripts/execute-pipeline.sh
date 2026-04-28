@@ -19,6 +19,7 @@ MAX_FIX_RETRIES=2
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 . "$SCRIPT_DIR/lib/pipeline-telemetry.sh"
+. "$SCRIPT_DIR/lib/build-gate.sh"
 PIPELINE_STARTED=false
 
 # Snapshot args before the while loop consumes them via shift, so the
@@ -314,33 +315,41 @@ HAS_VITE=false
 [[ -f "$PROJECT_DIR/vite.config.ts" || -f "$PROJECT_DIR/vite.config.js" || -f "$PROJECT_DIR/vite.config.mjs" ]] && HAS_VITE=true
 
 BUILD_GATE_OUTPUT=""
+BUILD_GATE_TSC_MS=0
+BUILD_GATE_VITE_MS=0
+BUILD_GATE_MODE="sequential"
+# run_build_gate is sourced from scripts/lib/build-gate.sh (line 22 above).
+# Reads PROJECT_DIR / PIPELINE_TMP / HAS_TSCONFIG / HAS_VITE; sets the four
+# globals above. Parallel mode opt-in via IAGO_PARALLEL_BUILD=1.
 
-run_build_gate() {
-  BUILD_GATE_OUTPUT=""
-  local ok=true
-  local tsc_out="" vite_out=""
-  if $HAS_TSCONFIG; then
-    tsc_out=$(cd "$PROJECT_DIR" && npx tsc --noEmit 2>&1) || ok=false
-    BUILD_GATE_OUTPUT="$tsc_out"
+# Emit per-process build telemetry (called only inside the build_gate stage so
+# tsc_duration_ms / vite_duration_ms attach to the right stage_end record).
+emit_build_gate_extras() {
+  if [[ "${HAS_TSCONFIG:-false}" == "true" ]]; then
+    stage_extra tsc_duration_ms "${BUILD_GATE_TSC_MS:-0}"
   fi
-  if $HAS_VITE; then
-    vite_out=$(cd "$PROJECT_DIR" && npx vite build 2>&1) || ok=false
-    BUILD_GATE_OUTPUT="${BUILD_GATE_OUTPUT:+${BUILD_GATE_OUTPUT}
-}${vite_out}"
+  if [[ "${HAS_VITE:-false}" == "true" ]]; then
+    stage_extra vite_duration_ms "${BUILD_GATE_VITE_MS:-0}"
   fi
-  if ! $HAS_TSCONFIG && ! $HAS_VITE; then
-    log "No tsconfig.json or vite config found — build gate skipped"
-  fi
-  $ok
+  stage_extra build_gate_mode "\"${BUILD_GATE_MODE:-sequential}\""
 }
 
 stage_start build_gate
 build_attempt=0
 while true; do
-  log "BUILD GATE — attempt $((build_attempt + 1))"
+  # Compute the effective mode label honoring the same `=="1"` test the gate
+  # itself uses. Prior `${VAR:+}${VAR:-}` form printed `parallel0` when the
+  # var was explicitly set to "0".
+  if [[ "${IAGO_PARALLEL_BUILD:-0}" == "1" ]]; then
+    BUILD_GATE_MODE_LABEL="parallel"
+  else
+    BUILD_GATE_MODE_LABEL="sequential"
+  fi
+  log "BUILD GATE — attempt $((build_attempt + 1)) [mode: ${BUILD_GATE_MODE_LABEL}]"
 
   if run_build_gate; then
-    log "Build passed"
+    log "Build passed (tsc ${BUILD_GATE_TSC_MS}ms / vite ${BUILD_GATE_VITE_MS}ms / mode ${BUILD_GATE_MODE})"
+    emit_build_gate_extras
     stage_end build_gate 0
     break
   else
@@ -349,6 +358,7 @@ while true; do
 
     if [[ $build_attempt -ge $MAX_BUILD_RETRIES ]]; then
       log "ERROR: Build failed after $MAX_BUILD_RETRIES attempts. Stopping."
+      emit_build_gate_extras
       stage_end build_gate 1
       exit 1
     fi
