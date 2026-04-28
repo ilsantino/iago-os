@@ -49,9 +49,8 @@ PLAN_NAME=$(basename "$PLAN_PATH" .md)
 PIPELINE_TMP=$(mktemp -d)
 LOCK_DIR=""
 
-PIPELINE_STARTED=true
-pipeline_init
-
+# PIPELINE_STARTED guards the EXIT trap. Set true only after lock acquisition
+# so a lock-collision exit does not produce a phantom pipeline_finalize record.
 trap '__exit=$?; [[ "$PIPELINE_STARTED" == "true" ]] && pipeline_finalize "$__exit"; rm -rf "$PIPELINE_TMP"; [[ -n "${LOCK_DIR:-}" && -f "${LOCK_DIR}/pid" && "$(cat "${LOCK_DIR}/pid" 2>/dev/null)" == "$$" ]] && rm -rf "$LOCK_DIR"' EXIT
 
 # ─── Per-project pipeline lock ───────────────────────────────────────
@@ -83,6 +82,9 @@ fi
 echo "$$" > "$LOCK_DIR/pid"
 echo "$PLAN_PATH" > "$LOCK_DIR/plan"
 date -u +%Y-%m-%dT%H:%M:%SZ > "$LOCK_DIR/started"
+
+PIPELINE_STARTED=true
+pipeline_init
 
 PLAN_FILE="$PROJECT_DIR/$PLAN_PATH"
 DIFF_FILE="$PIPELINE_TMP/diff.txt"

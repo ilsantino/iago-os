@@ -70,7 +70,7 @@ pipeline_init() {
   RUN_STARTED_AT=$(__pipeline_now_ms)
   STAGE_START_MS=0
   CURRENT_STAGE=""
-  LAST_RUN_TIMED_OUT_FILE="${PIPELINE_TMP:-/tmp}/.pipeline-last-timed-out-$$"
+  LAST_RUN_TIMED_OUT_FILE="${PIPELINE_TMP:-/tmp}/.pipeline-last-timed-out"
   __pipeline_write_timed_out false
   : >> "$RUN_FILE"
 }
@@ -112,6 +112,6 @@ pipeline_finalize() {
   local now duration
   now=$(__pipeline_now_ms)
   duration=$(( now - ${RUN_STARTED_AT:-$now} ))
-  printf '{"type":"pipeline_finalize","plan":"%s","pipeline_exit":%s,"duration_ms":%s,"ts":"%s"}\n' \
+  printf '{"type":"pipeline_finalize","plan":"%s","pipeline_exit":"%s","duration_ms":%s,"ts":"%s"}\n' \
     "${PLAN_NAME:-unknown}" "$exit_code" "$duration" "$(__pipeline_now_iso)" >> "$RUN_FILE"
 }

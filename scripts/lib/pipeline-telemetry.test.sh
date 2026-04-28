@@ -104,10 +104,10 @@ bash -c "
 " || true
 RUN_FILE_PATH=$(cat "$RUN_FILE_PATH_FILE" 2>/dev/null || echo "")
 if [[ -n "$RUN_FILE_PATH" && -f "$RUN_FILE_PATH" ]]; then
-  if grep -q '"type":"pipeline_finalize".*"pipeline_exit":1' "$RUN_FILE_PATH"; then
-    ok "exit-nonzero: pipeline_finalize records pipeline_exit:1"
+  if grep -q '"type":"pipeline_finalize".*"pipeline_exit":"1"' "$RUN_FILE_PATH"; then
+    ok "exit-nonzero: pipeline_finalize records pipeline_exit:\"1\""
   else
-    nope "exit-nonzero: missing pipeline_exit:1 in pipeline_finalize"
+    nope "exit-nonzero: missing pipeline_exit:\"1\" in pipeline_finalize"
     cat "$RUN_FILE_PATH" >&2
   fi
 else

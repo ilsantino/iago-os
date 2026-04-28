@@ -5,8 +5,10 @@
 // Usage: node scripts/metrics-aggregate.mjs [--last N]
 //   --last N    Aggregate the most recent N complete runs (default 10).
 //
-// Order: filter (drop incomplete) → sort by pipeline_finalize.ts asc → take last N.
+// Order: filter (drop incomplete) → sort by filename asc → take last N.
 // Filter must come before sort/take so incomplete runs don't push valid ones out.
+// Sort by filename (YYYYMMDD-HHMMSS prefix) to avoid ISO-format divergence between
+// GNU date (+00:00) and BSD date (Z suffix) breaking localeCompare order.
 
 import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
@@ -59,12 +61,8 @@ if (complete.length === 0) {
   process.exit(1);
 }
 
-// Sort by pipeline_finalize.ts ascending.
-complete.sort((a, b) => {
-  const ta = a.records.find((r) => r.type === "pipeline_finalize").ts || "";
-  const tb = b.records.find((r) => r.type === "pipeline_finalize").ts || "";
-  return ta.localeCompare(tb);
-});
+// Sort by filename ascending (YYYYMMDD-HHMMSS prefix is format-agnostic).
+complete.sort((a, b) => a.file.localeCompare(b.file));
 
 // Take last N.
 const taken = complete.slice(-lastN);
@@ -95,10 +93,15 @@ for (const run of taken) {
 }
 
 // Compute per-stage stats.
+// Linear interpolation: for n=2 q=0.5, returns average of both samples rather
+// than always picking the upper value (which makes p50 == p95 == max at n=2).
 const percentile = (sorted, q) => {
   if (sorted.length === 0) return 0;
-  const idx = Math.min(sorted.length - 1, Math.floor(q * sorted.length));
-  return sorted[idx];
+  const pos = q * (sorted.length - 1);
+  const lo = Math.floor(pos);
+  const hi = Math.ceil(pos);
+  if (lo === hi) return sorted[lo];
+  return Math.round(sorted[lo] + (sorted[hi] - sorted[lo]) * (pos - lo));
 };
 
 const stats = [];
