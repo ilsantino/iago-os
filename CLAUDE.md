@@ -115,6 +115,16 @@ Five layers, each with distinct purpose and access pattern:
 
 13.5K drawers across 7 wings: `iago_os`, `munet`, `din`, `sentria`, `installflow`, `santiago`, `business`. Stop hook auto-writes diary entries. Bulk backfill: `mempalace mine ~/.claude/projects/{dir}/ --mode convos --wing {name}`.
 
+### Frozen-snapshot rule
+
+**MEMORY.md is a frozen snapshot.** Loaded into context at session start by Claude Code, including `claude -p` sessions (auto-loaded by default; only `claude --bare` skips it). Mid-session: do not grep, Read, or open the file at `~/.claude/projects/{project-slug}/memory/MEMORY.md` — content is already present in your context. Mutations (Write to add new entries) persist for next session, do not reflect in current context.
+
+**Permitted exceptions:**
+- **Read-after-Write to verify persistence** — after writing a new memory entry, you may Read to confirm the write succeeded. The prohibition is on grepping to retrieve already-injected content, not on verifying write side effects.
+- **Skills explicitly designed to reference cross-session preferences** (e.g., `/council`, which reads `~/.claude/projects/*/memory/` to ground multi-advisor decisions). Such skills must include an inline comment explaining the exception.
+
+Implementation, fix, and review sessions must follow this rule unconditionally. Preserves prefix-cache and avoids redundant reads.
+
 ## Learnings
 
 `.iago/learnings/` accumulates review patterns. 5+ occurrences → candidate for CLAUDE.md promotion.

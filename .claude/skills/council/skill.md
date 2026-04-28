@@ -47,7 +47,7 @@ tensions: downside vs upside, rethink vs execute, insider vs outsider.
 **A. Scan for context** (< 30 seconds):
 - Read `CLAUDE.md` and `.iago/PROJECT.md` if they exist
 - Check Obsidian MCP (`search_notes`) for relevant business context, past decisions
-- Check memory files in `~/.claude/projects/*/memory/`
+- Check memory files in `~/.claude/projects/*/memory/` <!-- Permitted exception to MEMORY.md frozen-snapshot rule (CLAUDE.md): /council legitimately reads cross-session user preferences to ground multi-advisor decisions. -->
 - Read any files the user referenced
 
 **B. Frame:**
