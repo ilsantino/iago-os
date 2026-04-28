@@ -44,6 +44,22 @@ fi
 PLAN_CONTENT=$(cat "$PROJECT_DIR/$PLAN_PATH")
 PLAN_NAME=$(basename "$PLAN_PATH" .md)
 
+# ─── Self-freeze: re-exec from a copy ────────────────────────────────
+# Bash on Windows reads scripts by byte offset; if the IMPLEMENT claude -p
+# session edits this script while bash is still parsing it, line offsets
+# shift mid-stream and the parser crashes (e.g., "ools: command not found"
+# from a partial --allowedTools token). Copy the scripts/ tree to a tmp dir
+# and re-exec from there so the running parser sees a stable file. Helpers
+# under SCRIPT_DIR/lib and SCRIPT_DIR/review-checks ride along in the copy.
+# IAGO_PIPELINE_FROZEN sentinel prevents an infinite re-exec loop.
+if [[ "${IAGO_PIPELINE_FROZEN:-0}" != "1" ]]; then
+  IAGO_PIPELINE_FROZEN_DIR=$(mktemp -d -t iago-pipeline-frozen.XXXXXX)
+  cp -r "$SCRIPT_DIR/." "$IAGO_PIPELINE_FROZEN_DIR/"
+  export IAGO_PIPELINE_FROZEN=1
+  export IAGO_PIPELINE_FROZEN_DIR
+  exec bash "$IAGO_PIPELINE_FROZEN_DIR/execute-pipeline.sh" "$@"
+fi
+
 # Temp directory for pipeline artifacts — avoids "Argument list too long" on
 # Windows by writing large content to files instead of inlining in claude -p.
 PIPELINE_TMP=$(mktemp -d)
@@ -51,7 +67,7 @@ LOCK_DIR=""
 
 # PIPELINE_STARTED guards the EXIT trap. Set true only after lock acquisition
 # so a lock-collision exit does not produce a phantom pipeline_finalize record.
-trap '__exit=$?; [[ "$PIPELINE_STARTED" == "true" ]] && pipeline_finalize "$__exit"; rm -rf "$PIPELINE_TMP"; [[ -n "${LOCK_DIR:-}" && -f "${LOCK_DIR}/pid" && "$(cat "${LOCK_DIR}/pid" 2>/dev/null)" == "$$" ]] && rm -rf "$LOCK_DIR"' EXIT
+trap '__exit=$?; [[ "$PIPELINE_STARTED" == "true" ]] && pipeline_finalize "$__exit"; rm -rf "$PIPELINE_TMP"; [[ -n "${LOCK_DIR:-}" && -f "${LOCK_DIR}/pid" && "$(cat "${LOCK_DIR}/pid" 2>/dev/null)" == "$$" ]] && rm -rf "$LOCK_DIR"; [[ -n "${IAGO_PIPELINE_FROZEN_DIR:-}" ]] && rm -rf "$IAGO_PIPELINE_FROZEN_DIR"' EXIT
 
 # ─── Per-project pipeline lock ───────────────────────────────────────
 # Prevents concurrent pipelines on the same project-dir — use a separate

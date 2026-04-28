@@ -11,6 +11,20 @@ orchestrator.
 
 The only way to skip the pipeline is `/iago-fast` (trivial fixes, ≤3 files).
 
+### Self-freeze (Windows bash byte-offset hazard)
+
+At startup, the pipeline copies the entire `scripts/` tree to
+`$IAGO_PIPELINE_FROZEN_DIR` (a `mktemp -d` dir) and `exec`s itself from the
+copy. The sentinel env var `IAGO_PIPELINE_FROZEN=1` prevents an infinite
+re-exec loop. This exists because bash on Windows reads scripts by byte
+offset — if an IMPLEMENT `claude -p` session edits
+`scripts/execute-pipeline.sh` mid-run, line offsets shift and the parser
+crashes (`ools: command not found` from a partial `--allowedTools` token).
+The frozen copy gives the running bash a stable file to parse. Helpers under
+`scripts/lib/` and `scripts/review-checks/` ride along in the copy so the
+re-execed script can source/cat them via `$SCRIPT_DIR`. The frozen dir is
+cleaned in the EXIT trap.
+
 ### Rule: Skill Invocation Is Required
 
 When a plan exists that requires code changes:
