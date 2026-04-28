@@ -24,3 +24,9 @@ clients/
 # Hook/scheduler runtime locks (machine-specific)
 .claude/*.lock
 .iago/state/pipeline-runs/
+
+# Pipeline run logs (debug artifacts, not source)
+.iago/pipeline-*.log
+
+# Drop dirs may contain embedded repos
+docs/research/_drop-*/
