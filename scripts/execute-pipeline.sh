@@ -466,12 +466,12 @@ if [[ $REVIEW_EXIT -ne 0 ]]; then
 fi
 
 # Check for any findings (Critical, Important, or Minor) — fix all before PR.
-# Use grep -z so the entire output is treated as one record. Newlines no longer
-# act as line delimiters, which lets the regex match both the single-line
-# canonical form (`Verdict: FAIL`) and legacy markdown forms where the header
-# and verdict token land on separate lines (`## Verdict\n\n**FAIL**`).
+# Use tr '\n' ' ' to collapse to a single line before grep so the regex matches
+# both the canonical single-line form (`Verdict: FAIL`) and legacy markdown forms
+# where header and verdict token land on separate lines (`## Verdict\n\n**FAIL**`).
+# Portable: avoids GNU-only grep -z and \b word-boundary extension.
 fix_attempt=0
-while echo "$REVIEW_OUTPUT" | grep -qziE "Verdict\s*:?\s*\*{0,2}\s*(FAIL|PASS_WITH_CONCERNS)\b"; do
+while echo "$REVIEW_OUTPUT" | tr '\n' ' ' | grep -qiE "Verdict\s*:?\s*\*{0,2}\s*(FAIL|PASS_WITH_CONCERNS)"; do
   fix_attempt=$((fix_attempt + 1))
 
   if [[ $fix_attempt -gt $MAX_FIX_RETRIES ]]; then
@@ -614,7 +614,7 @@ fi
 # below picks up and runs the Claude adversarial fallback.
 if [[ "$USED_CODEX" == "true" ]] && [[ $CODEX_EXIT -eq 0 ]]; then
   _project_diff_files=$(cd "$PROJECT_DIR" && git diff --name-only "$PRE_IMPL_SHA"..HEAD 2>/dev/null || echo "")
-  if [[ -n "$_project_diff_files" ]] && echo "$CODEX_OUTPUT" | grep -qiE 'no[[:space:]]+changed[[:space:]]+files|no[[:space:]]+files[[:space:]]+changed'; then
+  if [[ -n "$_project_diff_files" ]] && echo "$CODEX_OUTPUT" | grep -qiE 'no[[:space:]]+changed[[:space:]]+files|no[[:space:]]+files[[:space:]]+changed|empty[[:space:]]+diff|nothing[[:space:]]+to[[:space:]]+review|no[[:space:]]+changes[[:space:]]+(detected|found|made)|no[[:space:]]+commits[[:space:]]+between|nothing[[:space:]]+changed'; then
     log "WARNING: Codex reported 'no changed files' but git diff $PRE_IMPL_SHA..HEAD in $PROJECT_DIR is non-empty:"
     echo "$_project_diff_files" | sed 's/^/  /'
     log "Treating as Codex failure (cwd misfire); failure path will run Claude adversarial fallback."
@@ -857,7 +857,7 @@ pr: ${PR_URL:-"(none)"}
 
 - **Implement:** exit $IMPL_EXIT
 - **Build gate:** passed
-- **Review:** $(echo "$REVIEW_OUTPUT" | tr '\n' ' ' | grep -oiE 'Verdict[^A-Za-z]+(PASS_WITH_CONCERNS|PASS|FAIL)' | head -1 | grep -oE '(PASS_WITH_CONCERNS|PASS|FAIL)' | head -1 || echo "completed")
+- **Review:** $(echo "$REVIEW_OUTPUT" | tr '\n' ' ' | grep -oiE 'Verdict[^A-Za-z]+(PASS_WITH_CONCERNS|PASS|FAIL)' | tail -1 | grep -oE '(PASS_WITH_CONCERNS|PASS|FAIL)' | tail -1 || echo "completed")
 - **Codex:** exit $CODEX_EXIT
 - **PR:** ${PR_URL:-"(not created)"}
 

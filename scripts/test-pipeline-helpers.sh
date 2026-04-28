@@ -13,12 +13,14 @@ set -uo pipefail
 PASS=0
 FAIL=0
 
+# Mirror of the loop-trigger condition in scripts/execute-pipeline.sh (while loop, ~line 474).
+# Keep in sync: if the pattern there changes, update this function too.
 assert_loop_triggers() {
   local label="$1"
   local input="$2"
   local expect_match="$3"  # "yes" or "no"
 
-  if echo "$input" | grep -qziE "Verdict\s*:?\s*\*{0,2}\s*(FAIL|PASS_WITH_CONCERNS)\b"; then
+  if echo "$input" | tr '\n' ' ' | grep -qiE "Verdict\s*:?\s*\*{0,2}\s*(FAIL|PASS_WITH_CONCERNS)"; then
     actual="yes"
   else
     actual="no"
@@ -33,12 +35,14 @@ assert_loop_triggers() {
   fi
 }
 
+# Mirror of the summary-extract pipeline in scripts/execute-pipeline.sh (~line 860).
+# Keep in sync: if the pipeline there changes, update this function too.
 assert_summary_extracts() {
   local label="$1"
   local input="$2"
   local expect_verdict="$3"
 
-  actual=$(echo "$input" | tr '\n' ' ' | grep -oiE 'Verdict[^A-Za-z]+(PASS_WITH_CONCERNS|PASS|FAIL)' | head -1 | grep -oE '(PASS_WITH_CONCERNS|PASS|FAIL)' | head -1 || echo "")
+  actual=$(echo "$input" | tr '\n' ' ' | grep -oiE 'Verdict[^A-Za-z]+(PASS_WITH_CONCERNS|PASS|FAIL)' | tail -1 | grep -oE '(PASS_WITH_CONCERNS|PASS|FAIL)' | tail -1 || echo "")
 
   if [[ "$actual" == "$expect_verdict" ]]; then
     echo "  PASS  $label (summary extracts: $actual)"
@@ -55,6 +59,11 @@ echo "Loop-trigger regex (must match FAIL and PASS_WITH_CONCERNS in any form):"
 assert_loop_triggers "single-line FAIL"               "Verdict: FAIL"                              "yes"
 assert_loop_triggers "single-line PASS_WITH_CONCERNS" "Verdict: PASS_WITH_CONCERNS"                "yes"
 assert_loop_triggers "single-line PASS"               "Verdict: PASS"                              "no"
+
+# Case-insensitive coverage — reviewers may write lowercase.
+assert_loop_triggers "lowercase verdict: fail"               "verdict: fail"                    "yes"
+assert_loop_triggers "uppercase VERDICT: PASS_WITH_CONCERNS" "VERDICT: PASS_WITH_CONCERNS"      "yes"
+assert_loop_triggers "mixed-case verdict: Pass"              "verdict: Pass"                    "no"
 
 # Legacy multi-line markdown — what reviewers actually wrote on PR #73.
 assert_loop_triggers "markdown header + bold FAIL"               $'## Verdict\n\n**FAIL** \xe2\x80\x94 three Important findings'                "yes"
@@ -77,6 +86,10 @@ assert_summary_extracts "single-line PASS"                $'Some prose here.\nVe
 assert_summary_extracts "markdown header + bold FAIL"     $'## Verdict\n\n**FAIL** \xe2\x80\x94 issues remain'        "FAIL"
 assert_summary_extracts "markdown header + bold PASS_WITH_CONCERNS" $'## Verdict\n\n**PASS_WITH_CONCERNS**'           "PASS_WITH_CONCERNS"
 assert_summary_extracts "markdown header + bold PASS"     $'## Verdict\n\n**PASS** all clean'                         "PASS"
+
+# Last verdict wins when prose quotes a prior one (reviewer writes "was FAIL, now PASS").
+QUOTED_VERDICT=$'Previously the verdict was Verdict: FAIL. After fixes... Verdict: PASS'
+assert_summary_extracts "last verdict wins over quoted earlier one" "$QUOTED_VERDICT" "PASS"
 
 echo
 echo "Result: $PASS passed, $FAIL failed"
