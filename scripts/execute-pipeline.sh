@@ -21,6 +21,10 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 . "$SCRIPT_DIR/lib/pipeline-telemetry.sh"
 PIPELINE_STARTED=false
 
+# Snapshot args before the while loop consumes them via shift, so the
+# self-freeze re-exec below can replay the original argv.
+ORIG_ARGS=("$@")
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --plan) PLAN_PATH="$2"; shift 2 ;;
@@ -57,7 +61,7 @@ if [[ "${IAGO_PIPELINE_FROZEN:-0}" != "1" ]]; then
   cp -r "$SCRIPT_DIR/." "$IAGO_PIPELINE_FROZEN_DIR/"
   export IAGO_PIPELINE_FROZEN=1
   export IAGO_PIPELINE_FROZEN_DIR
-  exec bash "$IAGO_PIPELINE_FROZEN_DIR/execute-pipeline.sh" "$@"
+  exec bash "$IAGO_PIPELINE_FROZEN_DIR/execute-pipeline.sh" "${ORIG_ARGS[@]}"
 fi
 
 # Temp directory for pipeline artifacts — avoids "Argument list too long" on
