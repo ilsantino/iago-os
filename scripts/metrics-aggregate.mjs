@@ -1,0 +1,152 @@
+#!/usr/bin/env node
+// Per-stage telemetry aggregator. Reads NDJSON run files under
+// .iago/state/pipeline-runs/, computes p50/p95/timeout/skip counts.
+//
+// Usage: node scripts/metrics-aggregate.mjs [--last N]
+//   --last N    Aggregate the most recent N complete runs (default 10).
+//
+// Order: filter (drop incomplete) → sort by pipeline_finalize.ts asc → take last N.
+// Filter must come before sort/take so incomplete runs don't push valid ones out.
+
+import { readdirSync, readFileSync } from "node:fs";
+import path from "node:path";
+
+const args = process.argv.slice(2);
+let lastN = 10;
+for (let i = 0; i < args.length; i++) {
+  if (args[i] === "--last") {
+    const v = parseInt(args[i + 1], 10);
+    if (!Number.isNaN(v) && v > 0) lastN = v;
+    i++;
+  }
+}
+
+const projectDir = process.cwd();
+const runsDir = path.join(projectDir, ".iago", "state", "pipeline-runs");
+
+let files;
+try {
+  files = readdirSync(runsDir).filter((f) => f.endsWith(".ndjson"));
+} catch {
+  console.error(`No pipeline runs directory at ${runsDir}`);
+  process.exit(1);
+}
+
+const runs = [];
+for (const f of files) {
+  const fullPath = path.join(runsDir, f);
+  const content = readFileSync(fullPath, "utf-8");
+  const records = [];
+  for (const line of content.split("\n")) {
+    if (!line.trim()) continue;
+    try {
+      records.push(JSON.parse(line));
+    } catch {
+      // skip malformed lines
+    }
+  }
+  runs.push({ file: f, records });
+}
+
+// Filter — keep only runs with exactly one pipeline_finalize.
+const complete = runs.filter((run) => {
+  const finalizes = run.records.filter((r) => r.type === "pipeline_finalize");
+  return finalizes.length === 1;
+});
+
+if (complete.length === 0) {
+  console.error("No complete runs found.");
+  process.exit(1);
+}
+
+// Sort by pipeline_finalize.ts ascending.
+complete.sort((a, b) => {
+  const ta = a.records.find((r) => r.type === "pipeline_finalize").ts || "";
+  const tb = b.records.find((r) => r.type === "pipeline_finalize").ts || "";
+  return ta.localeCompare(tb);
+});
+
+// Take last N.
+const taken = complete.slice(-lastN);
+
+// Walk stage_start/stage_end pairs per run.
+const perStage = new Map();
+for (const run of taken) {
+  let pendingStart = null;
+  for (const rec of run.records) {
+    if (rec.type === "stage_start") {
+      pendingStart = rec;
+    } else if (
+      rec.type === "stage_end" &&
+      pendingStart &&
+      pendingStart.stage === rec.stage
+    ) {
+      const stage = rec.stage;
+      if (!perStage.has(stage)) perStage.set(stage, []);
+      perStage.get(stage).push({
+        duration_ms: Number(rec.duration_ms) || 0,
+        timed_out: rec.timed_out === true,
+        exit: String(rec.exit),
+        skipped: String(rec.exit) === "skipped",
+      });
+      pendingStart = null;
+    }
+  }
+}
+
+// Compute per-stage stats.
+const percentile = (sorted, q) => {
+  if (sorted.length === 0) return 0;
+  const idx = Math.min(sorted.length - 1, Math.floor(q * sorted.length));
+  return sorted[idx];
+};
+
+const stats = [];
+const stageOrder = [
+  "stress_test",
+  "implement",
+  "build_gate",
+  "console_gate",
+  "review",
+  "codex_review",
+  "codex_fix",
+  "create_pr",
+  "tag_claude",
+  "summary",
+];
+const sortedStages = Array.from(perStage.keys()).sort((a, b) => {
+  const ia = stageOrder.indexOf(a);
+  const ib = stageOrder.indexOf(b);
+  if (ia === -1 && ib === -1) return a.localeCompare(b);
+  if (ia === -1) return 1;
+  if (ib === -1) return -1;
+  return ia - ib;
+});
+
+for (const stage of sortedStages) {
+  const samples = perStage.get(stage);
+  const ran = samples.filter((s) => !s.skipped);
+  const durations = ran.map((s) => s.duration_ms).sort((a, b) => a - b);
+  const n = durations.length;
+  stats.push({
+    stage,
+    n,
+    p50_ms: percentile(durations, 0.5),
+    p95_ms: percentile(durations, 0.95),
+    max_ms: n === 0 ? 0 : durations[n - 1],
+    timeouts: ran.filter((s) => s.timed_out).length,
+    skips: samples.filter((s) => s.skipped).length,
+  });
+}
+
+// Print fixed-width table.
+const cols = ["stage", "n", "p50_ms", "p95_ms", "max_ms", "timeouts", "skips"];
+const rows = stats.map((s) => cols.map((c) => String(s[c])));
+const widths = cols.map((c, i) =>
+  Math.max(c.length, ...rows.map((r) => r[i].length), 0),
+);
+const fmt = (vals) => vals.map((v, i) => v.padEnd(widths[i])).join("  ");
+console.log(fmt(cols));
+console.log(widths.map((w) => "-".repeat(w)).join("  "));
+for (const r of rows) console.log(fmt(r));
+console.log(`\n(${taken.length} run${taken.length === 1 ? "" : "s"} aggregated)`);

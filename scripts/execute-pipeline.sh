@@ -18,6 +18,9 @@ MAX_BUILD_RETRIES=2
 MAX_FIX_RETRIES=2
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
+. "$SCRIPT_DIR/lib/pipeline-telemetry.sh"
+PIPELINE_STARTED=false
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --plan) PLAN_PATH="$2"; shift 2 ;;
@@ -45,7 +48,11 @@ PLAN_NAME=$(basename "$PLAN_PATH" .md)
 # Windows by writing large content to files instead of inlining in claude -p.
 PIPELINE_TMP=$(mktemp -d)
 LOCK_DIR=""
-trap 'rm -rf "$PIPELINE_TMP"; [[ -n "${LOCK_DIR:-}" && -f "${LOCK_DIR}/pid" && "$(cat "${LOCK_DIR}/pid" 2>/dev/null)" == "$$" ]] && rm -rf "$LOCK_DIR"' EXIT
+
+PIPELINE_STARTED=true
+pipeline_init
+
+trap '__exit=$?; [[ "$PIPELINE_STARTED" == "true" ]] && pipeline_finalize "$__exit"; rm -rf "$PIPELINE_TMP"; [[ -n "${LOCK_DIR:-}" && -f "${LOCK_DIR}/pid" && "$(cat "${LOCK_DIR}/pid" 2>/dev/null)" == "$$" ]] && rm -rf "$LOCK_DIR"' EXIT
 
 # ─── Per-project pipeline lock ───────────────────────────────────────
 # Prevents concurrent pipelines on the same project-dir — use a separate
@@ -93,6 +100,7 @@ run_claude() {
   # after the parent is SIGKILL'd. `timeout` alone deadlocks callers using
   # $(run_claude ...). Redirect to a file, poll, then taskkill //T the tree.
   local timeout_secs="$1"; shift
+  __pipeline_latch_timed_out
   local out="$PIPELINE_TMP/claude-$$-$RANDOM.out"
   claude "$@" > "$out" 2>&1 &
   local pid=$!
@@ -110,6 +118,7 @@ run_claude() {
     sleep 2
     cat "$out" 2>/dev/null || true
     rm -f "$out"
+    __pipeline_write_timed_out true
     return 1
   fi
   wait "$pid"
@@ -139,8 +148,10 @@ compose_review_checks() {
 
 # ─── Step 0: Stress Test ─────────────────────────────────────────────
 # Skip if plan already has a "## Stress Test" section (tested during /iago-plan or /iago-stress)
+stage_start stress_test
 if grep -q '## Stress Test' "$PLAN_FILE"; then
   log "STRESS TEST — skipped (plan already stress-tested)"
+  stage_end stress_test skipped
 else
   log "STRESS TEST — $PLAN_NAME"
 
@@ -195,6 +206,7 @@ Output the verdict line as plain text — no markdown bold, no backticks, no hea
 
   if [[ "$STRESS_VERDICT" == "BLOCK" ]]; then
     log "ERROR: Stress test BLOCKED the plan. Review findings above and revise the plan."
+    stage_end stress_test "$STRESS_EXIT"
     exit 1
   fi
 
@@ -219,9 +231,11 @@ Output the verdict line as plain text — no markdown bold, no backticks, no hea
       cp "$STRESS_FILE" "$STRESS_FINDINGS"
     fi
   fi
+  stage_end stress_test "$STRESS_EXIT"
 fi
 
 # ─── Step 1: Implement ───────────────────────────────────────────────
+stage_start implement
 log "IMPLEMENT — $PLAN_NAME"
 
 PRE_IMPL_SHA=$(cd "$PROJECT_DIR" && git rev-parse HEAD) || {
@@ -254,6 +268,7 @@ Execute every task exactly. Create all files specified. End your response with D
 if [[ $IMPL_EXIT -ne 0 ]]; then
   log "ERROR: Implementation failed (exit $IMPL_EXIT)"
   echo "$IMPL_OUTPUT"
+  stage_end implement "$IMPL_EXIT"
   exit 1
 fi
 
@@ -262,10 +277,12 @@ IMPL_STATUS=$(echo "$IMPL_OUTPUT" | tail -5)
 if echo "$IMPL_STATUS" | grep -qE "^(BLOCKED|NEEDS_CONTEXT)"; then
   log "ERROR: Agent reported $(echo "$IMPL_STATUS" | grep -oE "^(BLOCKED|NEEDS_CONTEXT)" | head -1)"
   echo "$IMPL_OUTPUT"
+  stage_end implement 1
   exit 1
 fi
 
 log "Implementation complete"
+stage_end implement "$IMPL_EXIT"
 
 # ─── Step 2: Build gate ──────────────────────────────────────────────
 # Detect which build tools are available in the project
@@ -295,12 +312,14 @@ run_build_gate() {
   $ok
 }
 
+stage_start build_gate
 build_attempt=0
 while true; do
   log "BUILD GATE — attempt $((build_attempt + 1))"
 
   if run_build_gate; then
     log "Build passed"
+    stage_end build_gate 0
     break
   else
     BUILD_ERRORS="$BUILD_GATE_OUTPUT"
@@ -308,6 +327,7 @@ while true; do
 
     if [[ $build_attempt -ge $MAX_BUILD_RETRIES ]]; then
       log "ERROR: Build failed after $MAX_BUILD_RETRIES attempts. Stopping."
+      stage_end build_gate 1
       exit 1
     fi
 
@@ -334,6 +354,9 @@ done
 MAX_CONSOLE_RETRIES=2
 CONSOLE_ERRORS_FILE="$PIPELINE_TMP/console-errors.json"
 
+stage_start console_gate
+CONSOLE_STAGE_EXIT=0
+CONSOLE_STAGE_SKIPPED=false
 if $HAS_VITE; then
   console_attempt=0
   console_passed=false
@@ -352,6 +375,7 @@ if $HAS_VITE; then
     elif [[ $CONSOLE_EXIT -eq 2 ]]; then
       log "Console gate skipped (Playwright not available or preview failed)"
       console_passed=true
+      CONSOLE_STAGE_SKIPPED=true
       break
     else
       echo "$CONSOLE_OUTPUT" > "$CONSOLE_ERRORS_FILE"
@@ -361,6 +385,7 @@ if $HAS_VITE; then
 
       if [[ $console_attempt -ge $MAX_CONSOLE_RETRIES ]]; then
         log "WARNING: Console gate failed after $MAX_CONSOLE_RETRIES attempts — proceeding to review (errors will surface there)"
+        CONSOLE_STAGE_EXIT=1
         break
       fi
 
@@ -384,15 +409,23 @@ Read the plan for context at: $PLAN_FILE" \
       log "BUILD GATE (post-console-fix)"
       if ! run_build_gate; then
         log "ERROR: Build broke during console fix. Stopping."
+        stage_end console_gate 1
         exit 1
       fi
     fi
   done
+  if $CONSOLE_STAGE_SKIPPED; then
+    stage_end console_gate skipped
+  else
+    stage_end console_gate "$CONSOLE_STAGE_EXIT"
+  fi
 else
   log "CONSOLE GATE — skipped (no Vite config)"
+  stage_end console_gate skipped
 fi
 
 # ─── Step 3: Review ──────────────────────────────────────────────────
+stage_start review
 log "REVIEW — $PLAN_NAME"
 
 # Stage all new/modified files so they appear in the diff
@@ -405,6 +438,7 @@ COMBINED_DIFF="${DIFF}${STAGED_DIFF}"
 
 if [[ -z "$COMBINED_DIFF" ]]; then
   log "WARNING: Implementation produced no changes (empty diff). No changes to review."
+  stage_end review 1
   exit 1
 else
   DIFF="$COMBINED_DIFF"
@@ -468,6 +502,7 @@ while echo "$REVIEW_OUTPUT" | grep -qiE "Verdict\s*:?\s*\*{0,2}\s*(FAIL|PASS_WIT
 
   if [[ $fix_attempt -gt $MAX_FIX_RETRIES ]]; then
     log "ERROR: Findings persist after $MAX_FIX_RETRIES fix rounds. Stopping."
+    stage_end review 1
     exit 1
   fi
 
@@ -539,9 +574,11 @@ Then read each changed source file in full for context." \
 done
 
 log "Review passed"
+stage_end review 0
 fi  # end of non-empty diff check
 
 # ─── Step 4: Codex adversarial review ────────────────────────────────
+stage_start codex_review
 log "CODEX REVIEW — $PLAN_NAME"
 DIFF=$(cd "$PROJECT_DIR" && { git diff "$PRE_IMPL_SHA"..HEAD 2>/dev/null || echo ""; } && { git diff --cached 2>/dev/null || echo ""; })
 echo "$DIFF" > "$DIFF_FILE"
@@ -621,6 +658,7 @@ if [[ $CODEX_EXIT -ne 0 ]]; then
 fi
 
 log "Codex review complete"
+stage_end codex_review "$CODEX_EXIT"
 
 # ─── Step 4b: Fix Codex findings ─────────────────────────────────────
 echo "$CODEX_OUTPUT" > "$CODEX_FILE"
@@ -635,6 +673,7 @@ if echo "$CODEX_OUTPUT" | grep -qiE '\[P[012]\]|- \[P[012]\]|severity.*P[012]|^V
 elif [[ "$USED_CLAUDE_FALLBACK" != "true" ]] && echo "$CODEX_OUTPUT" | grep -qiE "$_codex_word_patterns"; then
   _has_findings=true
 fi
+stage_start codex_fix
 if [[ "$_has_findings" == "true" ]]; then
   log "CODEX FIX — fixing findings before PR"
 
@@ -677,6 +716,7 @@ Read the build errors at: $BUILD_ERRORS_FILE" \
 
     if ! run_build_gate; then
       log "ERROR: Build still failing after Codex fix. Stopping pipeline."
+      stage_end codex_fix 1
       exit 1
     else
       log "Build passed after Codex fix (with build fix)"
@@ -687,11 +727,14 @@ Read the build errors at: $BUILD_ERRORS_FILE" \
 
   # Re-stage changes from Codex fix
   (cd "$PROJECT_DIR" && git add -A -- ':!**/.env' ':!**/.env.*' ':!**/*.pem' ':!**/*.key' ':!**/*.p12' ':!**/*.pfx')
+  stage_end codex_fix "$CODEX_FIX_EXIT"
 else
   log "No actionable Codex findings — proceeding to PR"
+  stage_end codex_fix skipped
 fi
 
 # ─── Step 5: Create PR (or stacked commit if --no-pr) ─────────────────
+stage_start create_pr
 if [[ "$NO_PR" == "true" ]]; then
   log "STACKED COMMIT — $PLAN_NAME (no PR, staying on current branch)"
   # Stage, commit locally, do NOT push, do NOT create PR. Commits accumulate on the
@@ -704,6 +747,7 @@ if [[ "$NO_PR" == "true" ]]; then
 Stacked commit from execute-pipeline.sh --no-pr (pipeline stages 0-4b ran clean)."
     (cd "$PROJECT_DIR" && git commit -m "$STACK_COMMIT_MSG") || {
       log "ERROR: Stacked commit failed for $PLAN_NAME. Pipeline stopping."
+      stage_end create_pr 1
       exit 1
     }
     log "Stacked commit created: $(cd "$PROJECT_DIR" && git rev-parse --short HEAD)"
@@ -744,9 +788,11 @@ Steps:
 
   if [[ $PR_EXIT -ne 0 ]]; then
     log "ERROR: PR creation failed (exit $PR_EXIT). Pipeline stopping."
+    stage_end create_pr "$PR_EXIT"
     exit 1
   fi
 fi
+stage_end create_pr "$PR_EXIT"
 
 # ─── Step 5b: Tag @claude for PR review ─────────────────────────────
 if [[ "$NO_PR" != "true" ]]; then
@@ -760,10 +806,13 @@ if [[ "$NO_PR" != "true" ]]; then
   fi
 fi
 
+stage_start tag_claude
+TAG_STAGE_EXIT="skipped"
 if [ "$NO_TAG" != "true" ]; then
 if [[ -n "$PR_URL" ]]; then
   PR_NUMBER=$(echo "$PR_URL" | grep -oE '[0-9]+$')
   log "TAGGING @claude on PR #$PR_NUMBER"
+  TAG_STAGE_EXIT=0
 
   # Sonnet synthesizes a context-rich review request from plan + diff
   TAG_EXIT=0
@@ -794,16 +843,19 @@ Read these context files:
   (cd "$PROJECT_DIR" && gh pr comment "$PR_NUMBER" --body "$CLAUDE_REVIEW_BODY") || log "WARNING: Failed to post @claude comment on PR #$PR_NUMBER"
 else
   log "ERROR: Could not determine PR URL — @claude review tag was NOT posted. Check PR manually."
+  TAG_STAGE_EXIT=1
 fi
 else
   log "TAG SKIPPED (--no-tag)"
 fi
+stage_end tag_claude "$TAG_STAGE_EXIT"
 
 # Review-fix loop is handled by GitHub Action (claude-review-fix.yml).
 # After @claude responds, the Action detects findings and auto-fixes.
 # No local polling needed.
 
 # ─── Step 6: Write summary ────────────────────────────────────────────
+stage_start summary
 log "SUMMARY — $PLAN_NAME"
 SUMMARY_DIR="$PROJECT_DIR/.iago/summaries"
 mkdir -p "$SUMMARY_DIR"
@@ -838,5 +890,6 @@ $DIFF_STAT
 SUMMARY_EOF
 
 log "Summary written to .iago/summaries/${PLAN_NAME}.md"
+stage_end summary 0
 
 log "PIPELINE COMPLETE — $PLAN_NAME"
