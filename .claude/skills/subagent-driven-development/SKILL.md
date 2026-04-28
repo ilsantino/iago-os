@@ -143,7 +143,7 @@ your own work. YAGNI check: flag any code that isn't required by the plan.
 
 ### 4b. Codex adversarial review gate (mandatory)
 
-After internal review, dispatch `/codex:adversarial-review` (GPT-5.4 cross-model
+After internal review, dispatch `/codex:adversarial-review` (GPT-5.5 cross-model
 review) on the full diff. A different model catches different blind spots.
 
 **If Codex CLI is unavailable** (`command -v codex` fails or returns non-zero):
