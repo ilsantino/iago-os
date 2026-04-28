@@ -83,7 +83,7 @@ Each finding gets a severity:
 
 ### 5. Codex adversarial review gate (mandatory)
 
-After internal review, dispatch `/codex:adversarial-review` (GPT-5.4 cross-model
+After internal review, dispatch `/codex:adversarial-review` (GPT-5.5 cross-model
 review) on the same diff. A different model catches different blind spots.
 
 **If Codex CLI is unavailable** (`command -v codex` fails or returns non-zero):

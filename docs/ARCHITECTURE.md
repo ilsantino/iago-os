@@ -205,9 +205,9 @@ This data feeds into the future iaGO Dashboard (see `docs/IAGO-DASHBOARD.md`) �
 | Review/analysis profiles (analyst/operator-based) | Sonnet | review-single, review-full, research, infra, schema, content |
 | Pipeline PR creation + Codex fallback | Sonnet | Mechanical git/gh operations, fallback adversarial |
 | Pipeline @claude tag | Sonnet | Context-rich review request synthesis |
-| Cross-model review | GPT-5.4 (Codex) | Mandatory adversarial review on every plan (falls back to Claude adversarial if Codex CLI unavailable) |
+| Cross-model review | GPT-5.5 (Codex) | Mandatory adversarial review on every plan (falls back to Claude adversarial if Codex CLI unavailable) |
 
-**Agent model routing** is hardcoded per profile in frontmatter (`model: opus` or `model: sonnet`). **Pipeline model routing** is hardcoded in `scripts/execute-pipeline.sh` — opus for all substantive sessions (implement, fix, review, stress test), sonnet for mechanical (PR creation, Codex fallback, tag synthesis). Codex adversarial review uses GPT-5.4 when available; SDD and code-review skills automatically fall back to a Claude adversarial session if the Codex CLI is not installed.
+**Agent model routing** is hardcoded per profile in frontmatter (`model: opus` or `model: sonnet`). **Pipeline model routing** is hardcoded in `scripts/execute-pipeline.sh` — opus for all substantive sessions (implement, fix, review, stress test), sonnet for mechanical (PR creation, Codex fallback, tag synthesis). Codex adversarial review uses GPT-5.5 when available; SDD and code-review skills automatically fall back to a Claude adversarial session if the Codex CLI is not installed.
 
 ## Execution Pipeline Stages
 
@@ -219,7 +219,7 @@ Each plan passes through these stages in `scripts/execute-pipeline.sh`:
 | 1 | Implement | Opus | Reads plan + stress-test notes, writes code |
 | 2 | Build gate | — | `tsc --noEmit && vite build` (max 2 retries with fix sessions) |
 | 3 | Review | Opus | Three-pass: plan compliance + domain routing + adversarial |
-| 4 | Codex adversarial | GPT-5.4 | Cross-model review targeting auth, data loss, races, rollback |
+| 4 | Codex adversarial | GPT-5.5 | Cross-model review targeting auth, data loss, races, rollback |
 | 4b | Codex fix | Opus | Fix all Codex findings (skipped if none) |
 | 5 | Create PR | Sonnet | Stage, commit, push, create PR via `gh` |
 | 5b | Tag @claude | Sonnet | Context-rich review request on the PR |

@@ -57,7 +57,7 @@ Discuss → plan → execute → verify repeats per ROADMAP phase.
 | **What Claude does** | Wave analysis, run `scripts/execute-pipeline.sh` per plan (8-stage: stress test [skipped if already tested in `/iago-plan` or `/iago-stress`] → implement → build gate → review → codex → codex fix → PR → summary), collect results |
 | **State written** | Phase: `{NN}-{slug}`, Status: `executing` → `executed` |
 | **Output** | `.iago/summaries/{NN}-{slug}-{PP}.md` per plan, git commits, PRs |
-| **Profiles** | Opus for implementation/fix, Sonnet for review/PR, GPT-5.4 for Codex adversarial (Claude fallback if unavailable) |
+| **Profiles** | Opus for implementation/fix, Sonnet for review/PR, GPT-5.5 for Codex adversarial (Claude fallback if unavailable) |
 | **Pipeline** | Each plan runs through `execute-pipeline.sh` in separate `claude -p` sessions — no context bleed. Async GitHub Action review-fix loop after PR creation (max 5 rounds) |
 
 ### 4. Verify (`/iago-verify {phase-slug}`)

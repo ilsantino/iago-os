@@ -3,7 +3,7 @@
 <div align="center">
 
 <img src="https://img.shields.io/badge/Claude_Code-config_layer-7C3AED?style=for-the-badge&logo=anthropic&logoColor=white" alt="Claude Code">
-<img src="https://img.shields.io/badge/Skills-34-blue?style=for-the-badge" alt="Skills">
+<img src="https://img.shields.io/badge/Skills-37-blue?style=for-the-badge" alt="Skills">
 <img src="https://img.shields.io/badge/Agent_Profiles-12-green?style=for-the-badge" alt="Agent Profiles">
 <img src="https://img.shields.io/badge/Memory_Stack-opt--in-orange?style=for-the-badge" alt="Memory Stack">
 <img src="https://img.shields.io/badge/Platform-Windows_%7C_macOS-lightgrey?style=for-the-badge" alt="Platform">
@@ -35,18 +35,18 @@ iaGO-OS is not a framework, not an SDK, and not a SaaS product. It's a set of fi
 ## What's Inside
 
 ```
- 34 Skills          12 Agent Profiles       8 Hooks            13 Capabilities
+ 37 Skills          12 Agent Profiles       8 Hooks            13 Capabilities
  ─────────          ────────────────        ──────             ───────────────
- Workflow (9)       fullstack               context-persist    react-19
+ Workflow (10)      fullstack               context-persist    react-19
  Setup (6)          frontend                usage-tracker      dynamodb
- Core (6)           backend                 safety-guard       lambda
+ Core (7)           backend                 safety-guard       lambda
  Content (5)        review-single           config-protection  cognito
  Experimental (5)   review-full             commit-quality     tdd
  Industry (2)       security-audit          post-edit-format   security
-                    research                post-edit-types    e2e
- + Codex (6)        e2e                     post-edit-console  review-spec
- + Claude Code (4)  infra                                      review-quality
-                    schema                                     content
+ Audit (2)          research                post-edit-types    e2e
+                    e2e                     post-edit-console  review-spec
+ + Codex (6)        infra                                      review-quality
+ + Claude Code (4)  schema                                     content
                     content                                    infra
                     debug                                      forms
                                                                animation
@@ -121,7 +121,7 @@ Each step is a fresh `claude -p` session — isolated context, no token burn in 
 | **1. Implement** | Opus | Reads plan file + stress-test findings (MANDATORY, not advisory). Max 50 turns. |
 | **2. Build gate** | — | Compile check — verifies code compiles and bundles before review. Catches type errors, broken imports, missing deps. Max 2 retries with fix sessions. Skipped for config-only repos. |
 | **3. Review** | Opus | Three-pass: plan compliance + domain routing (selects relevant check modules from 8 loaded) + adversarial (auth bypass, data loss, races, rollback). Stress test enforcement verifies each finding was addressed. Severity floors on critical checks. Max 2 fix rounds. |
-| **4. Codex adversarial** | GPT-5.4 / Opus fallback | Cross-model review with plan context. Invokes `codex-companion adversarial-review` (bypasses the Codex agent sandbox, runs identically on Windows / Mac / Linux). Falls back to Claude Opus adversarial when the companion plugin isn't installed or fails at runtime. |
+| **4. Codex adversarial** | GPT-5.5 / Opus fallback | Cross-model review with plan context. Invokes `codex-companion adversarial-review` (bypasses the Codex agent sandbox, runs identically on Windows / Mac / Linux). Falls back to Claude Opus adversarial when the companion plugin isn't installed or fails at runtime. |
 | **4b. Codex fix** | Opus | Fixes all Codex findings (P0 → P1 → P2) + rebuild gate. Skipped if clean. |
 | **5. Create PR** | Sonnet | Stages, commits, pushes branch, creates PR via `gh`. |
 | **5b. Tag @claude** | Sonnet | Synthesizes review request from pipeline context, posts on PR. Triggers async loop. |
@@ -142,7 +142,7 @@ flowchart TD
     Review -->|findings| Fix2["Fix — Opus
     Critical→Important→Minor"]
     Fix2 --> Build
-    Review -->|pass| Codex["4. Codex Adversarial — GPT-5.4"]
+    Review -->|pass| Codex["4. Codex Adversarial — GPT-5.5"]
     Codex -->|findings| CdxFix[4b. Codex Fix — Opus]
     CdxFix --> Rebuild[Rebuild gate]
     Rebuild --> PR[5. Create PR — Sonnet]
@@ -153,7 +153,7 @@ flowchart TD
 
 ### Async Review-Fix Loop (GitHub Actions)
 
-Triggered by the @claude tag on the PR (step 5b). Two GitHub Actions workflows handle the loop — no local machine needed. `claude.yml` reviews the PR and posts findings; `claude-review-fix.yml` fixes findings, commits, pushes, and re-tags @claude. Loops until clean or max 5 rounds. `/iago-execute` tags automatically (suppress with `--no-review`); `/iago-quick` skips tagging by default (enable with `--review`). Manual trigger anytime: `/iago-prfix`.
+Triggered by the @claude tag on the PR (step 5b). Two GitHub Actions workflows handle the loop — no local machine needed. `claude.yml` reviews the PR and posts findings; `claude-review-fix.yml` fixes findings, commits, pushes, and re-tags @claude. Loops until clean or max 5 rounds. Both `/iago-execute` and `/iago-quick` auto-tag by default — pass `--no-tag` (or `--no-review` on `/iago-execute`) to suppress. Manual trigger anytime: `/iago-prfix`.
 
 ```mermaid
 flowchart TD
@@ -222,7 +222,7 @@ flowchart TD
 |-------|------|---------|
 | **Opus** | Planning, implementation, debugging | Orchestrator + executor profiles |
 | **Sonnet** | Analysis, PR creation, @claude tags, research | Analyst/operator profiles, pipeline PR + tagging |
-| **Codex (GPT-5.4)** | Cross-model adversarial review | `/codex:*` skills (falls back to Claude if unavailable) |
+| **Codex (GPT-5.5)** | Cross-model adversarial review | `/codex:*` skills (falls back to Claude if unavailable) |
 
 ---
 
@@ -239,6 +239,7 @@ Skills are reusable workflows invoked with `/skill-name`. Each one knows what to
 | `/iago-discuss` | Surfaces ambiguities in a phase, records decisions | None (interactive) |
 | `/iago-plan` | Decomposes phase into plans with verify commands | `research` (optional) |
 | `/iago-execute` | Full pipeline: agent dispatch → build → review → PR | Profile + review + Codex |
+| `/iago-stress` | Adversarial stress test on a plan before execution. `--deep` for council-style multi-lens (5 reviewers + peer review) | `analyst` (opus) |
 | `/iago-verify` | Goal-backward verification, opens PR if passed | None |
 | `/iago-quick` | One-shot: plan + full pipeline. Flags: `--discuss`, `--research`, `--verify` | Pipeline (same as execute) |
 | `/iago-fast` | Inline edit + atomic commit. No agents, no review | None |
@@ -265,6 +266,7 @@ Skills are reusable workflows invoked with `/skill-name`. Each one knows what to
 | `/subagent-driven-development` | Execute plan with fresh profile per task. `--pipeline` for 8-stage isolation | Profile + review + Codex |
 | `/code-review` | Severity-categorized findings (Critical/Important/Minor) | `review-single` or `review-full` |
 | `/deep-research` | Multi-source research → recommendation doc. `--focus market` for competitive analysis | `research` |
+| `/council` | 5-advisor council (Karpathy LLM Council pattern) — independent analysis, anonymous peer review, synthesis. For high-stakes business/strategic decisions | `analyst` × 5 + chairman |
 | `/prompt-optimizer` | Analyze, rewrite, test LLM prompts for client features | None |
 
 ### Content
@@ -293,6 +295,15 @@ Skills are reusable workflows invoked with `/skill-name`. Each one knows what to
 |-------|--------|
 | `/healthcare-phi-compliance` | HIPAA encryption, access controls, audit logging |
 | `/industry-patterns` | 8 domains via `--domain`: logistics, carrier, customs, energy, inventory, production, quality, returns |
+
+### Audit (deep sweeps)
+
+The pipeline already runs the highest-leverage rules from these skills on every plan via `scripts/review-checks/`. Use the full skills for periodic sweeps — pre-launch, post-incident, or new-client onboarding — not as a per-plan gate.
+
+| Skill | What it does |
+|-------|-------------|
+| `/amplify-bug-bounty` | Full Amplify Gen 2 audit (~200 rules): CFN cycles, AppSync auth, multi-tenancy, IAM, Cognito, S3 |
+| `/frontend-bug-bounty` | Full React 19 + Vite + TS + Tailwind audit (~280 rules), incl. data-pipeline correctness (paginated KPIs, NaN aggregates, money drift) |
 
 Full reference: [.claude/rules/available-skills.md](.claude/rules/available-skills.md)
 
@@ -394,12 +405,20 @@ Full architecture, retrieval routing, and cross-platform notes: see the **Memory
 
 ### Codex Plugin (Cross-Model)
 
-GPT-5.4 via Codex CLI for a second opinion from a different model family. Installed separately.
+GPT-5.5 via Codex CLI for a second opinion from a different model family. Installed separately. Requires Codex CLI ≥ 0.125.0 for `gpt-5.5` (older versions reject the model). Each operator pins their preferred model in `~/.codex/config.toml` — the pipeline never passes `--model`, so this is the single source of truth:
+
+```toml
+# ~/.codex/config.toml
+model = "gpt-5.5"
+model_reasoning_effort = "high"
+```
+
+If a machine has no `config.toml`, Codex CLI resolves to its built-in default. GPT-5.5 is currently ChatGPT-sign-in only during rollout (API-key auth still on `gpt-5.4`).
 
 | Skill | What it does |
 |-------|-------------|
 | `/codex:adversarial-review` | **Mandatory** cross-model review on every plan — auth, data loss, race conditions |
-| `/codex:review` | Read-only code review — GPT-5.4 perspective |
+| `/codex:review` | Read-only code review — GPT-5.5 perspective |
 | `/codex:rescue` | Delegate debugging/implementation to Codex in background |
 | `/codex:status` `/codex:result` `/codex:cancel` | Manage background Codex jobs |
 | `/codex:setup` | Check CLI readiness and manage review gate |
@@ -412,6 +431,8 @@ GPT-5.4 via Codex CLI for a second opinion from a different model family. Instal
 |--------|-----------------|-------|
 | `context7` | Live library/framework docs (React, Tailwind, AWS SDK, etc.) | Built-in |
 | `obsidian` | Read/write access to Obsidian vault | Built-in |
+| `markitdown` | Convert DOCX, PPTX, XLSX, EPub, large PDFs, and YouTube URLs to markdown | Global install |
+| `youtube-transcript` | Fetch YouTube video transcripts via InnerTube API | Global install |
 | `mempalace` | Semantic search over conversation history + agent diary | `setup-memory.sh` |
 | `graphify` | Knowledge graph queries (BFS/DFS, node lookup, community stats) | `setup-memory.sh` |
 
@@ -451,7 +472,7 @@ iago-os/
     sync-skills.sh/.ps1       # Sync skills/agents/rules to project or globally
     setup-memory.sh/.ps1      # Install memory stack (MemPalace + Graphify)
     execute-pipeline.sh       # Cross-session review pipeline (8-stage)
-    review-checks/            # 8 review modules (baseline, api, auth, backend, i18n, infra, patterns, react)
+    review-checks/            # 10 review modules (baseline, amplify, api, auth, backend, data-integrity, i18n, infra, patterns, react)
     usage-report.sh/.ps1      # Usage analytics from telemetry
     validate-hooks.sh         # CI: hook validation
     validate-skills.sh        # CI: skill validation
@@ -482,7 +503,7 @@ Optional:
 
 | Tool | What for | Install |
 |------|----------|---------|
-| **Codex CLI** | Cross-model GPT-5.4 review | `npm install -g @openai/codex` |
+| **Codex CLI** | Cross-model GPT-5.5 review (requires ≥ 0.125.0 for `gpt-5.5`) | `npm install -g @openai/codex@latest` |
 | **Python 3.10+** | Memory stack (MemPalace + Graphify) | [python.org](https://python.org/downloads/) |
 | **Playwright** | E2E testing | `npx playwright install` |
 

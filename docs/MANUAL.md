@@ -251,7 +251,7 @@ Default for `/iago-execute` and `/iago-quick`. The pipeline step 3 review is a s
 
 **Stress test enforcement:** If stress-test findings exist, the reviewer verifies each finding was addressed in code or justified with a comment. Unaddressed findings are flagged as Important.
 
-After the review, **step 4 (Codex adversarial)** sends the diff to GPT-5.4 for cross-model coverage. The pipeline invokes `codex-companion adversarial-review`, which uses the Codex app-server turn API and runs identically on Windows, Mac, and Linux. When the companion plugin isn't installed or errors at runtime, the pipeline falls back to a Claude adversarial session automatically.
+After the review, **step 4 (Codex adversarial)** sends the diff to GPT-5.5 for cross-model coverage. The pipeline invokes `codex-companion adversarial-review`, which uses the Codex app-server turn API and runs identically on Windows, Mac, and Linux. When the companion plugin isn't installed or errors at runtime, the pipeline falls back to a Claude adversarial session automatically.
 
 Critical/Important findings at steps 3-4 route back for local fixes (max 2 rounds) before PR creation.
 
@@ -260,7 +260,7 @@ Critical/Important findings at steps 3-4 route back for local fixes (max 2 round
 The Codex adversarial review is mandatory — not optional, not conditional. A different model architecture catches different blind spots.
 
 ```
-> /codex:review                    # Read-only GPT-5.4 review of git changes
+> /codex:review                    # Read-only GPT-5.5 review of git changes
 > /codex:adversarial-review        # Targeted review (auto-dispatched during execute)
 > /codex:rescue                    # Delegate debugging to Codex in background
 > /codex:status                    # Check background job status
@@ -682,7 +682,7 @@ Step 0: claude -p "stress test plan"  → adversarial plan review (skipped if al
 Step 1: claude -p "implement plan"    → full context + mandatory stress-test findings
 Step 2: tsc + vite build              → shell command, no Claude
 Step 3: claude -p "review this diff"  → three-pass with domain routing + stress enforcement
-Step 4: codex-companion adversarial-review → cross-model GPT-5.4 (Claude fallback if companion missing)
+Step 4: codex-companion adversarial-review → cross-model GPT-5.5 (Claude fallback if companion missing)
 Step 5: claude -p "create PR"         → commits + PR
 ```
 
