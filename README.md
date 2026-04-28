@@ -453,7 +453,7 @@ If a machine has no `config.toml`, Codex CLI resolves to its built-in default. G
 iago-os/
   .claude/
     settings.json             # Hook wiring
-    skills/                   # 34 skill definitions
+    skills/                   # 37 skill definitions
     agents/                   # 3 bases + 13 capabilities + 12 profiles
     rules/                    # 8 behavioral rules (TDD, debugging, git, etc.)
   .iago/
