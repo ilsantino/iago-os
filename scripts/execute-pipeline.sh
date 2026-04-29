@@ -65,6 +65,20 @@ if [[ "${IAGO_PIPELINE_FROZEN:-0}" != "1" ]]; then
   exec bash "$IAGO_PIPELINE_FROZEN_DIR/execute-pipeline.sh" "${ORIG_ARGS[@]}"
 fi
 
+# Portable timeout utility detection (Phase 0 — Codex stage 4 liveness gate).
+# macOS lacks GNU `timeout` by default; brew coreutils ships `gtimeout`.
+# HARD-fail if neither is available — silent fallback would re-expose the
+# exact bug being fixed (no liveness gate on long-running Codex calls).
+_TIMEOUT_CMD=""
+if command -v timeout >/dev/null 2>&1; then
+  _TIMEOUT_CMD="timeout"
+elif command -v gtimeout >/dev/null 2>&1; then
+  _TIMEOUT_CMD="gtimeout"
+else
+  echo "ERROR: neither 'timeout' nor 'gtimeout' available. Install GNU coreutils (macOS: brew install coreutils)." >&2
+  exit 1
+fi
+
 # Temp directory for pipeline artifacts — avoids "Argument list too long" on
 # Windows by writing large content to files instead of inlining in claude -p.
 PIPELINE_TMP=$(mktemp -d)
@@ -669,7 +683,16 @@ if command -v node &> /dev/null && [[ -n "$CODEX_COMPANION" ]]; then
   # shell inherits cwd, process.cwd() inside the worker can drift back to the
   # parent repo (iago-os), making `git diff <PRE_IMPL_SHA>..HEAD` see zero
   # changes and Codex return spurious "No changed files" approvals.
-  CODEX_OUTPUT=$(cd "$PROJECT_DIR" && node "$CODEX_COMPANION" adversarial-review --cwd "$PROJECT_DIR" --base "$PRE_IMPL_SHA" --wait 2>&1) || CODEX_EXIT=$?
+  # Bounded liveness gate: 600s budget, 10s SIGTERM→SIGKILL grace.
+  # GNU timeout syntax: `timeout [OPTION] DURATION COMMAND` — options
+  # MUST precede the duration; `timeout 600 --kill-after=10 cmd` parses
+  # `--kill-after=10` as the command and exits 127.
+  # On timeout: $_TIMEOUT_CMD returns 124 (SIGTERM-after-elapsed) or 137
+  # (SIGKILL-after-grace if child traps SIGTERM). Either captured by the
+  # outer `|| CODEX_EXIT=$?` and falls through to the Claude fallback at
+  # line ~695 via the existing `elif [[ $CODEX_EXIT -ne 0 ]]` branch.
+  # Preserves --cwd flag from PR #21 (defense in depth).
+  CODEX_OUTPUT=$(cd "$PROJECT_DIR" && $_TIMEOUT_CMD --kill-after=10 600 node "$CODEX_COMPANION" adversarial-review --cwd "$PROJECT_DIR" --base "$PRE_IMPL_SHA" --wait 2>&1) || CODEX_EXIT=$?
   USED_CODEX=true
 elif command -v codex &> /dev/null; then
   log "Running codex review (model from ~/.codex/config.toml) — companion plugin not found, using raw CLI"
