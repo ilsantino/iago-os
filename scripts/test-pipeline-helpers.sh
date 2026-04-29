@@ -91,6 +91,86 @@ assert_summary_extracts "markdown header + bold PASS"     $'## Verdict\n\n**PASS
 QUOTED_VERDICT=$'Previously the verdict was Verdict: FAIL. After fixes... Verdict: PASS'
 assert_summary_extracts "last verdict wins over quoted earlier one" "$QUOTED_VERDICT" "PASS"
 
+# Prose-surrounded canonical verdict — ensures a verdict line embedded in a
+# narrative paragraph still triggers the loop. Council worry #2.
+PROSE_FAIL=$'The reviewer wrote a long narrative about the implementation. The narrative spans several lines and mentions various concerns. Then the reviewer concludes with the verdict line.\n\nVerdict: FAIL'
+assert_loop_triggers "prose-surrounded canonical FAIL" "$PROSE_FAIL" "yes"
+
+# Multi-mention with tail -1: PASS quoted earlier, FAIL is the final verdict.
+# Loop must trigger; summary extractor must pick FAIL (last), not PASS (first).
+# Council worry #3.
+MULTI_FAIL_LAST=$'Initial round: Verdict: PASS (quoted from a prior review). Re-review surfaced regressions. Verdict: FAIL'
+assert_loop_triggers     "multi-mention tail picks FAIL"     "$MULTI_FAIL_LAST" "yes"
+assert_summary_extracts  "multi-mention tail extracts FAIL"  "$MULTI_FAIL_LAST" "FAIL"
+
+echo
+echo "Liveness gate (timeout wrapper around long-running child):"
+
+# Regression test for Phase 0 — Codex stage 4 liveness gate.
+# Ensures $_TIMEOUT_CMD (timeout / gtimeout) terminates a hung child within
+# budget + grace, mirroring the wrapper around the codex-companion call in
+# execute-pipeline.sh. Stubs `node` with a sleep-forever script via PATH
+# prefix so we don't need a real Codex install.
+liveness_gate_test() {
+  local label="liveness gate fires within budget + grace"
+
+  # Resolve the same timeout binary the pipeline uses.
+  local tcmd=""
+  if command -v timeout >/dev/null 2>&1; then
+    tcmd="timeout"
+  elif command -v gtimeout >/dev/null 2>&1; then
+    tcmd="gtimeout"
+  else
+    echo "  FAIL  $label (neither timeout nor gtimeout available — install GNU coreutils)"
+    FAIL=$((FAIL + 1))
+    return
+  fi
+
+  local stub_dir
+  stub_dir=$(mktemp -d -t iago-liveness-stub.XXXXXX)
+  local marker="$stub_dir/node-was-invoked"
+  # Stub `node`: touch a marker file to prove invocation, then sleep 30s. If
+  # the wrapper works, $tcmd kills it at 5s (SIGTERM) or 7s (SIGKILL after 2s
+  # grace). The marker rules out exit 127 from misordered timeout args (e.g.
+  # `$tcmd 5 --kill-after=2 node` would parse `--kill-after=2` as the command
+  # and exit 127 in <1s — which would otherwise be indistinguishable from a
+  # timeout pass). Trap-on-exit cleanup so failures don't orphan the stub.
+  trap 'rm -rf "$stub_dir" 2>/dev/null' RETURN
+  cat > "$stub_dir/node" <<STUB
+#!/usr/bin/env bash
+touch "$marker"
+sleep 30
+STUB
+  chmod +x "$stub_dir/node"
+
+  local start_s
+  start_s=$(date +%s)
+  local exit_code=0
+  # GNU timeout requires options BEFORE the duration:
+  # `timeout [OPTION] DURATION COMMAND [ARG]...`
+  PATH="$stub_dir:$PATH" "$tcmd" --kill-after=2 5 node anything >/dev/null 2>&1 || exit_code=$?
+  local end_s
+  end_s=$(date +%s)
+  local elapsed=$((end_s - start_s))
+
+  local node_invoked="no"
+  [[ -f "$marker" ]] && node_invoked="yes"
+
+  # Accept 124 (SIGTERM after budget) or 137 (SIGKILL after grace).
+  # Elapsed: 5s budget + 2s kill-after grace + 2s slack = 9s ceiling.
+  # node_invoked must be "yes" — if not, timeout misparsed and never spawned
+  # the stub, which means a production argument-order regression is masked.
+  if { [[ "$exit_code" == "124" ]] || [[ "$exit_code" == "137" ]]; } && (( elapsed <= 9 )) && [[ "$node_invoked" == "yes" ]]; then
+    echo "  PASS  $label (exit=$exit_code elapsed=${elapsed}s node_invoked=$node_invoked)"
+    PASS=$((PASS + 1))
+  else
+    echo "  FAIL  $label (expected exit ∈ {124,137}, elapsed ≤ 9s, node_invoked=yes; got exit=$exit_code elapsed=${elapsed}s node_invoked=$node_invoked)"
+    FAIL=$((FAIL + 1))
+  fi
+}
+
+liveness_gate_test
+
 echo
 echo "Result: $PASS passed, $FAIL failed"
 [[ $FAIL -eq 0 ]] || exit 1
