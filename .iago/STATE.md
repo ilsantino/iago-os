@@ -20,12 +20,12 @@ No active plans. Audit phase complete.
 | 2026-04-27 | research | hermes-agent (Nous Research, 120K stars) deep dive + 9-wedge adoption roadmap; CEO chose full adoption over conservative 3-wedge | docs/research/hermes-agent.md + docs/specs/hermes-agent-adoption.md |
 | 2026-04-27 | fast | Wedge A: MEMORY.md frozen-snapshot rule — CLAUDE.md paragraph + new feedback memory + council/skill.md exception comment. Wedges B–I queued as `feature-hermes-adoption` plans. | (this commit) |
 | 2026-04-27 | fast | Pipeline self-freeze + re-exec — copy scripts/ tree to mktemp, exec from frozen copy; fixes Windows bash byte-offset crash on script self-edit (PR #22 plan 01 run hit this) | [#24](https://github.com/ilsantino/iago-os/pull/24) |
+| 2026-04-28 | fast | CLAUDE.md macOS prereq note: `brew install coreutils` for `gtimeout` (Phase 1 item 1, Sebas-on-Mac unblocker) | [#29](https://github.com/ilsantino/iago-os/pull/29) |
 
 ## Known Issues
 
 | Issue | Severity | Detail |
 |-------|----------|--------|
-| macOS `timeout` in pipeline | Low | `run_claude()` uses GNU `timeout` — not available on macOS without coreutils. Sebas will hit this. Fix: detect OS, use `gtimeout` or background+sleep fallback. |
 | Local main diverged from origin/main | Minor | CRLF fix committed directly to local main; same content in PR #15 squash merge on remote. Run `git checkout main && git pull --rebase origin main` to reconcile. |
 
 ## Recent Decisions

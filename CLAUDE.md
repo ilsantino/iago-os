@@ -4,6 +4,10 @@
 Claude Code config layer for multi-client delivery.
 Stack fixed — no alternatives unless asked.
 
+## Prerequisites
+
+- **macOS:** `brew install coreutils` — pipeline requires `timeout` or `gtimeout` on PATH (`scripts/execute-pipeline.sh` hard-fails otherwise)
+
 ## Tech Stack
 
 - **Frontend:** React 19 + Vite + TypeScript (strict) + TailwindCSS 4 + ShadCN/UI + Framer Motion + GSAP/ScrollTrigger + Lenis
