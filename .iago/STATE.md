@@ -26,7 +26,6 @@ No active plans. Audit phase complete.
 
 | Issue | Severity | Detail |
 |-------|----------|--------|
-| macOS `timeout` in pipeline | Low | `run_claude()` uses GNU `timeout` — not available on macOS without coreutils. Sebas will hit this. Fix: detect OS, use `gtimeout` or background+sleep fallback. |
 | Local main diverged from origin/main | Minor | CRLF fix committed directly to local main; same content in PR #15 squash merge on remote. Run `git checkout main && git pull --rebase origin main` to reconcile. |
 
 ## Recent Decisions

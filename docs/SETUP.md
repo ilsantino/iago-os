@@ -13,6 +13,8 @@ First-time setup for iaGO-OS. Covers both Windows and macOS.
 | GitHub CLI | 2.x | [cli.github.com](https://cli.github.com/) | `gh --version` |
 | Biome | 1.x | Installed per-project via npm | `npx biome --version` |
 
+> **macOS only:** `brew install coreutils` — the pipeline uses `gtimeout` (GNU `timeout`), not available by default on macOS. `scripts/execute-pipeline.sh` hard-fails without it.
+
 ### Authenticate everything
 
 ```bash
