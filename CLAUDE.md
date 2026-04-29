@@ -12,6 +12,7 @@ Stack fixed — no alternatives unless asked.
 - **Testing:** Vitest (unit/integration), Playwright (E2E)
 - **Tooling:** Biome (formatter + linter) — never Prettier, ESLint, gofmt
 - **Infra:** AWS Amplify Gen 2 (manages all AWS resources), GitHub Actions CI/CD
+- **macOS prereq:** `brew install coreutils` — pipeline requires `timeout` or `gtimeout` on PATH (`scripts/execute-pipeline.sh` hard-fails otherwise)
 
 ## Code Standards
 
