@@ -128,10 +128,17 @@ liveness_gate_test() {
 
   local stub_dir
   stub_dir=$(mktemp -d -t iago-liveness-stub.XXXXXX)
-  # Stub `node`: ignore args, sleep 30s. If the wrapper works, $tcmd kills it
-  # at 5s (SIGTERM) or 7s (SIGKILL after 2s grace).
-  cat > "$stub_dir/node" <<'STUB'
+  local marker="$stub_dir/node-was-invoked"
+  # Stub `node`: touch a marker file to prove invocation, then sleep 30s. If
+  # the wrapper works, $tcmd kills it at 5s (SIGTERM) or 7s (SIGKILL after 2s
+  # grace). The marker rules out exit 127 from misordered timeout args (e.g.
+  # `$tcmd 5 --kill-after=2 node` would parse `--kill-after=2` as the command
+  # and exit 127 in <1s — which would otherwise be indistinguishable from a
+  # timeout pass). Trap-on-exit cleanup so failures don't orphan the stub.
+  trap 'rm -rf "$stub_dir" 2>/dev/null' RETURN
+  cat > "$stub_dir/node" <<STUB
 #!/usr/bin/env bash
+touch "$marker"
 sleep 30
 STUB
   chmod +x "$stub_dir/node"
@@ -146,15 +153,18 @@ STUB
   end_s=$(date +%s)
   local elapsed=$((end_s - start_s))
 
-  rm -rf "$stub_dir"
+  local node_invoked="no"
+  [[ -f "$marker" ]] && node_invoked="yes"
 
   # Accept 124 (SIGTERM after budget) or 137 (SIGKILL after grace).
   # Elapsed: 5s budget + 2s kill-after grace + 2s slack = 9s ceiling.
-  if { [[ "$exit_code" == "124" ]] || [[ "$exit_code" == "137" ]]; } && (( elapsed <= 9 )); then
-    echo "  PASS  $label (exit=$exit_code elapsed=${elapsed}s)"
+  # node_invoked must be "yes" — if not, timeout misparsed and never spawned
+  # the stub, which means a production argument-order regression is masked.
+  if { [[ "$exit_code" == "124" ]] || [[ "$exit_code" == "137" ]]; } && (( elapsed <= 9 )) && [[ "$node_invoked" == "yes" ]]; then
+    echo "  PASS  $label (exit=$exit_code elapsed=${elapsed}s node_invoked=$node_invoked)"
     PASS=$((PASS + 1))
   else
-    echo "  FAIL  $label (expected exit ∈ {124,137} and elapsed ≤ 9s; got exit=$exit_code elapsed=${elapsed}s)"
+    echo "  FAIL  $label (expected exit ∈ {124,137}, elapsed ≤ 9s, node_invoked=yes; got exit=$exit_code elapsed=${elapsed}s node_invoked=$node_invoked)"
     FAIL=$((FAIL + 1))
   fi
 }

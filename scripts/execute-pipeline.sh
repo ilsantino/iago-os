@@ -69,13 +69,19 @@ fi
 # macOS lacks GNU `timeout` by default; brew coreutils ships `gtimeout`.
 # HARD-fail if neither is available — silent fallback would re-expose the
 # exact bug being fixed (no liveness gate on long-running Codex calls).
+# Note: `exit 1` here is intentional — this script must be executed, not
+# sourced. A future contributor adding sourcing must replace exit with return
+# AND ensure the parent doesn't proceed without the timeout binary detected.
+# Path is resolved via `command -v` (absolute path, not bare command name) so
+# a shell function named `timeout` defined in a sourced lib cannot shadow the
+# real binary at the call site (functions DO expand inside $(...) subshells).
 _TIMEOUT_CMD=""
 if command -v timeout >/dev/null 2>&1; then
-  _TIMEOUT_CMD="timeout"
+  _TIMEOUT_CMD=$(command -v timeout)
 elif command -v gtimeout >/dev/null 2>&1; then
-  _TIMEOUT_CMD="gtimeout"
+  _TIMEOUT_CMD=$(command -v gtimeout)
 else
-  echo "ERROR: neither 'timeout' nor 'gtimeout' available. Install GNU coreutils (macOS: brew install coreutils)." >&2
+  echo "ERROR: neither 'timeout' nor 'gtimeout' available. Install GNU coreutils (macOS: brew install coreutils), then re-run the pipeline. The script will pick up the binary automatically — no further config." >&2
   exit 1
 fi
 
@@ -719,6 +725,13 @@ if [[ "$USED_CODEX" != "true" ]]; then
   CODEX_OUTPUT=$(cd "$PROJECT_DIR" && run_claude_adversarial) || CODEX_EXIT=$?
   USED_CLAUDE_FALLBACK=true
 elif [[ $CODEX_EXIT -ne 0 ]]; then
+  # Distinguish liveness-gate timeout (124/137) from other Codex failures —
+  # operators reading CI logs need to know whether the budget exhausted vs.
+  # whether Codex itself crashed. 124 = SIGTERM after elapsed; 137 = SIGKILL
+  # after --kill-after grace (child trapped or ignored SIGTERM).
+  if [[ $CODEX_EXIT -eq 124 || $CODEX_EXIT -eq 137 ]]; then
+    log "INFO: Codex stage 4 timeout fired (exit $CODEX_EXIT) — 600s budget exhausted, falling back to Claude adversarial"
+  fi
   log "WARNING: Codex review failed (exit $CODEX_EXIT)"
   log "Codex raw output: $CODEX_OUTPUT"
   # If output contains structured findings, keep them despite non-zero exit.
