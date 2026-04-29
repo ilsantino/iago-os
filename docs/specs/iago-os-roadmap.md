@@ -10,7 +10,7 @@ _Date: 2026-04-28 | Inputs: vision spec at `docs/specs/iago-os-vision.md` (Phase
 
 The vision's largest defect — diagnosed unanimously through 5 peer reviews — is that wedges derive from Hermes feature-gaps, not iaGO client problems. T2 (Hermes counter-patterns) and T4 (no direct competitors) make Hermes-mimicry actively wrong. But pure "wait for client to pull" stalls Monday execution. The synthesis: **keep the wedge alphabet; tie each surviving wedge to a named client trigger; cut wedges with no client trigger; harden moat before adding surface.**
 
-Cap held STRICTER than vision: **2 added (J, K-modified), 2 removed (E, I), 4 deferred (F, G, L, M, N), 3 reframed (C, D, H).** First Principles' "client-outcome gate" is adopted as the trigger condition for cycle 2 — wedges in cycle 2 must cite a named iaGO client problem before merge.
+Cap held STRICTER than vision: **2 added (J, K-modified), 2 removed (E, I), 5 deferred (F, G, L, M, N), 3 reframed (C, D, H).** First Principles' "client-outcome gate" is adopted as the trigger condition for cycle 2 — wedges in cycle 2 must cite a named iaGO client problem before merge.
 
 ---
 
@@ -71,7 +71,7 @@ If diagnosis takes longer than 90 minutes, escalate to `/codex:rescue` for cross
 ```
 Phase 0 (Monday morning, half-day)        ← STANDALONE, NOT A WEDGE
    ├── Codex 8h stall RCA (30 min)         ← FIRST commit precondition
-   ├── Codex cwd patch + regression test (standalone PR)
+   ├── Codex cwd patch + regression test (standalone PR)  [DONE — PR #27 merged 2026-04-29]
    ├── macOS `timeout` shim (scripts/lib/run-claude.sh)
    └── FAIL-regex per-line parser fix
    │
@@ -134,9 +134,9 @@ TOTAL: ~13 dev-days under 17.5-day working budget. Buffer = 4.5 days.
 | G | DEFER | — | Cycle 2 | Vision defer + 5-min `disable-model-invocation` audit per Contrarian |
 | M | DEFER | — | Beyond | Vision defer holds (no parallel-plan pressure yet) |
 | N | DEFER | — | Beyond | Vision defer holds (no same-project corpus yet) |
-| **Wk 6** | **BUFFER** | 5d | Wk 6 | Codex recurrence #4 + MUNET incident absorption + cleanup batch 2 |
+| **Wk 6** | **BUFFER** | 4.5d | Wk 6 | Codex recurrence #4 + MUNET incident absorption + cleanup batch 2 |
 
-**Cap honored:** 2 added (J, K-modified), 2 removed (E, I), 4 deferred, 3 reframed.
+**Cap honored:** 2 added (J, K-modified), 2 removed (E, I), 5 deferred, 3 reframed.
 
 ---
 
@@ -160,7 +160,7 @@ TOTAL: ~13 dev-days under 17.5-day working budget. Buffer = 4.5 days.
 | F (Telegram/Slack gateway) | A paying iaGO client requests a messaging channel for delivery comms |
 | L (externalize review-checks) | munet PHI compliance OR din-specific review requirement materializes |
 | G (progressive skill disclosure) | Skill catalog crosses 80 OR Anthropic ships GitHub #43928 (`disabledSkills` setting) |
-| I (agentskills.io publish) | (a) Codex cwd holds for 30 days, AND (b) MUNET ships, AND (c) one client requests skill catalog access |
+| I (agentskills.io publish) | An external publishing path materializes — public SkillRepo submission, client runtime portability requirement, or team adopts a non-Claude Code runtime |
 | M (plan status in STATE.md) | 3+ parallel plans running regularly (currently 1-2) |
 | N (trajectory ingestion) | ≥3 summaries on same client project (currently 0) |
 | D MCP-server expansion | D doc-only sees real usage and saves operator time |
@@ -185,7 +185,7 @@ If any invariant breaks during execution, halt the wave and convene Phase 0.5 (o
 
 - **Supersedes:** `docs/specs/hermes-agent-adoption.md` (now downgraded to research artifact). Future wedge plans reference THIS roadmap, not the original 9-wedge spec.
 - **Builds on:** `docs/specs/iago-os-vision.md` (Phase 0.2 brainstorming output). The vision spec stays as the brainstorm artifact; this roadmap is the council-modified canonical version.
-- **Phase 1 cleanup spec** (`docs/specs/iago-os-cleanup.md`) and **Phase 2 wedge plans** must cite this roadmap's verdict table, sequencing, and cycle-2 trigger conditions.
+- **Phase 1 cleanup spec** (`docs/specs/iago-os-cleanup.md` _(to be created)_) and **Phase 2 wedge plans** must cite this roadmap's verdict table, sequencing, and cycle-2 trigger conditions.
 
 ---
 
@@ -194,7 +194,7 @@ If any invariant breaks during execution, halt the wave and convene Phase 0.5 (o
 - `docs/specs/iago-os-vision.md` — Phase 0.2 brainstorming output
 - `.iago/research/_summary.md` — Phase 0.1 synthesis
 - `.iago/research/team-{1-5}-*.md` — Phase 0.1 deep-research artifacts
-- `sessions/2026-04-28-iago-os-pipeline-speed-06.md` — handoff digest with bounded scope rules
+- `sessions/2026-04-28-iago-os-pipeline-speed-06.md` _(Obsidian vault — not in repo)_ — handoff digest with bounded scope rules
 - 5 advisor responses (Contrarian, First Principles, Expansionist, Outsider, Executor) — 2026-04-28
 - 5 peer reviews — 2026-04-28
 - Chairman synthesis — 2026-04-28
