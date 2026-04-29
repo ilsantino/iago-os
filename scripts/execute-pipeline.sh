@@ -698,7 +698,7 @@ if command -v node &> /dev/null && [[ -n "$CODEX_COMPANION" ]]; then
   # outer `|| CODEX_EXIT=$?` and falls through to the Claude fallback at
   # line ~695 via the existing `elif [[ $CODEX_EXIT -ne 0 ]]` branch.
   # Preserves --cwd flag from PR #21 (defense in depth).
-  CODEX_OUTPUT=$(cd "$PROJECT_DIR" && $_TIMEOUT_CMD --kill-after=10 600 node "$CODEX_COMPANION" adversarial-review --cwd "$PROJECT_DIR" --base "$PRE_IMPL_SHA" --wait 2>&1) || CODEX_EXIT=$?
+  CODEX_OUTPUT=$(cd "$PROJECT_DIR" && "$_TIMEOUT_CMD" --kill-after=10 600 node "$CODEX_COMPANION" adversarial-review --cwd "$PROJECT_DIR" --base "$PRE_IMPL_SHA" --wait 2>&1) || CODEX_EXIT=$?
   USED_CODEX=true
 elif command -v codex &> /dev/null; then
   log "Running codex review (model from ~/.codex/config.toml) — companion plugin not found, using raw CLI"
