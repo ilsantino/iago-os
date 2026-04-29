@@ -69,11 +69,11 @@ If diagnosis takes longer than 90 minutes, escalate to `/codex:rescue` for cross
 ## Phase Sequencing (canonical)
 
 ```
-Phase 0 (Monday morning, half-day)        ← STANDALONE, NOT A WEDGE
-   ├── Codex 8h stall RCA (30 min)         ← FIRST commit precondition
-   ├── Codex cwd patch + regression test (standalone PR)  [DONE — PR #27 merged 2026-04-29]
-   ├── macOS `timeout` shim (scripts/lib/run-claude.sh)
-   └── FAIL-regex per-line parser fix
+Phase 0 (Monday morning, half-day)        ← STANDALONE, NOT A WEDGE  [ALL DONE]
+   ├── Codex 8h stall RCA (30 min)         [DONE — .iago/research/codex-stall-diagnosis-2026-04-28.md]
+   ├── Codex cwd patch + regression test (standalone PR)  [DONE — PR #21 merged 2026-04-28]
+   ├── macOS `timeout` shim (scripts/lib/run-claude.sh)   [DONE — PR #27 merged 2026-04-29]
+   └── FAIL-regex per-line parser fix                     [DONE — PR #21 merged 2026-04-28]
    │
    ▼
 Phase 1 (Week 1, ~3 dev-days, cleanup)     ← One bundled PR
