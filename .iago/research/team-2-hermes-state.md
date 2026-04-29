@@ -216,7 +216,8 @@ The `datagen-config-examples/` directory ships examples for RL training data gen
 **Wedge J — Shell-hook matchers (S, ~0.5d)**
 Extend `settings.json` hook entries with `matcher` (regex on tool name) and `timeout_seconds`. Enables scoped pre/post hooks without a full plugin. Example: "before any Edit to `amplify/data/resource.ts`, run schema-validation script." Zero new runtime, pure config extension. High confidence, high leverage.
 
-**Wedge K — Pre-LLM cron wake gate (S, ~0.5d)**
+**Wedge C addendum — Pre-LLM cron wake gate (S, ~0.5d)** _(Note: Pattern 5 above correctly identified this as a Wedge C fold. The "Wedge K" label used here is an artifact of this research doc; the council synthesis reassigned K to pre-stage pipeline checkpoints from T4/Cline — see `_summary.md` and `docs/specs/iago-os-roadmap.md`.)_
+
 Add `--wake-check <script>` flag to `scripts/scheduled-runner.sh`. If the script exits with a designated "no-wake" code, skip `claude -p` entirely. Cheaper than post-LLM `[SILENT]` token (our current Wedge C design). Can ship as a Wedge C addendum or a standalone micro-wedge. Also add `--allowed-tools` passthrough for per-job toolset limiting.
 
 These are both addendum candidates to existing Wedge C and Wedge H plans rather than full new plan files. Whether they get their own plan files is a judgment call.

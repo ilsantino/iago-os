@@ -136,7 +136,7 @@ The pattern mirrors MCP's trajectory: Anthropic publishes an open spec, OpenAI a
 - `description`: present in all 37, well-formed, compliant
 
 Non-standard fields in use:
-- `experimental: true` — 4 skills (`agent-payment-x402`, `autonomous-loops`, `continuous-agent-loop`, `liquid-glass-design`, `santa-method`)
+- `experimental: true` — 5 skills (`agent-payment-x402`, `autonomous-loops`, `continuous-agent-loop`, `liquid-glass-design`, `santa-method`)
 - `audit_scope: standalone` — 2 skills (`amplify-bug-bounty`, `frontend-bug-bounty`)
 - `audit_disclaimer: >-` — 2 skills (same 2 above)
 
