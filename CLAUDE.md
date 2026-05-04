@@ -7,6 +7,7 @@ Stack fixed — no alternatives unless asked.
 ## Prerequisites
 
 - **macOS:** `brew install coreutils` — pipeline requires `timeout` or `gtimeout` on PATH (`scripts/execute-pipeline.sh` hard-fails otherwise)
+- `gsort` — installed via `brew install coreutils` (macOS only); `scripts/execute-pipeline.sh` uses `sort -V` (GNU version sort) for codex-companion plugin cache lookup, with `-r` BSD fallback if GNU sort is absent
 
 ## Tech Stack
 

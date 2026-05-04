@@ -1,2 +1,3 @@
-# Runtime state — gitignored
-state/
+# Runtime state — gitignored, except README
+state/*
+!state/README.md

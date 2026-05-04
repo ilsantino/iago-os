@@ -227,3 +227,9 @@ references rather than re-pasted bulk text. Source: agent-skills-context
   threshold rarely fires inside a single stage. The rule still applies if a
   stage explicitly loops (e.g., the review fix-loop running 2 rounds with
   each round re-reading the diff).
+
+## Plan archive convention
+
+Plans superseded by a canonical roadmap or vision spec move to `.iago/plans/_archive/{YYYY-MM-{slug}}/` with a roadmap-pointer header on each file. Never execute archived plans without first re-stress-testing them against the current roadmap.
+
+A plan is superseded when a canonical spec explicitly replaces its execution pattern, not merely when it is deferred (deferred plans stay in their phase folder; superseded plans move to `_archive/`).

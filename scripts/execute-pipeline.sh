@@ -677,6 +677,7 @@ else
   # Sort in reverse to prefer the newest (highest) version directory.
   # sort -V (version sort) is GNU coreutils only; fall back to -r on macOS/BSD sort.
   _sort_version_flag="-rV"
+  # GNU-only — Mac path requires brew coreutils per CLAUDE.md prereq
   sort -V /dev/null 2>/dev/null || _sort_version_flag="-r"
   while IFS= read -r _companion_cached; do
     if [[ -f "$_companion_cached" ]]; then

@@ -1,5 +1,6 @@
-# iaGO-OS runtime state (session-specific, machine-specific)
-.iago/state/
+# iaGO-OS runtime state (session-specific, machine-specific) — README is tracked
+.iago/state/*
+!.iago/state/README.md
 
 # Claude Code local settings (per-developer)
 .claude/settings.local.json
