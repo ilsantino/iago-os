@@ -88,8 +88,7 @@ advisor one chance to update their position after seeing the others' drafts.
 Catches the "I would have said it differently if I'd known X was on the table"
 failure mode without leaking advisor identities.
 
-Collect all 5 responses from Step 2. Anonymize as Draft A-E (use the SAME
-A-E mapping you'll use in Step 3 — randomize once, reuse).
+Collect all 5 responses from Step 2. Randomize the A-E mapping once here; carry it forward unchanged into Step 3.
 
 Spawn 5 new `general-purpose` agents in parallel. Each agent receives its OWN
 original draft (by letter) plus the other 4 anonymized drafts, and decides

@@ -19,9 +19,11 @@ ALL of these must be true:
 - No new dependencies
 - Obvious fix or change (one-sentence description)
 - Not part of a ROADMAP phase
+- Does not touch auth, payment, or data-access code
 
 If ANY condition fails, redirect:
 - Unclear scope or >3 files → `/iago-quick`
+- Touches auth/payment/data-access → `/iago-quick` (pipeline review required)
 - Part of a ROADMAP phase → full workflow (`/iago-plan` → `/iago-execute`)
 
 ## Arguments
