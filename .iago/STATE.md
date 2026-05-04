@@ -1,11 +1,11 @@
 # State — iaGO-OS
 
-> **Phase:** post-audit | **Status:** audit verified
-> **Tag:** v0.1.0 | **Updated:** 2026-04-13
+> **Phase:** phase-1-cleanup | **Status:** audit verified
+> **Tag:** v0.1.0 | **Updated:** 2026-05-04
 
 ## Active
 
-No active plans. Audit phase complete.
+Phase 1 cleanup in flight per `docs/specs/iago-os-roadmap.md`. Implementer of Plan 01 must remove this 'in flight' line and replace with a dated completion row in the Active table at merge time.
 
 | Date | Mode | Description | Commit |
 |------|------|-------------|--------|

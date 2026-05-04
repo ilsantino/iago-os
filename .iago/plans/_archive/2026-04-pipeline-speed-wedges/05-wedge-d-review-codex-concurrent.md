@@ -1,3 +1,5 @@
+> ARCHIVED 2026-05-04 — superseded by docs/specs/iago-os-roadmap.md (Wave 1/2 wedge alphabet replaces these execution patterns).
+
 ---
 plan: 05-wedge-d-review-codex-concurrent
 phase: feature-pipeline-speed-wedges
