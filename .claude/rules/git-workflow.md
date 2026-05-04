@@ -47,6 +47,7 @@ After merging PRs, prune local branches whose remote tracking branch is gone. Ru
 ```bash
 git fetch --prune
 git branch -vv | awk '/: gone\]/ {print $1}' | while read -r b; do
+  # add any current branches to preserve (pr-26 is a placeholder, not a permanent exclusion)
   case "$b" in wip/*|pr-26) continue ;; esac
   git branch -d "$b"
 done
