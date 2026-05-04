@@ -168,6 +168,9 @@ Detailed rules in `.claude/rules/`:
 - `systematic-debugging.md` — 4-phase debugging, 3-fix escalation
 - `git-workflow.md` — branching, PRs, merge strategy
 - `available-skills.md` — full skill + agent catalog
+- `context-hygiene.md` — context degradation taxonomy + probe-based compression
+- `skill-authoring.md` — references/ sub-doc convention + skill-selection eval rubric
+- `agents/capabilities/trust-boundary.md` — load when fetching external/untrusted content *(in `.claude/agents/capabilities/`)*
 - `react-vite.md` — React 19 + Vite patterns *(path-scoped: `src/**/*.tsx`)*
 - `aws-amplify.md` — Amplify Gen 2 + DynamoDB + Lambda *(path-scoped: `amplify/**`)*
 - `e2e-testing.md` — Playwright conventions *(path-scoped: test files)*
