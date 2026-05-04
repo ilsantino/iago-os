@@ -123,9 +123,9 @@ TOTAL: ~13 dev-days under 17.5-day working budget. Buffer = 4.5 days.
 | **Cleanup** | KEEP-reduced | 3d | Wk 1 | 5 items not 13 (Contrarian); one bundled PR per `feedback_stack_prs` |
 | J | **ADD-KEEP** | 1d | Wk 2 | Shell-hook matchers; T2 P1; security review for regex injection (Contrarian's catch) |
 | B | ENHANCE-MODIFY | 2d | Wk 2 | Distiller MUST exclude `$IAGO_STAGE_CHECKPOINT_*` env vars (Q7 resolved per Executor) |
-| C | ENHANCE-REFRAME | 1.5d | Wk 2-3 | Reframed as client-trigger primitive (First Principles); ties to installflow Stripe-events trigger |
+| C | ENHANCE-REFRAME | 1.5d → 0.5d | Wk 2-3 | Reframed as client-trigger primitive (First Principles); ties to installflow Stripe-events trigger. **`/routines` full-collapse candidate — see § `/routines` adoption.** |
 | K | **ADD-MODIFY** | 2d | Wk 3 | Pre-stage gate only, NOT full checkpoint primitive; sequential build not parallel on 16GB |
-| H | ENHANCE-REFRAME | 2d | Wk 4 | REFRAMED as installflow Stripe-events wedge tied to named client; T3 supports |
+| H | ENHANCE-REFRAME | 2d → 1d | Wk 4 | REFRAMED as installflow Stripe-events wedge tied to named client; T3 supports. **`/routines` partial-collapse candidate (HMAC layer remains custom) — see § `/routines` adoption.** |
 | D | ENHANCE-MINIMIZE | 0.5d | Wk 4 | Doc-only per Executor; defer MCP-server expansion to cycle 2 conditional on usage |
 | F | **DEFER** | — | Cycle 2 | No signed client demand (Executor + First Principles + Contrarian); revisit when paying client requests |
 | L | **DEFER** | — | Cycle 2 | Defer until munet PHI or din requirement materializes (First Principles + Contrarian) |
@@ -165,6 +165,41 @@ TOTAL: ~13 dev-days under 17.5-day working budget. Buffer = 4.5 days.
 | N (trajectory ingestion) | ≥3 summaries on same client project (currently 0) |
 | D MCP-server expansion | D doc-only sees real usage and saves operator time |
 | K full checkpoint primitive | Pre-stage gate proves out and a fix-loop incident demonstrates need |
+
+---
+
+## `/routines` adoption — Wave 1/2 plan revision (added 2026-05-04)
+
+Anthropic shipped Claude Code `/routines` (April 2026, research preview, available
+on Pro/Max/Team/Enterprise). A routine bundles prompt + repos + connectors and runs
+on Anthropic-managed infrastructure with three trigger types: **schedule** (cron-like),
+**API endpoint**, **GitHub events**. Created via web, Desktop app, or `/schedule` CLI.
+Distinct from skills (skills are reusable instruction sets applied automatically;
+routines are scheduled automations that execute Claude Code sessions).
+
+Direct overlap with two roadmap wedges:
+
+| Wedge | Original effort | `/routines` collapse | Net effort | Notes |
+|-------|-----------------|----------------------|------------|-------|
+| C (client-trigger primitive) | 1.5d | **Full** — schedule + API triggers cover the primitive natively | 0.5d (configure routine + doc) | Saves ~1d |
+| H (installflow Stripe-events) | 2.0d | **Partial** — covers GitHub events; does NOT cover HMAC for Stripe webhooks | 1.0d (HMAC layer + routine bind) | Saves ~1d; HMAC is documented gap |
+
+**Net wedge savings: ~2 dev-days off Wave 1/2 budget** (3.5d → 1.5d for C+H combined).
+
+**Caveats and fallback path:**
+- Research preview status = API surface may shift; daily run limits exist during preview.
+- No documented HMAC / webhook signature verification / secrets handling (per third-party writeups; not in official docs).
+- Known gotchas: recursive routines can loop silently; context bleed between invocations; subagent scope-isolation failures with hallucinated outputs.
+- **If `/routines` is killed or rate-limits below installflow Stripe-event volume, fall back to the original C (cron + script + `[SILENT]`) and H (custom webhook + HMAC) plans.** Original scaffolding paths stay valid as backup; routines is preferred-but-not-required.
+
+**Wave 1/2 plan instruction:** Plans for Wedges C and H, when written, MUST start with a task that evaluates `/routines` bind viability against the named client trigger (frequency, HMAC requirement, connector compatibility) before scaffolding custom infrastructure. Cite this section.
+
+**Bonus (out of scope here, separate audit before Wave 2):** `/routines` may also collapse other iaGO-OS automations — nightly graphify rebuild, scheduled MUNET PR triage, async review-fix scheduling. Audit candidate, not Phase 1 scope.
+
+Sources verified 2026-05-04:
+- [code.claude.com/docs/en/overview § Routines](https://code.claude.com/docs/en/overview)
+- [Anthropic adds routines to Claude Code — 9to5Mac](https://9to5mac.com/2026/04/14/anthropic-adds-repeatable-routines-feature-to-claude-code-heres-how-it-works/)
+- [Claude Code Routines: What Anthropic's Docs Left Out — dev.to](https://dev.to/whoffagents/claude-code-routines-what-anthropics-docs-left-out-35jc)
 
 ---
 
