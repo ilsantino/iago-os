@@ -1,4 +1,5 @@
-# Force LF line endings for shell scripts and YAML workflows
+# Force LF line endings for shell scripts, YAML workflows, and ESM modules
 *.sh text eol=lf
 *.yml text eol=lf
 *.yaml text eol=lf
+*.mjs text eol=lf
