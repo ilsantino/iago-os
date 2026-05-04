@@ -1,10 +1,13 @@
 ---
 name: iago-plan
 description: >-
-  Use when creating implementation plans. Two modes: (1) /iago-plan {phase-slug}
+  Use when creating implementation plans on disk. Two modes: (1) /iago-plan {phase-slug}
   for ROADMAP phases, (2) /iago-plan --feature "description" or --feature path/to/file
-  for standalone features from a prompt, spec, PDF, or markdown file. Not when task
-  is trivial (use /iago-fast) or 1-3 tasks max (use /iago-quick).
+  for standalone features from a prompt, spec, PDF, or markdown file.
+  Do NOT use when the task is trivial (≤3 files, obvious — use /iago-fast),
+  when scope is 1-3 tasks and you intend to execute immediately without persisting a plan
+  (use /iago-quick), or when plans already exist on disk for the target phase
+  (use /iago-execute).
 ---
 
 ## Purpose

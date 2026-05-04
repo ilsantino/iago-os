@@ -80,6 +80,55 @@ angles you're not covering.
 Keep your response between 150-300 words. No preamble. Go straight into your analysis.
 ```
 
+
+### 2.5. BroadcastChannel peer-draft round (5 agents in parallel)
+
+Source: massgen. Before peer review judges anonymized responses, give each
+advisor one chance to update their position after seeing the others' drafts.
+Catches the "I would have said it differently if I'd known X was on the table"
+failure mode without leaking advisor identities.
+
+Collect all 5 responses from Step 2. Anonymize as Draft A-E (use the SAME
+A-E mapping you'll use in Step 3 — randomize once, reuse).
+
+Spawn 5 new `general-purpose` agents in parallel. Each agent receives its OWN
+original draft (by letter) plus the other 4 anonymized drafts, and decides
+whether to revise.
+
+```
+You are {Advisor Name} on an LLM Council. You already submitted Draft {X}
+below. The other four advisors submitted Drafts {others}. They are anonymized
+— do not try to guess who wrote which.
+
+YOUR DRAFT (Draft {X}):
+---
+{your original response}
+---
+
+THE OTHER FOUR DRAFTS:
+**Draft {A}:** {response}
+**Draft {B}:** {response}
+**Draft {C}:** {response}
+**Draft {D}:** {response}
+
+You may revise your position once, in 100 words or fewer, if reading the
+others has changed your view or surfaced a stronger framing. If your
+original draft still stands, reply with the literal token NO_REVISION
+and nothing else.
+
+Constraints:
+- Maximum 100 words for any revision.
+- Stay in your assigned thinking style (do not become a Contrarian if you are
+  the Expansionist, etc.).
+- Do not name or accuse any other draft. Reference them only by letter.
+- Do not summarize. Output only the revised position OR NO_REVISION.
+```
+
+For each advisor: if the response is `NO_REVISION`, carry forward the original
+Step 2 draft. Otherwise, use the revision as the final response. The set of
+final responses (revised or original) feeds Step 3 peer review and Step 4
+chairman synthesis.
+
 ### 3. Peer review (5 agents in parallel)
 
 Collect all 5 responses. **Anonymize as Response A-E** (randomize mapping to
@@ -158,6 +207,17 @@ A clear, direct recommendation. Not "it depends." A real answer with reasoning.
 ## The One Thing to Do First
 A single concrete next step. Not a list. One thing.
 
+## Voting Record
+Source: massgen CoordinationTracker. Surface a per-advisor verdict so deliberation
+is auditable. For each major sub-question the council weighed (extract 2-5
+sub-questions from the discussion), emit one line:
+
+`Q{n} ({short label}): Contrarian={vote}, FirstPrinciples={vote}, Expansionist={vote}, Outsider={vote}, Executor={vote}`
+
+Votes are short tokens drawn from the responses (e.g., A/B/C, YES/NO,
+SHIP/HOLD, REWRITE/EXTEND). If an advisor did not opine on a sub-question,
+mark `abstain`. Aim for 2-5 lines total — one per substantive sub-question.
+
 Be direct. Don't hedge.
 ```
 
@@ -195,6 +255,7 @@ If `--save` is passed or the decision is significant, write to Obsidian:
 
 - Always spawn all 5 advisors in parallel. Sequential spawning wastes time.
 - Always anonymize for peer review. Named responses create deference bias.
+- The peer-draft round (Step 2.5) is mandatory — it's the cheapest way to surface late-binding insights without leaking identities.
 - The chairman can disagree with the majority if the dissenter's reasoning is strongest.
 - Don't council trivial questions. One right answer = just answer it.
 - Agents use `general-purpose` type with model `sonnet` for advisors/reviewers, `opus` for chairman.

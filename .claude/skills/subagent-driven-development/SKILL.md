@@ -1,10 +1,12 @@
 ---
 name: subagent-driven-development
 description: >-
-  Use when executing a multi-task implementation plan. Supports --pipeline for
-  full 8-stage review isolation. Not when task is trivial (single file, <5 min
-  — use /iago-fast instead) or when executing a ROADMAP phase (use /iago-execute
-  instead).
+  Use when executing a multi-task implementation plan that lives outside the ROADMAP phase
+  structure (legacy plans, ad-hoc multi-task work). Supports --pipeline for full 8-stage review
+  isolation per task.
+  Do NOT use when the task is trivial (single file, <5 min — use /iago-fast),
+  when executing a ROADMAP-phase plan (use /iago-execute which orchestrates wave dispatch),
+  or when scope fits in 1-3 tasks of a single plan (use /iago-quick).
 ---
 
 ## Purpose

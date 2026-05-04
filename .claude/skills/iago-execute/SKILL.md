@@ -1,8 +1,11 @@
 ---
 name: iago-execute
 description: >-
-  Use when executing implementation plans for a ROADMAP phase.
-  Not when no plans exist for the phase (run /iago-plan first).
+  Use when executing implementation plans that already exist on disk under .iago/plans/.
+  Runs each plan through the full 8-stage pipeline (stress → impl → build → review → codex → fix → PR).
+  Do NOT use when no plan files exist yet (run /iago-plan first), when the change is trivial
+  (use /iago-fast), or when scope is 1-3 standalone tasks with no plan written
+  (use /iago-quick which writes the plan inline).
 ---
 
 ## Purpose

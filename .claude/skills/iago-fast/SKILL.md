@@ -2,8 +2,9 @@
 name: iago-fast
 description: >-
   Use when executing a trivial inline task (≤3 file edits, no new deps, obvious fix).
-  Not when scope is unclear, >3 files are affected, or task is part of a ROADMAP phase
-  (use /iago-quick or the full workflow instead).
+  Do NOT use when scope is unclear, >3 files are affected, the change touches auth/payment/data-access,
+  or the task is part of a ROADMAP phase. For 1-3-task scope use /iago-quick; for ROADMAP phases use the full
+  /iago-plan → /iago-execute workflow.
 ---
 
 ## Purpose
