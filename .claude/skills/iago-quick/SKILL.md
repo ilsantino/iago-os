@@ -2,8 +2,10 @@
 name: iago-quick
 description: >-
   Use when executing a small focused task (1-3 tasks, clear scope) outside the
-  full multi-phase workflow. Not when the task is part of a ROADMAP phase
-  (use the full init → discuss → plan → execute → verify cycle instead).
+  full multi-phase workflow. Runs the FULL 8-stage pipeline on the lightweight plan.
+  Do NOT use when the change is ≤3 files and obvious (use /iago-fast which skips review),
+  when scope exceeds 3 tasks (decompose with /iago-plan first), or when the task is part of a
+  ROADMAP phase (use the full init → discuss → plan → execute → verify cycle instead).
 ---
 
 ## Purpose

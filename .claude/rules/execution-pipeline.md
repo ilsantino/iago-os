@@ -179,3 +179,51 @@ The orchestrator DOES:
 - Report results to the user
 - Update STATE.md after completion
 - Escalate if the script fails
+
+## Observation Masking
+
+In implementation sessions exceeding ~3 turns of verbose tool output (full
+file reads, multi-screen `Grep` dumps, long `Bash` logs), replace prior tool
+outputs with compact reference markers when re-reading the same data instead
+of re-emitting the full content. The marker format:
+
+```
+[file:<path>@lines L<start>-<end>, summary: <one-line gist>]
+```
+
+Goal: keep the prefix-cache stable and let later turns operate against
+references rather than re-pasted bulk text. Source: agent-skills-context
+(research sweep 2026-05-04).
+
+### Three concrete examples
+
+1. **Long Read result.** First turn: `Read .iago/plans/feature-X/01.md` (full
+   200 lines). Subsequent turn that needs the same plan: emit
+   `[file:.iago/plans/feature-X/01.md@lines L1-L200, summary: 5-task plan,
+   wave 1, depends_on=[]]` rather than re-running Read. Re-fetch only the
+   specific lines needed via `Read offset=… limit=…`.
+2. **Multi-screen Grep result.** Initial `Grep -r "useEffect" src/` returns
+   80 hits across 30 files. When re-referencing later, emit
+   `[grep:"useEffect" src/, summary: 80 hits in 30 files; key clusters in
+   src/features/auth (12) and src/features/dashboard (18)]`. If a later turn
+   needs the auth cluster specifically, run a narrower targeted grep, do not
+   re-emit the original 80-line list.
+3. **Verbose Bash log.** A `npm run build` produces 400 lines. Capture the
+   verdict (`exit 0` or first failing TypeScript diagnostic) and emit
+   `[bash:npm run build, summary: exit 0, no warnings, build artifacts in
+   dist/ (1.2 MB)]`. Keep the full log only if a later turn must inspect a
+   specific error.
+
+### Scope
+
+- **Sub-agents (advisory).** Sub-agents dispatched by the orchestrator
+  *should* apply observation masking when their internal tool history grows
+  large; they are not required to.
+- **Long sessions (mandatory).** Any session exceeding 30 turns must apply
+  observation masking on every re-reference to a prior tool output.
+  Implementation, fix, and review pipeline sessions count their own turns
+  toward this threshold; the orchestrator counts all-of-session turns.
+- **Pipeline `claude -p` stages.** Each stage starts fresh, so the 30-turn
+  threshold rarely fires inside a single stage. The rule still applies if a
+  stage explicitly loops (e.g., the review fix-loop running 2 rounds with
+  each round re-reading the diff).
