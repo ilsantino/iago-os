@@ -41,12 +41,21 @@ if [[ -z "$PLAN_PATH" || -z "$PROJECT_DIR" ]]; then
   exit 1
 fi
 
-if [[ ! -f "$PROJECT_DIR/$PLAN_PATH" ]]; then
-  echo "ERROR: Plan file not found: $PROJECT_DIR/$PLAN_PATH"
+# Resolve PLAN_FULL — accept absolute (POSIX `/...` or Windows `C:/...`) as-is,
+# otherwise prepend PROJECT_DIR. Prevents path doubling when caller passes an
+# absolute --plan (e.g. `C:/Users/.../C:/Users/.../plan.md`).
+if [[ "$PLAN_PATH" == /* || "$PLAN_PATH" =~ ^[A-Za-z]: ]]; then
+  PLAN_FULL="$PLAN_PATH"
+else
+  PLAN_FULL="$PROJECT_DIR/$PLAN_PATH"
+fi
+
+if [[ ! -f "$PLAN_FULL" ]]; then
+  echo "ERROR: Plan file not found: $PLAN_FULL"
   exit 1
 fi
 
-PLAN_CONTENT=$(cat "$PROJECT_DIR/$PLAN_PATH")
+PLAN_CONTENT=$(cat "$PLAN_FULL")
 PLAN_NAME=$(basename "$PLAN_PATH" .md)
 
 # ─── Self-freeze: re-exec from a copy ────────────────────────────────
@@ -127,7 +136,7 @@ date -u +%Y-%m-%dT%H:%M:%SZ > "$LOCK_DIR/started"
 PIPELINE_STARTED=true
 pipeline_init
 
-PLAN_FILE="$PROJECT_DIR/$PLAN_PATH"
+PLAN_FILE="$PLAN_FULL"
 DIFF_FILE="$PIPELINE_TMP/diff.txt"
 REVIEW_FILE="$PIPELINE_TMP/review.txt"
 CODEX_FILE="$PIPELINE_TMP/codex.txt"
