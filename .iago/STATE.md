@@ -23,6 +23,7 @@ No active plans. Audit phase complete.
 | 2026-04-28 | fast | CLAUDE.md macOS prereq note: `brew install coreutils` for `gtimeout` (Phase 1 item 1, Sebas-on-Mac unblocker) | [#29](https://github.com/ilsantino/iago-os/pull/29) |
 | 2026-05-04 | research | 6-repo tool surveillance + pattern mining (agent-browser, Scrapling, kepano/obsidian-skills, notebooklm-skill, agent-skills-context, massgen) + council on 2 architectural tensions | `.iago/research/2026-05-04-*.md` (7 files: 6 per-repo + integration matrix) |
 | 2026-05-04 | plan | `feature-tool-surveillance` — 4 plans / 21 tasks across 2 waves. Pattern absorption + selective install + /what-skill recommender. Browser tools deferred until real bottleneck. Auto-dispatch rejected. Slot post-Munet M2. | `docs/specs/feature-tool-surveillance.md` + `.iago/plans/feature-tool-surveillance/01-04` |
+| 2026-05-04 | fast | Fix path-concat bug in execute-pipeline.sh — accept absolute --plan (POSIX `/...` and Windows `C:/...`) as-is; prevents `C:/.../C:/.../plan.md` doubling | 2bbf5be |
 
 ## Known Issues
 
