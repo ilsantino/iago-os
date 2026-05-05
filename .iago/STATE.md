@@ -5,10 +5,9 @@
 
 ## Active
 
-Phase 1 cleanup in flight per `docs/specs/iago-os-roadmap.md`. Implementer of Plan 01 must remove this 'in flight' line and replace with a dated completion row in the Active table at merge time.
-
 | Date | Mode | Description | Commit |
 |------|------|-------------|--------|
+| 2026-05-04 | execute | Phase 1 cleanup hygiene shipped — STATE.md discipline rule, branch-prune doc, deferred plans archived, macOS audit (`gsort` prereq + `# GNU-only` annotation), `.iago/state/` README + gitignore pattern | [#31](https://github.com/ilsantino/iago-os/pull/31) merged |
 | 2026-04-13 | fast | Add console gate (step 2b) — Playwright runtime error check | ec00081 |
 | 2026-04-20 | quick | Real Codex adversarial on Windows via codex-companion | [#18](https://github.com/ilsantino/iago-os/pull/18) |
 | 2026-04-20 | fast | Add concurrency guards to claude.yml + claude-review-fix.yml (stop parallel loops) | f47cc2c |
