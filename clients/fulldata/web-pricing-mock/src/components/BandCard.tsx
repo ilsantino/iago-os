@@ -1,151 +1,161 @@
 import { AnimatePresence, motion } from "framer-motion";
 import type { Banda } from "../data/pricing";
-import { formatoMXN } from "../data/pricing";
+import {
+	calcAnnual,
+	calcAnnualMonthlyEquiv,
+	calcSavings,
+	formatoMXN,
+} from "../data/pricing";
 import type { BillingMode } from "./BillingToggle";
 
 type Props = {
-  banda: Banda;
-  mode: BillingMode;
+	banda: Banda;
+	mode: BillingMode;
+	index: number;
 };
 
-const featuresIncluded = [
-  "CFDI 4.0 ilimitado",
-  "Carta Porte 3.1 ilimitada",
-  "GPS por unidad",
-  "Cobranza + DSO real",
-  "Usuarios ilimitados",
-  "Soporte ilimitado",
-];
+const EASE_OUT_EXPO = [0.16, 1, 0.3, 1] as const;
 
-export const BandCard = ({ banda, mode }: Props) => {
-  const isCustom = banda.precioMensual === null;
-  const isRecomendado = !!banda.recomendado;
+const cardVariants = {
+	hidden: { opacity: 0, y: 24 },
+	visible: (i: number) => ({
+		opacity: 1,
+		y: 0,
+		transition: {
+			delay: i * 0.06,
+			duration: 0.55,
+			ease: EASE_OUT_EXPO,
+		},
+	}),
+};
 
-  const baseScale = isRecomendado ? 1.03 : 1;
-  const hoverY = isCustom ? -4 : -8;
+const bandNumber = (i: number) =>
+	`0${i + 1}`.slice(-2);
 
-  const renderPrice = () => {
-    if (isCustom) {
-      return (
-        <div className="flex flex-col gap-1">
-          <span className="text-3xl font-semibold text-slate-800">
-            Habla con ventas
-          </span>
-          <span className="text-sm text-slate-600">
-            Cotizaci&oacute;n personalizada por flota.
-          </span>
-        </div>
-      );
-    }
+export const BandCard = ({ banda, mode, index }: Props) => {
+	const renderPrice = () => {
+		const monthly = banda.precioMensual as number;
+		const annualTotal = calcAnnual(monthly);
+		const annualEquivMonthly = calcAnnualMonthlyEquiv(monthly);
+		const annualLista = monthly * 12;
+		const savings = calcSavings(monthly);
 
-    const monthly = banda.precioMensual as number;
-    const annualTotal = Math.round(monthly * 12 * 0.88);
-    const annualEquivMonthly = Math.round(monthly * 0.88);
+		if (mode === "monthly") {
+			return (
+				<div className="flex flex-col gap-1.5">
+					<div className="flex items-baseline gap-1">
+						<span className="text-xl text-slate-400 transition-colors duration-500 group-hover:text-brand-primary">
+							$
+						</span>
+						<span className="text-5xl font-semibold tracking-tight leading-none text-slate-900 tabular-nums transition-colors duration-500 group-hover:text-brand-primary">
+							{formatoMXN(monthly)}
+						</span>
+					</div>
+					<span className="text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500">
+						MXN / mes
+					</span>
+				</div>
+			);
+		}
 
-    if (mode === "monthly") {
-      return (
-        <div className="flex flex-col gap-1">
-          <div className="flex items-baseline gap-1">
-            <span className="text-2xl text-slate-600">$</span>
-            <span className="text-5xl font-semibold tracking-tight text-slate-800 tabular-nums">
-              {formatoMXN(monthly)}
-            </span>
-          </div>
-          <span className="text-sm text-slate-600">MXN / mes</span>
-        </div>
-      );
-    }
+		return (
+			<div className="flex flex-col gap-1.5">
+				<span className="text-[10px] text-slate-400 line-through tabular-nums">
+					${formatoMXN(annualLista)} MXN lista
+				</span>
+				<div className="flex items-baseline gap-1">
+					<span className="text-xl text-slate-400 transition-colors duration-500 group-hover:text-brand-primary">
+						$
+					</span>
+					<span className="text-5xl font-semibold tracking-tight leading-none text-slate-900 tabular-nums transition-colors duration-500 group-hover:text-brand-primary">
+						{formatoMXN(annualTotal)}
+					</span>
+				</div>
+				<span className="text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500">
+					MXN / a&ntilde;o · ${formatoMXN(annualEquivMonthly)}/mes equiv
+				</span>
+				<span className="mt-1 inline-flex w-fit items-center gap-1 rounded-full bg-brand-primary/10 px-2 py-0.5 text-[10px] font-semibold tabular-nums text-brand-primary">
+					<span aria-hidden>&#9889;</span>
+					Ahorras ${formatoMXN(savings)} MXN/a&ntilde;o
+				</span>
+			</div>
+		);
+	};
 
-    return (
-      <div className="flex flex-col gap-1">
-        <div className="flex items-baseline gap-1">
-          <span className="text-2xl text-slate-600">$</span>
-          <span className="text-5xl font-semibold tracking-tight text-slate-800 tabular-nums">
-            {formatoMXN(annualTotal)}
-          </span>
-        </div>
-        <span className="text-sm text-slate-600">MXN / a&ntilde;o</span>
-        <span className="text-xs text-slate-400">
-          (${formatoMXN(annualEquivMonthly)} MXN/mes equivalente)
-        </span>
-      </div>
-    );
-  };
+	return (
+		<motion.article
+			custom={index}
+			initial="hidden"
+			whileInView="visible"
+			viewport={{ once: true, margin: "-10%" }}
+			variants={cardVariants}
+			whileHover={{ y: -8, scale: 1.02 }}
+			transition={{ type: "spring", stiffness: 380, damping: 24 }}
+			className="group relative flex flex-col overflow-hidden rounded-2xl bg-gradient-to-br from-white via-white to-brand-primary/[0.04] p-5 md:p-6 ring-1 ring-slate-200/80 shadow-[0_4px_12px_-2px_rgba(15,23,42,0.06),0_2px_4px_-2px_rgba(216,96,48,0.04)] transition-shadow duration-500 hover:ring-2 hover:ring-brand-primary hover:shadow-[0_20px_45px_-12px_rgba(216,96,48,0.35),0_8px_18px_-8px_rgba(216,96,48,0.2)]"
+		>
+			{/* Always-visible top accent bar — fades from 50% baseline to 100% on hover */}
+			<div
+				aria-hidden
+				className="pointer-events-none absolute inset-x-0 top-0 h-[3px] bg-gradient-to-r from-brand-primary via-brand-light to-brand-primary opacity-50 transition-opacity duration-500 group-hover:opacity-100"
+			/>
 
-  return (
-    <motion.article
-      initial={{ opacity: 0, y: 16 }}
-      animate={{ opacity: 1, y: 0, scale: baseScale }}
-      whileHover={
-        isCustom
-          ? { y: hoverY }
-          : { y: hoverY, scale: baseScale * 1.02 }
-      }
-      transition={{ type: "spring", stiffness: 300, damping: 22 }}
-      className={`relative flex flex-col rounded-2xl border bg-white p-6 shadow-sm transition-shadow hover:shadow-lg ${
-        isRecomendado
-          ? "border-transparent ring-2 ring-brand-primary"
-          : "border-slate-200"
-      }`}
-    >
-      {isRecomendado && (
-        <span className="absolute -top-3 left-1/2 -translate-x-1/2 inline-flex items-center gap-1 rounded-full bg-brand-primary px-3 py-1 text-xs font-semibold uppercase tracking-wide text-white shadow">
-          <span aria-hidden>&#9733;</span> Recomendado
-        </span>
-      )}
+			{/* Number badge in top-right corner */}
+			<span
+				aria-hidden
+				className="pointer-events-none absolute right-4 top-3 text-[11px] font-bold uppercase tracking-[0.18em] text-brand-primary/30 transition-colors duration-500 group-hover:text-brand-primary"
+			>
+				{bandNumber(index)}
+			</span>
 
-      <header className="mb-5 flex flex-col gap-1">
-        <div className="flex items-baseline gap-2">
-          <h3 className="text-lg font-semibold text-slate-800">
-            {banda.nombre}
-          </h3>
-          {banda.subtitle && (
-            <span className="text-xs font-medium uppercase tracking-wide text-brand-primary">
-              {banda.subtitle}
-            </span>
-          )}
-        </div>
-        <p className="text-sm text-slate-600">{banda.rangoUnidades}</p>
-      </header>
+			{/* Glow blob — subtle baseline, intensifies on hover */}
+			<div
+				aria-hidden
+				className="pointer-events-none absolute -right-16 -top-16 h-40 w-40 rounded-full bg-brand-primary/[0.06] blur-3xl transition-all duration-700 group-hover:bg-brand-primary/30 group-hover:scale-110"
+			/>
 
-      <div className="mb-6 min-h-[7rem]">
-        <AnimatePresence mode="wait" initial={false}>
-          <motion.div
-            key={`${mode}-${banda.id}`}
-            initial={{ opacity: 0, y: 8 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: -8 }}
-            transition={{ duration: 0.25 }}
-          >
-            {renderPrice()}
-          </motion.div>
-        </AnimatePresence>
-      </div>
+			{/* Subtle gradient overlay — fades in extra warmth on hover */}
+			<div
+				aria-hidden
+				className="pointer-events-none absolute inset-0 bg-gradient-to-br from-brand-primary/0 via-transparent to-brand-light/0 opacity-0 transition-opacity duration-700 group-hover:from-brand-primary/[0.05] group-hover:to-brand-light/[0.04] group-hover:opacity-100"
+			/>
 
-      <ul className="mb-6 flex flex-col gap-2 text-sm text-slate-600">
-        {featuresIncluded.map((feat) => (
-          <li key={feat} className="flex items-start gap-2">
-            <span
-              aria-hidden
-              className="mt-0.5 inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-brand-primary/10 text-brand-primary"
-            >
-              &#10003;
-            </span>
-            <span>{feat}</span>
-          </li>
-        ))}
-      </ul>
+			<header className="relative mb-4 flex flex-col gap-0.5">
+				<h3 className="text-lg font-semibold tracking-tight text-slate-900 transition-colors duration-500 group-hover:text-brand-primary">
+					{banda.nombre}
+				</h3>
+				<p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500">
+					{banda.rangoUnidades}
+				</p>
+			</header>
 
-      <button
-        type="button"
-        className={`mt-auto rounded-xl px-4 py-2.5 text-sm font-semibold transition-colors ${
-          isRecomendado || banda.ctaCustom
-            ? "bg-brand-primary text-white hover:bg-brand-light"
-            : "border border-slate-200 text-slate-800 hover:border-brand-primary hover:text-brand-primary"
-        }`}
-      >
-        {banda.ctaCustom ? "Agendar llamada" : "Comenzar"}
-      </button>
-    </motion.article>
-  );
+			<div className="relative mb-4 min-h-[6.5rem]">
+				<AnimatePresence mode="wait" initial={false}>
+					<motion.div
+						key={`${mode}-${banda.id}`}
+						initial={{ opacity: 0, y: 8 }}
+						animate={{ opacity: 1, y: 0 }}
+						exit={{ opacity: 0, y: -8 }}
+						transition={{ duration: 0.28, ease: EASE_OUT_EXPO }}
+					>
+						{renderPrice()}
+					</motion.div>
+				</AnimatePresence>
+			</div>
+
+			{banda.precioPorUnidad !== null && (
+				<p className="relative mb-5 text-[10px] text-slate-400 tabular-nums">
+					~${formatoMXN(banda.precioPorUnidad)} MXN / unidad / mes
+				</p>
+			)}
+
+			<motion.button
+				type="button"
+				whileTap={{ scale: 0.97 }}
+				transition={{ type: "spring", stiffness: 400, damping: 28 }}
+				className="relative mt-auto overflow-hidden rounded-xl border-2 border-slate-200 bg-white px-4 py-2.5 text-xs md:text-sm font-semibold text-slate-800 transition-all duration-500 group-hover:border-brand-primary group-hover:bg-brand-primary group-hover:text-white group-hover:shadow-[0_6px_16px_-4px_rgba(216,96,48,0.5)]"
+			>
+				<span className="relative z-10">Comenzar 1 mes gratis</span>
+			</motion.button>
+		</motion.article>
+	);
 };

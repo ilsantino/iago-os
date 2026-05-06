@@ -38,3 +38,6 @@ Next steps:
 [14:03:19] Codex review complete
 [14:03:20] No actionable Codex findings — proceeding to PR
 [14:03:21] CREATE PR — quick-260505-fulldata-pricing-mock
+[14:05:39] PR creation output:
+Error: Reached max turns (15)
+[14:05:39] ERROR: PR creation failed (exit 1). Pipeline stopping.

@@ -1,4 +1,4 @@
-import { motion } from "framer-motion";
+import { AnimatePresence, motion } from "framer-motion";
 
 export type BillingMode = "monthly" | "annual";
 
@@ -41,23 +41,56 @@ export const BillingToggle = ({ mode, onChange }: Props) => {
           role="tab"
           aria-selected={isAnnual}
           onClick={() => onChange("annual")}
-          className={`relative z-10 px-6 py-2 text-sm font-medium rounded-full transition-colors min-w-[8rem] ${
+          className={`relative z-10 inline-flex items-center gap-2 px-6 py-2 text-sm font-medium rounded-full transition-colors min-w-[8rem] ${
             isAnnual ? "text-white" : "text-slate-600 hover:text-slate-800"
           }`}
         >
-          Anual
+          <span>Anual</span>
+          <span
+            className={`inline-flex items-center rounded-full px-1.5 py-0.5 text-[10px] font-bold leading-none ${
+              isAnnual
+                ? "bg-white/20 text-white"
+                : "bg-brand-primary/15 text-brand-primary"
+            }`}
+          >
+            -12%
+          </span>
         </button>
       </div>
-      <p className="text-xs text-slate-600">
-        {isAnnual ? (
-          <>
-            <span className="font-semibold text-brand-primary">12% off</span>{" "}
-            sobre precio lista &middot; pago anual upfront
-          </>
-        ) : (
-          <>1 mes gratis al activarse &middot; revenue desde el segundo mes</>
-        )}
-      </p>
+
+      <div className="min-h-[1.25rem]">
+        <AnimatePresence mode="wait" initial={false}>
+          {isAnnual ? (
+            <motion.p
+              key="annual"
+              initial={{ opacity: 0, y: 4 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -4 }}
+              transition={{ duration: 0.18 }}
+              className="text-xs text-slate-700"
+            >
+              Pago anual upfront ·{" "}
+              <span className="font-semibold text-brand-primary">
+                ahorra hasta $50,393 MXN/año
+              </span>
+            </motion.p>
+          ) : (
+            <motion.p
+              key="monthly"
+              initial={{ opacity: 0, y: 4 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -4 }}
+              transition={{ duration: 0.18 }}
+              className="text-xs text-slate-700"
+            >
+              <span className="font-semibold text-brand-primary">
+                1 mes gratis
+              </span>{" "}
+              · facturación mensual flexible
+            </motion.p>
+          )}
+        </AnimatePresence>
+      </div>
     </div>
   );
 };
