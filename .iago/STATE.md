@@ -1,12 +1,13 @@
 # State — iaGO-OS
 
 > **Phase:** phase-1-cleanup | **Status:** audit verified
-> **Tag:** v0.1.0 | **Updated:** 2026-05-10
+> **Tag:** v0.1.0 | **Updated:** 2026-05-11
 
 ## Active
 
 | Date | Mode | Description | Commit |
 |------|------|-------------|--------|
+| 2026-05-11 | fast | Remove stranded `clients/munet-web-wt-m06/` — leftover full copy of munet-web from 2026-04-28 M06 work (named like a worktree but never registered via `git worktree`); no inner `.git`, not on `git worktree list`; safe deletion | (this commit) |
 | 2026-05-10 | fast | Land council-revised v2 munet-web playbook (905 lines) at `.iago/research/munet-web-playbook.md` — rescued from orphan commits 08d68a5/aab3f1e after branches `wip/munet-web-playbook-v2` and `docs/munet-web-playbook` were deleted without record; 2026-05-10 status-pull session also wrote canonical evals for cortextos + agentic-os-dashboard to close a research-rediscovery gap | [#36](https://github.com/ilsantino/iago-os/pull/36) |
 | 2026-05-04 | execute | Phase 1 cleanup hygiene shipped — STATE.md discipline rule, branch-prune doc, deferred plans archived, macOS audit (`gsort` prereq + `# GNU-only` annotation), `.iago/state/` README + gitignore pattern | [#31](https://github.com/ilsantino/iago-os/pull/31) merged |
 | 2026-04-13 | fast | Add console gate (step 2b) — Playwright runtime error check | ec00081 |
