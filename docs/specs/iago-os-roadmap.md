@@ -123,7 +123,7 @@ TOTAL: ~13 dev-days under 17.5-day working budget. Buffer = 4.5 days.
 | **Cleanup** | KEEP-reduced | 3d | Wk 1 | 5 items not 13 (Contrarian); one bundled PR per `feedback_stack_prs` |
 | J | **ADD-KEEP** | 1d | Wk 2 | Shell-hook matchers; T2 P1; security review for regex injection (Contrarian's catch) |
 | B | ENHANCE-MODIFY | 2d | Wk 2 | Distiller MUST exclude `$IAGO_STAGE_CHECKPOINT_*` env vars (Q7 resolved per Executor) |
-| C | ENHANCE-REFRAME | 1.5d → 0.5d | Wk 2-3 | Reframed as client-trigger primitive (First Principles); ties to installflow Stripe-events trigger. **`/routines` full-collapse candidate — see § `/routines` adoption.** |
+| C | ENHANCE-REFRAME → DEFERRED-TO-CYCLE-2 | 1.5d → 0.5d → audit only | Wk 2-3 → Cycle 2 | Reframed as client-trigger primitive (First Principles); ties to installflow Stripe-events trigger. **`/routines` full-collapse candidate — see § `/routines` adoption.** **Status superseded by audit row "Wedge C (2026-05-11 audit)" below; that row is authoritative for current state — this row preserves the pre-audit reasoning.** |
 | K | **ADD-MODIFY** | 2d | Wk 3 | Pre-stage gate only, NOT full checkpoint primitive; sequential build not parallel on 16GB |
 | H | ENHANCE-REFRAME | 2d → 1d | Wk 4 | REFRAMED as installflow Stripe-events wedge tied to named client; T3 supports. **`/routines` partial-collapse candidate (HMAC layer remains custom) — see § `/routines` adoption.** |
 | D | ENHANCE-MINIMIZE | 0.5d | Wk 4 | Doc-only per Executor; defer MCP-server expansion to cycle 2 conditional on usage |
@@ -135,6 +135,7 @@ TOTAL: ~13 dev-days under 17.5-day working budget. Buffer = 4.5 days.
 | M | DEFER | — | Beyond | Vision defer holds (no parallel-plan pressure yet) |
 | N | DEFER | — | Beyond | Vision defer holds (no same-project corpus yet) |
 | **Wk 6** | **BUFFER** | 4.5d | Wk 6 | Codex recurrence #4 + MUNET incident absorption + cleanup batch 2 |
+| **Wedge C (2026-05-11 audit)** | **DEFERRED-TO-CYCLE-2** | 0.5d audit only | Audited 2026-05-11 | `/routines` bind viability against async review-fix trigger evaluated; verdict `BIND-NOT-VIABLE` because (1) roadmap line 197 marks async review-fix as audit-candidate-not-Phase-1, (2) Wedge C requires a *client* trigger and async review-fix is iaGO-internal, (3) `@claude` bind target collides with `claude.yml`. Fallback documented at `.iago/runbooks/async-review-fix-routine.md`. Verdict artifact at `.iago/research/2026-05-11-routines-bind-viability.md`. |
 
 **Cap honored:** 2 added (J, K-modified), 2 removed (E, I), 5 deferred, 3 reframed.
 
@@ -195,6 +196,56 @@ Direct overlap with two roadmap wedges:
 **Wave 1/2 plan instruction:** Plans for Wedges C and H, when written, MUST start with a task that evaluates `/routines` bind viability against the named client trigger (frequency, HMAC requirement, connector compatibility) before scaffolding custom infrastructure. Cite this section.
 
 **Bonus (out of scope here, separate audit before Wave 2):** `/routines` may also collapse other iaGO-OS automations — nightly graphify rebuild, scheduled MUNET PR triage, async review-fix scheduling. Audit candidate, not Phase 1 scope.
+
+### 2026-05-11 audit outcome (async review-fix trigger)
+
+Plan `feature-wedge-c-routines/01-routines-bind-viability` ran against the
+async review-fix bind candidate from the Bonus paragraph above. Outcome:
+**`BIND-NOT-VIABLE` — `DEFERRED-TO-CYCLE-2`.** Measured signals:
+
+- **Volume:** 60 actually-ran fix-loop invocations across 22 days
+  (2026-04-20 → 2026-05-11), 8 active days, peak 20 ran/day on
+  2026-04-28. Burst pattern, not steady. Sits in the zone where
+  preview-tier rate limits are plausibly an issue.
+- **Rate-limit behavior:** unmeasured — would require a live bind to
+  confirm. Volume profile (burst peaks of 20/day on a single repo) is the
+  risk surface.
+- **Recursion outcome:** N/A — bind not performed. Required recursion
+  guards documented in `.iago/runbooks/async-review-fix-routine.md`
+  § Recursion guards. Decisive: `@claude` bind target would collide with
+  `.github/workflows/claude.yml` and create a recursion loop; the only
+  viable bind target is `[claude-review-complete]` (replacing
+  `claude-review-fix.yml`, not duplicating `claude.yml`).
+- **Eligibility:** Max 200 plan eligibility confirmed by public docs;
+  contingency is the runbook revert path if revoked.
+- **Runbook:** `.iago/runbooks/async-review-fix-routine.md` covers the
+  workflow-only canonical path, the smoke-test procedure for any future
+  bind, the branch-matrix for task-4 status outcomes, and the fallback
+  revert.
+
+**Why deferred to cycle 2:** the Bonus paragraph above explicitly marks
+this trigger as audit-candidate-not-Phase-1; the audit was performed and
+confirmed the line's intent. Re-evaluation belongs in cycle 2 alongside
+the Wedge H scoping conversation, or after `/routines` exits research
+preview with documented rate limits.
+
+**Recommended pivot for any follow-up `/routines` audit plan:** the
+**nightly graphify rebuild** (also named on the Bonus paragraph) — lower
+blast radius, true `schedule:` trigger (the `/routines` strongest
+documented type), no collision with existing workflows, and exercises the
+same routine mechanism that Wedge H will need. This audit-candidate is
+NOT executed in cycle 1; the recommendation is recorded for the next
+planner.
+
+**Cycle-2 reactivation triggers for Wedge C `/routines` bind:**
+
+- `/routines` exits research preview with documented per-day rate limits
+  ≥ 50 ran/day on a single repo, OR
+- Wedge H is planned (the bind pattern becomes load-bearing for a paying
+  client), OR
+- `claude-review-fix.yml` shows sustained reliability regression that the
+  workflow-only path can no longer absorb (current state: stable; no
+  trigger).
 
 Sources verified 2026-05-04:
 - [code.claude.com/docs/en/overview § Routines](https://code.claude.com/docs/en/overview)
