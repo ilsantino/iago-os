@@ -268,7 +268,7 @@ planner.
   workflow-only path can no longer absorb (current state: stable; no
   trigger).
 
-Sources verified 2026-05-04:
+Sources for /routines adoption section (verified 2026-05-04):
 - [code.claude.com/docs/en/overview § Routines](https://code.claude.com/docs/en/overview)
 - [Anthropic adds routines to Claude Code — 9to5Mac](https://9to5mac.com/2026/04/14/anthropic-adds-repeatable-routines-feature-to-claude-code-heres-how-it-works/)
 - [Claude Code Routines: What Anthropic's Docs Left Out — dev.to](https://dev.to/whoffagents/claude-code-routines-what-anthropics-docs-left-out-35jc)

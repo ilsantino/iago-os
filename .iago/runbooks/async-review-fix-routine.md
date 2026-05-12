@@ -260,7 +260,7 @@ include all of the following — non-negotiable.
    `.github/workflows/claude-review-fix.yml` line 128-134.
 5. **Clean-signal short-circuit:** if the latest claude[bot] comment
    matches any clean signal in `.github/workflows/claude-review-fix.yml`
-   line 70-92, the routine MUST post `## Review Summary` and exit.
+   line 69-93, the routine MUST post `## Review Summary` and exit.
 6. **Both markers required:** the routine MUST emit *both*
    `[claude-review-complete]` (after review) and `[review-fix-loop]`
    (after fix push) for the legacy round counter to keep functioning
