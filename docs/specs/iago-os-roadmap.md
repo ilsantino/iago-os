@@ -123,7 +123,7 @@ TOTAL: ~13 dev-days under 17.5-day working budget. Buffer = 4.5 days.
 | **Cleanup** | KEEP-reduced | 3d | Wk 1 | 5 items not 13 (Contrarian); one bundled PR per `feedback_stack_prs` |
 | J | **ADD-KEEP** | 1d | Wk 2 | Shell-hook matchers; T2 P1; security review for regex injection (Contrarian's catch) |
 | B | ENHANCE-MODIFY | 2d | Wk 2 | Distiller MUST exclude `$IAGO_STAGE_CHECKPOINT_*` env vars (Q7 resolved per Executor) |
-| C | ENHANCE-REFRAME | 1.5d → 0.5d | Wk 2-3 | Reframed as client-trigger primitive (First Principles); ties to installflow Stripe-events trigger. **`/routines` full-collapse candidate — see § `/routines` adoption.** |
+| C | ENHANCE-REFRAME → DEFERRED-TO-CYCLE-2 (Wedge C audit 2026-05-11) | 1.5d → 0.5d audit only (0.5d spent on audit; implementation half not allocated for Phase 1) | Wk 2-3 → Cycle 2 | Reframed as client-trigger primitive (First Principles); ties to installflow Stripe-events trigger. **`/routines` full-collapse candidate — see § `/routines` adoption.** **2026-05-11 audit verdict:** `BIND-NOT-VIABLE` for async review-fix trigger; see § `/routines` adoption → "2026-05-11 audit outcome" subsection for full reasoning, sources, and cycle-2 reactivation triggers. Fallback runbook: `.iago/runbooks/async-review-fix-routine.md`. Verdict artifact: `.iago/research/2026-05-11-routines-bind-viability.md`. |
 | K | **ADD-MODIFY** | 2d | Wk 3 | Pre-stage gate only, NOT full checkpoint primitive; sequential build not parallel on 16GB |
 | H | ENHANCE-REFRAME | 2d → 1d | Wk 4 | REFRAMED as installflow Stripe-events wedge tied to named client; T3 supports. **`/routines` partial-collapse candidate (HMAC layer remains custom) — see § `/routines` adoption.** |
 | D | ENHANCE-MINIMIZE | 0.5d | Wk 4 | Doc-only per Executor; defer MCP-server expansion to cycle 2 conditional on usage |
@@ -196,7 +196,79 @@ Direct overlap with two roadmap wedges:
 
 **Bonus (out of scope here, separate audit before Wave 2):** `/routines` may also collapse other iaGO-OS automations — nightly graphify rebuild, scheduled MUNET PR triage, async review-fix scheduling. Audit candidate, not Phase 1 scope.
 
-Sources verified 2026-05-04:
+### 2026-05-11 audit outcome (async review-fix trigger)
+
+Plan `feature-wedge-c-routines/01-routines-bind-viability` ran against the
+async review-fix bind candidate from the Bonus paragraph above. Outcome:
+**`BIND-NOT-VIABLE` — `DEFERRED-TO-CYCLE-2`.** Measured signals:
+
+- **Volume:** 60 actually-ran fix-loop invocations across 22 days
+  (2026-04-20 → 2026-05-11), 7 days with ≥1 actually-ran job (8 days
+  with any record incl. skipped-only), peak 20 ran/day on 2026-04-28.
+  Burst pattern, not steady. Sits in the zone where preview-tier rate
+  limits are plausibly an issue.
+- **Rate-limit behavior:** unmeasured — would require a live bind to
+  confirm. Volume profile (burst peaks of 20/day on a single repo) is the
+  risk surface.
+- **Recursion outcome:** N/A — bind not performed. Required recursion
+  guards documented in `.iago/runbooks/async-review-fix-routine.md`
+  § Recursion guards. Decisive: `@claude` bind target would collide with
+  `.github/workflows/claude.yml` and create a recursion loop; the only
+  viable bind target is `[claude-review-complete]` (replacing
+  `claude-review-fix.yml`, not duplicating `claude.yml`).
+- **Eligibility:** Max 200 plan eligibility confirmed by public docs;
+  contingency is the runbook revert path if revoked.
+- **Runbook:** `.iago/runbooks/async-review-fix-routine.md` covers the
+  workflow-only canonical path, the smoke-test procedure for any future
+  bind, the branch-matrix for task-4 status outcomes, and the fallback
+  revert.
+
+**Why deferred to cycle 2:** the Bonus paragraph above explicitly marks
+this trigger as audit-candidate-not-Phase-1; the audit was performed.
+Re-evaluation belongs in cycle 2 alongside the Wedge H scoping
+conversation, or after `/routines` exits research preview with documented
+rate limits.
+
+**Budget disposition (Wedge C 0.5d allotment).** The original Wedge C
+table row earmarked 0.5d for "configure routine + doc." This audit
+consumed approximately 0.5d producing the verdict, runbook, and roadmap
+update — i.e., the 0.5d *was* spent, but on the audit half of the
+collapsed plan, not on the implementation half. Net effect:
+
+- **Phase 1 (Wk 2–3):** Wedge C is **closed for Phase 1**. No further
+  Wedge C budget is requested for the current Wave 1/Phase 1 window.
+- **Cycle 2:** Any re-attempt requires a new plan with its own
+  allocation. Estimated additional cost is the original 0.5d
+  implementation half (configure routine + smoke test) **plus** an
+  incremental audit refresh (re-fetch `/routines` docs, re-measure
+  volume). No implicit carry-over from Phase 1.
+- **Wedge H dependency:** if Wedge H planning needs the `/routines` bind
+  pattern proven, Wedge H either funds its own bind audit or pivots to
+  the recommended `nightly graphify rebuild` audit (lower blast radius,
+  see § "Recommended pivot" below).
+
+This makes explicit that Wedge C did **not** silently consume Phase 1
+budget for an unallocated successor.
+
+**Recommended pivot for any follow-up `/routines` audit plan:** the
+**nightly graphify rebuild** (also named on the Bonus paragraph) — lower
+blast radius, true `schedule:` trigger (the `/routines` strongest
+documented type), no collision with existing workflows, and exercises the
+same routine mechanism that Wedge H will need. This audit-candidate is
+NOT executed in cycle 1; the recommendation is recorded for the next
+planner.
+
+**Cycle-2 reactivation triggers for Wedge C `/routines` bind:**
+
+- `/routines` exits research preview with documented per-day rate limits
+  ≥ 50 ran/day on a single repo, OR
+- Wedge H is planned (the bind pattern becomes load-bearing for a paying
+  client), OR
+- `claude-review-fix.yml` shows sustained reliability regression that the
+  workflow-only path can no longer absorb (current state: stable; no
+  trigger).
+
+Sources for /routines adoption section (verified 2026-05-04):
 - [code.claude.com/docs/en/overview § Routines](https://code.claude.com/docs/en/overview)
 - [Anthropic adds routines to Claude Code — 9to5Mac](https://9to5mac.com/2026/04/14/anthropic-adds-repeatable-routines-feature-to-claude-code-heres-how-it-works/)
 - [Claude Code Routines: What Anthropic's Docs Left Out — dev.to](https://dev.to/whoffagents/claude-code-routines-what-anthropics-docs-left-out-35jc)
