@@ -8,15 +8,11 @@ status: decision-artifact
 
 # `/routines` Bind Viability — Async Review-Fix Trigger (Wedge C, task 1)
 
-## Scope and substitution rule
+## Scope
 
 This is the task-1 decision artifact for plan
-`.iago/plans/feature-wedge-c-routines/01-routines-bind-viability.md`. The plan
-filename placeholder `2026-05-XX` is substituted with the execution date
-**2026-05-11** for every artifact created by this plan run. Future plans that
-reuse the `2026-05-XX` placeholder must substitute at execution time; this is
-the rule the plan was missing (addresses stress finding **P5/P2** — placeholder
-substitution).
+`.iago/plans/feature-wedge-c-routines/01-routines-bind-viability.md`,
+executed on **2026-05-11**.
 
 Decision asked: should `/routines` (Anthropic Claude Code research preview,
 April 2026) be bound to the iaGO async review-fix scheduling trigger as the
@@ -24,6 +20,12 @@ Wedge C client-trigger primitive proof-point?
 
 Verdict labels the plan defined: `BIND-VIABLE`, `BIND-VIABLE-WITH-MITIGATION`,
 `BIND-NOT-VIABLE`.
+
+> Plan-authoring note (P2): the plan's filename placeholder `2026-05-XX`
+> was substituted with the execution date `2026-05-11` at runtime. Future
+> plans that reuse the same placeholder must substitute at execution time.
+> This is recorded for plan-authoring rule reference, not as part of the
+> verdict reasoning.
 
 ## Pre-flight: stress-test findings that gate the verdict
 
@@ -33,7 +35,7 @@ precondition to evaluating any of the 6 numbered checks in task 1. Each
 finding is addressed in line with the plan invariant "fallback preserved" and
 the roadmap invariant "no iaGO client deliverable delayed by wedge work."
 
-### C1 — Trigger contradicts roadmap line 197
+### C1 — Scope/budget gate (not a viability gate)
 
 Roadmap line 197 (`docs/specs/iago-os-roadmap.md` § `/routines` adoption,
 "Bonus" paragraph) reads:
@@ -43,14 +45,23 @@ Roadmap line 197 (`docs/specs/iago-os-roadmap.md` § `/routines` adoption,
 > candidate, not Phase 1 scope.**"
 
 The plan picks "async review-fix scheduling" as the bind target. The roadmap
-explicitly marks this trigger as **audit candidate, not Phase 1 scope**. The
-plan does not override or supersede the roadmap.
+explicitly marks this trigger as **audit candidate, not Phase 1 scope**.
 
-**Resolution:** the contradiction stands and is decisive. The artifact cannot
-return `BIND-VIABLE` against an audit-candidate trigger that the canonical
-roadmap excludes from current scope. The most this plan can recommend is a
-**separate audit** that re-opens the roadmap line, not a bind action under
-the existing Phase 1/Wave 1 budget. (Addresses stress finding **C1**.)
+**Correct reading:** "audit candidate" authorizes an audit (this plan IS
+that audit); it does **not** predetermine the outcome. The roadmap line
+gates *scope and budget* — any bind action consumes audit budget plus
+implementation budget, neither of which was pre-allocated in Phase 1. It
+does **not** gate *technical viability*; that determination must come from
+the substantive checks (C2, C3, P1, volume, recursion). Earlier drafts of
+this artifact mis-framed C1 as a decisive viability gate; that framing has
+been corrected here.
+
+**Disposition:** C1 stands as a scope/budget reason to defer (no Phase 1
+allocation for the implementation half of a bind), but it is **not** the
+load-bearing reason for the `BIND-NOT-VIABLE` verdict. The load-bearing
+reasons are C2, C3 + P1, and the volume-risk profile (see § Verdict). C1
+contributes only to the *DEFERRED-TO-CYCLE-2* timing label, not to the
+*BIND-NOT-VIABLE* viability label.
 
 ### C2 — "Client-trigger primitive" framing mismatched
 
@@ -108,16 +119,24 @@ Measured via `gh run list --workflow=claude-review-fix.yml --limit=200` on
 | Metric | Value |
 |---|---|
 | Records returned | 200 (capped) |
-| Span | 2026-04-20 → 2026-05-11 (22 days) |
-| Active days (any record) | 8 |
+| Span (inclusive) | 2026-04-20 → 2026-05-11 (22 days) |
+| Days with any record (skipped or ran) | 8 |
+| Days with ≥1 actually-ran job | 7 (excludes 2026-05-06 — 4 skipped, 0 ran) |
 | Conclusion = `skipped` (workflow `if` rejected) | 140 |
 | Conclusion = `success` | 27 |
 | Conclusion = `failure` | 33 |
 | Actually-ran jobs (success + failure) | 60 |
-| Average ran-per-day over 22-day span | 2.73 |
-| Average ran-per-active-day | 8.57 |
+| Average ran-per-day over 22-day span (60/22) | 2.73 |
+| Average ran-per-ran-active-day (60/7) | 8.57 |
 | Peak ran-day | 2026-04-28: 20 invocations |
 | Peak total-day (incl. skipped) | 2026-04-28: 65 events |
+
+Note on denominators: "days with any record" = 8 counts every calendar
+day with at least one workflow record, including the 2026-05-06 day that
+had 4 skipped events and zero actually-ran jobs. "Days with ≥1
+actually-ran job" = 7 excludes that day. The first metric measures
+*workflow attention*; the second measures *real load*. Volume-risk
+assessment uses the second.
 
 `claude.yml` cross-check on the same window: 200 records, 55 ran, 124
 skipped, 21 cancelled, same peak day (20 ran on 2026-04-28). Aligns with the
@@ -131,9 +150,13 @@ burst-driven 20+/day spikes. The peak day (20 ran) is the load profile that
 matters; the 2.73/day average is misleading because real iaGO usage is
 bursty (large pipeline runs concentrate invocations into single days).
 
-**Volume assessment:** burst peaks of ~20 ran/day are *plausibly* over an
-undocumented preview rate limit and would only be observable after binding.
-Risk is non-trivial; no way to verify without committing the bind.
+**Volume assessment:** burst peaks of ~20 ran/day on a single repo are a
+*risk surface*, not a confirmed blocker. Anthropic publishes no firm
+per-day numeric limit for the research-preview tier; third-party reports
+suggest the tier is sized for low-volume scheduled runs, but no source
+quantifies the threshold. The risk is plausibly material and can only be
+verified by a live bind. This check feeds the verdict as *risk avoided
+under current budget*, not as *confirmed rate-limit failure*.
 
 ### 2. Trigger-type fit
 
@@ -203,24 +226,30 @@ the verify grep `^## Verdict$` aligned with the plan's acceptance criterion.
 **BIND-NOT-VIABLE** — for the as-scoped trigger (async review-fix scheduling
 on `ilsantino/iago-os`), at this point in the roadmap.
 
-Reasoning, in priority order:
+Reasoning, in priority order (substantive viability first, scope/timing last):
 
-1. **C1 is decisive.** Roadmap line 197 marks the async review-fix trigger
-   as `audit candidate, not Phase 1 scope`. The plan does not carry an
-   explicit roadmap override and cannot manufacture one inside its own
-   artifact. Binding now would either bypass the canonical roadmap or
-   require a separate Wave 1 budget allocation that no one has approved.
-2. **C2 confirms.** Even if C1 were waived, the bound primitive would not
-   satisfy Wedge C's "named client trigger" definition — it would be a
-   precursor for Wedge H, which is a separate plan and was not authorized
+1. **C2 — wedge-fit mismatch (load-bearing).** Wedge C is scoped as a
+   *named client trigger* primitive. Async review-fix is an
+   iaGO-internal trigger. A bind here proves the routine *mechanism* but
+   does not satisfy Wedge C's roadmap definition; it would be a precursor
+   experiment for Wedge H, which is a separate plan and was not authorized
    in this run.
-3. **C3 + P1 constrain the bind target** to `[claude-review-complete]`
-   (replacing `claude-review-fix.yml`), not `@claude` (which would duplicate
-   `claude.yml`). The plan's stated event filter was wrong; a viable bind
-   requires re-specification.
-4. **Volume + rate-limit risk** (check 1) cannot be verified without a live
-   bind, and the peak load (20 ran/day, bursty) sits in the zone where
-   undocumented preview-tier limits are plausible blockers.
+2. **C3 + P1 — bind target is unsafe as specified.** The plan named
+   `@claude` PR comments as the event filter, which collides with
+   `.github/workflows/claude.yml` (existing handler). The only coherent
+   bind target is `[claude-review-complete]` (replacing
+   `claude-review-fix.yml`), which is a substantively different plan.
+3. **Volume + preview-tier rate-limit risk (check 1).** Peak load is 20
+   ran/day on a single repo (bursty). Anthropic publishes no firm
+   per-day numeric limit for the research-preview tier, so this is a
+   *risk-of-blocker*, not a confirmed blocker — but the risk cannot be
+   removed without a live bind, and the artifact deliberately avoids
+   incurring that experiment under current budget.
+4. **C1 — scope/budget gate (timing, not viability).** Roadmap line 197
+   marks the trigger as `audit candidate, not Phase 1 scope`. C1
+   contributes to the `DEFERRED-TO-CYCLE-2` label (why-not-now); it does
+   **not** by itself contribute to the `BIND-NOT-VIABLE` label
+   (why-not-at-all-as-specified).
 5. **No iaGO client deliverable delay** is honored (roadmap invariant) by
    *not* binding now: a bind would consume operator-hours during a window
    that overlaps MUNET MVP work.
@@ -264,18 +293,18 @@ alternatives are S; acceptance-criteria gaps are A.
 
 | ID | Finding | Disposition |
 |----|---------|-------------|
-| C1 | Trigger contradicts roadmap line 197 | Decisive for `BIND-NOT-VIABLE`; recorded in § Verdict reasoning #1. |
+| C1 | Roadmap line 197 marks trigger as audit-candidate-not-Phase-1 | Reframed as **scope/budget** gate contributing to `DEFERRED-TO-CYCLE-2`, **not** as viability gate. Recorded in pre-flight § C1 and § Verdict reasoning #4. The load-bearing viability reasons are C2/C3+P1/volume; see § Verdict reasoning #1–3. |
 | C2 | Client-trigger framing mismatch | Recorded in § Verdict reasoning #2; pivot path noted (graphify audit, Wedge H scoping). |
 | C3 | `@claude` event collides with `claude.yml` | Recorded in pre-flight § C3; foreclosed bind target. |
 | P1 | Replace claude.yml or claude-review-fix.yml? | Resolved in pre-flight § P1 in favor of `claude-review-fix.yml`. |
 | P2 | `2026-05-XX` placeholder leaks into Files table | Substitution rule stated up front: this run substitutes `2026-05-XX` → `2026-05-11`. Future plan executions must do the same at run time. |
 | P3 | Max 200 eligibility — no contingency | Closed in check 4: contingency is the same revert path as task 3 fallback (no migration cost). |
-| P4 | Smoke-test SLA not defined | Moot — task 2 skipped. If task 2 ever runs, runbook defines SLA = 10 min from `[claude-review-complete]` to first routine action; >10 min = degrade. |
+| P4 | Smoke-test SLA not defined | **Mitigated-by-process** (not closed). Runbook records a *draft* 10-min SLA as a smoke-window placeholder; the number is unmoored from measured baseline. Any future bind MUST replace the 10-min placeholder with p50/p95 numbers derived from a baseline measurement before the SLA is treated as authoritative. See runbook § Smoke test step 2 for the full caveat. |
 | P5 | Task 4 misses "task 2 ran but smoke failed" case | Closed in runbook § Branch matrix: `RAN-SMOKE-FAILED` → roll back routine + emit `FALLBACK-DOCUMENTED` status. |
 | E1 | Multi-repo connector scope unspecified | Resolved: single-repo scope (`ilsantino/iago-os`) only. Client repos out of scope; each client repo would require its own connector grant and its own audit plan. |
 | E2 | Concurrent invocation (merge burst) | Recorded in check 1 as the load profile that matters (peak 20 ran/day, 2026-04-28). Bursty workload is one of the gating risks for `BIND-NOT-VIABLE`. |
 | E3 | Stale `@claude` on closed/merged PR | Both `claude.yml` and `claude-review-fix.yml` already gate on `github.event.issue.state == 'open'` / `!github.event.issue.pull_request \|\| github.event.issue.state == 'open'` (verified in `.github/workflows/claude.yml` line 26-27 and `.github/workflows/claude-review-fix.yml` line 28). Any future routine MUST replicate the same gate in the routine prompt. Recorded in runbook recursion-guard section. |
-| E4 | Prompt drift (workflow vs routine) | No automated guard available in `/routines`; documented as a Medium-severity ongoing risk in runbook § Risks, with the mitigation "routine prompt cites workflow file SHA at time of creation; re-sync when SHA changes." |
+| E4 | Prompt drift (workflow vs routine) | **Mitigated-by-process** (not closed). No automated guard exists inside `/routines`. Runbook § Drift guards records the manual mitigation (workflow-file SHA citation in the routine prompt + same-day re-sync rule + 2-divergence revert). Effectiveness depends on operator discipline; if the routine is ever bound and prompt drift is observed once, escalate to building an automated drift check before the next iaGO release. |
 | E5 | `[review-fix-loop]` marker not enumerated | Recorded in check 5: both `[claude-review-complete]` and `[review-fix-loop]` are required emissions any replacement routine must produce for the existing loop guard to function. Runbook lists both. |
 | S1 | Lower-blast-radius alternative (nightly graphify rebuild) | Adopted as recommended pivot for follow-up planning. Section "Recommended forward path" inside § Verdict. |
 | A1 | "No regression to claude-review-fix.yml" — no verification | Closed: no change is made to `.github/workflows/claude-review-fix.yml` by this plan (task 2 skipped). Regression verification = `git diff main -- .github/workflows/claude-review-fix.yml` returns empty. |
@@ -296,13 +325,23 @@ alternatives are S; acceptance-criteria gaps are A.
   invocation volume.
 - Anthropic Claude Code `/routines` docs:
   [code.claude.com/docs/en/overview](https://code.claude.com/docs/en/overview)
-  § Routines (cited by roadmap; not re-fetched in this run because the
-  verdict was determined by C1 before any check that required live doc
-  re-fetch — recorded for transparency).
-- Third-party preview-tier writeups cited in roadmap source list:
-  9to5Mac 2026-04-14 and dev.to whoffagents (recorded by roadmap as
-  sources; this artifact does not re-fetch them).
+  § Routines. **Not re-fetched in this audit run** — the artifact relied
+  on the citations the canonical roadmap (`docs/specs/iago-os-roadmap.md`
+  § `/routines` adoption, "Sources verified 2026-05-04") records. Any
+  follow-up audit re-opening the verdict (cycle 2 or earlier) MUST
+  re-fetch and timestamp these docs, since `/routines` is in research
+  preview and the API surface or rate-limit policy may change between
+  audits. This is a known methodological gap in this artifact; flagged
+  here so future readers do not treat the cited claims as session-time
+  verified.
+- Third-party preview-tier writeups: 9to5Mac 2026-04-14 and dev.to
+  whoffagents. **Also not re-fetched in this audit run** — same caveat
+  applies.
 - `.iago/plans/feature-wedge-c-routines/01-routines-bind-viability.md` —
-  the plan being executed.
-- `/tmp/tmp.M77ZZYEUvp/stress-findings.txt` — pipeline stress-test findings
-  forwarded to this implementation session.
+  the plan being executed. Stress findings (originally forwarded to this
+  session via a pipeline temp file) are **transcribed inline** in this
+  artifact's § Pre-flight (C1–C3, P1) and § Stress findings — disposition
+  table (full enumeration of C/P/E/S/A findings), so no external
+  reference is required to reproduce the reasoning. The earlier
+  citation of `/tmp/tmp.M77ZZYEUvp/stress-findings.txt` was non-reproducible
+  and is replaced by this in-artifact transcription.

@@ -8,6 +8,19 @@ verdict_source: .iago/research/2026-05-11-routines-bind-viability.md
 
 # Async Review-Fix — Operator Runbook
 
+> **⛔ NOT AN APPROVAL TO BIND.** Verdict is `BIND-NOT-VIABLE` as of
+> 2026-05-11 (see `.iago/research/2026-05-11-routines-bind-viability.md`).
+> The recursion guards, collision guards, drift guards, smoke-test
+> procedure, and branch matrix below are **forward-looking
+> specifications** preserved so that any future audit does not have to
+> re-derive them — they are **not authorization** to bind a routine
+> now. Before any bind action: (1) re-run the viability audit against
+> current Anthropic `/routines` docs, (2) update the canonical roadmap
+> line removing or amending the audit-candidate gate, (3) explicitly
+> allocate budget for the bind + smoke + monitoring. Skipping any of
+> the three steps is a violation of the canonical roadmap and of this
+> runbook's intent.
+
 Operator-facing runbook for the iaGO async review-fix loop. As of
 2026-05-11, **no `/routines` bind exists**; the canonical path is the
 two-workflow setup in `.github/workflows/claude.yml` +
@@ -57,9 +70,11 @@ How to operate today:
 | Inspect skipped runs | `gh run list --workflow=claude-review-fix.yml --json conclusion,createdAt --jq '[.[] \| select(.conclusion==\"skipped\")] \| length'` (skipped = `if:` guard rejected the trigger; this is normal — most comments are not `[claude-review-complete]` signals) |
 
 Round counter — gate on the `[review-fix-loop]` marker, not on
-`[claude-review-complete]`. The marker is emitted by the fix-loop step in
-`.github/workflows/claude-review-fix.yml` line 224. Five emissions stops
-the loop (closes stress finding **E5**).
+`[claude-review-complete]`. The marker is emitted by the fix-loop
+"Tag @claude for re-review" step in
+`.github/workflows/claude-review-fix.yml` (re-tag body literal at line
+225; step block at lines 210–226). Five emissions stops the loop (closes
+stress finding **E5**).
 
 ## Fallback
 
@@ -143,9 +158,22 @@ skipped per the `BIND-NOT-VIABLE` verdict.
 ### Steps
 
 1. Operator comments `@claude review` on the test PR. Start a stopwatch.
-2. **SLA gate:** Within **10 minutes**, the routine MUST have posted a
+2. **SLA gate (draft — needs baseline run before promotion to canonical):**
+   Within **10 minutes**, the routine MUST have posted a
    `[claude-review-complete]` signal OR a `[review-fix-loop]` round-1
-   comment (closes stress finding **P4** by defining the SLA number).
+   comment. The 10-min number is a **placeholder** chosen to (a) bound
+   the smoke window for the first bind attempt and (b) leave headroom
+   above the existing two-workflow chain's observed end-to-end latency
+   (rough estimate: `claude.yml` review ≈ 2–5 min + `claude-review-fix.yml`
+   dispatch ≈ 0.5–1 min, p50 not yet measured). **Before any production
+   bind, this SLA MUST be replaced with a number derived from**:
+   - measured p50 + p95 latency of the existing workflow chain over the
+     same 22-day window used in the volume table, AND
+   - measured p50 + p95 dispatch latency for `/routines` test invocations
+     (requires a live preview run on a sandbox PR — chicken-and-egg with
+     the bind decision, so the first smoke run doubles as the baseline).
+   Treat the 10-min number as **draft P4 closure**, not authoritative.
+   Stress finding P4 is therefore "Mitigated-by-process," not "Closed."
 3. Verify the existing `claude-review-fix.yml` round counter incremented
    correctly: `gh run list --workflow=claude-review-fix.yml --limit=2`
    must show the expected new run.
@@ -193,8 +221,23 @@ include all of the following — non-negotiable.
    to `[claude-review-complete]` signal comments ONLY. The Anthropic
    dashboard event filter MUST NEVER include `@claude` as an inbound
    match — `@claude` is the `claude.yml` handler's trigger and binding the
-   routine to it would duplicate review work and create a recursion loop
-   (closes stress finding **C3**).
+   routine to it would duplicate review work and create a recursion loop.
+   **Caveat — filter reliability:** per the research-artifact check 2
+   (`.iago/research/2026-05-11-routines-bind-viability.md` § "Trigger-type
+   fit"), fine-grained content filtering inside `issue_comment` payloads
+   is reported as unreliable in third-party `/routines` writeups
+   (dev.to whoffagents). Treat this dashboard filter as a *first-line*
+   guard, not a hard contract. The routine prompt MUST also include an
+   in-prompt body-content check: if the inbound comment body does not
+   contain the literal token `[claude-review-complete]`, exit immediately
+   with a one-line log entry and no side effects. The smoke test
+   (§ Smoke test) MUST verify the in-prompt guard rejects an `@claude`
+   comment that leaks past the dashboard filter (test case: post a plain
+   `@claude review` comment; routine MUST take no action). Without that
+   smoke-test evidence, the recursion-safety claim in this section is
+   unverified. (Addresses stress finding **C3** and resolves the
+   contradiction between check 2's filter-unreliability finding and the
+   former MUST language.)
 2. **Outbound loop signal (re-tag) — REQUIRED, not forbidden:** the
    routine replaces `.github/workflows/claude-review-fix.yml` step `Tag
    @claude for re-review` (line 210-226), so the routine MUST post an
@@ -230,8 +273,11 @@ If `/routines` is ever bound, the routine MUST NOT also fire on `@claude`
 PR comments. `.github/workflows/claude.yml` line 21 (`contains(github.event.comment.body,
 '@claude')`) is the existing handler and has priority. Anthropic dashboard
 event-filter configuration MUST be scoped to `body contains
-'[claude-review-complete]'` — never `@claude`. (Closes stress finding
-**C3**.)
+'[claude-review-complete]'` — never `@claude`. **Because dashboard
+content filters are reported unreliable (see § Recursion guards #1
+caveat), the in-prompt body-content check is the authoritative collision
+guard; the dashboard filter is best-effort defense in depth.** (Addresses
+stress finding **C3**.)
 
 If a routine is bound for any *other* trigger in the future (graphify
 nightly, MUNET PR triage), the same collision rule applies: verify no
