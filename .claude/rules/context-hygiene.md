@@ -4,6 +4,8 @@ How long-running agent sessions degrade, how to detect each failure mode, and
 which mitigation bucket fits. Source: agent-skills-context (research sweep
 2026-05-04).
 
+**Cross-reference (added 2026-05-13):** This rule is independently corroborated by Eduba vault-toolkit constraint 03 ("My Context Window Is a Mess") — both cite Liu et al. (2024) on lost-in-middle degradation. The vault-toolkit version adds a token-budget heuristic (routing 10-15% / reference 20-30% / source 30-40% / output 20-30%) and emphasizes the L3-vs-L4 distinction (internalize-as-constraint vs process-as-input). See `.iago/research/2026-05-13-mwp-source-synthesis.md` §6 for full ICM context.
+
 ## Degradation Taxonomy
 
 Five distinct failure modes. Treat them as separate diagnoses — the right

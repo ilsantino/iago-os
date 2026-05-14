@@ -13,6 +13,8 @@ The audit's §3.4 decision tree ("where new docs go") was proposed to live in `.
 
 Any routing rule that doesn't auto-load *before* Claude decides where to put a new doc is theater — by the time the rule loads (on Write to a chosen path), the path has already been chosen.
 
+> **Terminology note (added 2026-05-13 per `.iago/research/2026-05-13-mwp-source-synthesis.md`):** This document uses "routing" in the sense of **file-placement routing** ("where does this new artifact live in the repo?"). In the canonical ICM paper, "routing" refers to **context-loading routing** ("what files does the agent load for this stage?"). These are different problems. File-placement routing is solved by an auto-loaded decision tree (the rule below). Context-loading routing is solved by L2 stage contracts (Inputs/Process/Outputs tables). Both are MWP-aligned; they operate at different layers. Don't conflate.
+
 ## Verdict — Option A: Inline in root CLAUDE.md
 
 **Embed the doc-routing decision tree directly in `iago-os/CLAUDE.md` as a top-level section** (`## Doc routing`), rendered as a compact lookup table (~18 lines). No reference indirection, no hook, no path-scoped supplement.
