@@ -87,7 +87,7 @@ Cited file paths are in the upstream repos; iaGO ports land under `runtime/` (ne
 │  │                                                            │   │
 │  │  ┌─────────────┐  ┌─────────────┐                        │   │
 │  │  │ Claude Code │  │   Codex     │                        │   │
-│  │  │  PTY adapter│  │  PTY adapter│                        │   │
+│  │  │  PTY adapter│  │  PTY adapter│  ← Phase 1 adapters   │   │
 │  │  └──────┬──────┘  └──────┬──────┘                        │   │
 │  │         │                │                                │   │
 │  │  ┌──────▼────────────────▼────────────────────────┐      │   │
@@ -119,7 +119,7 @@ Cited file paths are in the upstream repos; iaGO ports land under `runtime/` (ne
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-> **PTY adapter note:** Only Claude Code and Codex adapters are built. Hermes runtime is NOT adopted — Hermes patterns only (pre-LLM wake gate, shell-hook matchers, compression threshold, MCP sampling caps). See "From Hermes v0.11.0 — adopt selectively" table below.
+> **PTY adapter note:** Diagram shows Phase 1 state (Claude Code + Codex). Phase 3 adds Gemini + opencode adapters via the registry — see Pluggable PTY adapter registry section and phase table. Hermes runtime is NOT adopted — Hermes patterns only (pre-LLM wake gate, shell-hook matchers, compression threshold, MCP sampling caps). See "From Hermes v0.11.0 — adopt selectively" table below.
 
 ---
 
@@ -212,14 +212,19 @@ iaGO formalizes cortextOS's per-runtime PTY adapter pattern into a registry that
 **Interface (sketch — finalized in Phase 1 implementation):**
 
 ```ts
+// Extensible via module augmentation — do not widen to bare `string` at call sites
+type RuntimeId = "claude" | "codex" | "gemini" | "opencode";
+
 interface PTYAdapter {
-  readonly runtime: "claude" | "codex" | "gemini" | "opencode" | string;
+  readonly runtime: RuntimeId | string;
   readonly version: string;
   spawn(opts: { cwd: string; env: Record<string, string>; agentId: string; sessionId: string }): Promise<PTYHandle>;
   inject(handle: PTYHandle, text: string): Promise<void>;
-  onStatusChanged(handle: PTYHandle, cb: (status: "running" | "idle" | "exited" | "crashed", code?: number) => void): void;
+  // Returns unsubscribe fn — callers MUST call it when the handle is destroyed to prevent listener accumulation
+  onStatusChanged(handle: PTYHandle, cb: (status: "running" | "idle" | "exited" | "crashed", code?: number) => void): () => void;
   shutdown(handle: PTYHandle, signal?: "SIGTERM" | "SIGKILL"): Promise<void>;
   restoreFromMarker(markerPath: string): Promise<PTYHandle | null>; // for crash recovery
+  isAlive(handle: PTYHandle): Promise<boolean>; // poll liveness; don't rely solely on status callbacks
 }
 ```
 

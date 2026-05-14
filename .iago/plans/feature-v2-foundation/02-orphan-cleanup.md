@@ -164,13 +164,17 @@ ssh root@srv1456441 'ufw default deny incoming 2>&1'
 ssh root@srv1456441 'ufw default allow outgoing 2>&1'
 
 # Allow SSH on Tailscale interface (not the public interface)
+# NOTE: if 'ip addr show' above showed a Tailscale interface name other than 'tailscale0'
+# (e.g., ts0), substitute that name in the command below before running it.
 ssh root@srv1456441 'ufw allow in on tailscale0 to any port 22 proto tcp 2>&1'
 
 # Allow Tailscale wireguard UDP on any interface
 ssh root@srv1456441 'ufw allow in 41641/udp 2>&1'
 
 # Allow ICMP (ping diagnostics) — optional but useful for ops
-ssh root@srv1456441 'ufw allow in proto icmp from any 2>&1' 
+# NOTE: this allows ping from the public internet, increasing VPS discoverability.
+# Low risk, but remove this rule if minimal surface area is preferred.
+ssh root@srv1456441 'ufw allow in proto icmp from any 2>&1'
 
 # Enable ufw — this APPLIES the rules. Confirm sshd binding survives the apply.
 # CRITICAL: Tailscale SSH must remain reachable post-enable. Verify the allow rule for tailscale0 is in place BEFORE running 'ufw enable'.

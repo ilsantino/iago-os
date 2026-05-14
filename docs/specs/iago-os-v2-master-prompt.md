@@ -73,7 +73,7 @@ Already specified in `docs/specs/iago-os-v2-vision.md`. Summary for executors:
 │  Hostinger VPS — runtime substrate (systemd)      │
 │                                                    │
 │   iago-os-v2-daemon                                │
-│    ├─ PTY adapters (Claude Code + Codex)          │
+│    ├─ PTY adapters (Claude Code + Codex; Phase 3 adds Gemini + opencode) │
 │    ├─ Agent manager (registration, crash, restart)│
 │    ├─ File-bus (O_EXCL task claims)               │
 │    ├─ Telegram router (one bot, per-agent tagging) │

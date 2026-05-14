@@ -85,7 +85,7 @@ Token/secret fields redacted via the hardened `sed` pattern from the Phase 0 pla
 | `tools.web.search` | ✅ enabled (apiKey present, REDACTED) |
 | `tools.web.fetch` | ✅ enabled |
 | **`channels.telegram.enabled`** | ✅ **true** — botToken present (REDACTED), `dmPolicy: pairing`, `streaming: partial`, `groupPolicy: allowlist` |
-| **`channels.whatsapp.enabled`** | ✅ **true** — `dmPolicy: allowlist`, `allowFrom: ["+525539662048"]` (Santiago's number), `selfChatMode: true`, `mediaMaxMb: 50` |
+| **`channels.whatsapp.enabled`** | ✅ **true** — `dmPolicy: allowlist`, `allowFrom: [REDACTED]` (Santiago's number), `selfChatMode: true`, `mediaMaxMb: 50` |
 | `gateway.mode` | `local` (loopback bind, token-auth) |
 | `gateway.tailscale.mode` | `off` (Tailscale exposure disabled — gateway is localhost-only) |
 | `plugins.entries.telegram` | enabled |
