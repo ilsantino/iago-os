@@ -47,7 +47,7 @@ Build iago-os v2: a multi-agent operating system that runs Santiago's consultanc
 
 It must:
 
-1. **Cohabit Codex + Claude agents** on a single Hostinger VPS reached over Tailscale, with both runtimes alive simultaneously and coordinating via a shared file-bus (cortextOS pattern, not Hermes single-agent pattern).
+1. **Cohabit Claude + Codex + Gemini + opencode agents** (and any future runtime) on a single Hostinger VPS reached over Tailscale, with all runtimes alive simultaneously via a pluggable `PTYAdapter` registry, coordinating via a shared file-bus (cortextOS pattern + iaGO PTY-adapter registry extension; not Hermes single-agent pattern). Per Santiago 2026-05-13: multi-LLM flexibility is REQUIRED. Adding a new runtime is a single adapter file.
 2. **Run 24/7 as a systemd service** (no Docker auth dance, no daemon-restart auth dance). Survive reboots; resume in-flight work from crash markers.
 3. **Be controlled from a phone via Telegram.** Start agents, inject prompts, approve/deny irreversible actions, abort, and observe state — all from the Telegram app. WhatsApp deferred to demand; Slack/Discord deferred entirely.
 4. **Spawn its own terminal sessions** when work needs to happen. Each agent owns a PTY (Claude Code or Codex), claims tasks via O_EXCL file locks, and writes results back to the shared bus.
@@ -140,7 +140,7 @@ Already specified in `docs/specs/iago-os-v2-vision.md`. Summary for executors:
 
 - **NOT a Cursor/Aider/Continue replacement.** IDE workflow is out of scope. iaGO v2 runs on a server, not in an editor. **HOWEVER:** Santiago uses Cursor (or any editor with a terminal) as his daily IDE alongside v2 — he opens the iago-os repo in Cursor, sees files, and pulls up Claude or Codex inside Cursor's terminal. v2 daemon is the BACKEND that runs autonomously on the VPS; the IDE is Santiago's FRONTEND for direct hands-on work. These are complementary, not competitive.
 - **NOT a Devin clone.** Augments Santiago + Sebas; does not replace developers.
-- **NOT a 17-platform messaging gateway.** Telegram only for v1. Slack/Discord/WhatsApp deferred to demand from a paying client.
+- **NOT a 17-platform messaging gateway.** Telegram only. WhatsApp **explicitly dropped at OpenClaw cutover** (Santiago decision 2026-05-13: "Telegram works fine"). Slack/Discord deferred to demand from a paying client.
 - **NOT multi-tenant SaaS internally.** `clients/{name}/` directory separation is sufficient. Multi-tenancy stays a possible product angle, not internal infra.
 - **NOT Postgres.** SQLite + JSON/JSONL. cortextOS pattern.
 - **NOT Docker-wrapped agents.** systemd on the VPS directly. Eliminates the "container restart → re-auth Claude" fragility.
@@ -244,12 +244,18 @@ Over-routing deterministic work to agents wastes tokens, degrades quality on gen
 
 ### P1 — Multi-runtime + dashboard + daemon hardening
 
-5. **Codex PTY adapter.** `runtime/pty/codex-app-server-pty.ts`. Codex agents cohabit with Claude in the same daemon.
+5. **PTY adapter registry + multi-runtime support.** `runtime/pty/registry.ts` defines the `PTYAdapter` interface (spawn / inject / onStatusChanged / shutdown / restoreFromMarker) and registers adapters by `runtime` key. Phase 3 ships four adapter implementations:
+   - `runtime/pty/claude-pty.ts` — Claude Code (built in Phase 1 alongside the interface; this is the hello-world adapter)
+   - `runtime/pty/codex-app-server-pty.ts` — Codex App Server
+   - `runtime/pty/gemini-pty.ts` — Gemini (CLI if Google ships one; otherwise API-backed pseudo-PTY)
+   - `runtime/pty/opencode-pty.ts` — sst/opencode wrapper
+
+   Per Santiago decision 2026-05-13: multi-LLM flexibility is REQUIRED, not optional. Agents pick runtime via config (`runtime: "gemini"`); daemon routes to the appropriate adapter. Adding a fifth runtime (qwen, deepseek, local-via-ollama) is one adapter file, no daemon refactor. See `docs/specs/iago-os-v2-vision.md` § "Pluggable PTY adapter registry" for interface details.
 6. **Wedge J — shell-hook matchers.** Regex + timeout on Claude Code hooks. Lands in daemon hook config.
 7. **Wedge B — distiller + compression safety valve.** For long-running daemon sessions.
-8. **Dashboard skeleton.** Next.js (or Streamlit fallback) via IPC server. Agent list, current state, recent activity, token spend per agent / project / model.
+8. **Dashboard skeleton.** Next.js (or Streamlit fallback) via IPC server. Agent list, current state, recent activity, token spend per agent / project / model / **per-runtime**.
 8a. **Wedge K — pre-stage pipeline checkpoints.** Rollback safety inside the pipeline. Required by daemon crash-recovery (cortextOS `.daemon-stop` marker pattern). Lands as part of Phase 2–3 daemon hardening, NOT demand-triggered (Wave 2 per vision spec wedge table).
-8b. **OpenClaw cutover + cleanup.** Migrate remaining workflows, stop OpenClaw, archive state, delete after 30 days. Sequenced as roadmap Phase 7 (Stage D + E of the OpenClaw migration sequence), gated on Phase 6 dashboard stable. Not demand-triggered.
+8b. **OpenClaw cutover + cleanup.** Migrate remaining workflows, stop OpenClaw, archive state, delete after 30 days. Sequenced as roadmap Phase 7 (Stage D + E of the OpenClaw migration sequence), gated on Phase 6 dashboard stable. Not demand-triggered. WhatsApp channel + Meta Business webhook deauth happens during Stage E per audit doc § Active OpenClaw dependencies (Santiago decision 2026-05-13).
 
 ### P2 — Self-running automation pipeline (the Cormac loop, reimagined)
 
@@ -315,7 +321,7 @@ If any box unchecked: not done. Reopen.
 | 1 | 5–7d | Daemon skeleton local + hello-world end-to-end | Phase 0 done |
 | 1b | 3d | May-12 punch list (4 items: session-ID instrumentation, learnings write path, dirty-branch guard, fallback parser fix) | Parallel to Phase 1 |
 | 2 | 2–3d | VPS install alongside OpenClaw, one workflow migrated | Phase 1 + 1b done |
-| 3 | 3–4d | Codex PTY adapter | Phase 2 stable |
+| 3 | 5–7d | PTY adapters: Codex + Gemini + opencode (Claude adapter already shipped in Phase 1) | Phase 2 stable |
 | 4 | 1d | Wedge J shell-hook matchers | Phase 2 stable |
 | 5 | 2d | Wedge B distiller + compression | Phase 3 + 4 done |
 | 6 | 5–7d | Dashboard skeleton | Phase 3 stable |
@@ -326,7 +332,7 @@ If any box unchecked: not done. Reopen.
 | 11 | 2d | Email auto-provision | Phase 7 stable |
 | 12 | 1d | Learning loop pattern extraction | Phase 6 done |
 
-**Total to operational v2 (Phases 0–7 + 10):** ~25–30 dev-days. ~5–6 weeks at sustainable pace.
+**Total to operational v2 (Phases 0–7 + 10):** ~27–32 dev-days. ~5.5–6.5 weeks at sustainable pace. (Phase 3 grew by ~2d for multi-LLM adapter scope per Santiago 2026-05-13.)
 
 ---
 

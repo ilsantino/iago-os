@@ -19,7 +19,7 @@ This **overrides** the 2026-04-21 council "defer" verdict on iago-os-v2, the pri
 | # | Layer | What it is | Primary source pattern |
 |---|---|---|---|
 | 1 | **Runtime substrate** | Hostinger VPS + Tailscale mesh; systemd service host | OS-native (no Docker auth dance) |
-| 2 | **Agent execution** | Daemon spawning per-runtime PTY adapters (Claude Code + Codex side by side); file-bus coordination; crash markers + auto-restart | **cortextOS** `agent-pty.ts` + `codex-app-server-pty.ts` + `agent-manager.ts` |
+| 2 | **Agent execution** | Daemon spawning per-runtime PTY adapters (Claude Code + Codex + Gemini + opencode side by side via pluggable adapter registry); file-bus coordination; crash markers + auto-restart | **cortextOS** `agent-pty.ts` + `codex-app-server-pty.ts` + `agent-manager.ts` + new `PTYAdapter` interface |
 | 3 | **Control plane** | Telegram-primary phone control: start/stop/inject/approve/abort agents; file-based approval handshake (`pending/` → `resolved/`) | **cortextOS** `fast-checker.ts` `appr_*` callbacks |
 | 4 | **Dashboard** | Web UI for live agent state, token spend, intervention; same-host IPC, not REST | **cortextOS** Next.js + `ipc-server.ts` (free if daemon adopted); fallback Streamlit pattern from agentic-os-dashboard |
 | 5 | **Pipeline (preserved)** | Cross-model Codex review, severity floors, secret-exclusion staging, skill routing, stress test | **iago-os existing** — do not rewrite |
@@ -34,7 +34,7 @@ Cited file paths are in the upstream repos; iaGO ports land under `runtime/` (ne
 
 | Primitive | Upstream | Why we want it |
 |---|---|---|
-| **PTY adapter per runtime** | `src/pty/agent-pty.ts` (Claude Code), `src/pty/codex-app-server-pty.ts` (Codex) | Solves Codex + Claude cohabitation with zero broker / zero container orchestration. Two adapters, one daemon, both alive simultaneously. |
+| **PTY adapter per runtime** | `src/pty/agent-pty.ts` (Claude Code), `src/pty/codex-app-server-pty.ts` (Codex), `hermes-pty.ts` (experimental) | Solves multi-runtime cohabitation with zero broker / zero container orchestration. iaGO extends cortextOS by formalizing a **`PTYAdapter` interface registry** (see below) so Claude Code + Codex + Gemini + opencode all live in the same daemon (Santiago decision 2026-05-13: "flexibility to change LLMs at will, use whichever for whichever task"). Adding a fifth runtime is a config + adapter file, not a daemon refactor. |
 | **O_EXCL file-lock task claiming** | `src/bus/task.ts` `claimTask()` (`wx` flag → `EEXIST` on collision) | ~10 lines of TS that prevent any double-work race in parallel agent runs. No DB. Replaces our currently-unprotected wave dispatch in `execute-pipeline.sh`. |
 | **File-based approval handshake** | `src/daemon/fast-checker.ts` (`appr_(allow\|deny)_<id>` callbacks → file moves `pending/` → `resolved/`) | The right HITL primitive for Telegram. Simpler than webhook round-trip; survives network hiccups. |
 | **`.daemon-stop` crash markers** | `src/daemon/agent-manager.ts` | Distinguishes graceful shutdown from crash on next boot. Decides restore-vs-cold-start. No DB. |
@@ -205,6 +205,35 @@ What changes:
 - Pipeline telemetry NDJSON gets streamed to the dashboard via the IPC server.
 - `CLAUDE_CODE_SESSION_ID` injection (May-12 punch list) becomes the join key between Agent View and the dashboard.
 
+### Pluggable PTY adapter registry (iaGO extension to cortextOS)
+
+iaGO formalizes cortextOS's per-runtime PTY adapter pattern into a registry that supports N runtimes without daemon refactor. Required by Santiago's 2026-05-13 decision to preserve multi-LLM flexibility (claude + codex + gemini + opencode) currently delivered by OpenClaw's ACP backend.
+
+**Interface (sketch — finalized in Phase 1 implementation):**
+
+```ts
+interface PTYAdapter {
+  readonly runtime: "claude" | "codex" | "gemini" | "opencode" | string;
+  readonly version: string;
+  spawn(opts: { cwd: string; env: Record<string, string>; agentId: string; sessionId: string }): Promise<PTYHandle>;
+  inject(handle: PTYHandle, text: string): Promise<void>;
+  onStatusChanged(handle: PTYHandle, cb: (status: "running" | "idle" | "exited" | "crashed", code?: number) => void): void;
+  shutdown(handle: PTYHandle, signal?: "SIGTERM" | "SIGKILL"): Promise<void>;
+  restoreFromMarker(markerPath: string): Promise<PTYHandle | null>; // for crash recovery
+}
+```
+
+**Registry:** `runtime/pty/registry.ts` exports `registerAdapter(adapter: PTYAdapter)`. Agent config files reference adapter by `runtime` field. Daemon loads adapters at boot, validates interface compliance, and routes spawn calls.
+
+**Phase mapping:**
+- **Phase 1:** Ship the interface + registry + Claude Code adapter. Hello-world end-to-end uses Claude only.
+- **Phase 3:** Add Codex adapter (was already planned). Same phase: Gemini adapter (CLI via `gemini` if Google ships a CLI, OR API-backed pseudo-PTY) and opencode adapter (sst/opencode wrapper). Effort within Phase 3 grows from 3–4d to 5–7d to accommodate three adapters.
+- **Beyond:** new runtimes (qwen, deepseek, local models via ollama, etc.) drop in as adapter files.
+
+**What this is NOT:** not an ACP-protocol reimplementation. ACPX dies at cutover (see audit doc § Active OpenClaw dependencies). The registry is purely about hosting multiple runtime PTYs in one daemon process; inter-agent communication still goes through the file-bus, not an ACP-style message protocol.
+
+---
+
 ### Pipeline invocation contract (daemon → pipeline)
 
 The daemon is the new dispatch surface; the pipeline script is unchanged. Integration seam:
@@ -259,7 +288,7 @@ The 4.5-day punch list from `.iago/research/iago-os-adversarial-review-2026-05.m
 | **1 — Daemon skeleton (local)** | 5-7d | `runtime/` directory with agent-manager + file-bus + Claude Code PTY adapter + Telegram approval handshake; hello-world end-to-end on Santiago's Windows | Local validation |
 | **1b — May-12 punch list (4 of 6 items)** | 3d | `CLAUDE_CODE_SESSION_ID` instrumentation, learnings write path, dirty-branch guard, fallback parser fix | Parallel to Phase 1 — independent |
 | **2 — VPS install alongside OpenClaw** | 2-3d | `iago-os-v2-daemon.service` running on VPS, one workflow migrated, no OpenClaw impact | Phase 1 + 1b complete |
-| **3 — Codex PTY adapter** | 3-4d | `runtime/pty/codex-app-server-pty.ts` — Codex agents cohabit with Claude in daemon | Phase 2 stable |
+| **3 — PTY adapters (Codex + Gemini + opencode)** | 5-7d | `runtime/pty/codex-app-server-pty.ts`, `runtime/pty/gemini-pty.ts`, `runtime/pty/opencode-pty.ts` — all three runtimes cohabit with Claude in the daemon via the PTY adapter registry (Phase 1 shipped the interface + Claude adapter) | Phase 2 stable |
 | **4 — Wedge J shell-hook matchers** | 1d | regex + timeout on hooks; lands in daemon hook config | Phase 2 stable |
 | **5 — Wedge B distiller + compression** | 2d | Stage compression for long-running daemon sessions | Phase 3 + 4 |
 | **6 — Dashboard skeleton** | 5-7d | Next.js dashboard via IPC server: agent list, current state, recent activity | Phase 3 stable |
@@ -270,7 +299,7 @@ The 4.5-day punch list from `.iago/research/iago-os-adversarial-review-2026-05.m
 | **11 — Email auto-provision** | 2d | Per-agent email address via SES subdomain catch-all + IMAP polling | Phase 7 stable |
 | **12 — Learning loop pattern extraction** | 1d | Pipeline pattern-extraction stage writes to `.iago/learnings/patterns.md`; 5+ occurrence → CLAUDE.md promotion via daemon-managed PR | Phase 6 stable |
 
-**Total Phase 0–7 + Phase 10 effort:** ~25–30 dev-days (~5–6 weeks at sustainable pace).
+**Total Phase 0–7 + Phase 10 effort:** ~27–32 dev-days (~5.5–6.5 weeks at sustainable pace) — Phase 3 expanded by ~2d for multi-LLM adapter scope per Santiago 2026-05-13 decision.
 **Phases 8, 9, 11, 12 are demand-triggered or trailing**, not scheduled.
 
 ---
@@ -281,7 +310,7 @@ Stay scoped:
 
 - **Not a Cursor/Aider/Continue replacement.** Those are IDEs. iaGO v2 is a delivery runtime.
 - **Not a Devin clone.** Devin replaces developers. iaGO v2 augments a 3-person consultancy by giving Santiago + Sebas remote control over the agents that do the work.
-- **Not 17-platform messaging.** Telegram only. Slack/Discord only on real demand from a paying client.
+- **Not 17-platform messaging.** Telegram only. WhatsApp **explicitly dropped at cutover** (Santiago decision 2026-05-13: "Telegram works fine"). Slack/Discord only on real demand from a paying client.
 - **Not multi-tenant SaaS (internal use).** Per-client directory separation is sufficient. Multi-tenancy stays a possible product angle, not internal infra.
 - **Not Postgres.** SQLite for cost ledger + session state. JSON/JSONL for everything else (cortextOS pattern).
 - **Not Docker for agent runtime.** systemd on VPS. Docker auth dance is operational fragility.
