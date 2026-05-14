@@ -85,12 +85,12 @@ Cited file paths are in the upstream repos; iaGO ports land under `runtime/` (ne
 │  ┌──────────────────────────────────────────────────────────┐   │
 │  │  iago-os v2 daemon  (systemd service, Node.js 20)         │   │
 │  │                                                            │   │
-│  │  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐      │   │
-│  │  │ Claude Code │  │   Codex     │  │  Hermes (?)  │      │   │
-│  │  │  PTY adapter│  │  PTY adapter│  │  PTY adapter │      │   │
-│  │  └──────┬──────┘  └──────┬──────┘  └──────┬──────┘      │   │
-│  │         │                │                 │              │   │
-│  │  ┌──────▼────────────────▼─────────────────▼──────┐      │   │
+│  │  ┌─────────────┐  ┌─────────────┐                        │   │
+│  │  │ Claude Code │  │   Codex     │                        │   │
+│  │  │  PTY adapter│  │  PTY adapter│                        │   │
+│  │  └──────┬──────┘  └──────┬──────┘                        │   │
+│  │         │                │                                │   │
+│  │  ┌──────▼────────────────▼────────────────────────┐      │   │
 │  │  │  Agent manager (registration, crash/restart,    │      │   │
 │  │  │  multi-org cascade, .daemon-stop markers)       │      │   │
 │  │  └──────┬──────────────────────────────────────────┘      │   │
@@ -118,6 +118,8 @@ Cited file paths are in the upstream repos; iaGO ports land under `runtime/` (ne
 └─────────────────────────────────────────────────────────────────┘
 ```
 
+> **PTY adapter note:** Only Claude Code and Codex adapters are built. Hermes runtime is NOT adopted — Hermes patterns only (pre-LLM wake gate, shell-hook matchers, compression threshold, MCP sampling caps). See "From Hermes v0.11.0 — adopt selectively" table below.
+
 ---
 
 ## Wedge Reinterpretation (existing roadmap under new frame)
@@ -125,9 +127,9 @@ Cited file paths are in the upstream repos; iaGO ports land under `runtime/` (ne
 | Wedge | Original purpose | New purpose | Status change |
 |---|---|---|---|
 | **A** Frozen-snapshot MEMORY | Pipeline context discipline | Same — kept | ✅ shipped, no change |
-| **B** Distiller (+ compression safety valve) | Pipeline context compression between stages | Same + becomes load-bearing for long-running daemon sessions | Wave 1, kept |
+| **B** Distiller (+ compression safety valve) | Pipeline context compression between stages | Same + becomes load-bearing for long-running daemon sessions | Phase 5, gated on Phase 3+4 |
 | **C** `/routines` bind audit | Cron + `[SILENT]` token | **CLOSED** — `/routines` BIND-NOT-VIABLE (PR #37). Replaced by **cortextOS `cron-scheduler.ts` + Hermes pre-LLM wake gate** as v2 cron substrate | Adopted via cortextOS daemon, not via `/routines` |
-| **D** Memory provider doc | MCP sampling caps doc | Same — kept as doc-only | ✅ ship doc, no daemon change |
+| **D** Memory provider doc | MCP sampling caps doc | Same — kept as doc-only | ✅ ship doc, no daemon change — standalone `/iago-fast` task, before or in parallel with Phase 1 |
 | **F** Telegram gateway | Week-6 stretch, "Telegram only" scoped narrow | **PROMOTED to load-bearing control plane.** First v2 deliverable after daemon foundation. cortextOS `fast-checker.ts` approval handshake is the reference impl | Wave 1, top priority |
 | **G** Skill body progressive disclosure | Deferred (yellow feasibility) | Same — defer | No change |
 | **H** Webhook + HMAC | Stripe-events for installflow | **PROMOTED to load-bearing VPS event trigger surface.** GitHub events + Stripe events + arbitrary HMAC webhooks → daemon → agent wakeup | Wave 2, ahead of original schedule |
