@@ -83,10 +83,21 @@ Ship a complete inventory in one PR. Document what's there, what depends on what
    du -sh ~/.openclaw/* 2>&1 | head -20
    cat ~/.openclaw/config.json 2>&1 | head -50 || cat ~/.openclaw/*.config 2>&1 | head -50
    ```
-5. **Connected OAuth tokens? (look for service names in config)**
+5. **Connected OAuth tokens? (look for service names in config — list names only, NEVER token values)**
+
+   **Safe pattern:** list which config files mention each service, do NOT cat token-bearing lines verbatim. The greps below match service names line-by-line but pipe through a redactor before any output reaches the audit doc.
+
    ```bash
-   grep -riE "discord|slack|google|github|telegram|sentry|linear" ~/.openclaw/ 2>&1 | head -40
+   # Step 5a — file presence only (no content)
+   grep -rilE "discord|slack|google|github|telegram|sentry|linear" ~/.openclaw/ 2>&1 | head -20
+
+   # Step 5b — line matches with secrets pre-redacted before display
+   grep -riE "discord|slack|google|github|telegram|sentry|linear" ~/.openclaw/ 2>&1 \
+     | sed -E 's/(token|secret|key|password|bearer|api[_-]?key|access[_-]?token|refresh[_-]?token)[[:space:]]*[=:"'\'']+[A-Za-z0-9._\-]+/\1=[REDACTED]/gi' \
+     | head -40
    ```
+
+   **Step 5c — visual confirmation before paste:** before copying any output into `runtime/migration/00-vps-audit.md`, scan visually for token-shaped values (long base64-ish strings, JWT triplets, hex strings >20 chars). If any remain after the sed pass, redact manually before commit. List service NAMES only in the audit doc (e.g., "telegram bot token configured: yes"). Never paste the token itself.
 6. **Logs — last 200 lines?**
    ```bash
    journalctl -u openclaw --since "7 days ago" --no-pager 2>&1 | tail -200
@@ -117,8 +128,9 @@ Section in `runtime/migration/00-vps-audit.md` titled "OpenClaw inventory" with:
 
 **Acceptance:**
 - ✅ Every read-only command above ran and was captured
-- ✅ Section in audit doc filled with concrete values, no `[unknown]` placeholders
-- ✅ Active dependencies list is complete — if config references e.g. `discord_webhook_url`, list it
+- ✅ Section in audit doc filled with concrete values. Where a queried artifact genuinely does not exist (e.g., no `openclaw` binary, no `~/.openclaw/` dir, no `journalctl` unit), the cell value is `N/A — <one-line reason>` (e.g., `N/A — openclaw binary not present`). `[unknown]`, `[TODO]`, and blank cells are NOT acceptable.
+- ✅ Active dependencies list is complete — if config references e.g. `discord_webhook_url`, list the service name (NOT the URL value).
+- ✅ Secret-redaction pass (Step 5b sed + Step 5c visual) executed; audit doc contains zero tokens, zero webhook URLs with secrets, zero credentials of any kind.
 
 ---
 
@@ -156,8 +168,18 @@ Section in `runtime/migration/00-vps-audit.md` titled "OpenClaw inventory" with:
    ```
 6. **Firewall:**
    ```bash
-   ufw status 2>&1 || iptables -L -n 2>&1 | head -30
+   # 6a — confirm we are root before running iptables (non-root silently fails with permission errors that can be mis-read as "no firewall")
+   if [ "$(id -u)" -ne 0 ]; then
+     echo "FIREWALL_CHECK_SKIPPED: not running as root (uid=$(id -u)); rerun audit via root SSH"
+   else
+     ufw status verbose 2>&1 | head -30
+     echo "---iptables---"
+     iptables -L -n 2>&1 | head -30
+     echo "---ip6tables---"
+     ip6tables -L -n 2>&1 | head -10
+   fi
    ```
+   If the check is skipped (non-root SSH), Task 3 acceptance is NOT met — re-run via `ssh root@srv1456441.hstgr.cloud` before declaring Phase 0 done.
 7. **Existing cron jobs:**
    ```bash
    crontab -l 2>&1
@@ -182,8 +204,9 @@ Section in `runtime/migration/00-vps-audit.md` titled "Runtime baseline" with:
 
 **Acceptance:**
 - ✅ Every command captured
-- ✅ Section in audit doc has concrete values
+- ✅ Section in audit doc has concrete values (`N/A — <reason>` acceptable where artifact does not exist; `[unknown]` / `[TODO]` / blank are NOT)
 - ✅ Identifies what v2 daemon install needs to provision (e.g. "Node.js 20 not installed — Phase 1 will need to install")
+- ✅ Firewall check ran as root (not skipped). If it was skipped, Task 3 is not done — re-run with root SSH before declaring Phase 0 complete.
 
 ---
 
@@ -233,6 +256,6 @@ This plan is a READ-ONLY audit producing a single documentation deliverable. The
 - **Build gate:** N/A
 - **Review:** self-review + Santiago review of the audit doc before any Phase 1 work
 - **Codex adversarial:** N/A
-- **PR:** standard PR with audit doc as the diff
+- **PR:** PR with audit doc as the diff, opened via `/iago-fast`
 
-Equivalent to `/iago-fast` shape (single-doc deliverable). Invoke via `/iago-fast` OR manually via standard git workflow. Either is acceptable per pipeline-optional rule.
+**Skill-routing rule:** Invoke via `/iago-fast` (single-doc deliverable, ≤3 files, obvious — matches the `/iago-fast` profile per `.claude/rules/available-skills.md`). Manual `git commit` outside a skill is **never** the equivalent path, per root `CLAUDE.md` Execution Path table and memory `feedback_never_skip_reviews`. The audit's "no build, no test" shape does not exempt it from skill routing — it just makes `/iago-fast` (build-gate-only) the right skill rather than `/iago-quick` or `/iago-execute`.

@@ -10,7 +10,7 @@ Loading the following artifacts as input before executing any task:
 
 1. `docs/specs/iago-os-v2-vision.md` — 5-layer agent OS architecture
 2. `.iago/research/2026-05-13-multi-agent-cohabitation.md` — concrete primitives to steal from cortextOS / Hermes / Paperclip
-3. `.iago/research/2026-04-28-mwp-restructure-audit.md` — Model Workspace Protocol method (filesystem-as-context)
+3. `.iago/research/2026-05-13-mwp-source-synthesis.md` — canonical MWP ground truth (supersedes the 2026-04-28 audit, which was secondhand and ~30% materially wrong)
 4. `docs/specs/iago-os-mwp-routing-rule.md` — doc-routing decision tree
 5. `CLAUDE.md` (root) — execution discipline, pipeline rules, memory architecture
 6. Memory: `feedback_garry_impressed_standard.md`, `project_iago_v2_vision.md`, `feedback_iago_v2_overrides_council.md`
@@ -76,7 +76,7 @@ Already specified in `docs/specs/iago-os-v2-vision.md`. Summary for executors:
 │    ├─ PTY adapters (Claude Code + Codex)          │
 │    ├─ Agent manager (registration, crash, restart)│
 │    ├─ File-bus (O_EXCL task claims)               │
-│    ├─ Telegram router (per-agent or per-org)      │
+│    ├─ Telegram router (one bot, per-agent tagging) │
 │    ├─ Cron scheduler (pre-LLM wake gates)         │
 │    ├─ IPC server (Unix socket → dashboard + CLI)  │
 │    └─ Webhook receiver (Sentry, GitHub, Stripe)   │
@@ -84,7 +84,7 @@ Already specified in `docs/specs/iago-os-v2-vision.md`. Summary for executors:
 │   Filesystem state                                 │
 │    ├─ orgs/<client>/agents/<agent>/config.json    │
 │    ├─ tasks/{pending,claimed,resolved}/           │
-│    ├─ pending/<approvalId> ↔ resolved/            │
+│    ├─ approvals/{pending,resolved}/                │
 │    ├─ crons.json per agent                        │
 │    └─ ledger.sqlite (cost tracking when activated)│
 │                                                    │
@@ -164,7 +164,7 @@ Source: canonical synthesis at `.iago/research/2026-05-13-mwp-source-synthesis.m
 | L0 | CLAUDE.md — workspace identity, routing table | ~800 tok | Workspace root |
 | L1 | CONTEXT.md — workspace entry routing | ~300 tok | Workspace-level |
 | L2 | Stage contract — `Inputs / Process / Outputs` | 200–500 tok | Per-stage CONTEXT.md |
-| L3 | Reference/factory — rules, voice, conventions, skills | 500–2k tok | `_config/`, `references/`, `.claude/rules/` |
+| L3 | Reference/factory — rules, voice, conventions, skills | 500–2k tok | `.claude/rules/`, `docs/specs/`, `docs/patterns/` (iaGO canon); `_config/`, `references/` (vault-toolkit naming, optional) |
 | L4 | Working/product — per-run artifacts, source material | Varies | Stage `output/`, plan files |
 
 ### L3 vs L4 distinction (critical — was missing from prior docs)
@@ -218,7 +218,7 @@ Over-routing deterministic work to agents wastes tokens, degrades quality on gen
 
 - **Per-workspace `CLAUDE.md` delta only (8-15 lines)** — stack divergence, commands, never-do-X. No duplication of root rules.
 - **Doc-routing table** lives in root CLAUDE.md per `docs/specs/iago-os-mwp-routing-rule.md` (auto-loads every session).
-- **Path-scoped `.claude/rules/*.md` with YAML `paths:` frontmatter** loads only when matching files are touched.
+- **Path-scoped `.claude/rules/*.md` with YAML `description:` + `globs:` frontmatter** (the canonical iaGO schema — see `.claude/rules/react-vite.md`, `aws-amplify.md` for examples) loads only when matching files are touched.
 - **Note on hierarchical CLAUDE.md concatenation** ("deeper does not replace") — this is a Claude Code platform behavior, NOT an MWP prescription. MWP is model-agnostic per ICM §4.1.
 
 ### What MWP does NOT address (and what fills the gap in v2)
@@ -242,12 +242,14 @@ Over-routing deterministic work to agents wastes tokens, degrades quality on gen
 3. **VPS install alongside OpenClaw.** systemd unit `iago-os-v2-daemon.service`. Run in parallel. Validate one non-critical workflow.
 4. **Telegram control surface.** Bot token, `appr_*` callback handler, file-based handshake. Santiago can `/start`, `/agents`, `/approve <id>`, `/abort <agent>`, `/inject <agent> <text>` from his phone.
 
-### P1 — Multi-runtime + dashboard
+### P1 — Multi-runtime + dashboard + daemon hardening
 
 5. **Codex PTY adapter.** `runtime/pty/codex-app-server-pty.ts`. Codex agents cohabit with Claude in the same daemon.
 6. **Wedge J — shell-hook matchers.** Regex + timeout on Claude Code hooks. Lands in daemon hook config.
 7. **Wedge B — distiller + compression safety valve.** For long-running daemon sessions.
 8. **Dashboard skeleton.** Next.js (or Streamlit fallback) via IPC server. Agent list, current state, recent activity, token spend per agent / project / model.
+8a. **Wedge K — pre-stage pipeline checkpoints.** Rollback safety inside the pipeline. Required by daemon crash-recovery (cortextOS `.daemon-stop` marker pattern). Lands as part of Phase 2–3 daemon hardening, NOT demand-triggered (Wave 2 per vision spec wedge table).
+8b. **OpenClaw cutover + cleanup.** Migrate remaining workflows, stop OpenClaw, archive state, delete after 30 days. Sequenced as roadmap Phase 7 (Stage D + E of the OpenClaw migration sequence), gated on Phase 6 dashboard stable. Not demand-triggered.
 
 ### P2 — Self-running automation pipeline (the Cormac loop, reimagined)
 
@@ -265,10 +267,8 @@ Over-routing deterministic work to agents wastes tokens, degrades quality on gen
 ### P3 — Demand-triggered
 
 15. **Cost ledger (SQLite).** Per-agent budget + hard pause. Activates when any client moves to API billing.
-16. **OpenClaw cutover + cleanup.** Migrate remaining workflows, stop OpenClaw, archive state, delete after 30 days.
-17. **Wedge K — pre-stage pipeline checkpoints.** Rollback safety inside the pipeline.
-18. **Wedge L — externalize review-checks.** Per-client review-rule overrides.
-19. **Second messaging platform** (Slack or WhatsApp) — only when a paying client demands it.
+16. **Wedge L — externalize review-checks.** Per-client review-rule overrides. Activates when a paying client requires custom review rules.
+17. **Second messaging platform** (Slack or WhatsApp) — only when a paying client demands it.
 
 ---
 
@@ -282,7 +282,7 @@ For each P0 / P1 / P2 deliverable, the PR must pass:
 4. **Documentation.** `runtime/<component>/README.md` with: purpose, dependencies, configuration, ops runbook, failure modes.
 5. **Telemetry.** NDJSON event emission per stage, keyed on `CLAUDE_CODE_SESSION_ID` where applicable.
 6. **Rollback path.** Documented + tested. What does "undo this deployment" look like?
-7. **Verification path completed.** Either the full iaGO 8-stage pipeline (stress → impl → build → review → codex → fix → PR → summary) OR an equivalent path (Vitest/Pytest green + targeted Codex adversarial via `/codex:adversarial-review` + manual smoke test + screenshot evidence). Pipeline is a tool, not the only path. The Garry standard is COMPLETENESS, not pipeline-mechanical-compliance. Pick the path that's right for the deliverable; document the choice in the PR description.
+7. **Verification path completed.** Either (a) the full iaGO 8-stage pipeline via `/iago-execute` or `/iago-quick` (stress → impl → build → review → codex → fix → PR → summary), or (b) `/iago-fast` for trivial fixes (≤3 files, obvious, build gate only), or (c) a documentation-only deliverable produced inside a skill invocation. Manual `git commit` outside a skill is **never** the equivalent path — per root `CLAUDE.md` Execution Path table, all implementation goes through matching skill. The Garry standard is COMPLETENESS, and the skill-routing rule is how completeness is enforced. Pick the skill that's right for the deliverable; document the choice in the PR description.
 8. **Self-evidence.** PR description includes a screenshot or terminal log proving the feature works end-to-end. Not a description; evidence.
 
 If any criterion is not met, the deliverable is not done. Re-open and finish.
@@ -362,7 +362,7 @@ If you're an agent executing against this prompt:
 ## Open questions Santiago must answer before Phase 1
 
 1. **OpenClaw active dependencies.** What is running on it now that v2 must NOT break? (Inventory needed before cutover.)
-2. **Telegram bot strategy.** One bot routing to many agents (Hermes pattern), or one bot per agent (cortextOS pattern)? Default: one bot, per-agent file-bus tagging.
+2. **Telegram bot strategy.** ✅ DECIDED 2026-05-13 — one bot, per-agent file-bus tagging (Hermes-style routing with cortextOS-style approval handshake). cortextOS's per-agent-token pattern is rejected — operational overhead too high for 3-person scale. Subject to revisit if a paying client needs strict per-tenant bot isolation.
 3. **Sebas access.** Day-1 or after dashboard? Default: Santiago-only Phases 1–3; Sebas joins Phase 6.
 4. **Dashboard scope v1.** Full Next.js port or Streamlit minimal? Default: Streamlit minimal until daemon is stable.
 5. **MUNET parallelism.** v2 proceeds in parallel with MUNET stalled, or pause for MUNET MVP? Default: parallel.
@@ -373,11 +373,12 @@ If you're an agent executing against this prompt:
 
 - `docs/specs/iago-os-v2-vision.md` (2026-05-13) — 5-layer architecture
 - `.iago/research/2026-05-13-multi-agent-cohabitation.md` (2026-05-13) — primitives + adoption verdicts
-- `.iago/research/2026-04-28-mwp-restructure-audit.md` (2026-04-28) — MWP method
+- `.iago/research/2026-05-13-mwp-source-synthesis.md` (2026-05-13) — canonical MWP source synthesis (overrides 2026-04-28 audit)
+- `.iago/research/2026-04-28-mwp-restructure-audit.md` (2026-04-28) — superseded MWP method audit (kept for historical reasoning trail only)
 - `docs/specs/iago-os-mwp-routing-rule.md` (2026-05-04) — doc-routing rule
 - `.iago/research/iago-os-adversarial-review-2026-05.md` (2026-05-12) — May-12 punch list
 - cortextOS: github.com/grandamenium/cortextos
 - Hermes: github.com/NousResearch/hermes-agent (v0.11.0)
 - Paperclip: github.com/paperclipai/paperclip
 - Sentry Seer (Autofix + Agent + MCP Server): sentry.io/welcome/
-- Cormac video reference: `C:\Users\sanal\Downloads\buildwithcormac-selfrunningcompany.mp4` (transcript inline in this session — source pattern: Sentry → Slack → Linear → Cursor PR loop; v2 collapses this to: Sentry → daemon webhook → file-bus → agent PTY → pipeline → PR → Telegram)
+- Cormac video reference: "Build with Cormac — self-running company" (source on Santiago's local machine; not reachable from builder agents on VPS or in `claude -p` subprocess). Source pattern derived: Sentry → Slack → Linear → Cursor PR loop. v2 collapses this to: Sentry → daemon webhook → file-bus → agent PTY → pipeline → PR → Telegram. Pattern is canonical; primary source is not.

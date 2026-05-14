@@ -10,7 +10,7 @@ _Date: 2026-05-13 | Status: **CANONICAL** | Supersedes: `docs/specs/iago-os-visi
 
 This **replaces OpenClaw** as the production agent runtime. Same VPS, same Tailscale mesh, new software.
 
-This **overrides** the 2026-04-21 council "defer" verdict on iago-os-v2, the prior "Paperclip = DEFER" verdict, the prior "cortextOS = cherry-pick only" verdict, the prior "agentic-os-dashboard = patterns only" verdict, and the 2026-04-28 "not a Hermes clone, not a Devin replacement" framing. Closer-to-Hermes is now the target.
+This **overrides** the 2026-04-21 council "defer" verdict on iago-os-v2, the prior "Paperclip = DEFER" verdict, the prior "cortextOS = cherry-pick only" verdict, the prior "agentic-os-dashboard = patterns only" verdict, and the 2026-04-28 "not a Hermes clone, not a Devin replacement" framing. Closer-to-Hermes is now the target. Reasoning trail: `memory:feedback_iago_v2_overrides_council` (Santiago direction 2026-05-13 + supporting cortextOS adoption logic from `.iago/research/2026-05-13-multi-agent-cohabitation.md`).
 
 ---
 
@@ -143,14 +143,16 @@ Cited file paths are in the upstream repos; iaGO ports land under `runtime/` (ne
 
 ## OpenClaw → VPS Migration Sequence
 
-**Phase 0 — VPS audit (read-only, no destructive ops).**
+**Naming note:** These migration stages use letters (A–E) to avoid collision with the roadmap `Phase 0–12` numbering further down. The roadmap phases describe the v2 build calendar; the cutover stages below describe the OpenClaw→v2 transition within that calendar. Stage A maps to roadmap Phase 0; Stage E maps to roadmap Phase 7+.
+
+**Stage A — VPS audit (read-only, no destructive ops).** Maps to roadmap Phase 0.
 
 1. SSH into Hostinger VPS via Tailscale.
 2. Inventory: what is OpenClaw running right now? What workflows touch it? What state lives in `~/openclaw/` or equivalent?
 3. Confirm Tailscale mesh health, Node.js version, systemd availability.
 4. Write `runtime/migration/00-vps-audit.md` with the inventory.
 
-**Phase 1 — Daemon skeleton land (local first).**
+**Stage B — Daemon skeleton land (local first).** Maps to roadmap Phase 1.
 
 1. Create `runtime/` directory in iago-os.
 2. Port cortextOS minimal daemon: agent-manager + file-bus + one PTY adapter (Claude Code first).
@@ -158,26 +160,26 @@ Cited file paths are in the upstream repos; iaGO ports land under `runtime/` (ne
 4. systemd unit file authored but not deployed.
 5. Hello-world: register one Claude Code agent, claim a task, send Telegram message via test bot, receive `appr_allow` callback, agent proceeds. End-to-end on localhost.
 
-**Phase 2 — VPS install alongside OpenClaw.**
+**Stage C — VPS install alongside OpenClaw.** Maps to roadmap Phase 2.
 
 1. Deploy daemon to VPS as `iago-os-v2-daemon.service`. Run in parallel with OpenClaw, different ports / state dirs.
 2. Validate on one non-critical workflow.
 3. Migrate Telegram bot token from OpenClaw to v2 daemon (or use a separate bot during cutover).
 
-**Phase 3 — Cutover.**
+**Stage D — Cutover.** Maps to roadmap Phase 7 (gated on Phase 6 dashboard stable).
 
 1. Migrate remaining workflows from OpenClaw to v2 daemon.
 2. Stop OpenClaw systemd unit.
 3. Archive OpenClaw state (do not delete yet — keep 30 days).
 4. Update DNS / Telegram bot bindings.
 
-**Phase 4 — Cleanup.**
+**Stage E — Cleanup.** Trailing 30 days after Stage D.
 
 1. Uninstall OpenClaw from VPS.
 2. Delete archived state.
-3. Document removal in `runtime/migration/04-openclaw-removed.md`.
+3. Document removal in `runtime/migration/E-openclaw-removed.md`.
 
-**Open question (need Santiago input):** does OpenClaw run anything you actively depend on right now that would break if it stops? If yes, list it before Phase 2 cutover. If no, Phase 2 + 3 can collapse into one.
+**Open question (need Santiago input):** does OpenClaw run anything you actively depend on right now that would break if it stops? If yes, list it before Stage C cutover. If no, Stage C + D can collapse into one stage.
 
 ---
 
@@ -199,6 +201,20 @@ What changes:
 - Pipeline is dispatched **by** the daemon (cron / Telegram / webhook trigger), not manually invoked from Santiago's terminal.
 - Pipeline telemetry NDJSON gets streamed to the dashboard via the IPC server.
 - `CLAUDE_CODE_SESSION_ID` injection (May-12 punch list) becomes the join key between Agent View and the dashboard.
+
+### Pipeline invocation contract (daemon → pipeline)
+
+The daemon is the new dispatch surface; the pipeline script is unchanged. Integration seam:
+
+- **Spawn mechanism:** daemon spawns a child process via Node.js `child_process.spawn('bash', ['scripts/execute-pipeline.sh', '--plan', <path>, '--project-dir', <cwd>], { env, cwd, stdio })`. No PTY for pipeline stages — the script's existing self-freeze + bash semantics are preserved.
+- **Environment contract:** daemon must inject `CLAUDE_CODE_SESSION_ID` (UUID per invocation, becomes dashboard join key), `IAGO_PARALLEL_BUILD` (0 or 1 per build-gate policy), `IAGO_PIPELINE_FROZEN_DIR` is set BY the script (do not preset), `PATH` must include `node`, `git`, `gh`, `claude`, `codex` for the running user. Other pipeline-relevant env vars are documented in `scripts/lib/pipeline-telemetry.sh`.
+- **Working directory:** repo root for the target project (e.g., `clients/munet-web/` or iago-os root). The daemon resolves project-dir from the task's `org`/`project` fields per cortextOS multi-org cascade.
+- **Stdio sink:** daemon captures stdout+stderr per stage and streams to a per-task log file at `tasks/<taskId>/pipeline-<sessionId>.log`. NDJSON telemetry events emitted by `pipeline-telemetry.sh` go to `telemetry/<date>.ndjson` (existing iaGO convention) AND are tee'd to the IPC server's event bus for live dashboard render.
+- **Exit-code semantics:** 0 = pipeline clean, PR open, ready for review. Non-zero = stage failed before PR creation (build gate, review-fix loop max-rounds, codex failure). Daemon surfaces non-zero exits as `task.status = "blocked"` and pings Santiago via Telegram with the failing stage + log path.
+- **Cancellation:** SIGTERM from daemon → script's EXIT trap cleans `IAGO_PIPELINE_FROZEN_DIR`. SIGKILL only if SIGTERM doesn't return within 30s.
+- **Concurrency:** daemon respects `max_concurrent_children` (default 3, Hermes pattern). Pipeline invocations queue per-org to prevent two pipelines on the same project tree.
+
+This contract is what Phase 2 implements. Phase 1 builds the daemon skeleton without daemon-driven pipeline invocation; manual `claude -p` dispatch continues to work in parallel.
 
 ---
 
@@ -247,9 +263,12 @@ The 4.5-day punch list from `.iago/research/iago-os-adversarial-review-2026-05.m
 | **7 — OpenClaw cutover + cleanup** | 1d | All workflows on v2 daemon, OpenClaw stopped, state archived | Phase 6 stable + Santiago green-light |
 | **8 — Cost ledger (SQLite)** | 2d | Per-agent cost tracking + hard pause when budget breached | Triggered when first API-billing client lands |
 | **9 — Wedge H webhook surface** | 2-3d | HMAC webhook receiver → daemon trigger → agent wakeup | Triggered when first webhook integration demand |
+| **10 — Auto-PR loop end-to-end** | 1d | Sentry → daemon → file-bus task → agent → pipeline → PR loop wired end-to-end | Phase 9 webhook surface live |
+| **11 — Email auto-provision** | 2d | Per-agent email address via SES subdomain catch-all + IMAP polling | Phase 7 stable |
+| **12 — Learning loop pattern extraction** | 1d | Pipeline pattern-extraction stage writes to `.iago/learnings/patterns.md`; 5+ occurrence → CLAUDE.md promotion via daemon-managed PR | Phase 6 stable |
 
-**Total Phase 0-7 effort:** ~22-28 dev-days (4-6 weeks at sustainable pace).
-**Phase 8 + 9 are demand-triggered**, not scheduled.
+**Total Phase 0–7 + Phase 10 effort:** ~25–30 dev-days (~5–6 weeks at sustainable pace).
+**Phases 8, 9, 11, 12 are demand-triggered or trailing**, not scheduled.
 
 ---
 
@@ -269,7 +288,7 @@ Stay scoped:
 ## Open Questions (need Santiago verdict before Phase 1)
 
 1. **OpenClaw active dependencies.** What is OpenClaw doing on the VPS right now? Anything we can't lose during cutover?
-2. **Telegram bot strategy.** One bot per agent (cortextOS pattern) or one bot routing to many agents (Hermes pattern)? cortextOS's per-bot approach is simpler to start; one-router scales better long-term. Default recommendation: **one bot for v2 with per-agent message tagging in the file bus**.
+2. **Telegram bot strategy.** ✅ DECIDED 2026-05-13 — **one bot for v2 with per-agent message tagging in the file bus** (Hermes-style routing wrapped around cortextOS's `appr_*` approval handshake). cortextOS's per-agent-token pattern rejected — operational overhead too high for 3-person scale. Architecture diagram and master prompt reference architecture both reflect this. Subject to revisit only if a paying client requires strict per-tenant bot isolation.
 3. **Sebas integration.** Does Sebas get his own Tailscale node + Telegram bot binding from day 1, or after v2 stabilizes? Default recommendation: **single user (Santiago) for Phases 1-3**; add Sebas in Phase 6 when dashboard is up.
 4. **Dashboard scope (v1).** Full cortextOS Next.js port, or Streamlit minimal cockpit while daemon stabilizes? Default recommendation: **Streamlit minimal in Phase 6; promote to Next.js when daemon is stable and dashboard usage justifies the rewrite**.
 5. **MUNET handling during v2 build.** MUNET is currently stalled. Does v2 work proceed in parallel, or does MUNET MVP need to ship first? Per memory `project_munet_mvp_scope`, M2 03-06 + ticket-email-fix wave 2 are deferred post-MVP. Default: **v2 build proceeds in parallel; MUNET remains highest-revenue priority when it unblocks**.
@@ -280,13 +299,13 @@ Stay scoped:
 
 - **Research artifact (2026-05-13):** `.iago/research/2026-05-13-multi-agent-cohabitation.md` — comparison + adoption verdicts
 - **Hermes details:** `.iago/research/team-2-hermes-state.md`
-- **cortextOS eval (verdict now overridden):** `~/dev/obsidian-brain/projects/cortextos-eval.md`
-- **Paperclip eval (verdict now overridden):** `~/dev/obsidian-brain/projects/paperclip-eval.md`
-- **agentic-os-dashboard eval (verdict now overridden):** `~/dev/obsidian-brain/projects/agentic-os-dashboard-eval.md`
+- **cortextOS eval (verdict now overridden):** `~/dev/obsidian-brain/projects/cortextos-eval.md` (Santiago-local Obsidian vault; not reachable from builder agents on VPS or in `claude -p` subprocess — key adoption verdicts captured inline in `.iago/research/2026-05-13-multi-agent-cohabitation.md`)
+- **Paperclip eval (verdict now overridden):** `~/dev/obsidian-brain/projects/paperclip-eval.md` (Santiago-local; see above)
+- **agentic-os-dashboard eval (verdict now overridden):** `~/dev/obsidian-brain/projects/agentic-os-dashboard-eval.md` (Santiago-local; see above)
 - **May-12 adversarial review:** `.iago/research/iago-os-adversarial-review-2026-05.md`
 - **Old vision (superseded):** `docs/specs/iago-os-vision.md` — keep for historical reasoning trail; do not execute against
 - **Old wedge roadmap (partially superseded):** `docs/specs/iago-os-roadmap.md` — wedge primitives still valid; framing reinterpreted per this doc
-- **Council decision (now overridden):** `~/dev/obsidian-brain/decisions/2026-04-21-iago-os-v2-council.md` — keep for historical reasoning; verdict reversed by Santiago 2026-05-13
+- **Council decision (now overridden):** `~/dev/obsidian-brain/decisions/2026-04-21-iago-os-v2-council.md` (Santiago-local Obsidian vault) — keep for historical reasoning; verdict reversed by Santiago 2026-05-13 per `memory:feedback_iago_v2_overrides_council`
 
 ---
 

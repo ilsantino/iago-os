@@ -1,5 +1,8 @@
 ---
-paths:
+description: >-
+  60/30/10 task triage — deterministic / rule-based / AI layer routing. Applies
+  when designing plans, specs, daemon components, or research artifacts.
+globs:
   - ".iago/plans/**/*.md"
   - "docs/specs/**/*.md"
   - "runtime/**/*.ts"
