@@ -105,8 +105,9 @@ Cited file paths are in the upstream repos; iaGO ports land under `runtime/` (ne
 │  └─────────┼─────────────┼──────────────┼──────────────┼────┘   │
 │            │             │              │              │         │
 │  ┌─────────▼─────────────▼──────────────▼──────────────▼────┐   │
-│  │  Filesystem state: tasks/, pending/, resolved/,           │   │
-│  │  orgs/<client>/agents/<agent>/, crons.json, SQLite (cost) │   │
+│  │  Filesystem state: tasks/{pending,claimed,resolved}/,      │   │
+│  │  approvals/{pending,resolved}/, orgs/<client>/agents/,    │   │
+│  │  crons.json, SQLite (cost)                                │   │
 │  └────────────────────────────────────────────────────────────┘   │
 │                                                                  │
 │  ┌──────────────────────────────────────────────────────────┐   │
@@ -209,7 +210,7 @@ What changes:
 The daemon is the new dispatch surface; the pipeline script is unchanged. Integration seam:
 
 - **Spawn mechanism:** daemon spawns a child process via Node.js `child_process.spawn('bash', ['scripts/execute-pipeline.sh', '--plan', <path>, '--project-dir', <cwd>], { env, cwd, stdio })`. No PTY for pipeline stages — the script's existing self-freeze + bash semantics are preserved.
-- **Environment contract:** daemon must inject `CLAUDE_CODE_SESSION_ID` (UUID per invocation, becomes dashboard join key), `IAGO_PARALLEL_BUILD` (0 or 1 per build-gate policy), `IAGO_PIPELINE_FROZEN_DIR` is set BY the script (do not preset), `PATH` must include `node`, `git`, `gh`, `claude`, `codex` for the running user. Other pipeline-relevant env vars are documented in `scripts/lib/pipeline-telemetry.sh`.
+- **Environment contract:** daemon must inject `CLAUDE_CODE_SESSION_ID` (UUID per invocation, becomes dashboard join key), `IAGO_PARALLEL_BUILD` (0 or 1 per build-gate policy), `IAGO_PIPELINE_FROZEN_DIR` is set BY the script (do not preset), `IAGO_PIPELINE_FROZEN` must NOT be pre-set — clear it from the spawn env if inherited (inherited value of `1` would cause the child process to skip the self-freeze protection), `PATH` must include `node`, `git`, `gh`, `claude`, `codex` for the running user. Other pipeline-relevant env vars are documented in `scripts/lib/pipeline-telemetry.sh`.
 - **Working directory:** repo root for the target project (e.g., `clients/munet-web/` or iago-os root). The daemon resolves project-dir from the task's `org`/`project` fields per cortextOS multi-org cascade.
 - **Stdio sink:** daemon captures stdout+stderr per stage and streams to a per-task log file at `tasks/<taskId>/pipeline-<sessionId>.log`. NDJSON telemetry events emitted by `pipeline-telemetry.sh` go to `telemetry/<date>.ndjson` (existing iaGO convention) AND are tee'd to the IPC server's event bus for live dashboard render.
 - **Exit-code semantics:** 0 = pipeline clean, PR open, ready for review. Non-zero = stage failed before PR creation (build gate, review-fix loop max-rounds, codex failure). Daemon surfaces non-zero exits as `task.status = "blocked"` and pings Santiago via Telegram with the failing stage + log path.
