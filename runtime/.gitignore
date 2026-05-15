@@ -1,0 +1,9 @@
+dist/
+node_modules/
+tasks/
+approvals/
+state/
+telemetry/*.ndjson
+*.log
+.daemon-stop
+coverage/
