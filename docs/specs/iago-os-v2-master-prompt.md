@@ -1,6 +1,6 @@
 # iago-os v2 — Master Prompt
 
-_Date: 2026-05-13 | Status: **CANONICAL PROMPT** — executable as the master brief to any builder agent (Codex, Claude, or human contributor) | Author: Santiago + Claude orchestration_
+_Date: 2026-05-15 | Status: **CANONICAL PROMPT** — executable as the master brief to any builder agent (Codex, Claude, or human contributor) | Author: Santiago + Claude orchestration | Amended 2026-05-15 for agent-shape taxonomy + deeper adoption_
 
 ---
 
@@ -8,12 +8,14 @@ _Date: 2026-05-13 | Status: **CANONICAL PROMPT** — executable as the master br
 
 Loading the following artifacts as input before executing any task:
 
-1. `docs/specs/iago-os-v2-vision.md` — 5-layer agent OS architecture
-2. `.iago/research/2026-05-13-multi-agent-cohabitation.md` — concrete primitives to steal from cortextOS / Hermes / Paperclip
-3. `.iago/research/2026-05-13-mwp-source-synthesis.md` — canonical MWP ground truth (supersedes the 2026-04-28 audit, which was secondhand and ~30% materially wrong)
-4. `docs/specs/iago-os-mwp-routing-rule.md` — doc-routing decision tree
-5. `CLAUDE.md` (root) — execution discipline, pipeline rules, memory architecture
-6. Memory: `feedback_garry_impressed_standard.md`, `project_iago_v2_vision.md`, `feedback_iago_v2_overrides_council.md`
+1. `docs/specs/iago-os-v2-vision.md` — 5-layer agent OS architecture + Agent Shape Taxonomy (5 shapes via `AgentRuntime` interface)
+2. `.iago/decisions/2026-05-15-agent-shape-taxonomy.md` — ADR: multi-shape requirement + interface verdict
+3. `.iago/research/2026-05-13-multi-agent-cohabitation.md` — concrete primitives to steal from cortextOS / Hermes / Paperclip
+4. `.iago/research/2026-05-13-mwp-source-synthesis.md` — canonical MWP ground truth (supersedes the 2026-04-28 audit, which was secondhand and ~30% materially wrong)
+5. `docs/specs/iago-os-mwp-routing-rule.md` — doc-routing decision tree
+6. `runtime/migration/00-vps-audit.md` — Phase 0 audit deliverable (OpenClaw inventory + active dependencies)
+7. `CLAUDE.md` (root) — execution discipline, pipeline rules, memory architecture
+8. Memory: `feedback_garry_impressed_standard.md`, `project_iago_v2_vision.md`, `feedback_iago_v2_overrides_council.md`
 
 If any of these are missing or stale, stop and surface the gap before writing code.
 
@@ -47,16 +49,22 @@ Build iago-os v2: a multi-agent operating system that runs Santiago's consultanc
 
 It must:
 
-1. **Cohabit Claude + Codex + Gemini + opencode agents** (and any future runtime) on a single Hostinger VPS reached over Tailscale, with all runtimes alive simultaneously via a pluggable `PTYAdapter` registry, coordinating via a shared file-bus (cortextOS pattern + iaGO PTY-adapter registry extension; not Hermes single-agent pattern). Per Santiago 2026-05-13: multi-LLM flexibility is REQUIRED. Adding a new runtime is a single adapter file.
-2. **Run 24/7 as a systemd service** (no Docker auth dance, no daemon-restart auth dance). Survive reboots; resume in-flight work from crash markers.
-3. **Be controlled from a phone via Telegram.** Start agents, inject prompts, approve/deny irreversible actions, abort, and observe state — all from the Telegram app. WhatsApp deferred to demand; Slack/Discord deferred entirely.
-4. **Spawn its own terminal sessions** when work needs to happen. Each agent owns a PTY (Claude Code or Codex), claims tasks via O_EXCL file locks, and writes results back to the shared bus.
-5. **Operate multiple agents simultaneously**, coordinating without colliding. The supervisor agent dispatches; specialists claim and execute; results merge through ticket-style coordination.
-6. **Visualize agent state in a minimal web dashboard** running on the same VPS, accessible over Tailscale. Live agent list, current tasks, token spend, intervention controls. Same-host IPC, not REST.
+1. **Host agents of any execution shape** via the polymorphic `AgentRuntime` interface (Santiago decision 2026-05-15). Five shapes cohabit on a single Hostinger VPS reached over Tailscale, coordinating via a shared file-bus:
+   - **Shape 1 (PTY)** — Claude Code, Codex, Gemini, opencode (multi-LLM flexibility per Santiago 2026-05-13)
+   - **Shape 2 (HTTP/SDK)** — Anthropic SDK, OpenAI SDK programs, LangGraph workflows
+   - **Shape 3 (MCP-as-agent)** — Hermes runtime, future goal-taking MCP servers
+   - **Shape 4 (Webhook/event)** — Sentry-triage, GitHub-PR-handler, cron-tick workers
+   - **Shape 5 (Daemon)** — IMAP poller, Sentria incident-triage, inventory watchers
+   Adding a new runtime is "implement `AgentRuntime` for the right shape, register in `runtime/agent-runtime/registry.ts`." Adapter file, not daemon refactor.
+2. **Run 24/7 as a systemd service** (no Docker auth dance, no daemon-restart auth dance). Survive reboots; resume in-flight work from crash markers + `session.jsonl` replay (cortextOS deeper-adoption).
+3. **Be controlled from a phone via Telegram.** Start agents of any shape, inject prompts, approve/deny irreversible actions, abort, and observe state — all from the Telegram app. WhatsApp **explicitly dropped at OpenClaw cutover** (Santiago 2026-05-13); Slack/Discord deferred entirely.
+4. **Spawn its own execution contexts** when work needs to happen. Each agent owns a runtime handle (PTY, HTTP session, MCP stdio pair, event-handler process, or daemon command socket depending on shape), claims tasks via O_EXCL file locks, and writes results back to the shared bus.
+5. **Operate multiple agents simultaneously** across shapes, coordinating without colliding. Subagent spawn semantics (cortextOS deeper-adoption) link parent-child handles; cost rollup flows up; automatic shutdown when parent exits. The supervisor agent dispatches; specialists claim and execute; results merge through ticket-style coordination.
+6. **Visualize agent state in a full Next.js web dashboard** running on the same VPS, accessible over Tailscale. Live agent list across all 5 shapes with per-shape filters, current tasks, token spend per agent/project/model/shape, intervention controls. Same-host IPC, not REST. Streamlit fallback dropped 2026-05-15 per Garry-impressed standard.
 7. **Self-learn.** Append patterns to `.iago/learnings/patterns.md`. Ingest session digests into MemPalace. Update Graphify nightly. After N occurrences, promote learnings into CLAUDE.md candidates automatically.
-8. **Integrate with apps** through MCP servers and webhook endpoints. Email auto-provision via SES + IMAP polling; calendar via Google Workspace MCP; error capture via Sentry MCP; bug-fix dispatch via GitHub webhook.
+8. **Integrate with apps** through MCP servers and webhook endpoints. Email auto-provision via SES + IMAP polling (Daemon shape); calendar via Google Workspace MCP; error capture via Sentry MCP; bug-fix dispatch via GitHub webhook (Event shape). MCP rate-limiter (Hermes deeper-adoption) bounds cost per server.
 9. **Replace OpenClaw** (currently running on the same VPS). Delete the OpenClaw installation as part of cutover.
-10. **Ask Santiago for help when it needs it** — and only then. Background work is silent. Decisions that change scope, spend money, or touch production trigger a Telegram approval handshake (cortextOS `pending/` → `resolved/` file pattern).
+10. **Ask Santiago for help when it needs it** — and only then. Background work is silent. Decisions that change scope, spend money, or touch production trigger a Telegram approval handshake (cortextOS `pending/` → `resolved/` file pattern). Heartbeat health checks (cortextOS deeper-adoption) detect stalled agents and force-restart before Santiago has to notice.
 
 ---
 
@@ -73,11 +81,21 @@ Already specified in `docs/specs/iago-os-v2-vision.md`. Summary for executors:
 │  Hostinger VPS — runtime substrate (systemd)      │
 │                                                    │
 │   iago-os-v2-daemon                                │
-│    ├─ PTY adapters (Claude Code + Codex; Phase 3 adds Gemini + opencode) │
-│    ├─ Agent manager (registration, crash, restart)│
+│    ├─ AgentRuntime registry (5 shapes)            │
+│    │   ├─ Shape 1 (PTY): claude/codex/gemini/opencode │
+│    │   ├─ Shape 2 (HTTP/SDK): anthropic/openai    │
+│    │   ├─ Shape 3 (MCP-as-agent): hermes-mcp      │
+│    │   ├─ Shape 4 (Webhook/event): sentry/github/cron │
+│    │   └─ Shape 5 (Daemon): imap, sentria         │
+│    ├─ Agent manager (registration, crash, restart, │
+│    │   session.jsonl replay, subagent spawn,      │
+│    │   heartbeat health checks)                   │
 │    ├─ File-bus (O_EXCL task claims)               │
 │    ├─ Telegram router (one bot, per-agent tagging) │
+│    ├─ Cross-shape event router (generalized       │
+│    │   Hermes shell-hook matcher)                 │
 │    ├─ Cron scheduler (pre-LLM wake gates)         │
+│    ├─ MCP rate-limiter (token-bucket per server)  │
 │    ├─ IPC server (Unix socket → dashboard + CLI)  │
 │    └─ Webhook receiver (Sentry, GitHub, Stripe)   │
 │                                                    │
@@ -96,19 +114,23 @@ Already specified in `docs/specs/iago-os-v2-vision.md`. Summary for executors:
 
 ## Primitives to adopt (verbatim, with file references)
 
-### From cortextOS (https://github.com/grandamenium/cortextos)
+### From cortextOS (https://github.com/grandamenium/cortextos) — deeper adoption 2026-05-15
 
 | Primitive | Upstream file | Reason |
 |---|---|---|
-| Per-runtime PTY adapter | `src/pty/agent-pty.ts`, `src/pty/codex-app-server-pty.ts` | Codex + Claude cohabitation, one daemon |
+| Per-runtime PTY adapter (Shape 1 of AgentRuntime) | `src/pty/agent-pty.ts`, `src/pty/codex-app-server-pty.ts` | Codex + Claude cohabitation, one daemon |
 | Agent manager (register, crash, restart, multi-org cascade) | `src/daemon/agent-manager.ts` | Lifecycle without DB |
 | O_EXCL file-lock task claiming | `src/bus/task.ts` `claimTask()` `wx` flag | Coordination without broker |
 | Telegram approval handshake | `src/daemon/fast-checker.ts` `appr_*` callbacks + `pending/` → `resolved/` | HITL primitive |
 | `.daemon-stop` crash marker | `agent-manager.ts` | Distinguish graceful vs crash on boot |
 | IPC server (Unix socket / named pipe) | `src/daemon/ipc-server.ts` | Dashboard + CLI talk to daemon |
 | Cron scheduler with `crons.json` per agent | `src/daemon/cron-scheduler.ts` | Scheduled wakeups |
+| **`session.jsonl` append-only event log + replay** *(deeper)* | `src/daemon/session-log.ts` + `replayFromMarker()` | Crash recovery without DB — replays last N events per handle on daemon restart. Required by every shape. |
+| **Subagent spawn semantics** *(deeper)* | `agent-manager.ts` `spawnSubagent()` + parent-child handle linkage + cost rollup | Parent-child tracking; inheritance of cwd/env/cost-budget; automatic shutdown on parent exit. Makes the daemon truly multi-agent. |
+| **Heartbeat health checks + stall detection** *(deeper)* | `agent-manager.ts` `heartbeat()` (60s) + `restartIfStalled()` | Detect stalled adapters and force-restart. Replaces "Santiago notices in dashboard" failure mode. |
+| **Full Next.js dashboard** *(promoted from fallback to canonical)* | `apps/dashboard/` | Streamlit minimal fallback dropped 2026-05-15. Ship the real dashboard in Phase 6. |
 
-### From Hermes v0.11.0 (https://github.com/NousResearch/hermes-agent)
+### From Hermes v0.11.0 (https://github.com/NousResearch/hermes-agent) — deeper adoption 2026-05-15
 
 | Primitive | Upstream config | Reason |
 |---|---|---|
@@ -116,6 +138,10 @@ Already specified in `docs/specs/iago-os-v2-vision.md`. Summary for executors:
 | Shell-hook matchers (regex + timeout) | `cli-config.yaml` `hooks.<event>[]` | Scoped lifecycle automation |
 | Compression-threshold safety valve | `compression.{threshold:0.50,target_ratio:0.20,protect_last_n:20}` | Survive long sessions |
 | MCP sampling caps | `mcp_servers.<n>.sampling.max_tokens_cap` | Bound MCP cost |
+| **Hermes runtime as Shape 3 (MCP-as-agent) adapter** *(deeper, revised verdict)* | `hermes-mcp` stdio server | Hermes runtime IS adopted in Phase 3 — not as Shape 1, but as Shape 3. Patterns + runtime adoption now both land. |
+| **MCP sampling rate-limiter full impl** *(deeper)* | `mcp_server/rate_limiter.py` token-bucket | Full token-bucket per MCP server (budget, refill rate, hard-pause). Required as Sentry / Google Workspace / other MCPs land. |
+| **Shell-hook matcher generalized to cross-runtime event router** *(deeper)* | `cli-config.yaml` `hooks.<event>[]` extended | One rule language for all 5 shapes (PTY exit, HTTP error, webhook arrival, MCP sampling event, cron tick). Daemon Layer 3 control-plane router. |
+| **Compression threshold full impl** *(deeper)* | `compression/compress.py` sliding-window summarizer | Full sliding-window summarizer with exact Hermes semantics. Required for long-running PTY + Daemon shapes. |
 
 ### From Paperclip (pattern only, not stack)
 
@@ -146,6 +172,10 @@ Already specified in `docs/specs/iago-os-v2-vision.md`. Summary for executors:
 - **NOT Docker-wrapped agents.** systemd on the VPS directly. Eliminates the "container restart → re-auth Claude" fragility.
 - **NOT a Sentry replacement.** Sentry is a mature observability product (years of telemetry pipeline engineering). Integrate WITH Sentry via its MCP server; the AI autofix layer is where iaGO v2 plugs in.
 - **NOT a Linear replacement.** File-bus tasks/ directory with O_EXCL claims IS the ticketing system. No external task tracker.
+- **NOT PTY-only.** Daemon hosts 5 agent shapes via the polymorphic `AgentRuntime` interface (Santiago decision 2026-05-15). PTY is Shape 1 of 5, not the universal abstraction.
+- **NOT a workflow framework reimplementation.** LangGraph, CrewAI, AutoGen run as HTTP-shape agents — v2 hosts them, does not replace them.
+- **NOT a message-passing protocol.** File-bus is the protocol. No pub/sub, no agent-to-agent direct messaging, no ACP equivalent. Inter-agent coordination is `tasks/{pending,claimed,resolved}/` only.
+- **NOT a Streamlit dashboard.** Streamlit minimal fallback dropped 2026-05-15. Phase 6 ships the full cortextOS Next.js port.
 
 ---
 
@@ -237,25 +267,46 @@ Over-routing deterministic work to agents wastes tokens, degrades quality on gen
 
 ### P0 — Foundation (Phase 0–2 of vision sequencing)
 
-1. **VPS audit.** Inventory OpenClaw state, Tailscale mesh health, systemd availability. Output: `runtime/migration/00-vps-audit.md`.
-2. **Daemon skeleton (local first).** `runtime/` directory in iago-os. Agent manager + file-bus + one PTY adapter (Claude Code first). Hello-world end-to-end on Santiago's Windows: register agent → claim task → Telegram approval → resume.
+1. **VPS audit.** Inventory OpenClaw state, Tailscale mesh health, systemd availability. Output: `runtime/migration/00-vps-audit.md`. ✅ Shipped 2026-05-13.
+1.5. **Orphan cleanup.** Stop `iaguito-hq.service`, kill pulsara vite, install ufw default-deny + Tailscale-only SSH. Plan at `.iago/plans/feature-v2-foundation/02-orphan-cleanup.md`. Gated on Santiago authorization.
+2. **Daemon skeleton (local first).** `runtime/` directory in iago-os. Agent manager + file-bus + **`AgentRuntime` interface + registry** + Shape 1 (PTY) Claude adapter + Telegram approval handshake + **session.jsonl replay + heartbeat health checks + subagent spawn semantics** (cortextOS deeper-adoption). Hello-world end-to-end on Santiago's Windows: register agent → claim task → Telegram approval → resume.
 3. **VPS install alongside OpenClaw.** systemd unit `iago-os-v2-daemon.service`. Run in parallel. Validate one non-critical workflow.
-4. **Telegram control surface.** Bot token, `appr_*` callback handler, file-based handshake. Santiago can `/start`, `/agents`, `/approve <id>`, `/abort <agent>`, `/inject <agent> <text>` from his phone.
+4. **Telegram control surface.** Bot token, `appr_*` callback handler, file-based handshake. Available commands depend on the target agent's shape (the Telegram router introspects each agent's `runtime.shape` and exposes only the supported commands per shape):
+   - `/start <agent>` — all shapes
+   - `/agents` — list all agents across shapes
+   - `/approve <id>` — all shapes (HITL handshake)
+   - `/abort <agent>` — all shapes (sends signal via `AgentRuntime.shutdown()`)
+   - `/inject <agent> <text>` — **Shape 1 (PTY) only** — writes to running terminal stdin (PTY-specific; injecting raw text into an HTTP request or daemon process is nonsensical)
+   - `/send <agent> <message>` — Shapes 2/3/4/5 — delivers structured message via `AgentRuntime.send()`
+   - `/status <agent>` — all shapes — returns liveness + cost-tap snapshot
 
-### P1 — Multi-runtime + dashboard + daemon hardening
+### P1 — Multi-shape + dashboard + daemon hardening
 
-5. **PTY adapter registry + multi-runtime support.** `runtime/pty/registry.ts` defines the `PTYAdapter` interface (spawn / inject / onStatusChanged / shutdown / restoreFromMarker) and registers adapters by `runtime` key. Phase 3 ships four adapter implementations:
-   - `runtime/pty/claude-pty.ts` — Claude Code (built in Phase 1 alongside the interface; this is the hello-world adapter)
-   - `runtime/pty/codex-app-server-pty.ts` — Codex App Server
-   - `runtime/pty/gemini-pty.ts` — Gemini (CLI if Google ships one; otherwise API-backed pseudo-PTY)
-   - `runtime/pty/opencode-pty.ts` — sst/opencode wrapper
+5. **`AgentRuntime` registry + multi-shape support.** `runtime/agent-runtime/registry.ts` defines the polymorphic `AgentRuntime` interface (shape / id / version / spawn / send / onStatusChanged (returns unsubscribe) / isAlive / shutdown / restoreFromMarker / optional costTap) and registers adapters by `id` key. Phase 3 ships seven adapter implementations across three shapes:
 
-   Per Santiago decision 2026-05-13: multi-LLM flexibility is REQUIRED, not optional. Agents pick runtime via config (`runtime: "gemini"`); daemon routes to the appropriate adapter. Adding a fifth runtime (qwen, deepseek, local-via-ollama) is one adapter file, no daemon refactor. See `docs/specs/iago-os-v2-vision.md` § "Pluggable PTY adapter registry" for interface details.
-6. **Wedge J — shell-hook matchers.** Regex + timeout on Claude Code hooks. Lands in daemon hook config.
-7. **Wedge B — distiller + compression safety valve.** For long-running daemon sessions.
-8. **Dashboard skeleton.** Next.js (or Streamlit fallback) via IPC server. Agent list, current state, recent activity, token spend per agent / project / model / **per-runtime**.
-8a. **Wedge K — pre-stage pipeline checkpoints.** Rollback safety inside the pipeline. Required by daemon crash-recovery (cortextOS `.daemon-stop` marker pattern). Lands as part of Phase 2–3 daemon hardening, NOT demand-triggered (Wave 2 per vision spec wedge table).
-8b. **OpenClaw cutover + cleanup.** Migrate remaining workflows, stop OpenClaw, archive state, delete after 30 days. Sequenced as roadmap Phase 7 (Stage D + E of the OpenClaw migration sequence), gated on Phase 6 dashboard stable. Not demand-triggered. WhatsApp channel + Meta Business webhook deauth happens during Stage E per audit doc § Active OpenClaw dependencies (Santiago decision 2026-05-13).
+   **Shape 1 (PTY) adapters under `runtime/agent-runtime/pty/`:**
+   - `claude-pty.ts` — Claude Code (built in Phase 1 alongside the interface; hello-world adapter)
+   - `codex-pty.ts` — Codex App Server
+   - `gemini-pty.ts` — Gemini (CLI if Google ships one; otherwise API-backed pseudo-PTY)
+   - `opencode-pty.ts` — sst/opencode wrapper
+
+   **Shape 2 (HTTP/SDK) adapters under `runtime/agent-runtime/http/`:**
+   - `anthropic-sdk.ts` — Anthropic SDK programs (also hosts LangGraph workflows that use Anthropic)
+   - `openai-sdk.ts` — OpenAI SDK programs (also hosts LangGraph workflows that use OpenAI)
+
+   **Shape 3 (MCP-as-agent) adapters under `runtime/agent-runtime/mcp/`:**
+   - `hermes-mcp.ts` — Hermes runtime as a goal-taking MCP server
+
+   Per Santiago decision 2026-05-15: multi-shape support is REQUIRED. Multi-LLM (2026-05-13) was one slice; multi-shape is the broader hard part. Adding a new shape adapter (e.g., a sixth Daemon-shape agent for inventory watching) is one adapter file. See `docs/specs/iago-os-v2-vision.md` § "Agent Shape Taxonomy + `AgentRuntime` Interface" for interface details.
+
+   **Shape 4 (Webhook/event)** lands in Phase 9+10 alongside the inbound webhook surface — see P2 item 10.
+   **Shape 5 (Daemon)** lands in Phase 11 with the IMAP email auto-provision agent — see P2 item 12.
+
+6. **Wedge J — shell-hook matchers.** Regex + timeout on Claude Code hooks. Lands in daemon hook config. **Generalized in Phase 5 to a cross-shape event router** (Hermes deeper-adoption).
+7. **Wedge B — distiller + Hermes-deeper bundle.** Compression for long-running sessions. **Phase 5 also ships:** full Hermes compression-threshold sliding-window summarizer (`threshold:0.50`, `target_ratio:0.20`, `protect_last_n:20`), full MCP sampling rate-limiter (token-bucket per server), and the generalized cross-shape event router.
+8. **Full Next.js dashboard.** Full cortextOS port via IPC server. Agent list across all 5 shapes, per-shape filters, current state, recent activity, token spend per agent / project / model / **shape**. Streamlit fallback dropped 2026-05-15.
+8a. **Wedge K — pre-stage pipeline checkpoints.** Rollback safety inside the pipeline. Required by daemon crash-recovery (cortextOS `.daemon-stop` marker + `session.jsonl` replay pattern). Lands as part of Phase 2–3 daemon hardening, NOT demand-triggered.
+8b. **OpenClaw cutover + cleanup.** Migrate remaining workflows, stop OpenClaw, archive state, delete after 30 days. Sequenced as roadmap Phase 7 (Stage D + E of the OpenClaw migration sequence), gated on Phase 6 dashboard stable. WhatsApp channel + Meta Business webhook deauth happens during Stage E per audit doc § Active OpenClaw dependencies (Santiago decision 2026-05-13).
 
 ### P2 — Self-running automation pipeline (the Cormac loop, reimagined)
 
@@ -313,26 +364,32 @@ If any box unchecked: not done. Reopen.
 
 ---
 
-## Phased sequencing (mirror of vision doc)
+## Phased sequencing (mirror of vision doc, revised 2026-05-15)
 
 | Phase | Duration | Deliverable | Trigger |
 |---|---|---|---|
-| 0 | 0.5d | VPS audit | Day 1 |
-| 1 | 5–7d | Daemon skeleton local + hello-world end-to-end | Phase 0 done |
+| 0 | 0.5d | VPS audit ✅ shipped | Day 1 |
+| 0.5 | 0.5d | Orphan cleanup (iaguito-hq stop + pulsara vite stop + ufw default-deny + Tailscale-only SSH) | Phase 0 + Santiago auth |
+| 1 | **7–10d** | Daemon skeleton local + `AgentRuntime` interface + registry + Shape 1 (PTY) Claude adapter + session.jsonl replay + heartbeat + subagent semantics + hello-world end-to-end | Phase 0.5 done |
 | 1b | 3d | May-12 punch list (4 items: session-ID instrumentation, learnings write path, dirty-branch guard, fallback parser fix) | Parallel to Phase 1 |
 | 2 | 2–3d | VPS install alongside OpenClaw, one workflow migrated | Phase 1 + 1b done |
-| 3 | 5–7d | PTY adapters: Codex + Gemini + opencode (Claude adapter already shipped in Phase 1) | Phase 2 stable |
+| 3 | **7–10d** | Shape expansion: PTY (codex/gemini/opencode) + HTTP/SDK (anthropic/openai) + MCP-as-agent (hermes-mcp) | Phase 2 stable |
 | 4 | 1d | Wedge J shell-hook matchers | Phase 2 stable |
-| 5 | 2d | Wedge B distiller + compression | Phase 3 + 4 done |
-| 6 | 5–7d | Dashboard skeleton | Phase 3 stable |
+| 5 | **4–5d** | Wedge B distiller + Hermes-deeper bundle (full compression impl + MCP rate-limiter + generalized cross-shape event router) | Phase 3 + 4 done |
+| 6 | **8–10d** | Full Next.js dashboard (cortextOS port; Streamlit dropped) — all 5 shapes, per-shape filters, intervention controls | Phase 3 stable |
 | 7 | 1d | OpenClaw cutover + 30-day archive | Phase 6 stable + Santiago green-light |
-| 8 | 2d | Cost ledger SQLite | Triggered when first API-billing client |
-| 9 | 2–3d | Wedge H webhook surface (Sentry + GitHub + Stripe) | Triggered when first webhook integration |
+| 8 | 2d | Cost ledger SQLite (integrates with `AgentRuntime.costTap()`) | Triggered when first API-billing client |
+| 9 | **3–4d** | Wedge H webhook surface + Shape 4 (Webhook/event) adapters: sentry-event, github-event, cron-tick-event | Phase 7 stable |
 | 10 | 1d | Auto-PR loop end-to-end | Phase 9 done |
-| 11 | 2d | Email auto-provision | Phase 7 stable |
+| 11 | **2–3d** | Email auto-provision + Shape 5 (Daemon) IMAP poller adapter | Phase 7 stable |
 | 12 | 1d | Learning loop pattern extraction | Phase 6 done |
 
-**Total to operational v2 (Phases 0–7 + 10):** ~27–32 dev-days. ~5.5–6.5 weeks at sustainable pace. (Phase 3 grew by ~2d for multi-LLM adapter scope per Santiago 2026-05-13.)
+**Total to operational v2 (Phases 0–7 + 9–10):** ~38–46 dev-days. ~8–9.5 weeks at sustainable pace.
+- Phase 1 +2–3d for `AgentRuntime` interface + cortextOS deeper-adoption
+- Phase 3 +2–3d for HTTP + MCP shape adapters
+- Phase 5 +2–3d for Hermes-deeper bundle
+- Phase 6 +3d for full Next.js dashboard (Streamlit dropped)
+- Phase 9 (3–4d) always-on alongside Phase 10 (Shape 4 lands here); Phase 8+11+12 demand-triggered/trailing
 
 ---
 
@@ -367,17 +424,26 @@ If you're an agent executing against this prompt:
 
 ## Open questions Santiago must answer before Phase 1
 
-1. **OpenClaw active dependencies.** What is running on it now that v2 must NOT break? (Inventory needed before cutover.)
-2. **Telegram bot strategy.** ✅ DECIDED 2026-05-13 — one bot, per-agent file-bus tagging (Hermes-style routing with cortextOS-style approval handshake). cortextOS's per-agent-token pattern is rejected — operational overhead too high for 3-person scale. Subject to revisit if a paying client needs strict per-tenant bot isolation.
+1. **OpenClaw active dependencies.** ✅ Phase 0 audit answered most of this. Remaining: Pulsara/alfallo project status — active, personal, abandoned? Gates Phase 0.5 orphan cleanup.
+2. **Telegram bot strategy.** ✅ DECIDED 2026-05-13 — one bot, per-agent file-bus tagging.
 3. **Sebas access.** Day-1 or after dashboard? Default: Santiago-only Phases 1–3; Sebas joins Phase 6.
-4. **Dashboard scope v1.** Full Next.js port or Streamlit minimal? Default: Streamlit minimal until daemon is stable.
+4. **Dashboard scope v1.** ✅ DECIDED 2026-05-15 — full Next.js port, Streamlit fallback dropped per Garry-impressed standard.
 5. **MUNET parallelism.** v2 proceeds in parallel with MUNET stalled, or pause for MUNET MVP? Default: parallel.
+6. **Sentria daemon agent shape.** Ship Sentria as a Shape-5 (Daemon) agent inside v2 (Phase 11+), or keep it standalone on the BAS Labs repo? Default: standalone now, port to v2 daemon shape in Phase 12+.
+7. **LangGraph workflow hosting.** First LangGraph workflow runs as Shape 2 (HTTP/SDK) agent inside v2 daemon, or standalone? Default: HTTP shape inside v2 daemon. Sub-question: does LangGraph state persistence (checkpointer) integrate with `session.jsonl` replay, or stay separate? Decision needed before Phase 3.
+8. **HTTP-shape adapter authentication.** ✅ DECIDED 2026-05-15 — **systemd `LoadCredential=` with per-adapter credential files** under the v2 threat model (single-VPS, Tailscale-only inbound, systemd-managed daemon). 1Password CLI used as provisioning input at deploy time only, never at runtime. Strict unit sandboxing required (`NoNewPrivileges=true`, `PrivateTmp=true`, `ProtectSystem=strict`, `ProtectHome=true`). Confirmed by cross-model verdict (Codex GPT-5.5, 2026-05-15). Full reasoning in `.iago/decisions/2026-05-15-agent-shape-taxonomy.md` § Decisions made under this amendment.
+9. **MCP-as-agent shape verification.** Hermes runtime is the only known goal-taking MCP server today. Are there other Shape-3 candidates to design for, or is Hermes the load-bearing case? Decision needed before Phase 3.
+10. **Replay safety idempotency-key schema for Shape 4 + Shape 5.** Canonical idempotency-key format per operation type — derived from `sessionId + agentId + operation-sequence`, or operation-specific (Stripe `idempotency_key`, GitHub `client_mutation_id`)? Default: derive from `sessionId + agentId + operation-sequence-number` for daemon-internal dedupe, AND pass to external providers when supported (Anthropic ✓, OpenAI partial, Stripe ✓, GitHub ✓, SES via Message-ID). Decision needed before Phase 9.
+11. **Cross-shape task fairness.** Different polling cadences across shapes (Daemon polls 10x/sec vs Webhook on event arrival) create starvation risk. O_EXCL prevents double-claims but not starvation. Per-shape quotas, per-agent quotas, or weighted-fair-queueing? Defer to Phase 3 when multiple shapes coexist; flag for monitoring as Phase-3 acceptance gate.
 
 ---
 
 ## Sources cited
 
-- `docs/specs/iago-os-v2-vision.md` (2026-05-13) — 5-layer architecture
+- `docs/specs/iago-os-v2-vision.md` (2026-05-15) — 5-layer architecture + Agent Shape Taxonomy + `AgentRuntime` interface
+- `.iago/decisions/2026-05-15-agent-shape-taxonomy.md` — ADR: multi-shape requirement + interface verdict
+- `runtime/migration/00-vps-audit.md` (2026-05-13) — Phase 0 audit deliverable
+- `.iago/plans/feature-v2-foundation/02-orphan-cleanup.md` (2026-05-13) — Phase 0.5 plan
 - `.iago/research/2026-05-13-multi-agent-cohabitation.md` (2026-05-13) — primitives + adoption verdicts
 - `.iago/research/2026-05-13-mwp-source-synthesis.md` (2026-05-13) — canonical MWP source synthesis (overrides 2026-04-28 audit)
 - `.iago/research/2026-04-28-mwp-restructure-audit.md` (2026-04-28) — superseded MWP method audit (kept for historical reasoning trail only)
