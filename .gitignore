@@ -31,3 +31,7 @@ clients/
 
 # Drop dirs may contain embedded repos
 docs/research/_drop-*/
+
+# Pipeline run logs (relocated 2026-05-15 to .iago/logs/)
+.iago/logs/*.log
+!.iago/logs/README.md
