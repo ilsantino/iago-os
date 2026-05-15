@@ -1,12 +1,13 @@
 # State — iaGO-OS
 
-> **Phase:** v2-agent-shape-amendment | **Status:** spec amended, awaiting authorization to start Phase 0.5 + Phase 1
+> **Phase:** v2-phase-1-daemon | **Status:** Phase 1 plan stack written + stress-tested; awaiting Santiago approval before `/iago-execute`
 > **Tag:** v0.1.0 | **Updated:** 2026-05-15
 
 ## Active
 
 | Date | Mode | Description | Commit |
 |------|------|-------------|--------|
+| 2026-05-15 | plan | Feature plan + stress test for `feature-v2-phase-1-daemon` (Phase 1 daemon skeleton + AgentRuntime interface + registry + Shape 1 PTY Claude adapter + session.jsonl replay + heartbeat + subagent semantics + Telegram approval hello-world). L2 stage contract written first per MWP discipline. | 7 plans / 43 tasks / 4 waves — all 7 stress verdicts PROCEED_WITH_NOTES. Critical findings forwarded inline: AgentMessage shape canon match (P01), Windows rename + orphan claim recovery (P02), lastStatusChangeMs reset + heartbeat double-restart guard (P03), version range >=2.0.0 <3.0.0 (verified claude 2.1.113) + PTYAdapter type (P04), stale socket unlink (P05+P07), per-agent file-bus tagging form + bot/approval wiring (P06), SIGINT spawn leak + startup-cleanup sequence + biome gate (P07). |
 | 2026-05-15 | spec | iaGO-OS v2 vision + master prompt amended for Agent Shape Taxonomy + `AgentRuntime` polymorphic interface (5 shapes: PTY, HTTP/SDK, MCP-as-agent, Webhook/event, Daemon); deeper cortextOS adoption (session.jsonl replay, subagent semantics, heartbeat health, full Next.js dashboard); deeper Hermes adoption (MCP rate-limiter full impl, shell-hook router generalized cross-shape, compression threshold full impl); effort total 27-32d → 38-46d. ADR at `.iago/decisions/2026-05-15-agent-shape-taxonomy.md` | (this commit) |
 | 2026-05-14 | merge | PR #38 merged — canonical v2 vision lock + Phase 0 audit + scope updates (WhatsApp dropped, multi-LLM via PTY adapter registry) | [#38](https://github.com/ilsantino/iago-os/pull/38) |
 | 2026-05-11 | fast | Remove stranded `clients/munet-web-wt-m06/` — leftover full copy of munet-web from 2026-04-28 M06 work (named like a worktree but never registered via `git worktree`); no inner `.git`, not on `git worktree list`; safe deletion | (this commit) |
