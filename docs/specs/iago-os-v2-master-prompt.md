@@ -271,7 +271,14 @@ Over-routing deterministic work to agents wastes tokens, degrades quality on gen
 1.5. **Orphan cleanup.** Stop `iaguito-hq.service`, kill pulsara vite, install ufw default-deny + Tailscale-only SSH. Plan at `.iago/plans/feature-v2-foundation/02-orphan-cleanup.md`. Gated on Santiago authorization.
 2. **Daemon skeleton (local first).** `runtime/` directory in iago-os. Agent manager + file-bus + **`AgentRuntime` interface + registry** + Shape 1 (PTY) Claude adapter + Telegram approval handshake + **session.jsonl replay + heartbeat health checks + subagent spawn semantics** (cortextOS deeper-adoption). Hello-world end-to-end on Santiago's Windows: register agent → claim task → Telegram approval → resume.
 3. **VPS install alongside OpenClaw.** systemd unit `iago-os-v2-daemon.service`. Run in parallel. Validate one non-critical workflow.
-4. **Telegram control surface.** Bot token, `appr_*` callback handler, file-based handshake. Santiago can `/start`, `/agents`, `/approve <id>`, `/abort <agent>`, `/inject <agent> <text>` from his phone. Works across all 5 agent shapes (PTY/HTTP/MCP/Event/Daemon).
+4. **Telegram control surface.** Bot token, `appr_*` callback handler, file-based handshake. Available commands depend on the target agent's shape (the Telegram router introspects each agent's `runtime.shape` and exposes only the supported commands per shape):
+   - `/start <agent>` — all shapes
+   - `/agents` — list all agents across shapes
+   - `/approve <id>` — all shapes (HITL handshake)
+   - `/abort <agent>` — all shapes (sends signal via `AgentRuntime.shutdown()`)
+   - `/inject <agent> <text>` — **Shape 1 (PTY) only** — writes to running terminal stdin (PTY-specific; injecting raw text into an HTTP request or daemon process is nonsensical)
+   - `/send <agent> <message>` — Shapes 2/3/4/5 — delivers structured message via `AgentRuntime.send()`
+   - `/status <agent>` — all shapes — returns liveness + cost-tap snapshot
 
 ### P1 — Multi-shape + dashboard + daemon hardening
 
@@ -424,8 +431,10 @@ If you're an agent executing against this prompt:
 5. **MUNET parallelism.** v2 proceeds in parallel with MUNET stalled, or pause for MUNET MVP? Default: parallel.
 6. **Sentria daemon agent shape.** Ship Sentria as a Shape-5 (Daemon) agent inside v2 (Phase 11+), or keep it standalone on the BAS Labs repo? Default: standalone now, port to v2 daemon shape in Phase 12+.
 7. **LangGraph workflow hosting.** First LangGraph workflow runs as Shape 2 (HTTP/SDK) agent inside v2 daemon, or standalone? Default: HTTP shape inside v2 daemon. Sub-question: does LangGraph state persistence (checkpointer) integrate with `session.jsonl` replay, or stay separate? Decision needed before Phase 3.
-8. **HTTP-shape adapter authentication.** SDK adapters need provider API keys at spawn time. 1Password CLI, systemd `LoadCredential=`, or daemon-managed encrypted store? Decision needed before Phase 3.
+8. **HTTP-shape adapter authentication.** ✅ DECIDED 2026-05-15 — **systemd `LoadCredential=` with per-adapter credential files** under the v2 threat model (single-VPS, Tailscale-only inbound, systemd-managed daemon). 1Password CLI used as provisioning input at deploy time only, never at runtime. Strict unit sandboxing required (`NoNewPrivileges=true`, `PrivateTmp=true`, `ProtectSystem=strict`, `ProtectHome=true`). Confirmed by cross-model verdict (Codex GPT-5.5, 2026-05-15). Full reasoning in `.iago/decisions/2026-05-15-agent-shape-taxonomy.md` § Decisions made under this amendment.
 9. **MCP-as-agent shape verification.** Hermes runtime is the only known goal-taking MCP server today. Are there other Shape-3 candidates to design for, or is Hermes the load-bearing case? Decision needed before Phase 3.
+10. **Replay safety idempotency-key schema for Shape 4 + Shape 5.** Canonical idempotency-key format per operation type — derived from `sessionId + agentId + operation-sequence`, or operation-specific (Stripe `idempotency_key`, GitHub `client_mutation_id`)? Default: derive from `sessionId + agentId + operation-sequence-number` for daemon-internal dedupe, AND pass to external providers when supported (Anthropic ✓, OpenAI partial, Stripe ✓, GitHub ✓, SES via Message-ID). Decision needed before Phase 9.
+11. **Cross-shape task fairness.** Different polling cadences across shapes (Daemon polls 10x/sec vs Webhook on event arrival) create starvation risk. O_EXCL prevents double-claims but not starvation. Per-shape quotas, per-agent quotas, or weighted-fair-queueing? Defer to Phase 3 when multiple shapes coexist; flag for monitoring as Phase-3 acceptance gate.
 
 ---
 

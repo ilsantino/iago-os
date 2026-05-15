@@ -37,13 +37,13 @@ Cited file paths are in the upstream repos; iaGO ports land under `runtime/` (ne
 | Primitive | Upstream | Why we want it |
 |---|---|---|
 | **PTY adapter per runtime** | `src/pty/agent-pty.ts` (Claude Code), `src/pty/codex-app-server-pty.ts` (Codex), `hermes-pty.ts` (experimental) | Solves multi-runtime cohabitation with zero broker / zero container orchestration. iaGO extends cortextOS by formalizing it as **Shape 1 of the `AgentRuntime` registry** (see § Agent Shape Taxonomy) so Claude Code + Codex + Gemini + opencode all live in the same daemon (Santiago decision 2026-05-13: "flexibility to change LLMs at will"). Adding a fifth PTY runtime is a config + adapter file. |
-| **O_EXCL file-lock task claiming** | `src/bus/task.ts` `claimTask()` (`wx` flag → `EEXIST` on collision) | ~10 lines of TS that prevent any double-work race in parallel agent runs. No DB. Replaces our currently-unprotected wave dispatch in `execute-pipeline.sh`. |
+| **O_EXCL file-lock task claiming** | `src/bus/task.ts` `claimTask()` (`wx` flag → `EEXIST` on collision) | ~10 lines of TS that prevent any double-work race in parallel agent runs. No DB. Replaces our currently-unprotected wave dispatch in `execute-pipeline.sh`. **iaGO extension:** resolved-output writes use temp-file-plus-atomic-rename (`tasks/resolved/.<id>.tmp` → rename to `tasks/resolved/<id>`) with the writer's claim owner-ID and attempt-ID embedded in the result. The daemon REJECTS resolved writes whose owner-ID doesn't match the current claim holder (prevents zombie writes from stale or replayed adapters from contaminating fresh claims). |
 | **File-based approval handshake** | `src/daemon/fast-checker.ts` (`appr_(allow\|deny)_<id>` callbacks → file moves `pending/` → `resolved/`) | The right HITL primitive for Telegram. Simpler than webhook round-trip; survives network hiccups. |
 | **`.daemon-stop` crash markers** | `src/daemon/agent-manager.ts` | Distinguishes graceful shutdown from crash on next boot. Decides restore-vs-cold-start. No DB. |
 | **Multi-org agent resolution cascade** | `agent-manager.ts` `resolveAgentOrg()` (BUG-043 fix) | Lets one daemon host agents from multiple client orgs without collision. Maps to iaGO's `clients/*/` separation. |
 | **`crons.json` per-agent schedule + `cron-scheduler.ts` daemon-managed wakeups** | `src/daemon/cron-scheduler.ts` | Replaces manual `claude -p` invocations. Hermes also has this; cortextOS's is the cleaner reference. |
 | **Same-host IPC server (Unix socket / named pipe)** | `src/daemon/ipc-server.ts` (`fleet-health`, 30s cache) | Dashboard and CLI both talk to the daemon over this. No REST API surface to secure. |
-| **`session.jsonl` append-only event log + replay** *(deeper adoption, added 2026-05-15)* | `src/daemon/session-log.ts` + `replayFromMarker()` in agent-manager | Crash recovery without DB. After daemon restart, replay last N events per handle to restore conversation/work state. Directly relevant to yesterday's Windows crash (2026-05-14) — without this, sessions are lost on hard reboot. Required by every shape, not just PTY. |
+| **`session.jsonl` append-only event log + replay** *(deeper adoption, added 2026-05-15)* | `src/daemon/session-log.ts` + `replayFromMarker()` in agent-manager | Crash recovery without DB. After daemon restart, replay last N events per handle to restore conversation/work state. Directly relevant to yesterday's Windows crash (2026-05-14) — without this, sessions are lost on hard reboot. Required by every shape, not just PTY. **Two-phase replay:** (1) read events up to a recorded byte-offset / event-sequence high-water mark while live event intake is PAUSED; (2) after all pre-crash events are replayed, live intake resumes. Prevents new appends from interleaving with restored events and producing duplicated or reordered state. |
 | **Subagent spawn semantics** *(deeper adoption, added 2026-05-15)* | `agent-manager.ts` `spawnSubagent()` + parent-child handle linkage + cost rollup | Currently the spec adopts only the agent-manager skeleton. The subagent layer (parent-child tracking, inheritance of cwd/env/cost-budget, automatic shutdown when parent exits) is what makes the daemon truly multi-agent rather than single-agent-with-aliases. Pipeline review-fix loops, MWP stage handoffs, and the Hermes runtime's delegation all need this. |
 | **Heartbeat health checks + stall detection** *(deeper adoption, added 2026-05-15)* | `agent-manager.ts` `heartbeat()` (60s) + `restartIfStalled()` | Detect adapters that hang (no status change in N minutes) and force-restart. Without this, a stalled PTY or wedged HTTP request consumes a slot indefinitely. Replaces our current "Santiago notices in the dashboard" failure mode. |
 | **Full Next.js dashboard** *(promoted from fallback to canonical, 2026-05-15)* | `apps/dashboard/` (cortextOS Next.js port) | Drop the Streamlit minimal fallback. Garry-impressed standard: ship the real one in Phase 6. Dashboard spans all 5 agent shapes with per-shape filters, cost-per-shape breakdown, and intervention controls. |
@@ -94,41 +94,54 @@ Cited file paths are in the upstream repos; iaGO ports land under `runtime/` (ne
 │  ┌──────────────────────────────────────────────────────────┐   │
 │  │  iago-os v2 daemon  (systemd service, Node.js 20)         │   │
 │  │                                                            │   │
-│  │  ┌─────────────┐  ┌─────────────┐                        │   │
-│  │  │ Claude Code │  │   Codex     │                        │   │
-│  │  │  PTY adapter│  │  PTY adapter│  ← Phase 1 adapters   │   │
-│  │  └──────┬──────┘  └──────┬──────┘                        │   │
-│  │         │                │                                │   │
-│  │  ┌──────▼────────────────▼────────────────────────┐      │   │
-│  │  │  Agent manager (registration, crash/restart,    │      │   │
-│  │  │  multi-org cascade, .daemon-stop markers)       │      │   │
-│  │  └──────┬──────────────────────────────────────────┘      │   │
+│  │  ┌─────────────────────────────────────────────────────┐  │   │
+│  │  │  AgentRuntime registry (5 shapes)                   │  │   │
+│  │  │   ├─ Shape 1 (PTY): claude/codex/gemini/opencode   │  │   │
+│  │  │   ├─ Shape 2 (HTTP/SDK): anthropic-sdk/openai-sdk  │  │   │
+│  │  │   ├─ Shape 3 (MCP-as-agent): hermes-mcp            │  │   │
+│  │  │   ├─ Shape 4 (Webhook/event): sentry/github/cron   │  │   │
+│  │  │   └─ Shape 5 (Daemon): imap-daemon                 │  │   │
+│  │  └──────┬──────────────────────────────────────────────┘  │   │
+│  │         │                                                  │   │
+│  │  ┌──────▼────────────────────────────────────────────┐    │   │
+│  │  │  Agent manager (registration, crash/restart,       │    │   │
+│  │  │  multi-org cascade, .daemon-stop markers,          │    │   │
+│  │  │  session.jsonl two-phase replay, subagent spawn,   │    │   │
+│  │  │  heartbeat health + RSS recycling)                 │    │   │
+│  │  └──────┬─────────────────────────────────────────────┘    │   │
 │  │         │                                                  │   │
 │  │  ┌──────▼─────┐  ┌──────────┐  ┌───────────┐  ┌────────┐│   │
 │  │  │  File bus  │  │ Telegram │  │   Cron    │  │  IPC   ││   │
 │  │  │ (O_EXCL    │  │  router  │  │ scheduler │  │ server ││   │
-│  │  │  claims)   │  │ (per-bot │  │ (wake     │  │(Unix   ││   │
-│  │  │            │  │  token)  │  │  gates)   │  │ socket)││   │
+│  │  │  + atomic  │  │ (one bot,│  │ (pre-LLM  │  │ (Unix  ││   │
+│  │  │  rename)   │  │ per-agent│  │  wake     │  │ socket)││   │
+│  │  │            │  │ tagging) │  │  gates)   │  │        ││   │
 │  │  └──────┬─────┘  └────┬─────┘  └─────┬─────┘  └────┬───┘│   │
 │  │         │             │              │              │     │   │
-│  └─────────┼─────────────┼──────────────┼──────────────┼────┘   │
-│            │             │              │              │         │
-│  ┌─────────▼─────────────▼──────────────▼──────────────▼────┐   │
+│  │  ┌──────▼─────────────▼──────────────▼──────────────▼─┐  │   │
+│  │  │  Cross-shape event router (generalized Hermes hook) │  │   │
+│  │  │   + MCP rate-limiter (token-bucket per server)      │  │   │
+│  │  │   + Webhook receiver (Sentry/GitHub/Stripe HMAC)    │  │   │
+│  │  └──────┬──────────────────────────────────────────────┘  │   │
+│  └─────────┼──────────────────────────────────────────────────┘   │
+│            │                                                       │
+│  ┌─────────▼────────────────────────────────────────────────┐   │
 │  │  Filesystem state: tasks/{pending,claimed,resolved}/,      │   │
-│  │  approvals/{pending,resolved}/, orgs/<client>/agents/,    │   │
-│  │  crons.json, SQLite (cost)                                │   │
+│  │  approvals/{pending,resolved}/, events/dead-letter/,       │   │
+│  │  orgs/<client>/agents/, crons.json,                        │   │
+│  │  ledger.sqlite (cost + event_dedupe + replay_dedupe)      │   │
 │  └────────────────────────────────────────────────────────────┘   │
 │                                                                  │
 │  ┌──────────────────────────────────────────────────────────┐   │
 │  │  Dashboard (Next.js, same-host, IPC to daemon)            │   │
-│  │  - Live agent state                                       │   │
-│  │  - Token spend per agent / project / model                │   │
+│  │  - Live agent state across all 5 shapes (per-shape filter)│   │
+│  │  - Token spend per agent / project / model / shape        │   │
 │  │  - Session threads + intervention controls                │   │
 │  └──────────────────────────────────────────────────────────┘   │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-> **Shape 1 (PTY) only — diagram is intentionally Phase 1 state.** The daemon ultimately hosts all 5 agent shapes: Shape 1 (PTY — shown above), Shape 2 (HTTP/SDK — Phase 3), Shape 3 (MCP-as-agent — Phase 3, Hermes runtime adopted here), Shape 4 (Webhook/event — Phase 9), Shape 5 (Daemon/long-running — Phase 11). The master prompt diagram shows all 5 shapes inside the daemon box; this diagram is kept as Phase 1 state for clarity. See § Agent Shape Taxonomy + `AgentRuntime` Interface immediately below for the full multi-shape picture.
+> **5-shape view.** Diagram now reflects the post-2026-05-15 amendment with the full `AgentRuntime` registry. Phase 1 ships Shape 1 (PTY/Claude) only; Phase 3 adds Shape 2 + Shape 3 adapters; Phase 9 lands Shape 4; Phase 11 lands Shape 5. See § Agent Shape Taxonomy + `AgentRuntime` Interface immediately below for per-shape lifecycle semantics and the polymorphic interface contract.
 
 ---
 
@@ -182,6 +195,16 @@ interface AgentMessage {
 
 Common lifecycle (spawn → status → restore → shutdown) is enforced for every shape. Per-shape mechanics live in the adapter implementation. Adding a runtime is "implement `AgentRuntime` for the right shape, register in `runtime/agent-runtime/registry.ts`."
 
+### Per-shape lifecycle semantics (specialization of the common interface)
+
+The common interface enforces a uniform lifecycle, but each shape specializes the underlying semantics. Adapter docs must follow these rules; the agent-manager assumes them.
+
+- **Shape 1 (PTY) — text-stream lifecycle.** `spawn()` allocates a pseudo-terminal subprocess; `isAlive()` polls process state; `restoreFromMarker()` re-launches and replays from `session.jsonl` up to the recorded high-water mark before resuming live intake. **Version pinning required:** PTY adapters depend on each runtime's prompt-format (the on-screen string the daemon parses to derive `status`) — a Claude Code minor version that changes its prompt breaks status detection silently. Each PTY adapter pins a runtime version range, ships conformance tests with golden prompt/status transcripts captured from a known-good run, and **fails closed** on unknown parse rather than guessing (treats `status = "unknown"` as crash, triggers restart). See § Adopted Primitives → "session.jsonl append-only event log + replay" for the two-phase replay contract Shape 1 inherits.
+- **Shape 2 (HTTP/SDK) — session lifecycle.** `spawn()` returns a session handle that may issue N HTTP/SDK requests over its lifetime; no actual HTTP call yet. `send()` issues one logical request and owns its retry policy at the adapter level. `isAlive()` reflects whether the session holds valid credentials + an allocated slot, not whether a request is in flight. `restoreFromMarker()` re-creates the handle from the persisted slot record but does NOT replay in-flight requests — a mid-flight HTTP request on crash is treated as failed, the file-bus task moves back to `pending/`, and crash-recovery does not double-bill the provider. Adapter MUST attach an idempotency key per `send()` (derived from `sessionId + agentId + send-sequence-number`) where the provider supports it (Anthropic ✓, OpenAI partial, Stripe ✓, GitHub ✓, SES requires SES Message-ID-based dedupe). **Generation tokens** on each `AgentHandle` (monotonic counter, incremented on every restart) defend against heartbeat-restart races: send() attempts include the generation token, and responses whose token doesn't match the handle's current generation are DISCARDED to prevent double-commit when a heartbeat-driven restart fires mid-request. Cancellation via `AbortController` is best-effort; stale-completion discard is mandatory. `shutdown()` releases the slot, closes keep-alive connections, persists a final cost-tap record.
+- **Shape 3 (MCP-as-agent) — stdio JSON-RPC lifecycle with per-request deadlines.** `spawn()` starts the stdio JSON-RPC subprocess (e.g., `hermes-mcp`) and returns a handle holding both pipes. `send()` issues a JSON-RPC call with an adapter-enforced deadline (default 5 minutes per call, per-adapter override). The adapter MUST implement JSON-RPC cancellation (`$/cancel` notification or equivalent) when the daemon calls `shutdown()` mid-request. **Restart fencing:** if a request exceeds its deadline AND cancellation does not return within 30s, the adapter kills the subprocess and `restoreFromMarker()` spawns a fresh one — preventing a hung request from holding a slot indefinitely. `isAlive()` returns false on hung-request detection so the heartbeat loop force-restarts before manual intervention is needed.
+- **Shape 4 (Webhook/event) — persistent-handler-plus-ephemeral-worker lifecycle.** See § Shape 4 detail in `.iago/decisions/2026-05-15-agent-shape-taxonomy.md` for the full contract. Key points: `spawn()` is idempotent (registers persistent handler at daemon boot, not per event); `isAlive()` returns true while the handler is registered (not while a worker runs); events arrive via `send({ kind: "custom", payload })`; the adapter claims a file-bus task and dispatches an ephemeral child worker per event. **Burst handling:** inbound events route through a bounded queue (default 1000 events, configurable per source) with per-source concurrency limits (default 5 concurrent ephemeral workers per webhook source) so a Sentry burst cannot starve GitHub. Each event carries a durable ID (Sentry event ID, GitHub delivery ID, Stripe event ID); the daemon's `event_dedupe` SQLite table prevents double-processing on replay or duplicate delivery. Overflow events route to a dead-letter queue at `events/dead-letter/<source>/` with the original payload + dedupe key for manual replay.
+- **Shape 5 (Daemon/long-running) — agent-manager-managed child process lifecycle.** `spawn()` starts the daemon child process (via Node `child_process.spawn` or equivalent) and returns a handle representing the process + its command socket. The agent-manager owns the process — systemd manages only the `iago-os-v2-daemon.service` parent, not child daemons. `isAlive()` returns true if the child process is running AND its heartbeat has fired within the configured window (default 60s); RSS / heap thresholds checked here (default 512 MB RSS — exceeding triggers a recycle). `restoreFromMarker()` re-spawns from persisted config (cwd, env, credentials reference) but does NOT replay in-flight work — the adapter recovers its own state from its own persistent storage (e.g., IMAP cursor position). `shutdown()` sends SIGTERM, waits 30s, then SIGKILL; adapters MUST flush in-flight work on SIGTERM (persist cursor state, exit cleanly). **Recycling policy:** periodic recycle check (default 24h, per-adapter override) avoids long-tail memory growth without requiring leak-free adapter implementations. **Task-bus participation:** daemon-shape agents typically don't claim from `tasks/pending/`; they generate work from their internal trigger and write results to `tasks/resolved/`. Adapter docs MUST state whether the daemon participates in claiming.
+
 ### Registry mechanism
 
 `runtime/agent-runtime/registry.ts` exports `registerRuntime(rt: AgentRuntime)`. Agent config files reference runtime by `runtime` field (e.g., `runtime: "claude-pty"`, `runtime: "anthropic-sdk"`, `runtime: "sentria-daemon"`). The daemon's agent-manager:
@@ -195,6 +218,10 @@ Common lifecycle (spawn → status → restore → shutdown) is enforced for eve
 7. Runs heartbeat health checks every 60s; force-restarts stalled handles (cortextOS deeper-adoption)
 
 The registry is shape-agnostic. The agent-manager doesn't know if it's spawning a PTY or sending an HTTP request — that's the adapter's job. Shape diversity costs nothing at the agent-manager layer.
+
+### Interface versioning + migration
+
+`AgentRuntime` itself is versioned. Each adapter declares an `interfaceVersion: "v1"` literal field alongside `shape`, `id`, and adapter `version`. The registry validates `interfaceVersion` at boot. When the contract evolves (Phase 3+ may need new `send()` signatures or extra optional methods), the registry supports concurrent v1 + v2 adapters via a `RuntimeAdapterShim` that wraps a v1 adapter to satisfy the v2 contract (or vice versa) for one sprint of deprecation, after which v1 support is removed. Prevents the "one interface change breaks every adapter in lockstep" risk identified by cross-model adversarial review 2026-05-15. ADR detail at `.iago/decisions/2026-05-15-agent-shape-taxonomy.md` § Interface versioning + migration.
 
 ### Shape 4 adapter semantics (Webhook/event)
 
@@ -224,6 +251,7 @@ Shape 4 requires explicit clarification because its lifecycle diverges from PTY/
 - **Not an ACP-protocol reimplementation.** ACPX (OpenClaw's agent communication protocol) dies at cutover. v2 has no equivalent inter-agent protocol — file-bus is the protocol.
 - **Not a runtime polymorphism for the pipeline.** The pipeline's `execute-pipeline.sh` is dispatched via plain `child_process.spawn` from the daemon, not via `AgentRuntime`. The pipeline is a script-runner with internal stage isolation, not an agent.
 - **Not a "shape is determined at runtime" abstraction.** Each agent picks a shape at config time and stays in it. No shape morphing. Shape selection is a deliberate design choice per agent.
+- **Not a blind replay system for external side effects.** `session.jsonl` replay reconstructs conversational state safely for Shape 1 (PTY); for Shapes 4 (Webhook/event) and 5 (Daemon) that perform external mutations, the adapter MUST attach an idempotency key per side-effect-causing operation (Stripe charge, GitHub PR creation, email send, etc.) and the daemon maintains a dedupe table in `ledger.sqlite` (`replay_dedupe(idempotency_key, completed_at)`). Replay skips operations whose key is already in the dedupe table. This is mandatory before Shape 4 ships in Phase 9.
 
 ---
 
@@ -452,6 +480,12 @@ Stay scoped:
 3. **Sebas integration.** Does Sebas get his own Tailscale node + Telegram bot binding from day 1, or after v2 stabilizes? Default recommendation: **single user (Santiago) for Phases 1-3**; add Sebas in Phase 6 when dashboard is up.
 4. **Dashboard scope (v1).** ✅ DECIDED 2026-05-15 — **full Next.js port, Streamlit fallback dropped** per Garry-impressed standard. Phase 6 ships the real dashboard directly.
 5. **MUNET handling during v2 build.** MUNET is currently stalled. Does v2 work proceed in parallel, or does MUNET MVP need to ship first? Per memory `project_munet_mvp_scope`, M2 03-06 + ticket-email-fix wave 2 are deferred post-MVP. Default: **v2 build proceeds in parallel; MUNET remains highest-revenue priority when it unblocks**.
+6. **Sentria daemon agent shape.** Sentria is the most likely first Shape-5 (Daemon) candidate after `imap-daemon`. Open question: ship Sentria's incident-triage as a daemon-shape agent inside v2 (Phase 11+), or keep it standalone on the BAS Labs repo? Default recommendation: **standalone now, port to v2 daemon shape in Phase 12+ when Sentria stabilizes** — avoids coupling Sentria's MVP timeline to v2's roadmap.
+7. **LangGraph workflow hosting.** When the first LangGraph workflow lands (likely a client deliverable), does it run as a Shape 2 (HTTP/SDK) agent inside the v2 daemon, or as a separate process? Default: **HTTP shape inside v2 daemon, using `anthropic-sdk` or `openai-sdk` adapter with LangGraph as the workflow layer on top**. **Sub-question:** does LangGraph state persistence (checkpointer) integrate with the daemon's `session.jsonl` replay, or stay separate (LangGraph manages its own)? Decision in Phase 3 when SDK adapters ship.
+8. **HTTP-shape adapter authentication.** ✅ DECIDED 2026-05-15 — **systemd `LoadCredential=` with per-adapter credential files** under the v2 threat model (single-VPS, Tailscale-only inbound, systemd-managed daemon). Leak-mode reasoning: 1Password CLI at runtime leaks via session state / shell history / logged env; daemon-managed encrypted store leaks if the key lives beside ciphertext or backups; `LoadCredential=` leaks only if credentials propagate to env / stdout — preventable with strict unit sandboxing (`NoNewPrivileges=true`, `PrivateTmp=true`, `ProtectSystem=strict`, `ProtectHome=true`). 1Password CLI used as **provisioning input** at deploy time only, never at runtime. Confirmed by cross-model verdict (Codex GPT-5.5, 2026-05-15). Full reasoning in `.iago/decisions/2026-05-15-agent-shape-taxonomy.md` § Decisions made under this amendment.
+9. **Replay safety idempotency-key schema for Shape 4 + Shape 5.** What is the canonical idempotency-key format per operation type — derived from `sessionId + agentId + operation-sequence`, or operation-specific (Stripe `idempotency_key` header, GitHub `client_mutation_id`)? Decision needed before Phase 9 (Shape 4 ships). Default recommendation: derive from `sessionId + agentId + operation-sequence-number` for daemon-internal dedupe, AND pass the same key to external providers when their API supports it (Anthropic ✓, OpenAI partial, Stripe ✓, GitHub ✓, SES uses SES Message-ID-based dedupe).
+10. **MCP-as-agent shape verification.** Hermes runtime is the only known goal-taking MCP server today. Are there other Shape 3 candidates to design for (future Anthropic-managed agents shipping as MCP servers, third-party goal-taking MCPs), or is Hermes the load-bearing case? Affects adapter test coverage and registry validation. Confirms in Phase 3 when `hermes-mcp` adapter ships.
+11. **Cross-shape task fairness.** Shapes have different polling cadences — a Daemon-shape agent may poll `tasks/pending/` 10x/second while a Webhook-shape agent only wakes on inbound events. The O_EXCL claim primitive prevents double-claims but doesn't prevent starvation. Should the file-bus implement per-shape claim quotas, per-agent quotas, or weighted-fair-queueing? Defer answer to Phase 3 when multiple shapes coexist for real; flag for monitoring as a Phase-3 acceptance gate.
 6. **Sentria daemon agent shape.** Sentria is the most likely first Shape-5 (Daemon) candidate after `imap-daemon`. Open question: ship Sentria's incident-triage as a daemon-shape agent inside v2 (Phase 11+), or keep it standalone on the BAS Labs repo? Default recommendation: **standalone now, port to v2 daemon shape in Phase 12+ when Sentria stabilizes** — avoids coupling Sentria's MVP timeline to v2's roadmap.
 7. **LangGraph workflow hosting.** When the first LangGraph workflow lands (likely a client deliverable), does it run as a Shape 2 (HTTP/SDK) agent inside the v2 daemon, or as a separate process? Default: **HTTP shape inside v2 daemon, using `anthropic-sdk` or `openai-sdk` adapter with LangGraph as the workflow layer on top**. Confirms in Phase 3 when SDK adapters ship. Sub-question: does LangGraph state persistence (checkpointer) integrate with `session.jsonl` replay (cortextOS deeper-adoption), or do they stay separate parallel mechanisms? Decision needed before Phase 3 `anthropic-sdk` adapter ships.
 8. **HTTP-shape adapter authentication.** SDK adapters need provider API keys at spawn time. Storage: 1Password CLI integration (Santiago's existing tool), systemd `LoadCredential=`, or daemon-managed encrypted store? Decision needed before Phase 3.

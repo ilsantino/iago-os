@@ -2,6 +2,12 @@
 **Date:** 2026-05-13
 **Context:** Input for `docs/specs/iago-os-v2-vision.md`. Vision locked: Hostinger VPS + Tailscale mesh, Codex + Claude cohabiting, Telegram-primary control, web dashboard for live state + intervention. Pipeline kept.
 
+> **AMENDMENT 2026-05-15:** This artifact is the source research for the 2026-05-13 vision lock. The 2026-05-15 spec amendment (PR #39 / `.iago/decisions/2026-05-15-agent-shape-taxonomy.md`) introduces additional findings that override two recommendations below:
+>
+> 1. **Streamlit fallback dashboard recommendation is REVOKED.** Phase 6 ships the full cortextOS Next.js dashboard directly — no Streamlit fallback. The agentic-os-dashboard pattern is retained only as a MCP health-check reference. Override reason: Garry-impressed standard ("build the ocean") + cross-model verdict that the Streamlit fallback creates a permanent half-finished UI risk.
+> 2. **"PTY-only adapter registry" framing is REVOKED.** v2 hosts agents of any execution shape via a polymorphic `AgentRuntime` interface (5 shapes: PTY, HTTP/SDK, MCP-as-agent, Webhook/event, Daemon). PTY is Shape 1 of 5, not the universal abstraction. See `.iago/decisions/2026-05-15-agent-shape-taxonomy.md` for the full reframe.
+> 3. **Hermes runtime adoption verdict REVISED.** Hermes runtime IS adopted in Phase 3 as a Shape 3 (MCP-as-agent) runtime via `hermes-mcp` adapter (was: "patterns only, runtime NOT adopted"). The Shape 3 abstraction enables coherent Hermes-as-runtime adoption that wasn't tractable under PTY-only framing.
+
 ---
 
 ## 1. cortextOS — File-Bus + PTY-Persistence Pattern
