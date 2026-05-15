@@ -2,7 +2,7 @@
 
 _Date: 2026-05-15 | Status: **CANONICAL** | Supersedes: `docs/specs/iago-os-vision.md` (2026-04-28, downgraded to research artifact) AND the 2026-05-13 lock | Locked by: Santiago, 2026-05-15_
 
-**Amendment 2026-05-15:** Adds agent-shape taxonomy + `AgentRuntime` polymorphic interface (PTY adapter registry recontextualized as Shape 1 of 5). Deeper cortextOS adoption (full Next.js dashboard, session.jsonl replay, subagent semantics, heartbeat health). Deeper Hermes adoption (MCP rate-limiter full impl, shell-hook router generalized, compression threshold full impl). Effort total 27-32d → 35-42d. Trail: `.iago/decisions/2026-05-15-agent-shape-taxonomy.md`.
+**Amendment 2026-05-15:** Adds agent-shape taxonomy + `AgentRuntime` polymorphic interface (PTY adapter registry recontextualized as Shape 1 of 5). Deeper cortextOS adoption (full Next.js dashboard, session.jsonl replay, subagent semantics, heartbeat health). Deeper Hermes adoption (MCP rate-limiter full impl, shell-hook router generalized, compression threshold full impl). Effort total 27-32d → 38-46d. Trail: `.iago/decisions/2026-05-15-agent-shape-taxonomy.md`.
 
 ---
 
@@ -395,7 +395,7 @@ The 4.5-day punch list from `.iago/research/iago-os-adversarial-review-2026-05.m
 
 ## Phase Sequencing (v2, supersedes old roadmap waves)
 
-**Effort math revised 2026-05-15** to absorb agent-shape taxonomy + deeper cortextOS adoption (session.jsonl replay, subagent semantics, heartbeat health, full Next.js dashboard) + deeper Hermes adoption (MCP rate-limiter, shell-hook router, compression full impl). Phase 1 +2-3d, Phase 3 +2-3d, Phase 6 +3d, new Hermes-deeper folded into Phase 5. Total 27-32d → 35-42d.
+**Effort math revised 2026-05-15** to absorb agent-shape taxonomy + deeper cortextOS adoption (session.jsonl replay, subagent semantics, heartbeat health, full Next.js dashboard) + deeper Hermes adoption (MCP rate-limiter, shell-hook router, compression full impl). Phase 1 +2-3d, Phase 3 +2-3d, Phase 6 +3d, new Hermes-deeper folded into Phase 5, Phase 9 +1d (Shape 4 adapter scope). Total 27-32d → 38-46d.
 
 | Phase | Duration | Deliverable | Gate |
 |---|---|---|---|
