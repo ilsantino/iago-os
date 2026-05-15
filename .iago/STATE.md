@@ -1,12 +1,14 @@
 # State — iaGO-OS
 
-> **Phase:** phase-1-cleanup | **Status:** audit verified
-> **Tag:** v0.1.0 | **Updated:** 2026-05-11
+> **Phase:** v2-agent-shape-amendment | **Status:** spec amended, awaiting authorization to start Phase 0.5 + Phase 1
+> **Tag:** v0.1.0 | **Updated:** 2026-05-15
 
 ## Active
 
 | Date | Mode | Description | Commit |
 |------|------|-------------|--------|
+| 2026-05-15 | spec | iaGO-OS v2 vision + master prompt amended for Agent Shape Taxonomy + `AgentRuntime` polymorphic interface (5 shapes: PTY, HTTP/SDK, MCP-as-agent, Webhook/event, Daemon); deeper cortextOS adoption (session.jsonl replay, subagent semantics, heartbeat health, full Next.js dashboard); deeper Hermes adoption (MCP rate-limiter full impl, shell-hook router generalized cross-shape, compression threshold full impl); effort total 27-32d → 35-42d. ADR at `.iago/decisions/2026-05-15-agent-shape-taxonomy.md` | (this commit) |
+| 2026-05-14 | merge | PR #38 merged — canonical v2 vision lock + Phase 0 audit + scope updates (WhatsApp dropped, multi-LLM via PTY adapter registry) | [#38](https://github.com/ilsantino/iago-os/pull/38) |
 | 2026-05-11 | fast | Remove stranded `clients/munet-web-wt-m06/` — leftover full copy of munet-web from 2026-04-28 M06 work (named like a worktree but never registered via `git worktree`); no inner `.git`, not on `git worktree list`; safe deletion | (this commit) |
 | 2026-05-10 | fast | Land council-revised v2 munet-web playbook (905 lines) at `.iago/research/munet-web-playbook.md` — rescued from orphan commits 08d68a5/aab3f1e after branches `wip/munet-web-playbook-v2` and `docs/munet-web-playbook` were deleted without record; 2026-05-10 status-pull session also wrote canonical evals for cortextos + agentic-os-dashboard to close a research-rediscovery gap | [#36](https://github.com/ilsantino/iago-os/pull/36) |
 | 2026-05-04 | execute | Phase 1 cleanup hygiene shipped — STATE.md discipline rule, branch-prune doc, deferred plans archived, macOS audit (`gsort` prereq + `# GNU-only` annotation), `.iago/state/` README + gitignore pattern | [#31](https://github.com/ilsantino/iago-os/pull/31) merged |
