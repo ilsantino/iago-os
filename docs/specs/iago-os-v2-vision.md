@@ -128,7 +128,7 @@ Cited file paths are in the upstream repos; iaGO ports land under `runtime/` (ne
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-> **PTY adapter note (Shape 1 only):** Diagram shows Phase 1 state (Claude Code + Codex). Phase 3 adds Gemini + opencode adapters AND opens Shape 2 (HTTP/SDK) and Shape 3 (MCP-as-agent) — see § Agent Shape Taxonomy + `AgentRuntime` Interface immediately below. Hermes runtime IS adopted in Phase 3 as a Shape 3 (MCP-as-agent) runtime; Hermes *patterns* (pre-LLM wake gate, shell-hook matchers, compression threshold, MCP sampling caps) land independently of the runtime adoption — see "From Hermes v0.11.0 — adopt selectively + deeper" table above.
+> **Shape 1 (PTY) only — diagram is intentionally Phase 1 state.** The daemon ultimately hosts all 5 agent shapes: Shape 1 (PTY — shown above), Shape 2 (HTTP/SDK — Phase 3), Shape 3 (MCP-as-agent — Phase 3, Hermes runtime adopted here), Shape 4 (Webhook/event — Phase 9), Shape 5 (Daemon/long-running — Phase 11). The master prompt diagram shows all 5 shapes inside the daemon box; this diagram is kept as Phase 1 state for clarity. See § Agent Shape Taxonomy + `AgentRuntime` Interface immediately below for the full multi-shape picture.
 
 ---
 
@@ -196,13 +196,25 @@ Common lifecycle (spawn → status → restore → shutdown) is enforced for eve
 
 The registry is shape-agnostic. The agent-manager doesn't know if it's spawning a PTY or sending an HTTP request — that's the adapter's job. Shape diversity costs nothing at the agent-manager layer.
 
+### Shape 4 adapter semantics (Webhook/event)
+
+Shape 4 requires explicit clarification because its lifecycle diverges from PTY/HTTP/MCP patterns:
+
+**`spawn()` is idempotent — registers a persistent handler, not a per-event process.** The daemon calls `spawn()` once at boot for each registered event-shape adapter (e.g., `sentry-event`). `spawn()` registers the inbound webhook receiver and returns a persistent `AgentHandle`. The adapter stays resident; it does not start and stop per event.
+
+**`isAlive()` returns `true` while the handler is registered.** Because the handle is persistent, `isAlive()` reflects whether the receiver is up and listening — not whether an agent is actively processing an event. The heartbeat loop can safely call `isAlive()` without triggering false-restart: a dormant-but-registered `sentry-event` handler returns `true`, not `false`.
+
+**Event payloads arrive via `send()`.** When an inbound webhook fires, the daemon delivers the event to the handler via `send(handle, { kind: "custom", payload: eventData })`. The adapter claims a file-bus task and dispatches an ephemeral worker for that single event. From the daemon's perspective, the handle never goes away — only the per-event worker is ephemeral.
+
+**Consequence:** `SpawnOpts` needs no event-payload slot. The two-step spawn-then-send pattern is the intended contract for Shape 4. Implementers must NOT model Shape 4 as "one `spawn()` call per event" — that interpretation would cause the daemon to accumulate orphaned handles.
+
 ### Per-shape adapter scope (Phase mapping)
 
 | Phase | Shape work | Shipped adapters |
 |---|---|---|
 | **1** | `AgentRuntime` interface + registry skeleton + Shape 1 (PTY) | `claude-pty` |
 | **3** | Shape 1 (PTY) deeper: `codex-pty` + `gemini-pty` + `opencode-pty`; Shape 2 (HTTP/SDK): `anthropic-sdk` + `openai-sdk` (also enables LangGraph host scripts); Shape 3 (MCP-as-agent): `hermes-mcp` adapter | `claude-pty`, `codex-pty`, `gemini-pty`, `opencode-pty`, `anthropic-sdk`, `openai-sdk`, `hermes-mcp` |
-| **6** | Shape 4 (Webhook/event): daemon-managed inbound webhook receiver dispatches events to event-shape adapters | + `sentry-event`, `github-event`, `cron-tick-event` |
+| **9** | Shape 4 (Webhook/event): daemon-managed inbound webhook receiver dispatches events to event-shape adapters | + `sentry-event`, `github-event`, `cron-tick-event` |
 | **11** | Shape 5 (Daemon): email auto-provision IMAP poller lands as first Daemon-shape agent | + `imap-daemon` |
 
 ### What this is NOT
@@ -322,7 +334,7 @@ interface PTYAdapter {
 }
 ```
 
-**Registry:** `runtime/pty/registry.ts` exports `registerAdapter(adapter: PTYAdapter)`. Agent config files reference adapter by `runtime` field. Daemon loads adapters at boot, validates interface compliance, and routes spawn calls.
+**Registry:** `runtime/agent-runtime/registry.ts` exports `registerRuntime(rt: AgentRuntime)`. Agent config files reference adapter by `runtime` field. Daemon loads adapters at boot, validates interface compliance, and routes spawn calls.
 
 **Phase mapping:**
 - **Phase 1:** Ship the interface + registry + Claude Code adapter. Hello-world end-to-end uses Claude only.
@@ -403,13 +415,14 @@ The 4.5-day punch list from `.iago/research/iago-os-adversarial-review-2026-05.m
 | **11 — Email auto-provision + Shape 5 (Daemon)** | 2-3d *(was 2d)* | Per-agent email address via SES subdomain catch-all + IMAP polling. IMAP poller lands as the first Daemon-shape agent (`imap-daemon`), completing Shape 5 of the registry. | Phase 7 stable |
 | **12 — Learning loop pattern extraction** | 1d | Pipeline pattern-extraction stage writes to `.iago/learnings/patterns.md`; 5+ occurrence → CLAUDE.md promotion via daemon-managed PR | Phase 6 stable |
 
-**Total Phase 0–7 + Phase 10 effort:** ~35-42 dev-days (~7-8.5 weeks at sustainable pace).
+**Total Phase 0–7 + Phase 9–10 effort:** ~38-46 dev-days (~8-9.5 weeks at sustainable pace).
 - Phase 1 grew +2-3d for `AgentRuntime` interface + cortextOS deeper-adoption (session.jsonl replay, heartbeat, subagent semantics)
 - Phase 3 grew +2-3d for HTTP + MCP shape adapters (was PTY-only multi-LLM)
 - Phase 5 grew +2-3d for Hermes-deeper bundle (rate-limiter, hook router, full compression impl)
 - Phase 6 grew +3d for full Next.js dashboard (Streamlit fallback dropped)
+- Phase 9 (3-4d) is always-on alongside Phase 10 — Shape 4 lands here
 
-**Phases 8, 11, 12 are demand-triggered or trailing**, not scheduled. Phase 9+10 ride on Phase 7+8 sequencing because Shape 4 lands here.
+**Phases 8, 11, 12 are demand-triggered or trailing**, not scheduled.
 
 **Phase 0.5 (orphan cleanup)** is new — derived from Phase 0 audit findings (`iaguito-hq.service` + pulsara vite running publicly on VPS for 60-70 days, no ufw). Plan exists at `.iago/plans/feature-v2-foundation/02-orphan-cleanup.md`; runs before Phase 1 daemon code.
 
@@ -440,8 +453,9 @@ Stay scoped:
 4. **Dashboard scope (v1).** ✅ DECIDED 2026-05-15 — **full Next.js port, Streamlit fallback dropped** per Garry-impressed standard. Phase 6 ships the real dashboard directly.
 5. **MUNET handling during v2 build.** MUNET is currently stalled. Does v2 work proceed in parallel, or does MUNET MVP need to ship first? Per memory `project_munet_mvp_scope`, M2 03-06 + ticket-email-fix wave 2 are deferred post-MVP. Default: **v2 build proceeds in parallel; MUNET remains highest-revenue priority when it unblocks**.
 6. **Sentria daemon agent shape.** Sentria is the most likely first Shape-5 (Daemon) candidate after `imap-daemon`. Open question: ship Sentria's incident-triage as a daemon-shape agent inside v2 (Phase 11+), or keep it standalone on the BAS Labs repo? Default recommendation: **standalone now, port to v2 daemon shape in Phase 12+ when Sentria stabilizes** — avoids coupling Sentria's MVP timeline to v2's roadmap.
-7. **LangGraph workflow hosting.** When the first LangGraph workflow lands (likely a client deliverable), does it run as a Shape 2 (HTTP/SDK) agent inside the v2 daemon, or as a separate process? Default: **HTTP shape inside v2 daemon, using `anthropic-sdk` or `openai-sdk` adapter with LangGraph as the workflow layer on top**. Confirms in Phase 3 when SDK adapters ship.
+7. **LangGraph workflow hosting.** When the first LangGraph workflow lands (likely a client deliverable), does it run as a Shape 2 (HTTP/SDK) agent inside the v2 daemon, or as a separate process? Default: **HTTP shape inside v2 daemon, using `anthropic-sdk` or `openai-sdk` adapter with LangGraph as the workflow layer on top**. Confirms in Phase 3 when SDK adapters ship. Sub-question: does LangGraph state persistence (checkpointer) integrate with `session.jsonl` replay (cortextOS deeper-adoption), or do they stay separate parallel mechanisms? Decision needed before Phase 3 `anthropic-sdk` adapter ships.
 8. **HTTP-shape adapter authentication.** SDK adapters need provider API keys at spawn time. Storage: 1Password CLI integration (Santiago's existing tool), systemd `LoadCredential=`, or daemon-managed encrypted store? Decision needed before Phase 3.
+9. **MCP-as-agent shape verification.** Hermes runtime is the only known goal-taking MCP server today. Are there other Shape-3 candidates to design for, or is Hermes the load-bearing case? Decision needed before Phase 3 `hermes-mcp` adapter implementation — affects whether the Shape 3 adapter interface should be Hermes-specific or generalized.
 
 ---
 

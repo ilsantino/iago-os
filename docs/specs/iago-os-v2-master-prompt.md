@@ -377,12 +377,12 @@ If any box unchecked: not done. Reopen.
 | 11 | **2–3d** | Email auto-provision + Shape 5 (Daemon) IMAP poller adapter | Phase 7 stable |
 | 12 | 1d | Learning loop pattern extraction | Phase 6 done |
 
-**Total to operational v2 (Phases 0–7 + 10):** ~35–42 dev-days. ~7–8.5 weeks at sustainable pace.
+**Total to operational v2 (Phases 0–7 + 9–10):** ~38–46 dev-days. ~8–9.5 weeks at sustainable pace.
 - Phase 1 +2–3d for `AgentRuntime` interface + cortextOS deeper-adoption
 - Phase 3 +2–3d for HTTP + MCP shape adapters
 - Phase 5 +2–3d for Hermes-deeper bundle
 - Phase 6 +3d for full Next.js dashboard (Streamlit dropped)
-- Phase 9+10 always-on (Shape 4 lands here), Phase 8+11+12 demand-triggered/trailing
+- Phase 9 (3–4d) always-on alongside Phase 10 (Shape 4 lands here); Phase 8+11+12 demand-triggered/trailing
 
 ---
 
@@ -423,8 +423,9 @@ If you're an agent executing against this prompt:
 4. **Dashboard scope v1.** ✅ DECIDED 2026-05-15 — full Next.js port, Streamlit fallback dropped per Garry-impressed standard.
 5. **MUNET parallelism.** v2 proceeds in parallel with MUNET stalled, or pause for MUNET MVP? Default: parallel.
 6. **Sentria daemon agent shape.** Ship Sentria as a Shape-5 (Daemon) agent inside v2 (Phase 11+), or keep it standalone on the BAS Labs repo? Default: standalone now, port to v2 daemon shape in Phase 12+.
-7. **LangGraph workflow hosting.** First LangGraph workflow runs as Shape 2 (HTTP/SDK) agent inside v2 daemon, or standalone? Default: HTTP shape inside v2 daemon.
+7. **LangGraph workflow hosting.** First LangGraph workflow runs as Shape 2 (HTTP/SDK) agent inside v2 daemon, or standalone? Default: HTTP shape inside v2 daemon. Sub-question: does LangGraph state persistence (checkpointer) integrate with `session.jsonl` replay, or stay separate? Decision needed before Phase 3.
 8. **HTTP-shape adapter authentication.** SDK adapters need provider API keys at spawn time. 1Password CLI, systemd `LoadCredential=`, or daemon-managed encrypted store? Decision needed before Phase 3.
+9. **MCP-as-agent shape verification.** Hermes runtime is the only known goal-taking MCP server today. Are there other Shape-3 candidates to design for, or is Hermes the load-bearing case? Decision needed before Phase 3.
 
 ---
 

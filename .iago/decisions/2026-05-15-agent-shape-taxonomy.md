@@ -64,13 +64,24 @@ interface AgentRuntime {
 
 Common lifecycle (spawn → status → restore → shutdown) is enforced for every shape. Per-shape mechanics live in the adapter implementation.
 
+### Shape 4 adapter semantics (Webhook/event)
+
+Shape 4 has non-obvious lifecycle semantics that must be specified to prevent incorrect heartbeat behavior:
+
+- **`spawn()` is called once at daemon boot** (per registered event adapter). It registers a persistent inbound webhook handler and returns a long-lived `AgentHandle`. It is NOT called per event.
+- **`isAlive()` returns `true` while the handler is registered** — not just when an event is being processed. A dormant handler between events is healthy, not dead. The heartbeat loop must not attempt to restart a dormant-but-registered event handler.
+- **Event payloads arrive via `send()`** — the daemon delivers `{ kind: "custom", payload: eventData }` when an inbound webhook fires. The adapter then claims a file-bus task and runs the per-event work in an ephemeral child process. The persistent handle remains live throughout.
+- **`SpawnOpts` needs no event-payload slot.** The spawn-then-send contract is sufficient; do not smuggle event data into `SpawnOpts.env`.
+
+This resolves the `isAlive()` / heartbeat conflict: the handle is long-lived (isAlive = true), only the per-event worker is ephemeral.
+
 ### Per-shape adapter scope (Phase mapping)
 
 | Phase | Shape work | Shipped adapters |
 |---|---|---|
 | 1 | `AgentRuntime` interface + registry skeleton + Shape 1 (PTY) | `claude-pty` |
 | 3 | Shape 1 (PTY) deeper: `codex-pty`, `gemini-pty`, `opencode-pty`; Shape 2 (HTTP/SDK): `anthropic-sdk`, `openai-sdk` (also hosts LangGraph); Shape 3 (MCP-as-agent): `hermes-mcp` | 7 adapters across 3 shapes |
-| 6 | Shape 4 (Webhook/event): daemon-managed inbound webhook receiver dispatches to event-shape adapters | `sentry-event`, `github-event`, `cron-tick-event` |
+| 9 | Shape 4 (Webhook/event): daemon-managed inbound webhook receiver dispatches to event-shape adapters | `sentry-event`, `github-event`, `cron-tick-event` |
 | 11 | Shape 5 (Daemon): email auto-provision IMAP poller | `imap-daemon` |
 
 ---
@@ -108,7 +119,7 @@ Rejected. LangGraph is a workflow framework, not an execution-shape abstraction.
 | 9 | 2–3d | 3–4d | +1d | Shape 4 (Webhook/event) adapters land here |
 | 11 | 2d | 2–3d | +1d | Shape 5 (Daemon) IMAP poller adapter |
 
-**Total operational-v2:** 27–32d → 35–42d (~6 dev-days added).
+**Total operational-v2:** 27–32d → 35–42d (~8–10d added).
 
 ### Architecture impact
 
@@ -149,7 +160,7 @@ Two related decisions land in the same amendment as the shape-taxonomy verdict:
 | MCP sampling rate-limiter (token-bucket per server) | **ADOPT** full impl in Phase 5. Bounds cost as Sentry/Google Workspace/other MCPs land. |
 | Shell-hook matcher generalized to cross-shape event router | **ADOPT** generalized impl in Phase 5. One rule language for all 5 shapes. |
 | Compression threshold (sliding-window summarizer) | **ADOPT** full impl in Phase 5. Required by long-running PTY + Daemon shapes. |
-| Hermes runtime adoption | **REVISED** — Hermes runtime IS adopted in Phase 3 as a Shape 3 (MCP-as-agent) runtime via `hermes-mcp` adapter. Patterns + runtime adoption now both land. |
+| Hermes runtime adoption | **REVISED** — Hermes runtime IS adopted in Phase 3 as a Shape 3 (MCP-as-agent) runtime via `hermes-mcp` adapter. Patterns + runtime adoption now both land. The 2026-05-13 rejection was because there was no native abstraction for stdio JSON-RPC — the PTY-only registry would have required a fake terminal wrapper around Hermes's stdio transport. Shape 3 (MCP-as-agent) provides a native home, making the prior objection void. |
 
 ---
 
