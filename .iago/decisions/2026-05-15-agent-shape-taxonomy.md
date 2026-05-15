@@ -119,7 +119,7 @@ Rejected. LangGraph is a workflow framework, not an execution-shape abstraction.
 | 9 | 2–3d | 3–4d | +1d | Shape 4 (Webhook/event) adapters land here |
 | 11 | 2d | 2–3d | +1d | Shape 5 (Daemon) IMAP poller adapter |
 
-**Total operational-v2:** 27–32d → 35–42d (~8–10d added).
+**Total operational-v2:** 27–32d → 38–46d (~11–14d added).
 
 ### Architecture impact
 
