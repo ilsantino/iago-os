@@ -266,16 +266,35 @@ A Stage E sub-task should: (a) list every credential file in `~/.openclaw/creden
 
 ---
 
-## Orphan processes — separate cleanup track (NOT v2 scope)
+## Orphan processes — CLEANED 2026-05-15 (Phase 0.5 executed)
 
-Two long-running dev servers on the VPS unrelated to OpenClaw:
+Two long-running dev servers on the VPS unrelated to OpenClaw, stopped per `.iago/plans/feature-v2-foundation/02-orphan-cleanup.md` after Santiago authorization 2026-05-15:
 
-| Process | PID | Uptime | Bind | Risk |
-|---|---|---|---|---|
-| `node /home/ilsantino/hq/backend/server.js` | 69266 | 70+ days | `0.0.0.0:3001` | Public network exposure with no firewall |
-| `node .../pulsara/node_modules/.bin/vite --host 0.0.0.0 --port 5173` | 267393 | 62+ days | `0.0.0.0:5173` | Vite dev server (HMR enabled, debug routes exposed) publicly reachable |
+| Process | PID at audit | Post-cleanup state |
+|---|---|---|
+| `node /home/ilsantino/hq/backend/server.js` | 69266 (70+ days) | ✅ STOPPED — PM2 process `iaguito-hq` (id 0) stopped + deleted + saved empty state. systemd unit `iaguito-hq.service` disabled (will not auto-start). Repo at `/home/ilsantino/hq/` preserved. |
+| `node .../pulsara/node_modules/.bin/vite --host 0.0.0.0 --port 5173` | 267393 (62+ days) | ✅ STOPPED — PM2 process `pulsara-dev` (id 1) stopped + deleted + saved empty state. Repo at `/home/ilsantino/repos/pulsara/` preserved. Santiago decision 2026-05-15: "no clue what pulsara is, kill it." |
 
-**Recommendation:** open a separate `/iago-quick` (or `/iago-fast` if Santiago confirms scope) to either bind these to localhost / Tailscale interface only, or stop them entirely if no longer needed. This is independent of the v2 cutover and should NOT block Phase 1 or Phase 2. Surfaced here so it doesn't get lost.
+**Surprise discovered during cleanup:** Both processes were supervised by **PM2** (PID 39606 "God Daemon", running 72d under user systemd `--user --deserialize=10`, PID 1809). PM2 was NOT mentioned in the initial audit and was auto-restarting `hq` after each kill (26 restarts logged). Real cleanup path required `pm2 delete all` + `pm2 save --force` to persist empty state. The `iaguito-hq.service` user systemd unit was a wrapper; the actual orchestration was PM2.
+
+**PM2 itself:** retained — no system-level or user-level systemd unit registered (PM2 had been running 72d but is not enabled for auto-start; even if it restarts manually, the saved dump is empty). Skipping `pm2 unstartup` as no startup unit exists.
+
+**Firewall (ufw) installed and active:**
+
+```
+Status: active
+Logging: on (low)
+Default: deny (incoming), allow (outgoing)
+
+22/tcp on tailscale0       ALLOW IN    Anywhere
+41641/udp                  ALLOW IN    Anywhere
+22/tcp (v6) on tailscale0  ALLOW IN    Anywhere (v6)
+41641/udp (v6)             ALLOW IN    Anywhere (v6)
+```
+
+`systemctl is-enabled ufw` → `enabled` (persists on reboot). ICMP rule from the plan was rejected by ufw 0.36.2's protocol parser; skipped (per plan's "optional" tag — smaller attack surface anyway). Tailscale SSH session from `surface-san` survived ufw enable (verified via `whoami` + `date` post-enable).
+
+**Public exposure after Phase 0.5:** none. Ports 3001 and 5173 confirmed released (`ss -tlnp` shows no listeners). Only Tailscale IP (100.94.1.34) and Tailscale UDP port 41641 are inbound-allowed. eth0 public interface is firewalled.
 
 ---
 
