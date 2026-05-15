@@ -104,6 +104,78 @@ describe("agent-runtime registry", () => {
 		);
 	});
 
+	it("rejects runtime missing the send method", () => {
+		const partial = {
+			shape: "pty" as const,
+			id: "missing-send",
+			version: "0.0.1",
+			interfaceVersion: "v1" as const,
+			spawn: async () => makeHandle(),
+			onStatusChanged: (_h: AgentHandle, _cb: StatusCallback) => () => {},
+			isAlive: async () => true,
+			shutdown: async () => {},
+			restoreFromMarker: async () => null,
+		} satisfies Partial<AgentRuntime>;
+		// @ts-expect-error — intentionally missing `send` to exercise the runtime probe
+		expect(() => registerRuntime(partial)).toThrowError(
+			/missing required method "send"/,
+		);
+	});
+
+	it("rejects runtime missing the isAlive method", () => {
+		const partial = {
+			shape: "pty" as const,
+			id: "missing-isalive",
+			version: "0.0.1",
+			interfaceVersion: "v1" as const,
+			spawn: async () => makeHandle(),
+			send: async (_h: AgentHandle, _m: AgentMessage) => {},
+			onStatusChanged: (_h: AgentHandle, _cb: StatusCallback) => () => {},
+			shutdown: async () => {},
+			restoreFromMarker: async () => null,
+		} satisfies Partial<AgentRuntime>;
+		// @ts-expect-error — intentionally missing `isAlive` to exercise the runtime probe
+		expect(() => registerRuntime(partial)).toThrowError(
+			/missing required method "isAlive"/,
+		);
+	});
+
+	it("rejects runtime missing the shutdown method", () => {
+		const partial = {
+			shape: "pty" as const,
+			id: "missing-shutdown",
+			version: "0.0.1",
+			interfaceVersion: "v1" as const,
+			spawn: async () => makeHandle(),
+			send: async (_h: AgentHandle, _m: AgentMessage) => {},
+			onStatusChanged: (_h: AgentHandle, _cb: StatusCallback) => () => {},
+			isAlive: async () => true,
+			restoreFromMarker: async () => null,
+		} satisfies Partial<AgentRuntime>;
+		// @ts-expect-error — intentionally missing `shutdown` to exercise the runtime probe
+		expect(() => registerRuntime(partial)).toThrowError(
+			/missing required method "shutdown"/,
+		);
+	});
+
+	it("rejects runtime missing the restoreFromMarker method", () => {
+		const partial = {
+			shape: "pty" as const,
+			id: "missing-restore",
+			version: "0.0.1",
+			interfaceVersion: "v1" as const,
+			spawn: async () => makeHandle(),
+			send: async (_h: AgentHandle, _m: AgentMessage) => {},
+			onStatusChanged: (_h: AgentHandle, _cb: StatusCallback) => () => {},
+			isAlive: async () => true,
+			shutdown: async () => {},
+		} satisfies Partial<AgentRuntime>;
+		// @ts-expect-error — intentionally missing `restoreFromMarker` to exercise the runtime probe
+		expect(() => registerRuntime(partial)).toThrowError(
+			/missing required method "restoreFromMarker"/,
+		);
+	});
+
 	it("rejects invalid shape", () => {
 		// @ts-expect-error — registry probes at runtime; force "browser" through the type system to test the runtime guard
 		const bad = makeValidRuntime({ shape: "browser" });

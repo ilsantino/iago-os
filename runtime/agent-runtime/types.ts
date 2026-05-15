@@ -63,16 +63,14 @@ export interface InjectMessage {
 }
 
 /**
- * Adapter-specific escape hatch. The outer `payload` is the AgentMessage
- * envelope field; the inner `payload` is the adapter's structured value.
- * Adapters read the carried value via `msg.payload.payload`. The shape
- * matches the spec literally (`custom: { payload: unknown }`); adapters
- * that accept structured `custom` payloads OWN the inner schema and MUST
+ * Adapter-specific escape hatch. `payload` is `unknown` — this is the only
+ * field in the discriminated union that is not a typed object. Adapters that
+ * accept structured `custom` payloads OWN their payload schema and MUST
  * document it on their `send()` JSDoc.
  */
 export interface CustomMessage {
 	readonly kind: "custom";
-	readonly payload: { readonly payload: unknown };
+	readonly payload: unknown;
 }
 
 export type AgentMessage =
