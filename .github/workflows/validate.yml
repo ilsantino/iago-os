@@ -31,3 +31,32 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: bash -n scripts/execute-pipeline.sh scripts/new-client.sh scripts/sync-skills.sh scripts/usage-report.sh scripts/validate-hooks.sh scripts/validate-skills.sh
+
+  runtime-checks:
+    name: Runtime (typecheck + tests)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Check runtime/ presence
+        id: presence
+        run: |
+          if [ -f runtime/package.json ]; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Install runtime deps
+        if: steps.presence.outputs.exists == 'true'
+        working-directory: runtime
+        run: npm ci
+      - name: Typecheck runtime
+        if: steps.presence.outputs.exists == 'true'
+        working-directory: runtime
+        run: npx tsc --noEmit
+      - name: Test runtime (with coverage)
+        if: steps.presence.outputs.exists == 'true'
+        working-directory: runtime
+        run: npx vitest run --coverage
