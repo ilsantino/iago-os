@@ -186,6 +186,8 @@ export async function claimTask(opts: {
 }): Promise<ClaimResult> {
 	const { taskId, ownerId, attemptId } = opts;
 	assertSafeIdentifier(taskId, "taskId");
+	assertSafeIdentifier(ownerId, "ownerId");
+	assertSafeIdentifier(attemptId, "attemptId");
 	const claimPath = claimPathOf(taskId);
 	const claimContents: ClaimFileContents = {
 		ownerId,
@@ -214,7 +216,9 @@ export async function claimTask(opts: {
 		await fsp.rename(pendingPathOf(taskId), claimedTaskPathOf(taskId));
 	} catch (err) {
 		const code = getErrnoCode(err);
-		if (code === "ENOENT") {
+		if (code === "ENOENT" || code === "EEXIST") {
+			// ENOENT: pending envelope already moved (race).
+			// EEXIST: crash-recovery — claimed envelope already present (Windows).
 			try {
 				await fsp.unlink(claimPath);
 			} catch {

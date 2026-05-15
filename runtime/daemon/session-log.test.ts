@@ -230,4 +230,35 @@ describe("session-log / two-phase replay", () => {
 			{ name: "H" },
 		]);
 	});
+
+	it("resumeIntake keeps queued drain items before live concurrent appends", async () => {
+		const handleId = "h-concurrent-resume";
+		await appendEvent(handleId, { name: "A" });
+
+		const controller = new ReplayController(handleId);
+		await controller.pauseIntake();
+
+		// Queue 3 events while paused.
+		const queued = ["B", "C", "D"].map((name) =>
+			appendEvent(handleId, { name }),
+		);
+
+		// Start resume and concurrently queue Z while the backlog drain is running.
+		// Z arrives while paused=true so it lands in the late-queue, gets flushed
+		// in pass 2 — after B/C/D and before any subsequent direct appends.
+		const resumePromise = controller.resumeIntake();
+		const livePromise = appendEvent(handleId, { name: "Z" });
+
+		const [drainedResults, liveResult] = await Promise.all([
+			Promise.all(queued),
+			livePromise,
+			resumePromise,
+		]);
+
+		const sequences = drainedResults.map((r) => r.sequence);
+		// B, C, D were in the initial backlog — must be consecutive from 2.
+		expect(sequences).toEqual([2, 3, 4]);
+		// Z was a late-queue item — comes after all backlog items.
+		expect(liveResult.sequence).toBeGreaterThan(Math.max(...sequences));
+	});
 });

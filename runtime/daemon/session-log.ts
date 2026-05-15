@@ -117,6 +117,8 @@ async function loadSequence(handleId: string): Promise<number> {
 }
 
 async function persistSequence(handleId: string, seq: number): Promise<void> {
+	// No fdatasync: .seq is a performance cache, not authoritative. Crash
+	// recovery counts lines in .jsonl (which IS fsynced). See readSequence().
 	await fsp.writeFile(seqPathOf(handleId), String(seq));
 }
 
@@ -187,6 +189,8 @@ export async function* readEventsUpToHWM(
 ): AsyncIterable<{ event: unknown; sequence: number }> {
 	assertSafeIdentifier(handleId, "handleId");
 	const filePath = logPathOf(handleId);
+	// TODO Phase 3: stream instead of readFile for large logs; unbounded
+	// sessions produce O(n) memory spikes at replay time.
 	let raw: string;
 	try {
 		raw = await fsp.readFile(filePath, "utf8");
@@ -327,9 +331,23 @@ export class ReplayController {
 
 	async resumeIntake(): Promise<void> {
 		const state = getPauseState(this.handleId);
-		state.paused = false;
+		// Pass 1: drain initial backlog while still paused so concurrent
+		// appendEvent callers queue up rather than interleave with drain items.
 		const drained = state.queue.splice(0);
 		for (const item of drained) {
+			try {
+				const result = await performAppend(this.handleId, item.event);
+				item.resolve(result);
+			} catch (err) {
+				item.reject(err);
+			}
+		}
+		// Unpause before pass 2: new callers go direct from here onward.
+		state.paused = false;
+		// Pass 2: flush items that arrived during pass 1 (finite — new arrivals
+		// after paused=false bypass the queue and call performAppend directly).
+		const late = state.queue.splice(0);
+		for (const item of late) {
 			try {
 				const result = await performAppend(this.handleId, item.event);
 				item.resolve(result);
@@ -344,6 +362,10 @@ export class ReplayController {
  * Test-only reset of module-scope caches (pause flags, sequence
  * cache, file locks). Underscore prefix marks test infrastructure —
  * do not call from production code paths.
+ *
+ * TODO Plan 03: move to session-log.internal.ts or a conditional
+ * export before bootRecovery integrates, to prevent accidental
+ * production calls from wiping in-memory state on a live daemon.
  */
 export function _resetSessionLogStateForTests(): void {
 	pauseStates.clear();

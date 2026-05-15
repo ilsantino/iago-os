@@ -104,6 +104,9 @@ describe("state-paths", () => {
 		it("rejects ids containing __", () => {
 			const result = validateAgentId("alpha__bot");
 			expect(result.valid).toBe(false);
+			if (!result.valid) {
+				expect(result.reason).toBe("double-underscore");
+			}
 		});
 
 		it("rejects 'nul' (Windows reserved, case-insensitive)", () => {

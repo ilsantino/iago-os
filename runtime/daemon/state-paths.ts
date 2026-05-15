@@ -96,11 +96,11 @@ export function validateAgentId(id: string): AgentIdValidation {
 	if (id.length > 63) {
 		return { valid: false, reason: "too-long" };
 	}
-	if (!AGENT_ID_PATTERN.test(id)) {
-		return { valid: false, reason: "invalid-chars" };
-	}
 	if (id.includes("__")) {
 		return { valid: false, reason: "double-underscore" };
+	}
+	if (!AGENT_ID_PATTERN.test(id)) {
+		return { valid: false, reason: "invalid-chars" };
 	}
 	if (WINDOWS_RESERVED.test(id)) {
 		return { valid: false, reason: "windows-reserved" };
