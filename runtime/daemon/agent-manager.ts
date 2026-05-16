@@ -60,6 +60,7 @@ import {
 import {
 	ReplayController,
 	appendEvent,
+	cancelPendingAppends,
 } from "./session-log.js";
 import { assertSafeIdentifier, getErrnoCode, pathFor } from "./state-paths.js";
 
@@ -109,6 +110,34 @@ export class ParentDiedDuringSpawn extends Error {
 	}
 }
 
+/**
+ * Thrown by `registerAgent` when an `agentId` is already registered in
+ * a DIFFERENT org. Enforces the stress-test PR4 invariant at the write
+ * boundary — without this the dup is only surfaced later by a
+ * `resolveAgentOrg` lookup nobody expects to fail, by which time both
+ * agents are running (review CRITICAL #1).
+ */
+export class AgentIdAlreadyRegisteredError extends Error {
+	readonly agentId: string;
+	readonly existingOrg: string | null;
+	readonly attemptedOrg: string | null;
+	constructor(
+		agentId: string,
+		existingOrg: string | null,
+		attemptedOrg: string | null,
+	) {
+		super(
+			`Agent id "${agentId}" is already registered (existing org: ${
+				existingOrg ?? "(none)"
+			}; attempted org: ${attemptedOrg ?? "(none)"})`,
+		);
+		this.name = "AgentIdAlreadyRegisteredError";
+		this.agentId = agentId;
+		this.existingOrg = existingOrg;
+		this.attemptedOrg = attemptedOrg;
+	}
+}
+
 interface TrackedHandle {
 	handle: AgentHandle;
 	runtime: AgentRuntime;
@@ -123,6 +152,27 @@ interface TrackedHandle {
 	rolledUpCost: number;
 	costTapDone: boolean;
 }
+
+/**
+ * Adapter-provided optional liveness signal that OVERRIDES
+ * `lastStatusChangeMs` for stall-detection purposes when the adapter
+ * has a richer health signal than status callbacks. Returning `true`
+ * tells the heartbeat "this handle is doing legitimate steady-state
+ * work; don't restart on stall even if no status change has been
+ * observed within `stallThresholdMs`" (review IMPORTANT #5 +
+ * cross-cutting probe Q3 — long-running adapter calls like
+ * `git clone` keep status in `running` for the whole operation, so
+ * `lastStatusChangeMs` never refreshes and the stall detector
+ * misfires).
+ *
+ * Adapters expose this via `AgentManager.registerLivenessProbe`. The
+ * probe runs INSIDE the heartbeat probe and must not throw —
+ * exceptions are logged and the heartbeat falls back to plain
+ * `lastStatusChangeMs` comparison.
+ */
+export type AdapterLivenessProbe = (
+	handle: AgentHandle,
+) => Promise<boolean> | boolean;
 
 interface InternalStateSnapshot {
 	readonly handles: Array<{
@@ -168,6 +218,21 @@ export class AgentManager {
 	// `restartAgent` calls receive the same promise — eliminates the
 	// teardown→track window where a guard could throw (M1).
 	private readonly restartingPromises = new Map<string, Promise<AgentHandle>>();
+	// CRITICAL #1: per-agentId in-process mutex for registerAgent. Two
+	// parallel `registerAgent({agentId: "x", ...})` calls would otherwise
+	// race past the disk pre-check and both succeed; the second arrival
+	// awaits the first via this chain and then re-runs the pre-check
+	// against the now-persisted record.
+	private readonly registrationLocks = new Map<string, Promise<unknown>>();
+	// IMPORTANT #4: per-parentHandleId mutex held for the entire
+	// spawnSubagent → linkage block AND the parent's cascade path so
+	// child creation cannot interleave with parent teardown.
+	private readonly parentLocks = new Map<string, Promise<unknown>>();
+	// IMPORTANT #5: optional per-runtime liveness probe registered by
+	// adapters whose status callbacks fire only on transitions (e.g.,
+	// PTY adapter, which stays in `running` for the whole `git clone`
+	// without refreshing `lastStatusChangeMs`).
+	private readonly livenessProbes = new Map<string, AdapterLivenessProbe>();
 	private bootRecoveryRan = false;
 	private cachedBootRecovery: BootRecoveryResult | null = null;
 	// Same promise-capture pattern as restartingPromises: assigned synchronously
@@ -199,25 +264,56 @@ export class AgentManager {
 	async registerAgent(config: RegisterAgentConfig): Promise<AgentHandle> {
 		assertSafeIdentifier(config.agentId, "agentId");
 		assertSafeIdentifier(config.sessionId, "sessionId");
-		const runtime = resolveRuntime(config.runtimeId);
-		const spawnOpts: SpawnOpts = {
-			cwd: config.cwd,
-			env: { ...config.env },
-			agentId: config.agentId,
-			sessionId: config.sessionId,
-			org: config.org,
-		};
-		const handle = await runtime.spawn(spawnOpts);
-		await this.trackHandle({
-			handle,
-			runtime,
-			spawnOpts,
-			config,
-			org: config.org ?? null,
-			parentHandleId: null,
+		// CRITICAL #1: in-process mutex keyed on agentId so two parallel
+		// `registerAgent({agentId: "x", ...})` calls cannot both race past
+		// the on-disk uniqueness check. The second arrival awaits the
+		// first via the chain, then re-runs the check against the
+		// persisted record (and either finds itself in the same org and
+		// can proceed, or throws `AgentIdAlreadyRegisteredError`).
+		return this.withAgentRegistrationLock(config.agentId, async () => {
+			// Write-side enforcement of PR4 (agentIds globally unique).
+			// Walks in-memory handles first, then the on-disk
+			// `pathFor("agents")` scan. If a record for `config.agentId`
+			// exists in a DIFFERENT org, throw immediately — no spawn,
+			// no marker, no orphan adapter resources.
+			await this.assertAgentIdAvailable(config.agentId, config.org ?? null);
+
+			const runtime = resolveRuntime(config.runtimeId);
+			const spawnOpts: SpawnOpts = {
+				cwd: config.cwd,
+				env: { ...config.env },
+				agentId: config.agentId,
+				sessionId: config.sessionId,
+				org: config.org,
+			};
+			const handle = await runtime.spawn(spawnOpts);
+			await this.trackHandle({
+				handle,
+				runtime,
+				spawnOpts,
+				config,
+				org: config.org ?? null,
+				parentHandleId: null,
+			});
+			await this.persistAgentConfig(handle.id, config, runtime);
+			return handle;
 		});
-		await this.persistAgentConfig(handle.id, config);
-		return handle;
+	}
+
+	/**
+	 * Register an adapter-side liveness probe for a specific runtime id.
+	 * The heartbeat consults this probe BEFORE concluding "stalled" — if
+	 * the probe resolves `true`, the stall trip is suppressed for the
+	 * current tick. Addresses IMPORTANT #5 / Q3 (long-running adapter
+	 * operations like `git clone` keep status in `running` and never
+	 * refresh `lastStatusChangeMs`).
+	 *
+	 * Probe is keyed by `runtimeId` because all handles of a given
+	 * adapter share the liveness semantics (e.g., every PTY handle uses
+	 * the same `pty.isAlive()` mechanism).
+	 */
+	registerLivenessProbe(runtimeId: string, probe: AdapterLivenessProbe): void {
+		this.livenessProbes.set(runtimeId, probe);
 	}
 
 	getHandle(handleId: string): AgentHandle | undefined {
@@ -232,23 +328,54 @@ export class AgentManager {
 		handleId: string,
 		signal: "SIGTERM" | "SIGKILL" = "SIGTERM",
 	): Promise<void> {
+		return this.shutdownAgentInternal(handleId, signal, "graceful");
+	}
+
+	/**
+	 * Internal shutdown that takes an explicit `markerReason`. Called by:
+	 *   - `shutdownAgent` (public) — always `"graceful"` (user intent).
+	 *   - `cascadeShutdownChildren` — propagates the parent's exit
+	 *     reason (CRITICAL #2). When a parent CRASHES, its children
+	 *     receive `"crash"` markers — the boot-recovery replay set then
+	 *     includes them. Stamping `"graceful"` on crash-cascaded children
+	 *     would silently skip them from replay (inverted behavior).
+	 */
+	private async shutdownAgentInternal(
+		handleId: string,
+		signal: "SIGTERM" | "SIGKILL",
+		markerReason: StopMarkerReason,
+	): Promise<void> {
 		const tracked = this.handles.get(handleId);
 		if (tracked === undefined) return;
-		// Write graceful marker BEFORE calling runtime.shutdown — absent
-		// marker on next boot means crash.
-		await writeStopMarker(handleId, "graceful");
-		// Cascade children BEFORE invoking the adapter's shutdown. Some
-		// adapters do not emit a terminal `exited`/`crashed` status
-		// callback on shutdown, so the status-driven cascade in
-		// `handleStatusChange` would never fire and child handles would
-		// orphan. Explicit cascade here makes the cleanup independent of
-		// adapter callback semantics.
-		await this.cascadeShutdownChildren(handleId);
-		try {
-			await tracked.runtime.shutdown(tracked.handle, signal);
-		} finally {
-			this.teardown(handleId);
-		}
+		// IMPORTANT #4: hold the parent-lock for this handle so a
+		// concurrent `spawnSubagent` cannot insert a new child between
+		// `cascadeShutdownChildren`'s snapshot and `teardown`.
+		return this.withParentLock(handleId, async () => {
+			// Re-check after acquiring the lock — concurrent shutdown could
+			// have already torn this handle down.
+			if (!this.handles.has(handleId)) return;
+			// Write marker BEFORE calling runtime.shutdown — absent
+			// marker on next boot means crash.
+			await writeStopMarker(handleId, markerReason);
+			// Cascade children BEFORE invoking the adapter's shutdown. Some
+			// adapters do not emit a terminal `exited`/`crashed` status
+			// callback on shutdown, so the status-driven cascade in
+			// `handleStatusChange` would never fire and child handles
+			// would orphan. Explicit cascade here makes the cleanup
+			// independent of adapter callback semantics. The cascade
+			// PROPAGATES the parent's exit reason so children get
+			// matching markers (CRITICAL #2).
+			await this.cascadeShutdownChildren(handleId, markerReason);
+			// Cancel any queued session-log appends so callers awaiting
+			// `appendEvent` while the controller was paused don't hang
+			// after teardown completes (wave 1 contract).
+			cancelPendingAppends(handleId, `shutdown:${markerReason}`);
+			try {
+				await tracked.runtime.shutdown(tracked.handle, signal);
+			} finally {
+				this.teardown(handleId);
+			}
+		});
 	}
 
 	async restartAgent(
@@ -284,11 +411,11 @@ export class AgentManager {
 		await writeStopMarker(handleId, markerReason);
 		// Cascade children BEFORE the parent shutdown so they are torn
 		// down cleanly even when the adapter does not emit a terminal
-		// callback. Restart breaks parent identity (new handle id, new
-		// generation token), so the application layer must respawn
-		// children against the new parent — silently re-linking to a
-		// stale id would mask resource leaks.
-		await this.cascadeShutdownChildren(handleId);
+		// callback. Cascade marker reason matches the parent's reason —
+		// crash-restarts produce `crash`-marker children that replay on
+		// next boot; recycle-restarts produce `recycle` children that do
+		// NOT replay (CRITICAL #2).
+		await this.cascadeShutdownChildren(handleId, markerReason);
 		try {
 			await existing.runtime.shutdown(existing.handle, "SIGTERM");
 		} catch (err) {
@@ -300,10 +427,38 @@ export class AgentManager {
 		}
 		this.teardown(handleId);
 
-		// Re-spawn with the SAME sessionId so session.jsonl is continuous.
-		const freshHandle = await existing.runtime.spawn(existing.spawnOpts);
+		// CRITICAL #3: re-spawn with the SAME handle id via SpawnOpts.restoreId
+		// so the new handle is keyed identically — `getHandle(handleId)` after
+		// restart returns the new generation, and any external reference
+		// (heartbeat, IPC, dashboard, prior restartAgent caller) continues to
+		// resolve the same logical agent. SessionId is also preserved so
+		// session.jsonl is continuous; the generation increment is the only
+		// signal callers should use to discriminate generations.
+		const restoreSpawnOpts: SpawnOpts = {
+			...existing.spawnOpts,
+			restoreId: handleId,
+		};
+		const freshHandle = await existing.runtime.spawn(restoreSpawnOpts);
+		if (freshHandle.id !== handleId) {
+			// Adapter ignored restoreId — that's a contract violation. Tear
+			// down the rogue handle and throw so the bug is loud rather than
+			// silently producing a stale handle map.
+			try {
+				await existing.runtime.shutdown(freshHandle, "SIGTERM");
+			} catch (err) {
+				console.error(
+					`[agent-manager] cleanup after rogue restart handle ${freshHandle.id} (expected ${handleId}) failed: ${
+						err instanceof Error ? err.message : String(err)
+					}`,
+				);
+			}
+			throw new Error(
+				`AgentRuntime "${existing.runtime.id}" violated SpawnOpts.restoreId contract: returned handle id "${freshHandle.id}" instead of "${handleId}"`,
+			);
+		}
 		const newGeneration: AgentHandle = {
 			...freshHandle,
+			id: handleId,
 			generationToken: existing.handle.generationToken + 1,
 		};
 		await this.trackHandle({
@@ -318,64 +473,79 @@ export class AgentManager {
 	}
 
 	async spawnSubagent(opts: SpawnSubagentOpts): Promise<AgentHandle> {
-		const parent = this.handles.get(opts.parentHandleId);
-		if (parent === undefined) {
-			throw new Error(`Parent handle not registered: ${opts.parentHandleId}`);
-		}
-		const runtime = resolveRuntime(opts.runtimeId);
-		const mergedEnv = mergeEnv(parent.spawnOpts.env, opts.env ?? {});
-		const spawnOpts: SpawnOpts = {
-			cwd: parent.spawnOpts.cwd,
-			env: mergedEnv,
-			agentId: opts.agentId,
-			sessionId: opts.sessionId,
-			org: parent.org ?? undefined,
-			parentHandle: parent.handle,
-		};
-		const childHandle = await runtime.spawn(spawnOpts);
-
-		// EC2: between spawn returning and the linkage insertion, the parent
-		// may have exited. Re-check parent liveness before completing the
-		// linkage; if the parent is dead, shut the child down and throw.
-		const stillAlive = await parent.runtime.isAlive(parent.handle);
-		if (!stillAlive || !this.handles.has(opts.parentHandleId)) {
-			try {
-				await runtime.shutdown(childHandle, "SIGTERM");
-			} catch (err) {
-				console.error(
-					`[agent-manager] child shutdown after parent-died-during-spawn failed: ${
-						err instanceof Error ? err.message : String(err)
-					}`,
-				);
+		// IMPORTANT #4: hold the parent-lock for the ENTIRE spawn+linkage
+		// block. The cascade path acquires the same lock so it cannot
+		// start tearing children down mid-spawn. The pre-check before
+		// spawn short-circuits the expensive runtime.spawn cost when
+		// parent is already gone (avoids paying for a PTY allocation
+		// just to throw immediately).
+		return this.withParentLock(opts.parentHandleId, async () => {
+			const parent = this.handles.get(opts.parentHandleId);
+			if (parent === undefined) {
+				throw new Error(`Parent handle not registered: ${opts.parentHandleId}`);
 			}
-			throw new ParentDiedDuringSpawn(opts.parentHandleId);
-		}
+			// Cheap pre-check: if parent is already dead before we even
+			// pay the spawn cost, throw early.
+			const aliveBeforeSpawn = await parent.runtime.isAlive(parent.handle);
+			if (!aliveBeforeSpawn || !this.handles.has(opts.parentHandleId)) {
+				throw new ParentDiedDuringSpawn(opts.parentHandleId);
+			}
 
-		const childConfig: RegisterAgentConfig = {
-			agentId: opts.agentId,
-			runtimeId: opts.runtimeId,
-			org: parent.org ?? undefined,
-			cwd: parent.spawnOpts.cwd,
-			env: mergedEnv,
-			sessionId: opts.sessionId,
-		};
-		await this.trackHandle({
-			handle: childHandle,
-			runtime,
-			spawnOpts,
-			config: childConfig,
-			org: parent.org,
-			parentHandleId: opts.parentHandleId,
+			const runtime = resolveRuntime(opts.runtimeId);
+			const mergedEnv = mergeEnv(parent.spawnOpts.env, opts.env ?? {});
+			const spawnOpts: SpawnOpts = {
+				cwd: parent.spawnOpts.cwd,
+				env: mergedEnv,
+				agentId: opts.agentId,
+				sessionId: opts.sessionId,
+				org: parent.org ?? undefined,
+				parentHandle: parent.handle,
+			};
+			const childHandle = await runtime.spawn(spawnOpts);
+
+			// EC2: between spawn returning and the linkage insertion, the parent
+			// may have exited. Re-check parent liveness before completing the
+			// linkage; if the parent is dead, shut the child down and throw.
+			const stillAlive = await parent.runtime.isAlive(parent.handle);
+			if (!stillAlive || !this.handles.has(opts.parentHandleId)) {
+				try {
+					await runtime.shutdown(childHandle, "SIGTERM");
+				} catch (err) {
+					console.error(
+						`[agent-manager] child shutdown after parent-died-during-spawn failed: ${
+							err instanceof Error ? err.message : String(err)
+						}`,
+					);
+				}
+				throw new ParentDiedDuringSpawn(opts.parentHandleId);
+			}
+
+			const childConfig: RegisterAgentConfig = {
+				agentId: opts.agentId,
+				runtimeId: opts.runtimeId,
+				org: parent.org ?? undefined,
+				cwd: parent.spawnOpts.cwd,
+				env: mergedEnv,
+				sessionId: opts.sessionId,
+			};
+			await this.trackHandle({
+				handle: childHandle,
+				runtime,
+				spawnOpts,
+				config: childConfig,
+				org: parent.org,
+				parentHandleId: opts.parentHandleId,
+			});
+
+			let children = this.parentChildren.get(opts.parentHandleId);
+			if (children === undefined) {
+				children = new Set<string>();
+				this.parentChildren.set(opts.parentHandleId, children);
+			}
+			children.add(childHandle.id);
+
+			return childHandle;
 		});
-
-		let children = this.parentChildren.get(opts.parentHandleId);
-		if (children === undefined) {
-			children = new Set<string>();
-			this.parentChildren.set(opts.parentHandleId, children);
-		}
-		children.add(childHandle.id);
-
-		return childHandle;
 	}
 
 	getCostSummary(handleId: string): CostSummary {
@@ -466,76 +636,58 @@ export class AgentManager {
 		this.bootRecoveryPromise = (async () => {
 			this.bootRecoveryRan = true;
 
-		const recovered: string[] = [];
-		const cleanShutdowns: string[] = [];
-		const crashes: string[] = [];
+			const recovered: string[] = [];
+			const cleanShutdowns: string[] = [];
+			const crashes: string[] = [];
 
-		const markers = await listAllMarkers();
-		const knownConfigs = opts?.knownConfigs;
-		// Track every handleId we observed via a marker so we can detect
-		// daemon-crash-before-marker-write below: any knownConfigs entry
-		// without a marker on disk means the daemon died before it could
-		// stamp one. That path was previously skipped (highest-value
-		// recovery case) and is now treated as a crash candidate.
-		const seenHandleIds = new Set<string>();
+			const markers = await listAllMarkers();
+			const knownConfigs = opts?.knownConfigs;
+			// Track every handleId we observed via a marker so we can detect
+			// daemon-crash-before-marker-write below: any knownConfigs entry
+			// without a marker on disk means the daemon died before it could
+			// stamp one. That path was previously skipped (highest-value
+			// recovery case) and is now treated as a crash candidate.
+			const seenHandleIds = new Set<string>();
 
-		for (const { handleId, marker } of markers) {
-			seenHandleIds.add(handleId);
-			if (marker.reason === "graceful") {
-				cleanShutdowns.push(handleId);
-				await clearStopMarker(handleId);
-				continue;
-			}
-			if (marker.reason === "recycle") {
-				// Voluntary restart: re-spawn cleanly, NO replay.
-				cleanShutdowns.push(handleId);
-				if (knownConfigs !== undefined) {
-					const cfg = knownConfigs.get(handleId);
-					if (cfg !== undefined) {
-						try {
-							await this.registerAgent(cfg);
-							// M2: the new handle has its own `<newHandleId>.json`
-							// (written by registerAgent → persistAgentConfig). The
-							// pre-restart `<originalHandleId>.json` is orphan
-							// housekeeping — unlink it so resolveAgentOrg cannot
-							// later see duplicates.
-							await this.removeOrphanAgentConfig(handleId);
-						} catch (err) {
-							console.error(
-								`[agent-manager] recycle re-spawn failed for ${handleId}: ${
-									err instanceof Error ? err.message : String(err)
-								}`,
-							);
+			for (const { handleId, marker } of markers) {
+				seenHandleIds.add(handleId);
+				if (marker.reason === "graceful") {
+					cleanShutdowns.push(handleId);
+					await clearStopMarker(handleId);
+					continue;
+				}
+				if (marker.reason === "recycle") {
+					// Voluntary restart: re-spawn cleanly, NO replay.
+					cleanShutdowns.push(handleId);
+					if (knownConfigs !== undefined) {
+						const cfg = knownConfigs.get(handleId);
+						if (cfg !== undefined) {
+							try {
+								await this.registerAgent(cfg);
+								// M2: the new handle has its own `<newHandleId>.json`
+								// (written by registerAgent → persistAgentConfig). The
+								// pre-restart `<originalHandleId>.json` is orphan
+								// housekeeping — unlink it so resolveAgentOrg cannot
+								// later see duplicates.
+								await this.removeOrphanAgentConfig(handleId);
+							} catch (err) {
+								console.error(
+									`[agent-manager] recycle re-spawn failed for ${handleId}: ${
+										err instanceof Error ? err.message : String(err)
+									}`,
+								);
+							}
 						}
 					}
+					await clearStopMarker(handleId);
+					continue;
 				}
-				await clearStopMarker(handleId);
-				continue;
-			}
-			// reason === "crash"
-			crashes.push(handleId);
-			// I2: capture the restored handle's id rather than assuming it
-			// matches the marker's handleId. Adapters MAY return a handle
-			// with a different id (e.g., generation suffix); the recovered
-			// listing reflects what was actually tracked.
-			const recoveredId = await this.attemptCrashReplay(handleId, knownConfigs);
-			if (recoveredId !== null && this.handles.has(recoveredId)) {
-				recovered.push(recoveredId);
-			}
-			await clearStopMarker(handleId);
-		}
-
-		// Daemon-crash-without-marker: any knownConfigs entry that did not
-		// surface a marker on disk means the daemon (or the host) died
-		// before the agent's exit path could stamp one. The marker
-		// invariant — "absent marker on next boot means crash" — is
-		// enforced here. Without this branch the highest-value recovery
-		// case (daemon hard-crash) was silently skipped and replay never
-		// ran for those handles.
-		if (knownConfigs !== undefined) {
-			for (const handleId of knownConfigs.keys()) {
-				if (seenHandleIds.has(handleId)) continue;
+				// reason === "crash"
 				crashes.push(handleId);
+				// I2: capture the restored handle's id rather than assuming it
+				// matches the marker's handleId. Adapters MAY return a handle
+				// with a different id (e.g., generation suffix); the recovered
+				// listing reflects what was actually tracked.
 				const recoveredId = await this.attemptCrashReplay(
 					handleId,
 					knownConfigs,
@@ -543,16 +695,37 @@ export class AgentManager {
 				if (recoveredId !== null && this.handles.has(recoveredId)) {
 					recovered.push(recoveredId);
 				}
+				await clearStopMarker(handleId);
 			}
-		}
 
-		const result: BootRecoveryResult = {
-			recovered,
-			cleanShutdowns,
-			crashes,
-		};
-		this.cachedBootRecovery = result;
-		return result;
+			// Daemon-crash-without-marker: any knownConfigs entry that did not
+			// surface a marker on disk means the daemon (or the host) died
+			// before the agent's exit path could stamp one. The marker
+			// invariant — "absent marker on next boot means crash" — is
+			// enforced here. Without this branch the highest-value recovery
+			// case (daemon hard-crash) was silently skipped and replay never
+			// ran for those handles.
+			if (knownConfigs !== undefined) {
+				for (const handleId of knownConfigs.keys()) {
+					if (seenHandleIds.has(handleId)) continue;
+					crashes.push(handleId);
+					const recoveredId = await this.attemptCrashReplay(
+						handleId,
+						knownConfigs,
+					);
+					if (recoveredId !== null && this.handles.has(recoveredId)) {
+						recovered.push(recoveredId);
+					}
+				}
+			}
+
+			const result: BootRecoveryResult = {
+				recovered,
+				cleanShutdowns,
+				crashes,
+			};
+			this.cachedBootRecovery = result;
+			return result;
 		})();
 		// bootRecoveryPromise was just assigned above; non-null assertion is safe.
 		return this.bootRecoveryPromise!;
@@ -634,6 +807,40 @@ export class AgentManager {
 						lastStatusChangeMs: tracked.lastStatusChangeMs,
 					};
 				}
+
+				// IMPORTANT #5: consult the adapter-registered liveness
+				// probe (if any) and let it suppress a stale-status
+				// trip by reporting a "just now" `lastStatusChangeMs`.
+				// The adapter knows its own work pattern; for adapters
+				// whose status callback stays in `running` for the
+				// whole operation (PTY git clone), the probe is the
+				// only way the heartbeat learns the agent is
+				// alive-and-working.
+				//
+				// We return `Number.MAX_SAFE_INTEGER` when liveness is
+				// true so the heartbeat's stall test
+				// `this.now() - status.lastStatusChangeMs > threshold`
+				// is unconditionally false regardless of which clock
+				// the heartbeat uses (real or test-fake). Returning
+				// `Date.now()` would not suppress the trip when the
+				// heartbeat runs on a fast-forwarded test clock.
+				let effectiveLastStatusChangeMs = current.lastStatusChangeMs;
+				const liveness = this.livenessProbes.get(runtime.id);
+				if (liveness !== undefined) {
+					try {
+						const alive = await liveness(handle);
+						if (alive) {
+							effectiveLastStatusChangeMs = Number.MAX_SAFE_INTEGER;
+						}
+					} catch (err) {
+						console.error(
+							`[agent-manager] adapter liveness probe for ${handle.id} (runtime ${runtime.id}) threw: ${
+								err instanceof Error ? err.message : String(err)
+							}`,
+						);
+					}
+				}
+
 				// Prefer the adapter's richer `getStatus` when present so
 				// the heartbeat actually receives RSS for recycle-policy
 				// evaluation. Without this branch the rssLimitBytes gate
@@ -643,7 +850,7 @@ export class AgentManager {
 						const status = await runtime.getStatus(handle);
 						return {
 							alive: status.alive,
-							lastStatusChangeMs: current.lastStatusChangeMs,
+							lastStatusChangeMs: effectiveLastStatusChangeMs,
 							rssBytes: status.rssBytes,
 						};
 					} catch (err) {
@@ -660,7 +867,7 @@ export class AgentManager {
 				const alive = await runtime.isAlive(handle);
 				return {
 					alive,
-					lastStatusChangeMs: current.lastStatusChangeMs,
+					lastStatusChangeMs: effectiveLastStatusChangeMs,
 					rssBytes: undefined,
 				};
 			};
@@ -702,26 +909,44 @@ export class AgentManager {
 		}
 
 		if (status === "exited" || status === "crashed") {
-			await this.cascadeShutdownChildren(handleId);
+			// CRITICAL #2: propagate the parent's exit reason to children.
+			// `exited` is a clean intentional stop → children get
+			// `graceful` markers (skipped from replay on next boot).
+			// `crashed` is involuntary → children get `crash` markers
+			// (included in replay set on next boot). Stamping
+			// `graceful` on crash-cascaded children would silently skip
+			// them from replay (inverted behavior — children would be
+			// silently lost).
+			const cascadeReason: StopMarkerReason =
+				status === "crashed" ? "crash" : "graceful";
+			await this.cascadeShutdownChildren(handleId, cascadeReason);
 		}
 	}
 
-	private async cascadeShutdownChildren(parentId: string): Promise<void> {
+	private async cascadeShutdownChildren(
+		parentId: string,
+		cascadeReason: StopMarkerReason,
+	): Promise<void> {
 		const children = this.parentChildren.get(parentId);
 		if (children === undefined) return;
 		const toShutdown = Array.from(children);
 		this.parentChildren.delete(parentId);
-		for (const childId of toShutdown) {
-			try {
-				await this.shutdownAgent(childId, "SIGTERM");
-			} catch (err) {
-				console.error(
-					`[agent-manager] cascade shutdown of ${childId} (parent ${parentId}) failed: ${
-						err instanceof Error ? err.message : String(err)
-					}`,
-				);
-			}
-		}
+		// MINOR (carried forward from earlier review): fan-out so one slow
+		// child doesn't block the rest. `allSettled` preserves the
+		// per-child error logging done inside `shutdownAgentInternal`.
+		await Promise.allSettled(
+			toShutdown.map(async (childId) => {
+				try {
+					await this.shutdownAgentInternal(childId, "SIGTERM", cascadeReason);
+				} catch (err) {
+					console.error(
+						`[agent-manager] cascade shutdown of ${childId} (parent ${parentId}, reason ${cascadeReason}) failed: ${
+							err instanceof Error ? err.message : String(err)
+						}`,
+					);
+				}
+			}),
+		);
 	}
 
 	private async consumeCostTap(
@@ -784,6 +1009,19 @@ export class AgentManager {
 		if (cfg === undefined) return null;
 
 		const runtime = resolveRuntime(cfg.runtimeId);
+
+		// IMPORTANT #7: adapter-version drift detection. The persisted
+		// config records `runtimeVersion` at registration time; on
+		// replay, compare against the current adapter's version. If the
+		// operator upgraded the adapter between runs, replay is best-
+		// effort — log loudly and continue (not block boot).
+		const persistedVersion = await this.readPersistedRuntimeVersion(handleId);
+		if (persistedVersion !== null && persistedVersion !== runtime.version) {
+			console.error(
+				`[agent-manager] adapter version drifted on replay for ${handleId}: persisted=${persistedVersion}, current=${runtime.version} — replay continues but may be unsafe`,
+			);
+		}
+
 		const markerPath = path.join(pathFor("markers"), `${handleId}.daemon-stop`);
 		let restored: AgentHandle | null = null;
 		try {
@@ -857,6 +1095,35 @@ export class AgentManager {
 	}
 
 	/**
+	 * Read the persisted `runtimeVersion` from `<handleId>.json`.
+	 * Returns `null` if the file is absent, unparseable, or pre-dates
+	 * the runtimeVersion field (legacy records written before
+	 * IMPORTANT #7 landed). Best-effort — version drift detection is
+	 * informational, not blocking.
+	 */
+	private async readPersistedRuntimeVersion(
+		handleId: string,
+	): Promise<string | null> {
+		const file = path.join(pathFor("agents"), `${handleId}.json`);
+		let raw: string;
+		try {
+			raw = await fsp.readFile(file, "utf8");
+		} catch (err) {
+			if (getErrnoCode(err) === "ENOENT") return null;
+			return null;
+		}
+		let parsed: unknown;
+		try {
+			parsed = JSON.parse(raw);
+		} catch {
+			return null;
+		}
+		if (typeof parsed !== "object" || parsed === null) return null;
+		const v = (parsed as { runtimeVersion?: unknown }).runtimeVersion;
+		return typeof v === "string" ? v : null;
+	}
+
+	/**
 	 * Filter session-log events for the replay re-feed loop. Only
 	 * `prompt` and `inject` AgentMessages are replayed; `approval`,
 	 * `abort`, and `custom` are application-level. Status events
@@ -892,6 +1159,7 @@ export class AgentManager {
 	private async persistAgentConfig(
 		handleId: string,
 		config: RegisterAgentConfig,
+		runtime: AgentRuntime,
 	): Promise<void> {
 		const dir = pathFor("agents");
 		const file = path.join(dir, `${handleId}.json`);
@@ -901,6 +1169,12 @@ export class AgentManager {
 			org: config.org ?? null,
 			cwd: config.cwd,
 			sessionId: config.sessionId,
+			// IMPORTANT #7: record the adapter version observed at register
+			// time so `attemptCrashReplay` can detect drift on the next
+			// boot (operator upgraded the adapter between runs). EC4
+			// documented the gap; this records the data so we can act on
+			// it instead of just warning in the README.
+			runtimeVersion: runtime.version,
 			// env intentionally omitted — avoids persisting AWS_* / IAGO_*
 			// credentials on disk; knownConfigs must supply env at boot
 			// recovery time (see daemon/README.md "Boot recovery" section).
@@ -913,6 +1187,145 @@ export class AgentManager {
 					err instanceof Error ? err.message : String(err)
 				}`,
 			);
+		}
+	}
+
+	/**
+	 * Per-agentId mutex. Chains tail-on-tail so two concurrent
+	 * `registerAgent({agentId: "x"})` calls execute in arrival order —
+	 * the second sees the persisted record from the first and either
+	 * proceeds (same org) or throws (different org).
+	 *
+	 * Mirrors the session-log `withFileLock` pattern used in
+	 * `runtime/daemon/session-log.ts` for cross-call serialization.
+	 */
+	private async withAgentRegistrationLock<T>(
+		agentId: string,
+		fn: () => Promise<T>,
+	): Promise<T> {
+		const prev = this.registrationLocks.get(agentId) ?? Promise.resolve();
+		let release!: () => void;
+		const myLock = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		this.registrationLocks.set(
+			agentId,
+			prev.then(() => myLock).catch(() => undefined),
+		);
+		try {
+			await prev;
+		} catch {
+			// Previous holder rejected; claim the lock anyway.
+		}
+		try {
+			return await fn();
+		} finally {
+			release();
+			// Best-effort GC of the lock map entry once everyone behind us
+			// has drained. Safe to leave entries around — they're cheap
+			// promises.
+			if (this.registrationLocks.get(agentId) === myLock) {
+				this.registrationLocks.delete(agentId);
+			}
+		}
+	}
+
+	/**
+	 * Per-parentHandleId mutex (IMPORTANT #4). Held for the entire
+	 * `spawnSubagent` block AND the `shutdownAgentInternal` block of
+	 * the parent so cascade tearing-down cannot interleave with child
+	 * insertion. Same chain pattern as `withAgentRegistrationLock`.
+	 */
+	private async withParentLock<T>(
+		parentHandleId: string,
+		fn: () => Promise<T>,
+	): Promise<T> {
+		const prev = this.parentLocks.get(parentHandleId) ?? Promise.resolve();
+		let release!: () => void;
+		const myLock = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		this.parentLocks.set(
+			parentHandleId,
+			prev.then(() => myLock).catch(() => undefined),
+		);
+		try {
+			await prev;
+		} catch {
+			// Previous holder rejected; claim the lock anyway.
+		}
+		try {
+			return await fn();
+		} finally {
+			release();
+			if (this.parentLocks.get(parentHandleId) === myLock) {
+				this.parentLocks.delete(parentHandleId);
+			}
+		}
+	}
+
+	/**
+	 * Throws `AgentIdAlreadyRegisteredError` if an `agentId` is registered
+	 * in a different org. Same-org re-registration is permitted (a
+	 * higher layer may legitimately re-register an idle agent under the
+	 * same identity). Walks in-memory first, then on-disk records.
+	 */
+	private async assertAgentIdAvailable(
+		agentId: string,
+		attemptedOrg: string | null,
+	): Promise<void> {
+		// In-memory check
+		for (const tracked of this.handles.values()) {
+			if (tracked.handle.agentId !== agentId) continue;
+			const existingOrg = tracked.org;
+			if (existingOrg !== attemptedOrg) {
+				throw new AgentIdAlreadyRegisteredError(
+					agentId,
+					existingOrg,
+					attemptedOrg,
+				);
+			}
+		}
+
+		// On-disk scan
+		const dir = pathFor("agents");
+		let entries: string[];
+		try {
+			entries = await fsp.readdir(dir);
+		} catch (err) {
+			if (getErrnoCode(err) === "ENOENT") return;
+			throw err;
+		}
+		for (const entry of entries) {
+			if (!entry.endsWith(".json")) continue;
+			let raw: string;
+			try {
+				raw = await fsp.readFile(path.join(dir, entry), "utf8");
+			} catch {
+				continue;
+			}
+			let parsed: unknown;
+			try {
+				parsed = JSON.parse(raw);
+			} catch {
+				continue;
+			}
+			if (
+				typeof parsed !== "object" ||
+				parsed === null ||
+				(parsed as { agentId?: unknown }).agentId !== agentId
+			) {
+				continue;
+			}
+			const orgVal = (parsed as { org?: unknown }).org;
+			const existingOrg = typeof orgVal === "string" ? orgVal : null;
+			if (existingOrg !== attemptedOrg) {
+				throw new AgentIdAlreadyRegisteredError(
+					agentId,
+					existingOrg,
+					attemptedOrg,
+				);
+			}
 		}
 	}
 

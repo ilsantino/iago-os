@@ -94,7 +94,16 @@ export class HeartbeatController {
 	start(): void {
 		if (this.timer !== null) return;
 		this.timer = setInterval(() => {
-			this.inflightSweep = this.sweep();
+			// IMPORTANT #5 (heartbeat): sample-and-skip. If the previous
+			// sweep is still running, drop this tick rather than launch a
+			// second sweep concurrently — otherwise the new sweep
+			// overwrites `this.inflightSweep` and the prior one becomes
+			// unawaitable, leaving stop() / test teardown with a still-
+			// running task that writes into a torn-down temp dir.
+			if (this.inflightSweep !== null) return;
+			this.inflightSweep = this.sweep().finally(() => {
+				this.inflightSweep = null;
+			});
 		}, this.intervalMs);
 	}
 
@@ -111,6 +120,15 @@ export class HeartbeatController {
 			}
 			this.inflightSweep = null;
 		}
+	}
+
+	/**
+	 * Test-only inspection: returns the count of handles currently
+	 * tracked. Used by overlap-detection tests that need to verify the
+	 * sample-and-skip policy from IMPORTANT #5.
+	 */
+	_handleCountForTests(): number {
+		return this.handles.size;
 	}
 
 	/**
@@ -151,6 +169,15 @@ export class HeartbeatController {
 				continue;
 			}
 
+			// IMPORTANT #6: while we awaited `probe()`, another async
+			// path (cascade shutdown, restart, IPC unregister) may have
+			// called `this.unregister(handleId)`. The snapshot still
+			// holds a stale entry; firing `onForceRestart` for a handle
+			// the manager already discarded produces a spurious
+			// `restartAgent` call that throws "No handle to restart"
+			// and noisily logs. Re-check before deciding.
+			if (!this.handles.has(handleId)) continue;
+
 			let reason: ForceRestartReason | null = null;
 			if (!status.alive) {
 				// Agent died between ticks — use "dead" so the manager writes
@@ -170,6 +197,13 @@ export class HeartbeatController {
 			}
 
 			if (reason === null) continue;
+
+			// Second re-check immediately before firing — the gap
+			// between the first re-check and onForceRestart is tiny
+			// (synchronous), but unregister can land in a queued
+			// microtask. Cheap to test, prevents the spurious-restart
+			// log entirely.
+			if (!this.handles.has(handleId)) continue;
 
 			try {
 				await this.onForceRestart(handleId, reason);

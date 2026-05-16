@@ -37,6 +37,22 @@ export interface SpawnOpts {
 	readonly sessionId: string;
 	readonly org?: string;
 	readonly parentHandle?: AgentHandle;
+	/**
+	 * Caller-supplied handle id to reuse for the spawned handle. When
+	 * present, the adapter MUST use this exact id for the returned
+	 * `AgentHandle.id` instead of generating a fresh uuid. Set by
+	 * `AgentManager.restartAgent` so the handle id remains stable
+	 * across restart — concurrent restart callers and any external
+	 * reference (heartbeat, IPC, dashboard) continue to resolve the
+	 * same logical agent via its original id. Generation differences
+	 * are tracked exclusively via `AgentHandle.generationToken`.
+	 *
+	 * Adapters that cannot honor a caller-supplied id (e.g., because
+	 * the underlying provider mints the id externally) MUST throw at
+	 * spawn time — silent id substitution would re-introduce the
+	 * concurrent-restart staleness bug (review CRITICAL #3).
+	 */
+	readonly restoreId?: string;
 }
 
 export interface PromptMessage {

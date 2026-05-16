@@ -48,6 +48,15 @@ export interface AgentRuntime {
 	readonly version: string;
 	readonly interfaceVersion: InterfaceVersion;
 
+	/**
+	 * Spawn a fresh handle. If `opts.restoreId` is supplied, the returned
+	 * `AgentHandle.id` MUST equal `opts.restoreId` exactly — caller
+	 * (typically `AgentManager.restartAgent`) is preserving id stability
+	 * across restart. Adapters that mint ids externally and cannot honor
+	 * a caller-supplied id MUST throw rather than substitute a fresh id;
+	 * silent substitution re-introduces the concurrent-restart
+	 * staleness bug (review CRITICAL #3 of PR #42 adversarial pass).
+	 */
 	spawn(opts: SpawnOpts): Promise<AgentHandle>;
 	send(handle: AgentHandle, message: AgentMessage): Promise<void>;
 	/**

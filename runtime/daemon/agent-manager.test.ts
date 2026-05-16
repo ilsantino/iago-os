@@ -18,7 +18,10 @@ import type {
 	StatusValue,
 } from "../agent-runtime/types.js";
 
-import { AgentManager } from "./agent-manager.js";
+import {
+	AgentIdAlreadyRegisteredError,
+	AgentManager,
+} from "./agent-manager.js";
 import { HeartbeatController } from "./heartbeat.js";
 import { listAllMarkers, readStopMarker, writeStopMarker } from "./markers.js";
 import {
@@ -100,7 +103,12 @@ function makeMockRuntime(id: string): MockRuntimeControls {
 		async spawn(opts: SpawnOpts): Promise<AgentHandle> {
 			spawnCalls.push(opts);
 			spawnCounter++;
-			const handleId = `${id}-h${spawnCounter}`;
+			// CRITICAL #3: honor SpawnOpts.restoreId so restart preserves
+			// handle-id stability. The mock matches the contract the real
+			// Plan 04 PTY adapter will also implement — adapters that
+			// cannot honor a caller-supplied id MUST throw rather than
+			// substitute, per `AgentRuntime.spawn` JSDoc.
+			const handleId = opts.restoreId ?? `${id}-h${spawnCounter}`;
 			const handle: AgentHandle = {
 				id: handleId,
 				runtime: id,
@@ -678,7 +686,7 @@ describe("AgentManager / getCostSummary missing handle", () => {
 });
 
 describe("AgentManager / EC2 parent-died-during-spawn", () => {
-	it("shuts the child down and throws ParentDiedDuringSpawn when parent dies between spawn and linkage", async () => {
+	it("short-circuits via pre-check (IMPORTANT #4) when parent is already dead before spawn", async () => {
 		const ctrl = makeMockRuntime("mock-pty-12");
 		registerRuntime(ctrl.runtime);
 		const mgr = new AgentManager();
@@ -691,9 +699,10 @@ describe("AgentManager / EC2 parent-died-during-spawn", () => {
 			sessionId: "sess-p2",
 		});
 
-		// Mark the parent as not-alive BEFORE spawnSubagent fires. The mock
-		// spawn still returns a child handle, but the EC2 re-check sees the
-		// parent dead and runs the cleanup branch.
+		// Mark the parent as not-alive BEFORE spawnSubagent fires. The
+		// IMPORTANT #4 pre-check short-circuits before paying the spawn
+		// cost — no second runtime.spawn call should land.
+		const spawnsBefore = ctrl.spawnCalls.length;
 		ctrl.setAlive(parent.id, false);
 
 		await expect(
@@ -705,9 +714,49 @@ describe("AgentManager / EC2 parent-died-during-spawn", () => {
 			}),
 		).rejects.toThrow(/Parent handle died during subagent spawn/);
 
-		// Cleanup: spawn ran (child was created), then shutdown was called
-		// on that child by the EC2 branch.
-		expect(ctrl.spawnCalls.length).toBeGreaterThanOrEqual(2);
+		// IMPORTANT #4: pre-check fired BEFORE runtime.spawn. No new
+		// spawn call landed (saves the expensive PTY allocation when
+		// parent is obviously gone).
+		expect(ctrl.spawnCalls.length).toBe(spawnsBefore);
+	});
+
+	it("post-spawn re-check (EC2 path) kills the child and throws when parent dies DURING spawn", async () => {
+		const ctrl = makeMockRuntime("mock-pty-12b");
+		registerRuntime(ctrl.runtime);
+		const mgr = new AgentManager();
+
+		const parent = await mgr.registerAgent({
+			agentId: "parent-ec2b",
+			runtimeId: "mock-pty-12b",
+			cwd: "/tmp/work",
+			env: {},
+			sessionId: "sess-p2b",
+		});
+
+		// Override isAlive: pre-check sees alive; post-check sees dead.
+		// Simulates the race window where parent exits between
+		// runtime.spawn returning and the linkage insertion.
+		let isAliveCallCount = 0;
+		ctrl.runtime.isAlive = async () => {
+			isAliveCallCount++;
+			// Calls 1 = pre-check (alive). Call 2 = post-check (dead).
+			return isAliveCallCount === 1;
+		};
+
+		const spawnsBefore = ctrl.spawnCalls.length;
+
+		await expect(
+			mgr.spawnSubagent({
+				parentHandleId: parent.id,
+				agentId: "child-ec2b",
+				runtimeId: "mock-pty-12b",
+				sessionId: "sess-c2b",
+			}),
+		).rejects.toThrow(/Parent handle died during subagent spawn/);
+
+		// Spawn DID run (pre-check passed), but the post-check killed
+		// the child and threw.
+		expect(ctrl.spawnCalls.length).toBe(spawnsBefore + 1);
 		const childShutdown = ctrl.shutdownCalls.find(
 			(s) => s.handleId !== parent.id,
 		);
@@ -937,7 +986,9 @@ describe("AgentManager / EC5 cost event after parent teardown", () => {
 			provider: "anthropic",
 			model: "claude-opus-4-7",
 		});
-		await waitForCondition(() => mgr.getCostSummary(parent.id).rolledUpCost > 0);
+		await waitForCondition(
+			() => mgr.getCostSummary(parent.id).rolledUpCost > 0,
+		);
 		expect(mgr.getCostSummary(parent.id).rolledUpCost).toBeCloseTo(0.1, 6);
 
 		// Shut down the parent — cascade tears down the child too.
@@ -968,5 +1019,463 @@ describe("AgentManager / EC5 cost event after parent teardown", () => {
 				model: "claude-opus-4-7",
 			}),
 		).resolves.toBeUndefined();
+	});
+});
+
+describe("AgentManager / CRITICAL #1 — agentId uniqueness at write-side", () => {
+	it("parallel registerAgent of same agentId in DIFFERENT orgs: one succeeds, one throws AgentIdAlreadyRegisteredError", async () => {
+		const ctrlA = makeMockRuntime("mock-pty-uniq-a");
+		const ctrlB = makeMockRuntime("mock-pty-uniq-b");
+		registerRuntime(ctrlA.runtime);
+		registerRuntime(ctrlB.runtime);
+		const mgr = new AgentManager();
+
+		const results = await Promise.allSettled([
+			mgr.registerAgent({
+				agentId: "alpha",
+				runtimeId: "mock-pty-uniq-a",
+				org: "org-1",
+				cwd: "/tmp/w",
+				env: {},
+				sessionId: "sess-1",
+			}),
+			mgr.registerAgent({
+				agentId: "alpha",
+				runtimeId: "mock-pty-uniq-b",
+				org: "org-2",
+				cwd: "/tmp/w",
+				env: {},
+				sessionId: "sess-2",
+			}),
+		]);
+
+		const fulfilled = results.filter((r) => r.status === "fulfilled");
+		const rejected = results.filter((r) => r.status === "rejected");
+		expect(fulfilled.length).toBe(1);
+		expect(rejected.length).toBe(1);
+		const rejection = rejected[0];
+		if (rejection?.status === "rejected") {
+			expect(rejection.reason).toBeInstanceOf(AgentIdAlreadyRegisteredError);
+		}
+	});
+
+	it("sequential registerAgent of same agentId in DIFFERENT orgs throws on the second call before spawn runs", async () => {
+		const ctrl = makeMockRuntime("mock-pty-uniq-seq");
+		registerRuntime(ctrl.runtime);
+		const mgr = new AgentManager();
+
+		await mgr.registerAgent({
+			agentId: "beta",
+			runtimeId: "mock-pty-uniq-seq",
+			org: "org-X",
+			cwd: "/tmp/w",
+			env: {},
+			sessionId: "sess-X",
+		});
+
+		const spawnsBefore = ctrl.spawnCalls.length;
+		await expect(
+			mgr.registerAgent({
+				agentId: "beta",
+				runtimeId: "mock-pty-uniq-seq",
+				org: "org-Y",
+				cwd: "/tmp/w",
+				env: {},
+				sessionId: "sess-Y",
+			}),
+		).rejects.toBeInstanceOf(AgentIdAlreadyRegisteredError);
+		// No second spawn should have landed — the throw is at the
+		// write boundary before runtime.spawn.
+		expect(ctrl.spawnCalls.length).toBe(spawnsBefore);
+	});
+
+	it("same agentId in the SAME org is permitted (re-registration of an idle agent)", async () => {
+		const ctrl = makeMockRuntime("mock-pty-uniq-same");
+		registerRuntime(ctrl.runtime);
+		const mgr = new AgentManager();
+
+		await mgr.registerAgent({
+			agentId: "gamma",
+			runtimeId: "mock-pty-uniq-same",
+			org: "org-1",
+			cwd: "/tmp/w",
+			env: {},
+			sessionId: "sess-g1",
+		});
+
+		// Same agentId + same org → permitted.
+		await expect(
+			mgr.registerAgent({
+				agentId: "gamma",
+				runtimeId: "mock-pty-uniq-same",
+				org: "org-1",
+				cwd: "/tmp/w",
+				env: {},
+				sessionId: "sess-g2",
+			}),
+		).resolves.toBeDefined();
+	});
+});
+
+describe("AgentManager / CRITICAL #2 — cascade marker reason propagation", () => {
+	it("parent CRASHES → children get 'crash' markers (replayed on next boot)", async () => {
+		const ctrl = makeMockRuntime("mock-pty-crash-cascade");
+		registerRuntime(ctrl.runtime);
+		const mgr = new AgentManager();
+
+		const parent = await mgr.registerAgent({
+			agentId: "crash-parent",
+			runtimeId: "mock-pty-crash-cascade",
+			cwd: "/tmp/w",
+			env: {},
+			sessionId: "sess-cp",
+		});
+		const child = await mgr.spawnSubagent({
+			parentHandleId: parent.id,
+			agentId: "crash-child",
+			runtimeId: "mock-pty-crash-cascade",
+			sessionId: "sess-cc",
+		});
+
+		// Parent crashes → cascade fires with reason "crash".
+		ctrl.emitStatus(parent.id, "crashed", 137);
+		await waitForCondition(() =>
+			ctrl.shutdownCalls.some((c) => c.handleId === child.id),
+		);
+		// Marker on the CHILD must be "crash" so boot recovery
+		// includes it in the replay set.
+		const childMarker = await readStopMarker(child.id);
+		expect(childMarker?.reason).toBe("crash");
+	});
+
+	it("parent shuts down RESTART (recycle) → children get 'recycle' markers (NOT replayed on next boot)", async () => {
+		const ctrl = makeMockRuntime("mock-pty-recycle-cascade");
+		registerRuntime(ctrl.runtime);
+		const mgr = new AgentManager();
+
+		const parent = await mgr.registerAgent({
+			agentId: "recycle-parent",
+			runtimeId: "mock-pty-recycle-cascade",
+			cwd: "/tmp/w",
+			env: {},
+			sessionId: "sess-rp",
+		});
+		const child = await mgr.spawnSubagent({
+			parentHandleId: parent.id,
+			agentId: "recycle-child",
+			runtimeId: "mock-pty-recycle-cascade",
+			sessionId: "sess-rc",
+		});
+
+		// Restart parent with reason "stalled" → child cascade reason
+		// is "recycle".
+		await mgr.restartAgent(parent.id, "stalled");
+		const childMarker = await readStopMarker(child.id);
+		expect(childMarker?.reason).toBe("recycle");
+	});
+
+	it("parent gracefully shutdownAgent → children get 'graceful' markers (NOT replayed)", async () => {
+		const ctrl = makeMockRuntime("mock-pty-graceful-cascade");
+		registerRuntime(ctrl.runtime);
+		const mgr = new AgentManager();
+
+		const parent = await mgr.registerAgent({
+			agentId: "graceful-parent",
+			runtimeId: "mock-pty-graceful-cascade",
+			cwd: "/tmp/w",
+			env: {},
+			sessionId: "sess-gp",
+		});
+		const child = await mgr.spawnSubagent({
+			parentHandleId: parent.id,
+			agentId: "graceful-child",
+			runtimeId: "mock-pty-graceful-cascade",
+			sessionId: "sess-gc",
+		});
+
+		await mgr.shutdownAgent(parent.id, "SIGTERM");
+		const childMarker = await readStopMarker(child.id);
+		expect(childMarker?.reason).toBe("graceful");
+	});
+});
+
+describe("AgentManager / CRITICAL #3 — handle-id stability across restart", () => {
+	it("3 concurrent restartAgent calls all resolve to handle with SAME id; getHandle(id) returns it after", async () => {
+		const ctrl = makeMockRuntime("mock-pty-stable");
+		registerRuntime(ctrl.runtime);
+		const mgr = new AgentManager();
+
+		const handle = await mgr.registerAgent({
+			agentId: "stable",
+			runtimeId: "mock-pty-stable",
+			cwd: "/tmp/w",
+			env: {},
+			sessionId: "sess-s",
+		});
+		const originalId = handle.id;
+
+		const results = await Promise.all([
+			mgr.restartAgent(originalId, "stalled"),
+			mgr.restartAgent(originalId, "stalled"),
+			mgr.restartAgent(originalId, "stalled"),
+		]);
+
+		// CRITICAL #3: all three callers resolve to the SAME handle id
+		// (preserved across restart via SpawnOpts.restoreId).
+		for (const r of results) {
+			expect(r.id).toBe(originalId);
+		}
+		// And `getHandle(originalId)` returns the new generation.
+		const retrieved = mgr.getHandle(originalId);
+		expect(retrieved?.id).toBe(originalId);
+		expect(retrieved?.generationToken).toBeGreaterThan(0);
+	});
+
+	it("restartAgent twice sequentially: second call resolves to same id, generation increments", async () => {
+		const ctrl = makeMockRuntime("mock-pty-stable-seq");
+		registerRuntime(ctrl.runtime);
+		const mgr = new AgentManager();
+
+		const handle = await mgr.registerAgent({
+			agentId: "stable-seq",
+			runtimeId: "mock-pty-stable-seq",
+			cwd: "/tmp/w",
+			env: {},
+			sessionId: "sess-ss",
+		});
+		const originalId = handle.id;
+
+		const r1 = await mgr.restartAgent(originalId, "stalled");
+		expect(r1.id).toBe(originalId);
+		expect(r1.generationToken).toBe(1);
+
+		const r2 = await mgr.restartAgent(originalId, "stalled");
+		expect(r2.id).toBe(originalId);
+		expect(r2.generationToken).toBe(2);
+	});
+
+	it("adapter that ignores restoreId throws contract-violation error", async () => {
+		const ctrl = makeMockRuntime("mock-pty-rogue");
+		// Override spawn to ignore restoreId.
+		ctrl.runtime.spawn = async (opts: SpawnOpts): Promise<AgentHandle> => {
+			ctrl.spawnCalls.push(opts);
+			const newId = `rogue-${Math.random().toString(36).slice(2, 9)}`;
+			return {
+				id: newId,
+				runtime: "mock-pty-rogue",
+				shape: "pty",
+				agentId: opts.agentId,
+				sessionId: opts.sessionId,
+				generationToken: 0,
+				org: opts.org,
+				parentHandleId: opts.parentHandle?.id,
+				spawnedAt: Date.now(),
+				markerPath: path.join(pathFor("markers"), `${newId}.daemon-stop`),
+			};
+		};
+		registerRuntime(ctrl.runtime);
+		const mgr = new AgentManager();
+
+		const handle = await mgr.registerAgent({
+			agentId: "rogue-agent",
+			runtimeId: "mock-pty-rogue",
+			cwd: "/tmp/w",
+			env: {},
+			sessionId: "sess-rog",
+		});
+
+		await expect(mgr.restartAgent(handle.id, "stalled")).rejects.toThrow(
+			/violated SpawnOpts.restoreId contract/,
+		);
+	});
+});
+
+describe("AgentManager / IMPORTANT #5 — adapter liveness probe overrides stall detection", () => {
+	it("liveness probe returning true suppresses stall trip even when lastStatusChangeMs is stale", async () => {
+		const ctrl = makeMockRuntime("mock-pty-liveness");
+		registerRuntime(ctrl.runtime);
+		const hb = new HeartbeatController({
+			intervalMs: 60_000,
+			stallThresholdMs: 10,
+			// onForceRestart REPLACED by AgentManager auto-wiring; we
+			// observe absence of restart via ctrl.spawnCalls.
+			onForceRestart: async () => {},
+		});
+		const mgr = new AgentManager({ heartbeat: hb });
+		// Register adapter-side liveness probe BEFORE registerAgent so
+		// trackHandle's probe closure picks it up.
+		mgr.registerLivenessProbe("mock-pty-liveness", () => true);
+
+		const handle = await mgr.registerAgent({
+			agentId: "long-runner",
+			runtimeId: "mock-pty-liveness",
+			cwd: "/tmp/w",
+			env: {},
+			sessionId: "sess-lr",
+		});
+		const spawnsBefore = ctrl.spawnCalls.length;
+
+		// Advance heartbeat clock far past stallThreshold — without
+		// the liveness override, this would trigger a stall trip.
+		hb._setNowForTests(() => Date.now() + 10_000);
+
+		await hb._tickForTests();
+		// Yield to let any restart-triggered spawn settle.
+		await new Promise<void>((resolve) => setTimeout(resolve, 50));
+
+		// Liveness probe returned true → no force-restart, no new spawn.
+		expect(ctrl.spawnCalls.length).toBe(spawnsBefore);
+		// Handle is still tracked under the original id.
+		expect(mgr.getHandle(handle.id)).toBeDefined();
+	});
+
+	it("liveness probe returning false leaves stall detection unchanged (stalled handle still fires restart)", async () => {
+		const ctrl = makeMockRuntime("mock-pty-liveness-false");
+		registerRuntime(ctrl.runtime);
+		const hb = new HeartbeatController({
+			intervalMs: 60_000,
+			stallThresholdMs: 10,
+			// onForceRestart will be REPLACED by AgentManager constructor
+			// (auto-wired to restartAgent). We observe the restart via
+			// ctrl.spawnCalls instead.
+			onForceRestart: async () => {},
+		});
+		const mgr = new AgentManager({ heartbeat: hb });
+		mgr.registerLivenessProbe("mock-pty-liveness-false", () => false);
+
+		const handle = await mgr.registerAgent({
+			agentId: "really-stalled",
+			runtimeId: "mock-pty-liveness-false",
+			cwd: "/tmp/w",
+			env: {},
+			sessionId: "sess-rs",
+		});
+		const spawnsBefore = ctrl.spawnCalls.length;
+
+		// Drive heartbeat's clock forward beyond stallThreshold so the
+		// stall trip is unambiguous regardless of test scheduling.
+		// Set AFTER registerAgent so lastStatusChangeMs (at register time)
+		// is in the past relative to now().
+		hb._setNowForTests(() => Date.now() + 10_000);
+
+		await hb._tickForTests();
+
+		// Probe said NOT alive (liveness false) → stall detection
+		// uses original lastStatusChangeMs, which is now 10s old
+		// against the fake-clock now() → restart fires (spawn increments).
+		await waitForCondition(() => ctrl.spawnCalls.length > spawnsBefore, 500);
+		expect(ctrl.spawnCalls.length).toBeGreaterThan(spawnsBefore);
+		expect(mgr.getHandle(handle.id)).toBeDefined();
+
+		// Drain pending status writes before teardown.
+		await new Promise<void>((resolve) => setTimeout(resolve, 50));
+	});
+});
+
+describe("AgentManager / IMPORTANT #7 — adapter version drift detection", () => {
+	it("persists runtimeVersion at register time; logs warning on replay when adapter version differs", async () => {
+		const ctrl = makeMockRuntime("mock-pty-drift");
+		ctrl.runtime.version = "v1.0.0";
+		registerRuntime(ctrl.runtime);
+		const mgr = new AgentManager();
+
+		const handle = await mgr.registerAgent({
+			agentId: "drift-agent",
+			runtimeId: "mock-pty-drift",
+			cwd: "/tmp/w",
+			env: {},
+			sessionId: "sess-drift",
+		});
+
+		// Read persisted file directly to confirm runtimeVersion is recorded.
+		const configFile = path.join(pathFor("agents"), `${handle.id}.json`);
+		const raw = await fsp.readFile(configFile, "utf8");
+		const parsed = JSON.parse(raw);
+		expect(parsed.runtimeVersion).toBe("v1.0.0");
+
+		// Simulate adapter upgrade between boots.
+		ctrl.runtime.version = "v2.0.0";
+
+		// Simulate crash-replay: stamp a crash marker + HWM, then call
+		// bootRecovery with knownConfigs.
+		await mgr.shutdownAgent(handle.id, "SIGTERM");
+		// Replace the graceful marker with a crash marker to drive
+		// attemptCrashReplay.
+		await writeStopMarker(handle.id, "crash");
+		ctrl.setRestoreFromMarker(async () => ({
+			id: handle.id,
+			runtime: "mock-pty-drift",
+			shape: "pty",
+			agentId: "drift-agent",
+			sessionId: "sess-drift",
+			generationToken: 1,
+			spawnedAt: Date.now(),
+			markerPath: path.join(pathFor("markers"), `${handle.id}.daemon-stop`),
+		}));
+
+		mgr._resetBootRecoveryForTests();
+		await mgr.bootRecovery({
+			knownConfigs: new Map([
+				[
+					handle.id,
+					{
+						agentId: "drift-agent",
+						runtimeId: "mock-pty-drift",
+						cwd: "/tmp/w",
+						env: {},
+						sessionId: "sess-drift",
+					},
+				],
+			]),
+		});
+
+		// Warning emitted via console.error (which the test spy already
+		// captures). Look for the drift message.
+		const errorCalls = (console.error as ReturnType<typeof vi.fn>).mock.calls;
+		const driftMessage = errorCalls.find((args) =>
+			String(args[0]).includes("adapter version drifted"),
+		);
+		expect(driftMessage).toBeDefined();
+	});
+});
+
+describe("AgentManager / shutdownAgent + cascadeShutdownChildren — mutex hardening (IMPORTANT #4)", () => {
+	it("parallel spawnSubagent + shutdownAgent on parent: shutdown waits for spawn to complete (no orphan child)", async () => {
+		const ctrl = makeMockRuntime("mock-pty-mutex");
+		registerRuntime(ctrl.runtime);
+		const mgr = new AgentManager();
+
+		const parent = await mgr.registerAgent({
+			agentId: "mutex-parent",
+			runtimeId: "mock-pty-mutex",
+			cwd: "/tmp/w",
+			env: {},
+			sessionId: "sess-mp",
+		});
+
+		// Kick off spawn + shutdown concurrently. The parent mutex
+		// serializes them — either spawn completes then shutdown
+		// cascades the new child, OR shutdown wins first and
+		// spawnSubagent throws ParentDiedDuringSpawn.
+		const spawnPromise = mgr
+			.spawnSubagent({
+				parentHandleId: parent.id,
+				agentId: "mutex-child",
+				runtimeId: "mock-pty-mutex",
+				sessionId: "sess-mc",
+			})
+			.catch((err) => err);
+		const shutdownPromise = mgr.shutdownAgent(parent.id, "SIGTERM");
+
+		const [spawnResult] = await Promise.all([spawnPromise, shutdownPromise]);
+
+		// After both settle, no live handles remain for the parent.
+		expect(mgr.getHandle(parent.id)).toBeUndefined();
+
+		// If spawn succeeded, the child must have been cascaded down.
+		if (spawnResult && typeof spawnResult === "object" && "id" in spawnResult) {
+			const childId = (spawnResult as AgentHandle).id;
+			expect(mgr.getHandle(childId)).toBeUndefined();
+		}
 	});
 });

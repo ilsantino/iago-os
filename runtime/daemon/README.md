@@ -32,6 +32,24 @@ handle stopped, which drives the next-boot recovery branch:
 | `crash` | Daemon detected the agent crashed (heartbeat-triggered fallback) | Attempt `restoreFromMarker` + session.jsonl replay. |
 | `recycle` | Voluntary restart from heartbeat (RSS-exceeded or stalled) | Re-spawn cleanly. NO replay. |
 
+### Cascade marker reason propagation (review CRITICAL #2)
+
+When a parent shuts down, every linked child also shuts down via
+`cascadeShutdownChildren`. Each child's marker reason is the SAME as the
+parent's reason — not unconditionally `graceful`:
+
+| Parent exit path | Cascade reason on each child |
+|------------------|------------------------------|
+| User `shutdownAgent(parent, ...)` | `graceful` |
+| Parent status callback `exited` | `graceful` |
+| Parent status callback `crashed` | `crash` |
+| Heartbeat-triggered `restartAgent(parent, "stalled"\|"rss-exceeded")` | `recycle` |
+| Heartbeat-triggered `restartAgent(parent, "dead"\|"crash")` | `crash` |
+
+Without reason propagation, every cascade-killed child would land on disk
+as `graceful` and be silently skipped from the next-boot replay set — losing
+work that was killed only because its parent crashed.
+
 **Absent marker on next boot** means the daemon itself crashed (no chance to
 write a marker). The boot recovery branch treats this as `crash` for any
 agent listed in `knownConfigs` whose marker is absent and runs the same
@@ -191,6 +209,47 @@ silently inert.
    `Ambiguous agentId across orgs: <name>` (stress-test PR4). AgentIds MUST
    be globally unique.
 
+### Write-side uniqueness enforcement (review CRITICAL #1)
+
+PR4 invariant is enforced at TWO points:
+
+- **Write-side:** `registerAgent` holds a per-agentId in-process mutex
+  (`registrationLocks: Map<agentId, Promise>`) AND runs a pre-spawn check
+  via `assertAgentIdAvailable(agentId, attemptedOrg)`. The check walks
+  in-memory handles + the on-disk `pathFor("agents")` scan. If a record
+  exists in a DIFFERENT org, throws `AgentIdAlreadyRegisteredError`
+  BEFORE `runtime.spawn` runs — no orphan adapter resources, no marker.
+  Same-org re-registration is permitted.
+- **Read-side:** `resolveAgentOrg` still throws on ambiguous on-disk
+  records as a defense-in-depth check.
+
+Parallel `registerAgent({agentId: "x", org: "a"})` /
+`registerAgent({agentId: "x", org: "b"})` calls serialize through the
+mutex; the second call sees the persisted record from the first and
+throws `AgentIdAlreadyRegisteredError`.
+
+## Handle-id stability across restart (review CRITICAL #3)
+
+`AgentManager.restartAgent` passes the original `handleId` as
+`SpawnOpts.restoreId` to `runtime.spawn`. Adapters MUST honor this — the
+returned `AgentHandle.id` must equal `opts.restoreId`. Adapters that
+cannot honor a caller-supplied id (e.g., because the underlying provider
+mints the id externally) MUST throw rather than silently substitute a
+fresh id; substitution re-introduces the staleness bug where a
+concurrent `restartAgent(originalId)` caller receives a handle whose id
+no longer matches anything `getHandle` knows about.
+
+The contract: handle ids are STABLE across restart; generations are the
+only signal callers should use to discriminate generations. The
+generation token in `AgentHandle.generationToken` monotonically
+increments on every restart.
+
+`AgentManager` enforces the contract: if `restoreId` is supplied but the
+adapter returns a handle with a different id, the rogue handle is shut
+down and `Error("...violated SpawnOpts.restoreId contract...")` is
+thrown — making the violation loud rather than producing a stale handle
+map.
+
 ## Cost-unit convention (stress-test PR3)
 
 `dollarsUsd: number` is a JavaScript float for Phase 1. The in-memory rollup
@@ -209,8 +268,14 @@ ledger is canonical.
 | `restoreFromMarker` returns `null` | Adapter cannot resume. Crash recorded, replay skipped — never fail boot. |
 | `.daemon-stop` corrupted | `readStopMarker` returns `null` with stderr warning. Treated as absent. |
 | Cost event after parent shutdown | `applyCostEvent` silently drops missing ancestors (EC5). |
-| Concurrent restart on same handle | `restartingPromises` map returns the same in-flight promise to both callers (EC1, M1). |
+| Concurrent restart on same handle | `restartingPromises` map returns the same in-flight promise to both callers (EC1, M1). Handle id is STABLE across restart (CRITICAL #3). |
+| Duplicate `agentId` across orgs | `registerAgent` throws `AgentIdAlreadyRegisteredError` at write-side (CRITICAL #1). Same-org re-registration permitted. |
+| Cascade marker reason | Children inherit parent's exit reason (CRITICAL #2). Crash-cascaded children replayed on next boot; graceful-cascaded children skipped. |
+| Adapter-version drift between boots | `persistAgentConfig` records `runtimeVersion`. `attemptCrashReplay` compares against current adapter version; logs `[agent-manager] adapter version drifted on replay for ${handleId}` warning and continues (IMPORTANT #7). |
 | Adapter-version mismatch (Phase 3+) | Phase 1 has only `v1`. RuntimeAdapterShim translates later — gap documented, not handled now (EC4). |
+| Heartbeat tick faster than sweep | Sample-and-skip — second tick during in-flight sweep is dropped (IMPORTANT #5). |
+| Handle unregistered mid-sweep | Re-check `handles.has(handleId)` after `await probe()` skips spurious restarts (IMPORTANT #6). |
+| Long steady-state operations (e.g., `git clone`) | Adapter registers a liveness probe via `AgentManager.registerLivenessProbe(runtimeId, probe)`. When the probe returns true, the stall trip is suppressed regardless of `lastStatusChangeMs` (IMPORTANT #5 / Q3). |
 
 ## State directory layout
 
