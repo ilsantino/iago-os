@@ -36,7 +36,7 @@ export interface HeartbeatStatus {
 	readonly lastStatusChangeMs: number;
 }
 
-export type ForceRestartReason = "stalled" | "rss-exceeded";
+export type ForceRestartReason = "stalled" | "rss-exceeded" | "dead";
 
 export type ForceRestartCallback = (
 	handleId: string,
@@ -153,7 +153,10 @@ export class HeartbeatController {
 
 			let reason: ForceRestartReason | null = null;
 			if (!status.alive) {
-				reason = "stalled";
+				// Agent died between ticks — use "dead" so the manager writes
+				// a "crash" marker and boot recovery attempts replay if the
+				// daemon itself crashes before the restart completes.
+				reason = "dead";
 			} else if (
 				status.rssBytes !== undefined &&
 				status.rssBytes > this.rssLimitBytes

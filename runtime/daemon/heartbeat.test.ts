@@ -62,7 +62,7 @@ describe("HeartbeatController", () => {
 		expect(calls).toHaveLength(0);
 	});
 
-	it("alive=false triggers force-restart 'stalled'", async () => {
+	it("alive=false triggers force-restart 'dead'", async () => {
 		const { hb, calls } = makeController();
 		hb._setNowForTests(() => 1_000_000);
 		hb.register(
@@ -76,7 +76,7 @@ describe("HeartbeatController", () => {
 
 		await hb._tickForTests();
 
-		expect(calls).toEqual([{ handleId: "h-dead", reason: "stalled" }]);
+		expect(calls).toEqual([{ handleId: "h-dead", reason: "dead" }]);
 	});
 
 	it("rss above limit triggers force-restart 'rss-exceeded'", async () => {

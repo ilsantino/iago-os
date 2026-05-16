@@ -60,8 +60,6 @@ import {
 import {
 	ReplayController,
 	appendEvent,
-	getHWM,
-	setHWM,
 } from "./session-log.js";
 import { assertSafeIdentifier, getErrnoCode, pathFor } from "./state-paths.js";
 
@@ -172,6 +170,9 @@ export class AgentManager {
 	private readonly restartingPromises = new Map<string, Promise<AgentHandle>>();
 	private bootRecoveryRan = false;
 	private cachedBootRecovery: BootRecoveryResult | null = null;
+	// Same promise-capture pattern as restartingPromises: assigned synchronously
+	// before the first await so concurrent callers share a single in-flight run.
+	private bootRecoveryPromise: Promise<BootRecoveryResult> | null = null;
 
 	constructor(opts?: AgentManagerOpts) {
 		this.heartbeat = opts?.heartbeat;
@@ -279,7 +280,7 @@ export class AgentManager {
 		existing: TrackedHandle,
 	): Promise<AgentHandle> {
 		const markerReason: StopMarkerReason =
-			reason === "crash" ? "crash" : "recycle";
+			reason === "crash" || reason === "dead" ? "crash" : "recycle";
 		await writeStopMarker(handleId, markerReason);
 		// Cascade children BEFORE the parent shutdown so they are torn
 		// down cleanly even when the adapter does not emit a terminal
@@ -461,10 +462,9 @@ export class AgentManager {
 	 * Idempotency: second call returns the cached result (EC3).
 	 */
 	async bootRecovery(opts?: BootRecoveryOpts): Promise<BootRecoveryResult> {
-		if (this.bootRecoveryRan && this.cachedBootRecovery !== null) {
-			return this.cachedBootRecovery;
-		}
-		this.bootRecoveryRan = true;
+		if (this.bootRecoveryPromise !== null) return this.bootRecoveryPromise;
+		this.bootRecoveryPromise = (async () => {
+			this.bootRecoveryRan = true;
 
 		const recovered: string[] = [];
 		const cleanShutdowns: string[] = [];
@@ -553,6 +553,9 @@ export class AgentManager {
 		};
 		this.cachedBootRecovery = result;
 		return result;
+		})();
+		// bootRecoveryPromise was just assigned above; non-null assertion is safe.
+		return this.bootRecoveryPromise!;
 	}
 
 	/**
@@ -587,6 +590,7 @@ export class AgentManager {
 	_resetBootRecoveryForTests(): void {
 		this.bootRecoveryRan = false;
 		this.cachedBootRecovery = null;
+		this.bootRecoveryPromise = null;
 	}
 
 	private async trackHandle(args: {
@@ -797,8 +801,6 @@ export class AgentManager {
 		const replay = new ReplayController(handleId);
 		await replay.pauseIntake();
 		try {
-			const hwm = await getHWM(handleId);
-			if (hwm !== null) await setHWM(handleId, hwm);
 			await replay.replay(async (event) => {
 				const message = this.eventToReplayableMessage(event);
 				if (message === null) return;
@@ -899,6 +901,9 @@ export class AgentManager {
 			org: config.org ?? null,
 			cwd: config.cwd,
 			sessionId: config.sessionId,
+			// env intentionally omitted — avoids persisting AWS_* / IAGO_*
+			// credentials on disk; knownConfigs must supply env at boot
+			// recovery time (see daemon/README.md "Boot recovery" section).
 		};
 		try {
 			await fsp.writeFile(file, JSON.stringify(payload));

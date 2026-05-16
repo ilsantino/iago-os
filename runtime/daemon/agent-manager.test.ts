@@ -898,3 +898,75 @@ describe("AgentManager / RSS-driven heartbeat recycling (Codex H3)", () => {
 		await new Promise<void>((resolve) => setTimeout(resolve, 50));
 	});
 });
+
+describe("AgentManager / EC5 cost event after parent teardown", () => {
+	it("normal rollup works; post-shutdown getCostSummary is stable and pushCost to closed stream does not throw", async () => {
+		// The cascade from shutdownAgent always tears down children before the
+		// parent, so "child alive, parent gone" is not reachable via the
+		// public API. This test verifies the adjacent observables that ARE
+		// reachable: normal rollup works, and the post-shutdown state is
+		// stable (no throw from getCostSummary or a pushCost on the now-closed
+		// child stream). The applyCostEvent guard at line 747 is exercised
+		// when a queued cost event fires after teardown removes the handle —
+		// that path is covered by the race on the existing cost rollup test
+		// plus the shutdown-path assertions here.
+		const ctrl = makeMockRuntime("mock-pty-ec5");
+		registerRuntime(ctrl.runtime);
+		const mgr = new AgentManager();
+
+		const parent = await mgr.registerAgent({
+			agentId: "ec5-parent",
+			runtimeId: "mock-pty-ec5",
+			cwd: "/tmp/work",
+			env: {},
+			sessionId: "sess-ec5-p",
+		});
+		const child = await mgr.spawnSubagent({
+			parentHandleId: parent.id,
+			agentId: "ec5-child",
+			runtimeId: "mock-pty-ec5",
+			sessionId: "sess-ec5-c",
+		});
+
+		// Normal rollup works: child cost event increments parent rolledUpCost.
+		await ctrl.pushCost(child.id, {
+			at: Date.now(),
+			agentId: "ec5-child",
+			sessionId: "sess-ec5-c",
+			dollarsUsd: 0.1,
+			provider: "anthropic",
+			model: "claude-opus-4-7",
+		});
+		await waitForCondition(() => mgr.getCostSummary(parent.id).rolledUpCost > 0);
+		expect(mgr.getCostSummary(parent.id).rolledUpCost).toBeCloseTo(0.1, 6);
+
+		// Shut down the parent — cascade tears down the child too.
+		await mgr.shutdownAgent(parent.id, "SIGTERM");
+		expect(mgr.getHandle(parent.id)).toBeUndefined();
+		expect(mgr.getHandle(child.id)).toBeUndefined();
+
+		// getCostSummary must not throw for removed handles; returns zeros.
+		expect(mgr.getCostSummary(parent.id)).toEqual({
+			selfCost: 0,
+			rolledUpCost: 0,
+			total: 0,
+		});
+		expect(mgr.getCostSummary(child.id)).toEqual({
+			selfCost: 0,
+			rolledUpCost: 0,
+			total: 0,
+		});
+
+		// pushCost into the closed child stream must not throw.
+		await expect(
+			ctrl.pushCost(child.id, {
+				at: Date.now(),
+				agentId: "ec5-child",
+				sessionId: "sess-ec5-c",
+				dollarsUsd: 0.1,
+				provider: "anthropic",
+				model: "claude-opus-4-7",
+			}),
+		).resolves.toBeUndefined();
+	});
+});
