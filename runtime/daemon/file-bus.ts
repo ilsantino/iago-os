@@ -14,6 +14,14 @@
  *   `__` (the Telegram → agent tagging convention writes filenames as
  *   `<agentId>__<uuid>.json`; the file-bus treats the whole string as
  *   the taskId). The file-bus NEVER splits on `__`.
+ * - **AgentId validation at boundary:** callers constructing composite
+ *   `<agentId>__<taskId>.json` filenames MUST `validateAgentId(agentId)`
+ *   from state-paths.ts BEFORE concatenation. The file-bus enforces
+ *   `assertSafeIdentifier` on the composite (rejects path separators,
+ *   `..`, NUL bytes) but does NOT verify the `<agentId>` half meets the
+ *   stricter agentId contract (lower-case, no Windows reserved names).
+ *   Plan 06 Telegram routing MUST validate before composing — file-bus
+ *   provides defense-in-depth, not the primary check.
  * - **Scale migration trigger:** Phase 1 + Phase 2 layout is
  *   `tasks/{pending,claimed,resolved}/<agentId>__<taskId>.json` (flat).
  *   Migrate to per-agent subdirectory layout
@@ -117,19 +125,41 @@ function resolvedPathOf(taskId: string): string {
 }
 
 function resolvedTmpPathOf(taskId: string): string {
-	return path.join(pathFor("tasks/resolved"), `.${taskId}.tmp`);
+	// Per-attempt suffix prevents same-owner concurrent writes from clobbering
+	// each other's tmp file. pid+hrtime+random gives uniqueness across
+	// processes, threads, and same-tick concurrent calls without requiring
+	// caller coordination. The atomicRename(tmp, final) target stays
+	// deterministic, so only the tmp ephemeral collision is fixed here.
+	const pid = process.pid;
+	const ts = process.hrtime.bigint().toString(36);
+	const rand = Math.random().toString(36).slice(2, 10);
+	return path.join(
+		pathFor("tasks/resolved"),
+		`.${taskId}.${pid}-${ts}-${rand}.tmp`,
+	);
 }
 
 async function writeClaimDurably(
 	claimPath: string,
 	contents: ClaimFileContents,
 ): Promise<void> {
+	// O_EXCL via "wx" creates a 0-byte file BEFORE we write contents. If the
+	// write or datasync fails (ENOSPC, EIO, mid-call SIGKILL), the empty file
+	// must be unlinked — otherwise the next claimTask call sees EEXIST on a
+	// malformed claim and reclaimIfStale cannot remove it (no `claimedAt`).
+	// Together with the malformed-claim handler in reclaimIfStale below, this
+	// closes the "claim crashed during write" failure mode.
 	const handle = await fsp.open(claimPath, "wx");
+	let wrote = false;
 	try {
 		await handle.writeFile(JSON.stringify(contents));
 		await handle.datasync();
+		wrote = true;
 	} finally {
 		await handle.close();
+		if (!wrote) {
+			await fsp.unlink(claimPath).catch(() => undefined);
+		}
 	}
 }
 
@@ -216,14 +246,18 @@ export async function claimTask(opts: {
 		await fsp.rename(pendingPathOf(taskId), claimedTaskPathOf(taskId));
 	} catch (err) {
 		const code = getErrnoCode(err);
+		// Any rename failure (ENOENT race, EEXIST recovery, EPERM/EACCES/EBUSY
+		// on Windows from antivirus locks) MUST clear the orphan claim — otherwise
+		// the next claimTask hits EEXIST on a defunct claim until reclaimIfStale
+		// runs hours later.
+		try {
+			await fsp.unlink(claimPath);
+		} catch {
+			// Best-effort claim teardown; surface the original race outcome.
+		}
 		if (code === "ENOENT" || code === "EEXIST") {
 			// ENOENT: pending envelope already moved (race).
 			// EEXIST: crash-recovery — claimed envelope already present (Windows).
-			try {
-				await fsp.unlink(claimPath);
-			} catch {
-				// Best-effort claim teardown; surface the original race outcome.
-			}
 			return { claimed: false, reason: "already-claimed" };
 		}
 		throw err;
@@ -370,7 +404,29 @@ export async function reclaimIfStale(
 	assertSafeIdentifier(taskId, "taskId");
 	const claimPath = claimPathOf(taskId);
 	const claim = await readClaimFile(claimPath);
-	if (claim === null) return false;
+	if (claim === null) {
+		// readClaimFile returns null for BOTH "file absent" and
+		// "file present but empty/malformed". Distinguish via stat: a malformed
+		// or 0-byte claim file is a crash-during-write residue and MUST be
+		// unlinked here (it has no `claimedAt`, so the age-based path cannot
+		// reach it). Without this, claimTask returns "already-claimed" forever.
+		let exists = false;
+		try {
+			const st = await fsp.stat(claimPath);
+			exists = st.isFile();
+		} catch (err) {
+			if (getErrnoCode(err) === "ENOENT") return false;
+			throw err;
+		}
+		if (!exists) return false;
+		try {
+			await fsp.unlink(claimPath);
+			return true;
+		} catch (err) {
+			if (getErrnoCode(err) === "ENOENT") return false;
+			throw err;
+		}
+	}
 	const age = Date.now() - claim.claimedAt;
 	if (age < maxAgeMs) return false;
 	try {

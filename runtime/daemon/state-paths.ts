@@ -53,7 +53,10 @@ const ALL_KINDS: ReadonlyArray<StateKind> = [
 export function getStateRoot(): string {
 	const envOverride = process.env.IAGO_DAEMON_STATE_ROOT;
 	if (envOverride !== undefined && envOverride.length > 0) {
-		return envOverride;
+		// Normalize against cwd at this moment — the state root MUST be absolute
+		// so subprocesses with differing cwds resolve to the same directory.
+		// path.resolve is a no-op if the value is already absolute.
+		return path.resolve(envOverride);
 	}
 	const cwd = process.cwd();
 	if (path.basename(cwd) === "iago-os") {

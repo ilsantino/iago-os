@@ -69,6 +69,24 @@ describe("state-paths", () => {
 				path.join(os.homedir(), ".iago-os", "daemon-state"),
 			);
 		});
+
+		it("normalizes a relative env override to an absolute path", () => {
+			// Relative env values would otherwise resolve against process.cwd()
+			// at every call — subprocesses with different cwds would partition
+			// silently. path.resolve normalizes at the trust boundary.
+			process.env.IAGO_DAEMON_STATE_ROOT = "./relative-root";
+			const fakeCwd = path.resolve(os.tmpdir(), "fake-cwd");
+			vi.spyOn(process, "cwd").mockReturnValue(fakeCwd);
+			const root = getStateRoot();
+			expect(path.isAbsolute(root)).toBe(true);
+			expect(root).toBe(path.resolve(fakeCwd, "relative-root"));
+		});
+
+		it("preserves an already-absolute env override unchanged", () => {
+			const abs = path.resolve(os.tmpdir(), "iago-abs-root");
+			process.env.IAGO_DAEMON_STATE_ROOT = abs;
+			expect(getStateRoot()).toBe(abs);
+		});
 	});
 
 	describe("ensureStateDirsSync", () => {

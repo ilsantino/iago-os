@@ -302,6 +302,63 @@ describe("file-bus / reclaimIfStale", () => {
 		expect(await reclaimIfStale("t-stale", 0)).toBe(true);
 		expect(await readClaim("t-stale")).toBeNull();
 	});
+
+	it("recovers a 0-byte claim file (C1: crash between wx-create and write)", async () => {
+		// Simulate the C1 crash window: writeClaimDurably opened the file via
+		// `wx` (created a 0-byte sentinel) and crashed before writing contents.
+		// reclaimIfStale MUST unlink the empty file regardless of maxAgeMs —
+		// the malformed claim has no claimedAt, so the age-based path can
+		// never reach it.
+		const taskId = "t-zero-byte";
+		await makePendingTask(taskId);
+		const claimPath = path.join(
+			pathFor("tasks/claimed"),
+			`${taskId}.claim.json`,
+		);
+		// Pre-plant an empty claim file (no contents at all).
+		await fsp.writeFile(claimPath, "");
+		expect((await fsp.stat(claimPath)).size).toBe(0);
+
+		// reclaimIfStale must clear the empty sentinel so a fresh claim can
+		// take the lock. maxAgeMs irrelevant because there's no claimedAt to
+		// compare against.
+		expect(await reclaimIfStale(taskId, 60_000)).toBe(true);
+		await expect(fsp.stat(claimPath)).rejects.toThrow();
+	});
+
+	it("recovers a malformed (non-JSON) claim file (C1)", async () => {
+		const taskId = "t-malformed-claim";
+		await makePendingTask(taskId);
+		const claimPath = path.join(
+			pathFor("tasks/claimed"),
+			`${taskId}.claim.json`,
+		);
+		await fsp.writeFile(claimPath, "{partial json");
+
+		expect(await reclaimIfStale(taskId, 60_000)).toBe(true);
+		await expect(fsp.stat(claimPath)).rejects.toThrow();
+	});
+
+	it("after recovering a malformed claim, a fresh claimTask succeeds (C1 end-to-end)", async () => {
+		const taskId = "t-c1-recovery";
+		await makePendingTask(taskId);
+		const claimPath = path.join(
+			pathFor("tasks/claimed"),
+			`${taskId}.claim.json`,
+		);
+		await fsp.writeFile(claimPath, "");
+
+		// First, simulate boot-recovery: reclaimIfStale clears the orphan.
+		expect(await reclaimIfStale(taskId, 0)).toBe(true);
+
+		// Now a fresh claim must succeed (lock is free, pending envelope intact).
+		const result = await claimTask({
+			taskId,
+			ownerId: "owner-A",
+			attemptId: "1",
+		});
+		expect(result.claimed).toBe(true);
+	});
 });
 
 describe("file-bus / taskId path-traversal guard", () => {
