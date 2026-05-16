@@ -275,6 +275,9 @@ describe("claude-pty adapter", () => {
 		// in isolation.
 		lastMockPty.emitData("Running tool");
 		expect(cb).not.toHaveBeenCalledWith("running", undefined);
+		// M2: the sub-threshold no-signal "idle" sentinel must NOT be emitted
+		// (I2 fix); status is retained from the initial "running" state.
+		expect(cb).not.toHaveBeenCalledWith("idle", undefined);
 		lastMockPty.emitData(": Read(file.ts)\n");
 		expect(cb).toHaveBeenCalledWith("running", undefined);
 	});
@@ -311,20 +314,24 @@ describe("claude-pty adapter — error paths and coverage", () => {
 		const adapter = await importAdapterFresh();
 		const handle = await adapter.claudePty.spawn(defaultSpawnOpts());
 		lastMockPty.emitExit(0);
+		// I1 fix: onExit deletes the handle from the map, so the error is now
+		// "unknown handle" (state cleaned up) rather than "no longer alive".
 		await expect(
 			adapter.claudePty.send(handle, {
 				kind: "prompt",
 				payload: { text: "x" },
 			}),
-		).rejects.toThrow(/no longer alive/);
+		).rejects.toThrow(/unknown handle/);
 	});
 
 	it("send with kind=custom is a no-op (warns, does not write)", async () => {
 		const adapter = await importAdapterFresh();
 		const handle = await adapter.claudePty.spawn(defaultSpawnOpts());
+		// M3: CustomMessage.payload is double-wrapped: { payload: unknown }
+		// per types.ts:73-75. The cast was silencing a wrong shape.
 		await adapter.claudePty.send(handle, {
 			kind: "custom",
-			payload: { whatever: 1 } as unknown as Record<string, unknown>,
+			payload: { payload: { whatever: 1 } },
 		});
 		expect(lastMockPty.writes).toEqual([]);
 	});

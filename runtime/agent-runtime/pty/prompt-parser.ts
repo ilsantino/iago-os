@@ -62,10 +62,21 @@ export const KNOWN_PATTERNS: ReadonlyArray<KnownPattern> = [
 	},
 ];
 
+// I4: Claude Code emits ANSI escape sequences for its TUI (color codes,
+// cursor positioning, box-drawing). Without stripping these, a startup banner
+// can exceed the 100-byte fail-closed threshold before any seed pattern
+// matches, triggering a spurious "crashed" → daemon restart loop.
+const ANSI_ESCAPE_RE = /\x1b(?:\[[0-9;]*[A-Za-z]|\][^\x07]*(?:\x07|\x1b\\)|[@-_])/g;
+
+function stripAnsi(s: string): string {
+	return s.replace(ANSI_ESCAPE_RE, "");
+}
+
 function countNonWhitespaceBytes(buffer: string): number {
+	const stripped = stripAnsi(buffer);
 	let count = 0;
-	for (let i = 0; i < buffer.length; i++) {
-		const ch = buffer.charCodeAt(i);
+	for (let i = 0; i < stripped.length; i++) {
+		const ch = stripped.charCodeAt(i);
 		// Skip ASCII whitespace: space (32), tab (9), newline (10),
 		// carriage return (13), form feed (12), vertical tab (11).
 		if (

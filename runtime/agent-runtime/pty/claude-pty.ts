@@ -82,6 +82,10 @@ interface PtyHandleState {
 	sigkillTimer: ReturnType<typeof setTimeout> | null;
 	cwd: string;
 	env: Record<string, string>;
+	// false until the first real signal is emitted; prevents de-dup from
+	// suppressing the first pattern match when lastStatus equals the initial
+	// assumed "running" state (which was never actually observed from output).
+	hasEmitted: boolean;
 }
 
 const RUNTIME_ID = "claude-pty";
@@ -116,6 +120,7 @@ function emitStatus(
 ): void {
 	state.lastStatus = status;
 	state.lastStatusChangeMs = Date.now();
+	state.hasEmitted = true;
 	for (const cb of state.statusListeners) {
 		try {
 			cb(status, code);
@@ -155,7 +160,14 @@ function wireDataAndExit(handleId: string, state: PtyHandleState): void {
 		state.outputBuffer.push(chunk);
 		state.outputBuffer = truncateBuffer(state.outputBuffer);
 		const parse = parseStatusFromOutput(state.outputBuffer);
-		if (parse.status === state.lastStatus) return;
+		// De-dup: skip if same as last observed status. The `hasEmitted` guard
+		// prevents suppression when lastStatus equals the initial assumed
+		// "running" state that was never actually observed from output.
+		if (state.hasEmitted && parse.status === state.lastStatus) return;
+		// I2: sub-threshold chunks return status "idle" with matchedPattern null
+		// as a "no-signal" sentinel. Emitting that would cause spurious
+		// running→idle→running round-trips during multi-chunk tool runs.
+		if (parse.status === "idle" && parse.matchedPattern === null) return;
 		if (parse.status === "unknown") {
 			emitStatus(state, "crashed");
 			void persistStatusEvent(handleId, "crashed", undefined);
@@ -180,6 +192,9 @@ function wireDataAndExit(handleId: string, state: PtyHandleState): void {
 		}
 		emitStatus(state, "exited", exitCode);
 		void persistStatusEvent(handleId, "exited", exitCode);
+		// I1: clean up dead handle so long-lived daemon does not accumulate
+		// O(total restarts) entries in the module-scope Map.
+		stateByHandleId.delete(handleId);
 	});
 }
 
@@ -218,6 +233,7 @@ async function spawnInternal(
 		sigkillTimer: null,
 		cwd: opts.cwd,
 		env: { ...opts.env },
+		hasEmitted: false,
 	};
 	stateByHandleId.set(handleId, state);
 	wireDataAndExit(handleId, state);
@@ -379,6 +395,11 @@ export const claudePty: PTYAdapter = {
 		const cfg = await readPersistedAgentConfig(handleId);
 		if (cfg === null) return null;
 
+		// I3: env is not persisted to disk (persistAgentConfig stores only
+		// agentId/runtimeId/org/cwd/sessionId). Restore uses the daemon's
+		// ambient process.env. Per-agent env overrides (API key, feature flags)
+		// introduced in Plan 06+ MUST be persisted to agentConfigPath and
+		// loaded here; until then this is an accepted Phase 1 limitation.
 		const opts: SpawnOpts = {
 			cwd: cfg.cwd,
 			env: { ...process.env } as Record<string, string>,
@@ -390,8 +411,10 @@ export const claudePty: PTYAdapter = {
 		return handle;
 	},
 
-	async inject(handle: AgentHandle, text: string): Promise<void> {
-		await this.send(handle, { kind: "inject", payload: { text } });
+	// M4: arrow fn closes over the binding so `const { inject } = claudePty`
+	// destructuring works correctly (no implicit `this` dependency).
+	inject: async (handle: AgentHandle, text: string): Promise<void> => {
+		await claudePty.send(handle, { kind: "inject", payload: { text } });
 	},
 };
 
