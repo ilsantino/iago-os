@@ -62,6 +62,21 @@ Confirm in the daemon terminal: agent picked up the task, requested approval, re
 
 **Evidence:** screenshot of the Telegram approval message + paste of the daemon terminal log showing the full flow.
 
+### 4b. Documentation check (criterion #4)
+
+```bash
+ls runtime/README.md runtime/agent-runtime/README.md runtime/daemon/README.md \
+   runtime/telegram/README.md runtime/agent-runtime/pty/claude-pty.md \
+   runtime/migration/phase-1-rollback.md
+wc -l runtime/README.md runtime/agent-runtime/README.md runtime/daemon/README.md \
+   runtime/telegram/README.md runtime/agent-runtime/pty/claude-pty.md \
+   runtime/migration/phase-1-rollback.md
+```
+
+Expected: all 6 files present, each ≥ 50 lines.
+
+**Evidence:** paste the `wc -l` output for each file.
+
 ### 5. Telemetry NDJSON sample (criterion #5)
 
 ```bash

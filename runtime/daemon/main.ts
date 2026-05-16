@@ -14,8 +14,9 @@
  *   7. Construct + start `IpcServer`. `IpcServer.start()` preemptively
  *      unlinks any stale socket file on POSIX (Plan 05 EC1).
  *   8. If `config.telegram` is non-null, construct + start `TelegramBot`.
- *   9. Auto-start every `agents[]` with `autoStart: true`.
- *   10. Install SIGINT/SIGTERM handlers calling `shutdown()`.
+ *   9. Install SIGINT/SIGTERM handlers calling `shutdown()` — BEFORE the
+ *      auto-start loop so the EC1 guard can observe the flag.
+ *   10. Auto-start every `agents[]` with `autoStart: true`.
  *   11. Emit `daemon-start` telemetry.
  *
  * Shutdown sequence (idempotent — safe to call from both SIGINT and
@@ -68,6 +69,8 @@ import { emit } from "./telemetry.js";
 
 export interface DaemonHandle {
 	readonly shutdown: () => Promise<void>;
+	/** Resolves when shutdown() completes. Await this to block until teardown is done. */
+	readonly shutdownPromise: Promise<void>;
 	readonly agentManager: AgentManager;
 	readonly heartbeat: HeartbeatController;
 	readonly ipcServer: IpcServer;
@@ -158,6 +161,10 @@ export async function startDaemon(
 
 	let shuttingDown = false;
 	const shutdownHandlers = new Set<() => void>();
+	let resolveShutdownPromise!: () => void;
+	const shutdownPromise = new Promise<void>((resolve) => {
+		resolveShutdownPromise = resolve;
+	});
 
 	const shutdown = async (): Promise<void> => {
 		if (shuttingDown) return;
@@ -195,15 +202,39 @@ export async function startDaemon(
 				);
 			}
 		}
-		await emit({
-			kind: "daemon-stop",
-			pid: process.pid,
-			reason: "graceful",
-		});
+		try {
+			await emit({
+				kind: "daemon-stop",
+				pid: process.pid,
+				reason: "graceful",
+			});
+		} catch (err) {
+			console.error(
+				`[daemon] telemetry emit(daemon-stop) failed: ${err instanceof Error ? err.message : String(err)}`,
+			);
+		}
 		for (const remove of shutdownHandlers) {
 			remove();
 		}
+		resolveShutdownPromise();
 	};
+
+	// Wire signal handlers BEFORE the auto-start loop so the EC1 SIGINT guard
+	// (shuttingDown check after each registerAgent) can actually fire. Without
+	// handlers installed here, SIGINT during the loop terminates the process
+	// immediately, leaving spawned PTY subprocesses as orphans.
+	const sigintHandler = (): void => {
+		void shutdown();
+	};
+	const sigtermHandler = (): void => {
+		void shutdown();
+	};
+	process.on("SIGINT", sigintHandler);
+	process.on("SIGTERM", sigtermHandler);
+	shutdownHandlers.add(() => process.removeListener("SIGINT", sigintHandler));
+	shutdownHandlers.add(() =>
+		process.removeListener("SIGTERM", sigtermHandler),
+	);
 
 	for (const cfg of config.agents) {
 		if (!cfg.autoStart) continue;
@@ -249,19 +280,6 @@ export async function startDaemon(
 
 	heartbeat.start();
 
-	const sigintHandler = (): void => {
-		void shutdown();
-	};
-	const sigtermHandler = (): void => {
-		void shutdown();
-	};
-	process.on("SIGINT", sigintHandler);
-	process.on("SIGTERM", sigtermHandler);
-	shutdownHandlers.add(() => process.removeListener("SIGINT", sigintHandler));
-	shutdownHandlers.add(() =>
-		process.removeListener("SIGTERM", sigtermHandler),
-	);
-
 	await emit({
 		kind: "daemon-start",
 		pid: process.pid,
@@ -270,6 +288,7 @@ export async function startDaemon(
 
 	return {
 		shutdown,
+		shutdownPromise,
 		agentManager,
 		heartbeat,
 		ipcServer,
@@ -296,13 +315,10 @@ export async function main(): Promise<void> {
 		process.exitCode = 1;
 		return;
 	}
-	await new Promise<void>((resolve) => {
-		const onShutdownSignal = (): void => {
-			void daemon.shutdown().finally(() => resolve());
-		};
-		process.once("SIGINT", onShutdownSignal);
-		process.once("SIGTERM", onShutdownSignal);
-	});
+	// startDaemon() already installed permanent SIGINT/SIGTERM handlers that
+	// call shutdown(). Await the shutdownPromise here instead of registering
+	// a second set of handlers — eliminates the double-handler ambiguity.
+	await daemon.shutdownPromise;
 }
 
 async function buildFleetHealth(

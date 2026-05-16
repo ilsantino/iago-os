@@ -26,7 +26,7 @@ kill -KILL <pid>
 On Windows (PowerShell):
 
 ```powershell
-Get-Process node | Where-Object { $_.MainModule.FileName -like "*runtime\\daemon\\main*" } | Stop-Process
+Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like "*runtime*daemon*main*" } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
 ```
 
 The daemon's SIGINT/SIGTERM handlers in `runtime/daemon/main.ts` write graceful `.daemon-stop` markers for every live agent handle.
@@ -112,7 +112,7 @@ git checkout feat/v2-runtime-skeleton-agent-runtime-interface
 git pull
 # Or merge the PRs in order: #40, #41, #42, #43, #44, #45, #46
 cd runtime && npm install
-npm test    # → 199+ passed, 5 skipped (per acceptance criterion #2)
+npm test    # → 203+ passed, 5 skipped (per acceptance criterion #2)
 node runtime/daemon/main.js          # daemon starts; see runtime/README.md
 ```
 

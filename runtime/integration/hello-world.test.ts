@@ -38,7 +38,10 @@ import { _resetRegistryForTests } from "../agent-runtime/registry.js";
 import { claimTask, writeResolvedOutput } from "../daemon/file-bus.js";
 import { readStopMarker } from "../daemon/markers.js";
 import { ensureStateDirsSync, pathFor } from "../daemon/state-paths.js";
-import { getTelemetryPath } from "../daemon/telemetry.js";
+import {
+	__resetTelemetryWarningFlagForTests,
+	getTelemetryPath,
+} from "../daemon/telemetry.js";
 import {
 	createApprovalRequest,
 	resolveApproval,
@@ -166,6 +169,7 @@ beforeEach(async () => {
 	telegramMessageHandlers.length = 0;
 	telegramSentMessages.length = 0;
 	_resetRegistryForTests();
+	__resetTelemetryWarningFlagForTests();
 	ensureStateDirsSync();
 });
 
