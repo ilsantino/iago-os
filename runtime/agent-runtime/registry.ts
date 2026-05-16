@@ -58,6 +58,19 @@ export interface AgentRuntime {
 	 */
 	onStatusChanged(handle: AgentHandle, cb: StatusCallback): () => void;
 	isAlive(handle: AgentHandle): Promise<boolean>;
+	/**
+	 * Optional richer status probe. When present, `AgentManager` calls this
+	 * from the heartbeat probe in preference to `isAlive()` so the
+	 * `HeartbeatController` can evaluate the 512MB RSS recycle threshold
+	 * (Plan 03 PR2: the heartbeat OWNS recycling decisions; adapters
+	 * supply the data). Adapters that cannot measure RSS may omit this
+	 * method or return `rssBytes: undefined`; recycling on RSS is then a
+	 * no-op for that adapter and stall/liveness-only recycling still
+	 * applies.
+	 */
+	getStatus?(
+		handle: AgentHandle,
+	): Promise<{ alive: boolean; rssBytes?: number }>;
 	shutdown(handle: AgentHandle, signal?: "SIGTERM" | "SIGKILL"): Promise<void>;
 	restoreFromMarker(markerPath: string): Promise<AgentHandle | null>;
 	costTap?(handle: AgentHandle): AsyncIterable<CostEvent>;

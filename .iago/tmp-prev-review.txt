@@ -1,0 +1,50 @@
+PASS 1 — PLAN COMPLIANCE
+
+All six tasks implemented; verification surface exceeds plan minimums.
+
+| Task | Spec | Status |
+|---|---|---|
+| 1 | `state-paths.ts` exports `getStateRoot`/`pathFor`/`ensureStateDirsSync` + stress-add `validateAgentId` + `atomicRename`; 5 tests | ✓ 11 tests (env override, repo-root, homedir, ensure-dirs, absolute paths, validateAgentId×5, atomicRename) |
+| 2 | `claimTask` with O_EXCL (open `wx` + datasync + close per M1) | ✓ file-bus.ts:185–231 — uses `fsp.open("wx") → writeFile → datasync → close` |
+| 3 | `writeResolvedOutput` / `readResolvedOutput` + owner-ID gate + atomic rename | ✓ file-bus.ts:255–338 — tmp + datasync + `atomicRename`; envelope holds owner/attempt/result/completedAt |
+| 4 | 8 file-bus tests | ✓ 13 tests (incl. concurrent-race, rename-over-existing, reclaimIfStale, complex round-trip, malformed-resolved null) |
+| 5 | `appendEvent` (fdatasync), `readEventsUpToHWM`, `getHWM`/`setHWM` (atomic), `ReplayController` (pause/replay/resume queue) | ✓ session-log.ts; `.seq` recovers from line count (M3), byteOffset = post-write file size (P2), JSDoc covers all stress-test contracts |
+| 6 | 8 session-log tests | ✓ 8 tests (append, 100-append monotonicity, malformed-skip + stderr spy, HWM round-trip, HWM null, HWM atomic failure via mkdir-as-dst, replay order, two-phase pause/queue/drain) |
+
+Stress-test forward list (8 items): all addressed — atomicRename (E2), reclaimIfStale (E1), datasync on claim (M1), fdatasync on append (M2), `.seq` recovery (M3), HWM byteOffset boundary (P2), buffer drain on pause (P3), Windows rename-over-existing tests (M4).
+
+PASS 2 — DOMAIN ROUTING
+
+Relevant domains:
+- **Baseline** (always)
+- **Pattern Consistency** (always)
+- **Backend** — partial: this is Node.js domain logic touching the filesystem (not a Lambda handler, but the "input validation at boundary" + "missing error handling" rules apply to a persistence primitive)
+- **Cross-cutting** (always) — directly load-bearing: the entire module exists to enforce ownership and atomicity
+
+Skipped (do not apply): Amplify (no `amplify/` files), API (no HTTP client), Auth (no Cognito/JWT), Data Integrity (no aggregates/money/dashboards), i18n (no Spanish UI strings), Infra (no CFN/IAM), React (no `.tsx`).
+
+PASS 3 — ADVERSARIAL
+
+Read all three source files + all three test files in full.
+
+**Cross-cutting:**
+- *Auth bypass:* owner-ID match enforced before resolved write (file-bus.ts:266–272); zombie write rejected. Test 5 covers. ✓
+- *Data loss:* tmp+atomicRename on both `writeResolvedOutput` and `setHWM`; claim write uses O_EXCL+datasync. ✓
+- *Race conditions:* `withFileLock` chain serializes per-handle appends; O_EXCL serializes claims. Concurrent-claim test (file-bus.test.ts:85–107) asserts exactly-one winner. ✓
+- *Rollback safety:* tmp file is NOT cleaned up if rename fails — see Minor #2.
+
+**Findings:**
+
+*Critical:* none.
+
+*Important — Path traversal on `taskId`/`handleId`.* file-bus.ts:99–116 and session-log.ts:69–82 do `path.join(pathFor(kind), \`${taskId}.json\`)` without validating the input. A `taskId` of `"../../etc/passwd"` or `"..\\..\\windows"` resolves outside the state root. The plan declares taskId opaque and tells callers to use `crypto.randomUUID()`, but the file-bus is the security boundary — `validateAgentId` already lives in state-paths.ts for exactly this class of bug yet is never called here. Reject taskId/handleId containing `/`, `\`, `..`, or NUL byte at module entry. Defense-in-depth, not theoretical: Plan 07 (Telegram routing) will feed user-derived strings into the agent prefix of `<agentId>__<taskId>.json`.
+
+*Important — `reclaimIfStale` JSDoc misleads callers.* file-bus.ts:340–367. JSDoc says "caller may now retry `claimTask`", but the function only `unlink`s the `.claim.json` — the task envelope remains in `tasks/claimed/`. A subsequent `claimTask` will write a fresh claim (succeeds), then hit `ENOENT` on `rename(pending → claimed)` (file-bus.ts:216) and return `already-claimed`. Either extend `reclaimIfStale` to also `rename(claimed → pending)` for the task envelope, or clarify in JSDoc that recovery requires a paired envelope restore (deferred to Plan 03's `bootRecovery`). As written, the orphan-recovery contract from stress-test E1 is half-implemented.
+
+*Minor — `getErrnoCode` duplicated across three modules* (state-paths.ts:113, file-bus.ts:118, session-log.ts:85). Pattern Consistency Minor. Extract to a shared fs-helper or accept the small duplication.
+
+*Minor — Tmp file pollution on rename failure.* `writeResolvedOutput` (file-bus.ts:284–291) and `setHWM` (session-log.ts:267–274) leave `<id>.tmp` behind when `atomicRename` throws. Wrap with `try {…} catch (e) { await fsp.unlink(tmp).catch(() => {}); throw e; }`.
+
+*Minor — Module-scope `Map`s never evict per handleId.* `pauseStates`, `sequenceCache`, `fileLocks` (session-log.ts:56–58). Fine for Phase 1 (~10 agents), revisit at scale.
+
+Verdict: PASS_WITH_CONCERNS
