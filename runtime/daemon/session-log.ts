@@ -264,12 +264,14 @@ function trackedPerformAppend(
 	const inflight = getInflightSet(handleId);
 	const p = performAppend(handleId, event);
 	inflight.add(p);
-	// Use .finally to remove the tracking entry whether the append resolved or
-	// rejected. The promise the caller awaits is `p` itself (not the .finally
-	// chain), so caller-visible behavior is unchanged.
-	void p.finally(() => {
-		inflight.delete(p);
-	});
+	// .catch(noop).finally(...) prevents the bookkeeping chain from itself
+	// becoming an unhandled rejection when `p` rejects (e.g., ENOENT after
+	// test-tempdir teardown). Caller still awaits `p` and sees the rejection.
+	void p
+		.catch(() => undefined)
+		.finally(() => {
+			inflight.delete(p);
+		});
 	return p;
 }
 
