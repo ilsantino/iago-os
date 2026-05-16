@@ -28,10 +28,11 @@
  * Race semantics (M2): when two `resolveApproval` calls race for the same
  * approvalId, the first to complete the unlink wins; the second observes
  * the missing pending file and returns `{ ok: false, reason:
- * "already-resolved" }`. The atomicRename of the resolved file uses the
- * Windows-safe unlink+rename pattern, so the second writer's resolved
- * envelope MAY transiently overwrite the first — the unlink-of-pending
- * step is the canonical race winner, not the resolved write.
+ * "already-resolved" }`. Only the unlink winner reaches the resolved-write
+ * path, so overwriting cannot happen. The `atomicRename` call for the
+ * resolved file uses the Windows-safe unlink+rename pattern to handle the
+ * case where a previous crashed run left a stale resolved file — that is a
+ * stale-file cleanup, not a concurrent-writer risk.
  */
 
 import * as crypto from "node:crypto";

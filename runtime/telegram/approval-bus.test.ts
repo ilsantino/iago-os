@@ -158,6 +158,34 @@ describe("approval-bus / waitForApproval", () => {
 		}
 		expect(elapsed).toBeGreaterThanOrEqual(140);
 	});
+
+	it("pending file persists after timeout (ghost-detection invariant)", async () => {
+		const { approvalId, pendingPath } = await createApprovalRequest({
+			agentId: "agent-foo",
+			handleId: "h-1",
+			reason: "deploy?",
+		});
+
+		await waitForApproval(approvalId, 100, 25);
+
+		// The pending file must still exist — ghost detection relies on it.
+		const stat = await fsp.stat(pendingPath).catch(() => null);
+		expect(stat).not.toBeNull();
+	});
+
+	it("caller can resolve after timeout to clean up orphan pending file", async () => {
+		const { approvalId } = await createApprovalRequest({
+			agentId: "agent-foo",
+			handleId: "h-1",
+			reason: "deploy?",
+		});
+
+		await waitForApproval(approvalId, 100, 25);
+
+		// Caller-cleanup pattern: deny with a system-timeout sentinel.
+		const cleanup = await resolveApproval(approvalId, "deny", "system-timeout");
+		expect(cleanup.ok).toBe(true);
+	});
 });
 
 describe("approval-bus / listPendingApprovals", () => {

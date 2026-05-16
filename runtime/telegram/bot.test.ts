@@ -320,10 +320,16 @@ describe("TelegramBot / callback routing", () => {
 		const decision = JSON.parse(raw);
 		expect(decision.decision).toBe("allow");
 		expect(decision.resolvedBy).toBe("santi");
-		const kinds = emitSpy.mock.calls.map(
-			(c) => (c[0] as { kind: string }).kind,
+		const emittedCalls = emitSpy.mock.calls.map(
+			(c) => c[0] as { kind: string; [k: string]: unknown },
 		);
-		expect(kinds).toContain("approval-resolved");
+		const resolvedEvent = emittedCalls.find(
+			(e) => e.kind === "approval-resolved",
+		);
+		expect(resolvedEvent).toBeDefined();
+		expect(resolvedEvent?.approvalId).toBe(approvalId);
+		expect(resolvedEvent?.decision).toBe("allow");
+		expect(resolvedEvent?.resolvedBy).toBe("santi");
 		await bot.stop();
 	});
 });
@@ -353,10 +359,16 @@ describe("TelegramBot / sendApprovalRequest", () => {
 		}>;
 		expect(buttons[0]?.callback_data).toBe("approve_allow_abc-123");
 		expect(buttons[1]?.callback_data).toBe("approve_deny_abc-123");
-		const kinds = emitSpy.mock.calls.map(
-			(c) => (c[0] as { kind: string }).kind,
+		const emittedCalls = emitSpy.mock.calls.map(
+			(c) => c[0] as { kind: string; [k: string]: unknown },
 		);
-		expect(kinds).toContain("approval-requested");
+		const requestedEvent = emittedCalls.find(
+			(e) => e.kind === "approval-requested",
+		);
+		expect(requestedEvent).toBeDefined();
+		expect(requestedEvent?.approvalId).toBe("abc-123");
+		expect(requestedEvent?.agentId).toBe("agent-foo");
+		expect(requestedEvent?.reason).toBe("deploy?");
 		await bot.stop();
 	});
 });

@@ -32,6 +32,30 @@ describe("commands / parseCommand", () => {
 		}
 	});
 
+	it("parses approve_allow_abc123 without leading slash (inline-keyboard callback_data format)", () => {
+		const r = parseCommand("approve_allow_abc123");
+		expect(r.ok).toBe(true);
+		if (r.ok) {
+			expect(r.command).toEqual({
+				name: "approve",
+				approvalId: "abc123",
+				decision: "allow",
+			});
+		}
+	});
+
+	it("parses approve_deny_xyz without leading slash (inline-keyboard callback_data format)", () => {
+		const r = parseCommand("approve_deny_xyz");
+		expect(r.ok).toBe(true);
+		if (r.ok) {
+			expect(r.command).toEqual({
+				name: "approve",
+				approvalId: "xyz",
+				decision: "deny",
+			});
+		}
+	});
+
 	it("parses /approve_deny_xyz (callback form)", () => {
 		const r = parseCommand("/approve_deny_xyz");
 		expect(r.ok).toBe(true);

@@ -166,10 +166,13 @@ export class TelegramBot {
 		};
 		if (!parsed.ok) {
 			await this.safeReply(target, `Callback error: ${parsed.error}`);
+			if (this.bot !== null && query.id !== undefined) {
+				await this.bot.answerCallbackQuery(query.id).catch(() => {});
+			}
 			return;
 		}
-		await this.dispatch(parsed.command, target);
 
+		// Answer immediately so the button stops spinning before I/O-heavy dispatch runs.
 		if (this.bot !== null && query.id !== undefined) {
 			try {
 				await this.bot.answerCallbackQuery(query.id);
@@ -179,6 +182,8 @@ export class TelegramBot {
 				);
 			}
 		}
+
+		await this.dispatch(parsed.command, target);
 	}
 
 	private async dispatch(command: Command, target: ReplyTarget): Promise<void> {
