@@ -35,3 +35,8 @@ docs/research/_drop-*/
 # Pipeline run logs (relocated 2026-05-15 to .iago/logs/)
 .iago/logs/*.log
 !.iago/logs/README.md
+
+# Pipeline review scratch (transient — review session writes, summary preserves the verdict)
+.iago/tmp-*.txt
+.iago/tmp-*.md
+.iago/pipeline-runs/

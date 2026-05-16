@@ -1128,6 +1128,16 @@ export class AgentManager {
 	 * `prompt` and `inject` AgentMessages are replayed; `approval`,
 	 * `abort`, and `custom` are application-level. Status events
 	 * (`kind: "status"`) are observational and never replayed.
+	 *
+	 * Event shapes accepted (any of):
+	 *   - `{ kind: "prompt"|"inject", payload: { text } }` — direct
+	 *     AgentMessage shape (legacy / handwritten test fixtures).
+	 *   - `{ kind: "input", messageKind: "prompt"|"inject",
+	 *      payload: { text } }` — wrapped shape emitted by
+	 *      `claude-pty.send` (PR43 adv IMPORTANT #6). The wrapper allows
+	 *      adapters to disambiguate input events from other persisted
+	 *      side-effects without colliding with the AgentMessage `kind`
+	 *      tag.
 	 */
 	private eventToReplayableMessage(event: unknown): AgentMessage | null {
 		if (typeof event !== "object" || event === null) return null;
@@ -1153,6 +1163,18 @@ export class AgentManager {
 				return { kind: "inject", payload: { text } };
 			}
 		}
+		if (kindVal === "input") {
+			const messageKindVal = (event as { messageKind?: unknown }).messageKind;
+			if (
+				(messageKindVal === "prompt" || messageKindVal === "inject") &&
+				typeof payloadVal === "object" &&
+				payloadVal !== null &&
+				typeof (payloadVal as { text?: unknown }).text === "string"
+			) {
+				const text = (payloadVal as { text: string }).text;
+				return { kind: messageKindVal, payload: { text } };
+			}
+		}
 		return null;
 	}
 
@@ -1175,9 +1197,24 @@ export class AgentManager {
 			// documented the gap; this records the data so we can act on
 			// it instead of just warning in the README.
 			runtimeVersion: runtime.version,
-			// env intentionally omitted — avoids persisting AWS_* / IAGO_*
-			// credentials on disk; knownConfigs must supply env at boot
-			// recovery time (see daemon/README.md "Boot recovery" section).
+			// PR43 adv CRITICAL #1: env is now persisted so adapters'
+			// `restoreFromMarker` can rebuild the original spawn environment.
+			// Without this, restore substituted the daemon's ambient
+			// `process.env` and silently dropped per-agent credentials
+			// (cross-client leak risk). The previous "intentionally omitted"
+			// stance was unsafe — knownConfigs is in-memory only and the
+			// daemon-crash-without-marker recovery path could not reach it
+			// in some scenarios, leaving restoreFromMarker no env source at
+			// all.
+			//
+			// Security tradeoff (documented in daemon/README.md "Env
+			// persistence" section): Phase 2 wraps this file in systemd
+			// `LoadCredential=` for at-rest encryption. Until then the file
+			// is mode 0600 via state-paths defaults and lives under
+			// `pathFor("agents")` which is daemon-private. Operators are
+			// responsible for not running the daemon with secrets the
+			// host filesystem cannot protect.
+			env: config.env,
 		};
 		try {
 			await fsp.writeFile(file, JSON.stringify(payload));
