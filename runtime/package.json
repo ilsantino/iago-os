@@ -9,6 +9,8 @@
 	},
 	"scripts": {
 		"build": "tsc -p .",
+		"prestart": "tsc -p .",
+		"start": "node --experimental-specifier-resolution=node dist/daemon/main.js",
 		"test": "vitest run",
 		"test:watch": "vitest",
 		"test:coverage": "vitest run --coverage",
