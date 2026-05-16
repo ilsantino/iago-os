@@ -2,11 +2,13 @@ import * as fsp from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ensureStateDirsSync, pathFor } from "../daemon/state-paths.js";
 import {
 	createApprovalRequest,
+	isValidApprovalId,
+	listInflightApprovals,
 	listPendingApprovals,
 	resolveApproval,
 	waitForApproval,
@@ -232,7 +234,11 @@ describe("approval-bus / concurrent resolveApproval", () => {
 
 		const N = 10;
 		const calls = Array.from({ length: N }, (_, i) =>
-			resolveApproval(approvalId, i % 2 === 0 ? "allow" : "deny", `caller-${i}`),
+			resolveApproval(
+				approvalId,
+				i % 2 === 0 ? "allow" : "deny",
+				`caller-${i}`,
+			),
 		);
 		const results = await Promise.all(calls);
 
@@ -245,5 +251,157 @@ describe("approval-bus / concurrent resolveApproval", () => {
 				expect(f.reason).toBe("already-resolved");
 			}
 		}
+	});
+});
+
+// PR45 CRITICAL — approvalId validation closes path-traversal surface
+describe("approval-bus / approvalId validation (PR45 security fix)", () => {
+	it("isValidApprovalId accepts UUID v4 format from crypto.randomUUID()", () => {
+		expect(isValidApprovalId("11111111-2222-4333-8444-555555555555")).toBe(
+			true,
+		);
+		expect(isValidApprovalId("aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee")).toBe(
+			true,
+		);
+	});
+
+	it("isValidApprovalId rejects path-traversal payloads", () => {
+		expect(isValidApprovalId("../../agents/foo")).toBe(false);
+		expect(isValidApprovalId("../../etc/passwd")).toBe(false);
+		expect(isValidApprovalId("foo/bar")).toBe(false);
+		expect(isValidApprovalId("foo\\bar")).toBe(false);
+		expect(isValidApprovalId("..")).toBe(false);
+	});
+
+	it("isValidApprovalId rejects non-UUID strings", () => {
+		expect(isValidApprovalId("abc123")).toBe(false);
+		expect(isValidApprovalId("")).toBe(false);
+		expect(isValidApprovalId("xyz")).toBe(false);
+		expect(
+			isValidApprovalId("11111111-2222-4333-8444-555555555555.extra"),
+		).toBe(false);
+		// UUID with NUL byte
+		expect(isValidApprovalId("11111111-2222-4333-8444-555555555555\0")).toBe(
+			false,
+		);
+	});
+
+	it("isValidApprovalId rejects non-string inputs", () => {
+		expect(isValidApprovalId(undefined)).toBe(false);
+		expect(isValidApprovalId(null)).toBe(false);
+		expect(isValidApprovalId(123)).toBe(false);
+		expect(isValidApprovalId({})).toBe(false);
+	});
+
+	it("resolveApproval('../../agents/foo', ...) returns invalid-id WITHOUT touching the filesystem", async () => {
+		const result = await resolveApproval(
+			"../../agents/foo",
+			"allow",
+			"santiago",
+		);
+		expect(result.ok).toBe(false);
+		if (!result.ok) {
+			expect(result.reason).toBe("invalid-id");
+		}
+		// Confirm: no file was created outside approvals/
+		const escapedPath = path.join(pathFor("agents"), "foo.json");
+		await expect(fsp.access(escapedPath)).rejects.toBeDefined();
+	});
+
+	it("resolveApproval('not-a-uuid', ...) returns invalid-id", async () => {
+		const result = await resolveApproval("abc123", "allow", "santiago");
+		expect(result.ok).toBe(false);
+		if (!result.ok) {
+			expect(result.reason).toBe("invalid-id");
+		}
+	});
+});
+
+// PR45 HIGH (Codex) — no-strand approval resolution
+describe("approval-bus / no-strand resolution (PR45 Codex HIGH fix)", () => {
+	it("happy path: inflight file is removed after resolved is durably written", async () => {
+		const { approvalId } = await createApprovalRequest({
+			agentId: "agent-foo",
+			handleId: "h-1",
+			reason: "deploy?",
+		});
+
+		const result = await resolveApproval(approvalId, "allow", "santiago");
+		expect(result.ok).toBe(true);
+
+		const inflightPath = path.join(
+			pathFor("approvals/pending"),
+			"..",
+			"inflight",
+			`${approvalId}.json`,
+		);
+		// inflight directory may not even exist or may be empty
+		await expect(fsp.access(inflightPath)).rejects.toBeDefined();
+	});
+
+	it("listInflightApprovals returns empty when no crashed approvals exist", async () => {
+		const result = await listInflightApprovals();
+		expect(result).toEqual([]);
+	});
+
+	it("listInflightApprovals surfaces stranded inflight files for boot recovery", async () => {
+		// Simulate a crash between phases (a) and (b) by creating an inflight
+		// file directly. The previous-impl strand-window bug would have lost
+		// this approval entirely.
+		const approvalId = "33333333-4444-4555-8666-777777777777";
+		const inflightDir = path.join(
+			pathFor("approvals/pending"),
+			"..",
+			"inflight",
+		);
+		await fsp.mkdir(inflightDir, { recursive: true });
+		const inflightPath = path.join(inflightDir, `${approvalId}.json`);
+		const envelope = {
+			approvalId,
+			agentId: "agent-foo",
+			handleId: "h-1",
+			reason: "deploy?",
+			createdAt: Date.now(),
+		};
+		await fsp.writeFile(inflightPath, JSON.stringify(envelope), "utf8");
+
+		const recovered = await listInflightApprovals();
+		expect(recovered).toHaveLength(1);
+		expect(recovered[0]?.approvalId).toBe(approvalId);
+		expect(recovered[0]?.agentId).toBe("agent-foo");
+	});
+});
+
+// PR45 IMPORTANT — listPendingApprovals must surface malformed files
+describe("approval-bus / listPendingApprovals malformed-file handling (PR45)", () => {
+	it("logs to stderr and skips malformed JSON files (no silent loss)", async () => {
+		const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+		// Good entry
+		const { approvalId: good } = await createApprovalRequest({
+			agentId: "agent-good",
+			handleId: "h-good",
+			reason: "deploy?",
+		});
+
+		// Malformed entry: bogus filename (not UUID)
+		const badPath = path.join(pathFor("approvals/pending"), "not-a-uuid.json");
+		await fsp.writeFile(badPath, "not valid json {", "utf8");
+
+		// Half-written entry: UUID name but corrupt JSON
+		const halfWritten = "99999999-8888-4777-8666-555555555555";
+		const halfPath = path.join(
+			pathFor("approvals/pending"),
+			`${halfWritten}.json`,
+		);
+		await fsp.writeFile(halfPath, "{ partial", "utf8");
+
+		const pending = await listPendingApprovals();
+		expect(pending).toHaveLength(1);
+		expect(pending[0]?.approvalId).toBe(good);
+		expect(errSpy).toHaveBeenCalled();
+		// Confirm at least one error mentions skip / malformed / parse
+		const allLogs = errSpy.mock.calls.map((c) => String(c[0])).join("\n");
+		expect(allLogs).toMatch(/skip|malformed|parse|non-UUID/i);
 	});
 });

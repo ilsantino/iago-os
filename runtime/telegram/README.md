@@ -127,21 +127,50 @@ effect runs.
 
 ## Security model
 
-- `allowedUserIds` is a hard allowlist enforced on every incoming
-  message AND every `callback_query`. Non-allowed users are ignored
-  silently — the bot does NOT reply (to avoid info leakage about the
-  bot's existence). Rejections ARE logged to stderr for operator
-  visibility.
-- Bot token lives in `IAGO_TELEGRAM_BOT_TOKEN` env var, NEVER in
-  code, NEVER in git, NEVER in logs. Phase 2 VPS deploy uses systemd
-  `LoadCredential=`.
-- Telegram callback_data is treated as untrusted input. The bot
-  parses it via `parseCommand` (same path as message text); unknown
-  callback IDs are rejected the same way unknown messages are.
-- The bot validates target `agentId` against `validateAgentId()`
-  before writing tagged file-bus tasks or invoking `injectIntoAgent`.
-  This prevents filesystem escape (`../../etc/passwd`) and reserved
-  collisions.
+- **Allowlist.** `allowedUserIds` is a hard allowlist enforced on
+  every incoming message AND every `callback_query`. Non-allowed users
+  are ignored silently (bot does NOT reply — avoids info leakage
+  about the bot's existence). Rejections are counted per-process and
+  logged with a counter (NOT user id / username — those are PII
+  that persists in journald on VPS deploys). Empty allowlist is
+  rejected at startup with `RangeError` (no silent dead-bot mode).
+- **Private-chat only.** Every incoming message AND every
+  inline-keyboard callback is gated on `chat.type === "private"`.
+  Group / supergroup / channel chats are dropped silently with a
+  counter. Reasoning: an allowlisted user can be added to a group
+  chat with the bot; without this gate, `/agents` or `/status`
+  replies would broadcast agent topology, handle IDs, and pending
+  approvals to every group member.
+- **Bot token.** Lives in `IAGO_TELEGRAM_BOT_TOKEN` env var, NEVER in
+  code, NEVER in git, NEVER in logs. The bot wraps the token in an
+  opaque object with a `util.inspect.custom` redactor so
+  `console.dir(bot)`, `JSON.stringify(bot)`, and stack-trace dumps
+  emit `[REDACTED]` instead of the secret. Phase 2 VPS deploy uses
+  systemd `LoadCredential=`. Rotation procedure: see `.env.example`.
+- **Callback_data.** Treated as untrusted input. The bot parses it via
+  `parseCommand` (same path as message text). `approvalId` arguments
+  (text-form `/approve` and callback-form `approve_*_<id>`) are
+  validated against the strict UUID v4 regex
+  (`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
+  to close the path-traversal surface in `resolveApproval` (an
+  unvalidated id with `..` would let an allowlisted user delete or
+  overwrite arbitrary files under the daemon state root).
+- **Agent IDs.** The bot validates target `agentId` against
+  `validateAgentId()` before writing tagged file-bus tasks or
+  invoking `injectIntoAgent`. This prevents filesystem escape
+  (`../../etc/passwd`) and reserved-name collisions. Reflected
+  agent-id strings in error messages are truncated to 64 chars
+  (defense-in-depth against phishing-in-chat-history).
+- **`/inject` payload sanitization.** Text forwarded to PTY stdin is
+  stripped of ASCII / C1 control bytes (Ctrl-C `\x03`, Ctrl-D `\x04`,
+  DEL `\x7f`, OSC 52 `\x1b]52`...) — tab, newline, carriage-return
+  retained. Length capped at 4096 bytes (Telegram's per-message
+  limit). Without this sanitization an allowlisted user could
+  drive arbitrary terminal-control sequences into the running TUI.
+- **`sendApprovalRequest` chat re-check.** The caller-supplied
+  `chatId` is re-validated against the allowlist before send; an
+  attacker who plumbs a hostile chatId cannot redirect approval
+  prompts away from Santiago.
 - `kind: "approval"` on `AgentRuntime.send()` is RESERVED and NOT
   currently dispatched. Only the file-bus path is active.
 
@@ -170,6 +199,19 @@ effect runs.
   suffix + rename for the resolved-file write. On Windows,
   concurrent renames to the same destination can raise EPERM —
   treated the same as ENOENT / EBUSY (race-loser).
+- **Multi-bot HTTP 409.** Telegram allows exactly ONE polling client
+  per token. If the daemon is started twice, or if OpenClaw still
+  polls the same token during Phase 2 cutover, `getUpdates` returns
+  409 and `node-telegram-bot-api` emits `polling_error`. The bot
+  registers a `polling_error` handler that logs to stderr. Mitigation
+  for cutover: revoke the OpenClaw token via BotFather and provision
+  a fresh one for the v2 daemon. Phase 2+ will switch to webhook
+  delivery to eliminate this hazard entirely.
+- **Approval crash recovery.** `resolveApproval` uses a three-phase
+  no-strand sequence: rename pending → inflight, durably write
+  resolved, then unlink inflight. A crash between phases (b) and (c)
+  leaves a recoverable inflight file. `listInflightApprovals()`
+  surfaces these on next boot for daemon-level reconciliation.
 
 ## Library choice
 

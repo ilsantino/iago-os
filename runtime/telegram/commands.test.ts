@@ -3,6 +3,11 @@ import { describe, expect, it } from "vitest";
 import type { AgentShape } from "../agent-runtime/types.js";
 import { isCommandAvailableForShape, parseCommand } from "./commands.js";
 
+// PR45 critical: approvalId must match UUID v4. Tests that previously
+// used arbitrary strings like "abc123" must use real UUIDs now.
+const UUID_A = "11111111-2222-4333-8444-555555555555";
+const UUID_B = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+
 describe("commands / parseCommand", () => {
 	it("parses /start agent-foo", () => {
 		const r = parseCommand("/start agent-foo");
@@ -20,63 +25,106 @@ describe("commands / parseCommand", () => {
 		}
 	});
 
-	it("parses /approve_allow_abc123 (callback form)", () => {
-		const r = parseCommand("/approve_allow_abc123");
+	it("parses /approve_allow_<uuid> (callback form)", () => {
+		const r = parseCommand(`/approve_allow_${UUID_A}`);
 		expect(r.ok).toBe(true);
 		if (r.ok) {
 			expect(r.command).toEqual({
 				name: "approve",
-				approvalId: "abc123",
+				approvalId: UUID_A,
 				decision: "allow",
 			});
 		}
 	});
 
-	it("parses approve_allow_abc123 without leading slash (inline-keyboard callback_data format)", () => {
-		const r = parseCommand("approve_allow_abc123");
+	it("parses approve_allow_<uuid> without leading slash (inline-keyboard callback_data format)", () => {
+		const r = parseCommand(`approve_allow_${UUID_A}`);
 		expect(r.ok).toBe(true);
 		if (r.ok) {
 			expect(r.command).toEqual({
 				name: "approve",
-				approvalId: "abc123",
+				approvalId: UUID_A,
 				decision: "allow",
 			});
 		}
 	});
 
-	it("parses approve_deny_xyz without leading slash (inline-keyboard callback_data format)", () => {
-		const r = parseCommand("approve_deny_xyz");
+	it("parses approve_deny_<uuid> without leading slash (inline-keyboard callback_data format)", () => {
+		const r = parseCommand(`approve_deny_${UUID_B}`);
 		expect(r.ok).toBe(true);
 		if (r.ok) {
 			expect(r.command).toEqual({
 				name: "approve",
-				approvalId: "xyz",
+				approvalId: UUID_B,
 				decision: "deny",
 			});
 		}
 	});
 
-	it("parses /approve_deny_xyz (callback form)", () => {
-		const r = parseCommand("/approve_deny_xyz");
+	it("parses /approve_deny_<uuid> (callback form)", () => {
+		const r = parseCommand(`/approve_deny_${UUID_B}`);
 		expect(r.ok).toBe(true);
 		if (r.ok) {
 			expect(r.command).toEqual({
 				name: "approve",
-				approvalId: "xyz",
+				approvalId: UUID_B,
 				decision: "deny",
 			});
 		}
 	});
 
-	it("parses text-form /approve abc deny", () => {
-		const r = parseCommand("/approve abc deny");
+	it("parses text-form /approve <uuid> deny", () => {
+		const r = parseCommand(`/approve ${UUID_A} deny`);
 		expect(r.ok).toBe(true);
 		if (r.ok) {
 			expect(r.command).toEqual({
 				name: "approve",
-				approvalId: "abc",
+				approvalId: UUID_A,
 				decision: "deny",
 			});
+		}
+	});
+
+	// PR45 CRITICAL — approvalId validation closes path-traversal surface
+	it("rejects /approve ../../agents/foo allow (path-traversal attempt via text form)", () => {
+		const r = parseCommand("/approve ../../agents/foo allow");
+		expect(r.ok).toBe(false);
+		if (!r.ok) {
+			expect(r.error).toContain("invalid approval ID");
+		}
+	});
+
+	it("rejects callback approve_allow_../../etc/passwd (path-traversal attempt via callback)", () => {
+		const r = parseCommand("approve_allow_../../etc/passwd");
+		expect(r.ok).toBe(false);
+		if (!r.ok) {
+			expect(r.error).toContain("invalid approval ID");
+		}
+	});
+
+	it("rejects callback approve_allow_<uuid>.extra (UUID with trailing chars)", () => {
+		const r = parseCommand(`approve_allow_${UUID_A}.extra`);
+		expect(r.ok).toBe(false);
+		if (!r.ok) {
+			expect(r.error).toContain("invalid approval ID");
+		}
+	});
+
+	it("rejects /approve abc123 allow (legacy short id no longer accepted)", () => {
+		const r = parseCommand("/approve abc123 allow");
+		expect(r.ok).toBe(false);
+		if (!r.ok) {
+			expect(r.error).toContain("invalid approval ID");
+		}
+	});
+
+	it("rejects callback approve_allow_<uuid with path separator> (defense-in-depth)", () => {
+		const r = parseCommand(
+			"approve_allow_11111111-2222/4333-8444-555555555555",
+		);
+		expect(r.ok).toBe(false);
+		if (!r.ok) {
+			expect(r.error).toContain("invalid approval ID");
 		}
 	});
 

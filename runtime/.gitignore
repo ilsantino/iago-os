@@ -7,3 +7,9 @@ telemetry/*.ndjson
 *.log
 .daemon-stop
 coverage/
+# PR45 adversarial: defense-in-depth — repo root .gitignore already
+# covers these but a local runtime/.env is easy to create and would be
+# devastating to commit (bot token + allowlist).
+.env
+.env.*
+!.env.example
