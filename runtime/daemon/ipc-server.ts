@@ -125,8 +125,6 @@ export class IpcServer {
 			this.handleConnection(socket);
 		});
 
-		this.server = server;
-
 		await new Promise<void>((resolve, reject) => {
 			const onError = (err: Error) => {
 				server.removeListener("listening", onListening);
@@ -140,6 +138,11 @@ export class IpcServer {
 			server.once("listening", onListening);
 			server.listen(this.socketPath);
 		});
+
+		// Assign only after a successful listen so that a failed start() leaves
+		// this.server null — allowing a subsequent start() to retry instead of
+		// silently no-opping with a non-listening server.
+		this.server = server;
 
 		// Restrict the Unix socket to the daemon owner so a permissive
 		// umask doesn't let other local users dial fleet-health/list-agents.
