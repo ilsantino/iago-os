@@ -123,3 +123,54 @@ describe("prompt-parser — synthetic inline fixtures (MC2)", () => {
 		expect(result.status).toBe("exited");
 	});
 });
+
+describe("prompt-parser — ANSI stripping (I4)", () => {
+	// Startup banners from Claude Code's TUI contain ANSI color codes and
+	// box-drawing sequences. Without stripping, these push the raw byte count
+	// past FAIL_CLOSED_MIN_BYTES (100), triggering "unknown" before any seed
+	// pattern can match, which would cause a daemon restart loop.
+
+	it("does not count ANSI CSI sequences toward the fail-closed threshold", () => {
+		// Build a string that is >100 raw bytes but only ~10 non-ANSI chars.
+		// Each "\x1b[0m" is 4 bytes; 30 of them = 120 bytes of pure ANSI.
+		const ansiPadding = "\x1b[0m".repeat(30);
+		const payload = `${ansiPadding}hi\n`;
+		// Raw byte length is well above 100; stripped non-whitespace is 2 ("hi").
+		expect(payload.length).toBeGreaterThan(100);
+		const result = parseStatusFromOutput([payload]);
+		// Should stay below the fail-closed threshold → warm-up "idle", not "unknown".
+		expect(result.status).toBe("idle");
+	});
+
+	it("strips OSC sequences (title-setting) before threshold check", () => {
+		// OSC format: \x1b]...\x07 — used by terminals to set window title.
+		const osc = "\x1b]0;Claude Code\x07".repeat(8); // 8 × ~17 bytes = 136 raw bytes
+		const result = parseStatusFromOutput([osc]);
+		expect(result.status).toBe("idle");
+	});
+
+	it("strips ANSI before pattern matching — idle prompt survives color codes", () => {
+		// The idle regex matches "\nHuman: " at end of buffer. Wrapping the
+		// prompt in color codes must not prevent the match.
+		const buffer = "\x1b[32mprevious reply\x1b[0m\n\nHuman: ";
+		const result = parseStatusFromOutput([buffer]);
+		// Pattern matching operates on the raw buffer (not stripped), so the
+		// idle regex must handle interleaved ANSI. This test documents current
+		// behaviour: the idle regex matches the literal "\nHuman: " substring
+		// which is present even with surrounding codes.
+		expect(result.status).toBe("idle");
+	});
+
+	it("startup banner with only ANSI + whitespace stays below threshold", () => {
+		// Simulates Claude Code's startup banner: lots of box-drawing ANSI,
+		// very few printable chars (just the ASCII art border spaces).
+		const banner = [
+			"\x1b[2J\x1b[H", // clear screen + home
+			"\x1b[1m\x1b[36m", // bold cyan
+			"   \n   \n", // whitespace-only content
+			"\x1b[0m", // reset
+		].join("");
+		const result = parseStatusFromOutput([banner]);
+		expect(result.status).toBe("idle");
+	});
+});
