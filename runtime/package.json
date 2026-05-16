@@ -14,6 +14,8 @@
 		"test": "vitest run",
 		"test:watch": "vitest",
 		"test:coverage": "vitest run --coverage",
+		"test:rollback": "node scripts/test-rollback.mjs",
+		"check:evidence": "node scripts/check-evidence.mjs",
 		"typecheck": "tsc --noEmit",
 		"lint": "biome check ."
 	},

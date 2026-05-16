@@ -41,8 +41,13 @@
  * bypass `main()` so they can assert on the thrown error.
  */
 
+import * as fsp from "node:fs/promises";
+import * as path from "node:path";
+import { pathToFileURL } from "node:url";
+
 import {
 	type AgentRuntime,
+	listRuntimes,
 	resolveRuntime,
 } from "../agent-runtime/registry.js";
 import type {
@@ -50,22 +55,138 @@ import type {
 	AgentMessage,
 	AgentShape,
 } from "../agent-runtime/types.js";
-import { TelegramBot } from "../telegram/bot.js";
+// Side-effect import — registers `claude-pty` in the polymorphic registry at
+// module load time. Adapter registration failures are fail-isolated inside
+// the adapter module itself; the daemon detects missing registration via
+// `listRuntimes()` at startup (Codex H1 + Opus C2 fix).
+import "../agent-runtime/pty/claude-pty.js";
 import {
 	type ApprovalRequest,
 	listPendingApprovals,
 } from "../telegram/approval-bus.js";
+import { TelegramBot } from "../telegram/bot.js";
 
-import { AgentManager } from "./agent-manager.js";
-import {
-	type AgentConfig,
-	type DaemonConfig,
-	loadConfig,
-} from "./config.js";
+import { AgentManager, type RegisterAgentConfig } from "./agent-manager.js";
+import { type AgentConfig, type DaemonConfig, loadConfig } from "./config.js";
 import { HeartbeatController } from "./heartbeat.js";
 import { IpcServer } from "./ipc-server.js";
-import { ensureStateDirsSync } from "./state-paths.js";
+import { ensureStateDirsSync, pathFor } from "./state-paths.js";
 import { emit } from "./telemetry.js";
+
+/**
+ * Per-stage shutdown timeout (ms). Opus I4: the daemon shutdown path
+ * previously awaited each stage serially with no outer timeout — a hung
+ * adapter shutdown would block forever and the rollback runbook's
+ * `kill -KILL` step was the only escape. Bounding each stage at 10s
+ * matches the 30s budget documented in `runtime/migration/phase-1-rollback.md`
+ * (heartbeat + bot + ipc + handle loop ≈ 4 stages × 10s, fits under 30s).
+ */
+const SHUTDOWN_STAGE_TIMEOUT_MS = 10_000;
+
+async function withTimeout<T>(
+	label: string,
+	op: () => Promise<T>,
+	timeoutMs = SHUTDOWN_STAGE_TIMEOUT_MS,
+): Promise<T | "timeout"> {
+	let timer: NodeJS.Timeout | null = null;
+	const timeout = new Promise<"timeout">((resolve) => {
+		timer = setTimeout(() => resolve("timeout"), timeoutMs);
+	});
+	try {
+		const result = await Promise.race([op(), timeout]);
+		if (result === "timeout") {
+			console.error(
+				`[daemon] shutdown stage "${label}" exceeded ${timeoutMs}ms — proceeding`,
+			);
+		}
+		return result;
+	} finally {
+		if (timer !== null) clearTimeout(timer);
+	}
+}
+
+/**
+ * Build a `knownConfigs` map by reading persisted `<handleId>.json`
+ * records under `pathFor("agents")`. Phase 1 plan 03 writes these on
+ * every `registerAgent` (see `agent-manager.persistAgentConfig`).
+ * Without this, `bootRecovery` cannot fire the crash-without-marker
+ * recovery branch (Codex H1 / Opus I2) — the daemon would silently
+ * strand every formerly-registered agent across a hard crash.
+ */
+export async function loadPersistedConfigs(): Promise<
+	Map<string, RegisterAgentConfig>
+> {
+	const out = new Map<string, RegisterAgentConfig>();
+	const dir = pathFor("agents");
+	let entries: string[];
+	try {
+		entries = await fsp.readdir(dir);
+	} catch (err) {
+		const code = (err as NodeJS.ErrnoException).code;
+		if (code === "ENOENT") return out;
+		console.error(
+			`[daemon] loadPersistedConfigs readdir(${dir}) failed: ${err instanceof Error ? err.message : String(err)}`,
+		);
+		return out;
+	}
+	for (const entry of entries) {
+		if (!entry.endsWith(".json")) continue;
+		const handleId = entry.slice(0, -5);
+		const file = path.join(dir, entry);
+		let raw: string;
+		try {
+			raw = await fsp.readFile(file, "utf8");
+		} catch (err) {
+			console.error(
+				`[daemon] loadPersistedConfigs read(${file}) failed: ${err instanceof Error ? err.message : String(err)}`,
+			);
+			continue;
+		}
+		let parsed: unknown;
+		try {
+			parsed = JSON.parse(raw);
+		} catch (err) {
+			console.error(
+				`[daemon] loadPersistedConfigs parse(${file}) failed: ${err instanceof Error ? err.message : String(err)}`,
+			);
+			continue;
+		}
+		if (typeof parsed !== "object" || parsed === null) continue;
+		const obj = parsed as Record<string, unknown>;
+		const agentId = typeof obj.agentId === "string" ? obj.agentId : null;
+		const runtimeId = typeof obj.runtimeId === "string" ? obj.runtimeId : null;
+		const cwd = typeof obj.cwd === "string" ? obj.cwd : null;
+		const sessionId = typeof obj.sessionId === "string" ? obj.sessionId : null;
+		const org = typeof obj.org === "string" ? obj.org : undefined;
+		const envRaw = obj.env;
+		const env: Record<string, string> = {};
+		if (typeof envRaw === "object" && envRaw !== null) {
+			for (const [k, v] of Object.entries(envRaw)) {
+				if (typeof v === "string") env[k] = v;
+			}
+		}
+		if (
+			agentId === null ||
+			runtimeId === null ||
+			cwd === null ||
+			sessionId === null
+		) {
+			console.error(
+				`[daemon] loadPersistedConfigs skipping ${entry}: missing required field`,
+			);
+			continue;
+		}
+		out.set(handleId, {
+			agentId,
+			runtimeId,
+			org,
+			cwd,
+			env,
+			sessionId,
+		});
+	}
+	return out;
+}
 
 export interface DaemonHandle {
 	readonly shutdown: () => Promise<void>;
@@ -85,13 +206,17 @@ export async function startDaemon(
 
 	const config = overrideConfig ?? (await loadConfig());
 
-	// Side-effect import — registers `claude-pty` in the polymorphic
-	// registry. Adapter failures are fail-isolated per registry.ts JSDoc.
-	try {
-		await import("../agent-runtime/pty/claude-pty.js");
-	} catch (err) {
+	// Codex H1 + Opus C2: claude-pty is registered via the top-level
+	// side-effect `import "../agent-runtime/pty/claude-pty.js"` (see
+	// imports above — guarantees registration at module load, not at
+	// startDaemon() call time). Validate registration so the operator
+	// sees an explicit error if the adapter failed to register rather
+	// than discovering it via a "No AgentRuntime registered for id"
+	// surprise on first registerAgent().
+	const loadedRuntimes = listRuntimes().map((r) => r.id);
+	if (!loadedRuntimes.includes("claude-pty")) {
 		console.error(
-			`[daemon] claude-pty registration failed: ${err instanceof Error ? err.message : String(err)}`,
+			"[daemon] WARNING: claude-pty adapter is not registered — registration likely failed at module load",
 		);
 	}
 
@@ -109,7 +234,13 @@ export async function startDaemon(
 
 	const agentManager = new AgentManager({ heartbeat });
 
-	const bootResult = await agentManager.bootRecovery();
+	// Codex H1 + Opus I2: build knownConfigs from persisted agent records
+	// before bootRecovery. Without this map, the daemon-crash-without-marker
+	// recovery branch (agent-manager.ts:708 — the highest-value recovery
+	// case) cannot fire and formerly-registered agents are silently
+	// stranded across a hard crash.
+	const knownConfigs = await loadPersistedConfigs();
+	const bootResult = await agentManager.bootRecovery({ knownConfigs });
 	for (const handleId of bootResult.cleanShutdowns) {
 		await emit({
 			kind: "agent-exited",
@@ -142,8 +273,7 @@ export async function startDaemon(
 			agentManager: {
 				getHandle: (id) => agentManager.getHandle(id),
 				listHandles: () => agentManager.listHandles(),
-				shutdownAgent: (id, signal) =>
-					agentManager.shutdownAgent(id, signal),
+				shutdownAgent: (id, signal) => agentManager.shutdownAgent(id, signal),
 				restartAgent: (id, reason) =>
 					agentManager.restartAgent(
 						id,
@@ -169,38 +299,59 @@ export async function startDaemon(
 	const shutdown = async (): Promise<void> => {
 		if (shuttingDown) return;
 		shuttingDown = true;
-		try {
-			await heartbeat.stop();
-		} catch (err) {
-			console.error(
-				`[daemon] heartbeat.stop failed: ${err instanceof Error ? err.message : String(err)}`,
-			);
-		}
-		if (bot !== null) {
+		// Opus I4: bound each stage with `withTimeout`. A hung adapter
+		// (heartbeat sweep, bot polling, IPC drain, or per-handle
+		// shutdown) would otherwise block the entire daemon and the
+		// rollback runbook's `kill -KILL` step was the only escape.
+		await withTimeout("heartbeat.stop", async () => {
 			try {
-				await bot.stop();
+				await heartbeat.stop();
 			} catch (err) {
 				console.error(
-					`[daemon] bot.stop failed: ${err instanceof Error ? err.message : String(err)}`,
+					`[daemon] heartbeat.stop failed: ${err instanceof Error ? err.message : String(err)}`,
 				);
 			}
+		});
+		if (bot !== null) {
+			const botRef = bot;
+			await withTimeout("bot.stop", async () => {
+				try {
+					await botRef.stop();
+				} catch (err) {
+					console.error(
+						`[daemon] bot.stop failed: ${err instanceof Error ? err.message : String(err)}`,
+					);
+				}
+			});
 		}
-		try {
-			await ipcServer.stop();
-		} catch (err) {
-			console.error(
-				`[daemon] ipcServer.stop failed: ${err instanceof Error ? err.message : String(err)}`,
-			);
-		}
+		await withTimeout("ipcServer.stop", async () => {
+			try {
+				await ipcServer.stop();
+			} catch (err) {
+				console.error(
+					`[daemon] ipcServer.stop failed: ${err instanceof Error ? err.message : String(err)}`,
+				);
+			}
+		});
 		const handles = agentManager.listHandles();
 		for (const handle of handles) {
-			try {
-				await agentManager.shutdownAgent(handle.id, "SIGTERM");
-			} catch (err) {
-				console.error(
-					`[daemon] shutdownAgent(${handle.id}) failed: ${err instanceof Error ? err.message : String(err)}`,
-				);
-			}
+			await withTimeout(`shutdownAgent(${handle.id})`, async () => {
+				try {
+					await agentManager.shutdownAgent(handle.id, "SIGTERM");
+					// Telemetry — shutdown is the canonical "graceful exit" hook;
+					// without this, the 7-canonical-event PHASE-1-EVIDENCE.md
+					// matrix (Opus I5) lacks `agent-exited` on the happy path.
+					await emit({
+						kind: "agent-exited",
+						handleId: handle.id,
+						reason: "graceful",
+					});
+				} catch (err) {
+					console.error(
+						`[daemon] shutdownAgent(${handle.id}) failed: ${err instanceof Error ? err.message : String(err)}`,
+					);
+				}
+			});
 		}
 		try {
 			await emit({
@@ -232,9 +383,7 @@ export async function startDaemon(
 	process.on("SIGINT", sigintHandler);
 	process.on("SIGTERM", sigtermHandler);
 	shutdownHandlers.add(() => process.removeListener("SIGINT", sigintHandler));
-	shutdownHandlers.add(() =>
-		process.removeListener("SIGTERM", sigtermHandler),
-	);
+	shutdownHandlers.add(() => process.removeListener("SIGTERM", sigtermHandler));
 
 	for (const cfg of config.agents) {
 		if (!cfg.autoStart) continue;
@@ -380,3 +529,36 @@ function resolveSessionId(cfg: AgentConfig): string {
 export type { DaemonConfig } from "./config.js";
 export type { ApprovalRequest };
 export { listPendingApprovals };
+
+/**
+ * Direct-execution guard (Codex C1).
+ *
+ * `runtime/package.json` `"start"` script runs `node dist/daemon/main.js`.
+ * Without this guard the module loads, exports `main()`, and exits without
+ * starting the daemon — the operator command silently does nothing.
+ *
+ * Compares `import.meta.url` (file:// URL of the currently-evaluating ESM
+ * module) against `process.argv[1]` (the script path Node was launched with,
+ * converted to file:// for cross-platform comparison). On match: invoke
+ * `main()`. On import-as-library (the test path): the URL of the importer
+ * differs from `argv[1]`, so this branch does not fire.
+ */
+function isDirectlyExecuted(): boolean {
+	const argv1 = process.argv[1];
+	if (argv1 === undefined) return false;
+	try {
+		const argvUrl = pathToFileURL(argv1).href;
+		return import.meta.url === argvUrl;
+	} catch {
+		return false;
+	}
+}
+
+if (isDirectlyExecuted()) {
+	// Avoids a top-level await constraint while still ensuring crash exit.
+	main().catch((err) => {
+		const message = err instanceof Error ? err.message : String(err);
+		process.stderr.write(`fatal: ${message}\n`);
+		process.exit(1);
+	});
+}

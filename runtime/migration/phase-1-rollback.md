@@ -19,17 +19,49 @@ If the daemon is currently running:
 ps aux | grep -E "node.*runtime/daemon/main" | grep -v grep
 # Send SIGTERM (graceful — writes .daemon-stop markers per Plan 03)
 kill -TERM <pid>
-# If it does not exit within 30s, force-kill
+# If it does not exit within 40s, force-kill (see budget below)
 kill -KILL <pid>
 ```
 
-On Windows (PowerShell):
+**Shutdown timeout budget.** `runtime/daemon/main.ts` (Opus I4 fix)
+bounds each stage of graceful shutdown at 10s:
+
+| Stage | Bound |
+|-------|-------|
+| heartbeat.stop | 10s |
+| bot.stop (if Telegram enabled) | 10s |
+| ipcServer.stop | 10s |
+| shutdownAgent per live handle | 10s each |
+
+For a daemon with N live handles the cumulative budget is
+`30s + 10s × N`. Wait at least that before escalating to SIGKILL — the
+graceful path WILL terminate within budget even if an adapter hangs.
+
+On Windows (PowerShell), do the graceful step first, fall back to
+force-kill only after the budget elapses:
 
 ```powershell
-Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like "*runtime*daemon*main*" } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
+# Step (a) — try graceful: send Ctrl+C to the daemon's console.
+# taskkill without /F sends WM_CLOSE / Ctrl+C; the daemon's SIGINT
+# handler then runs (writing .daemon-stop markers).
+$pid = (Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like "*runtime*daemon*main*" }).ProcessId
+taskkill /PID $pid /T          # graceful — no /F flag
+# Wait up to the budget (heartbeat+bot+ipc+handles × 10s).
+Start-Sleep -Seconds 40
+# Step (b) — only if still alive, force-kill (skips graceful shutdown).
+if (Get-Process -Id $pid -ErrorAction SilentlyContinue) {
+    Stop-Process -Id $pid -Force
+}
 ```
 
-The daemon's SIGINT/SIGTERM handlers in `runtime/daemon/main.ts` write graceful `.daemon-stop` markers for every live agent handle.
+If the Windows force-kill path runs, the daemon does NOT write
+`.daemon-stop` markers; the next boot will treat every prior handle as
+a crash candidate and attempt replay (correct behavior per the
+crash-without-marker recovery branch).
+
+The daemon's SIGINT/SIGTERM handlers in `runtime/daemon/main.ts` write
+graceful `.daemon-stop` markers for every live agent handle within the
+budget above.
 
 ### 2. Remove the daemon code
 
@@ -87,6 +119,12 @@ Phase 1 does **not** modify any iago-os files outside `runtime/`. Specifically:
 - No `scripts/execute-pipeline.sh` changes
 - No `.github/workflows/*.yml` changes EXCEPT the `runtime-checks` job added in PR #40 — leave this in place (it conditional-skips when `runtime/package.json` absent and harms nothing)
 
+Before deciding to drop the `runtime-checks` job, verify it actually exists with the expected block (some PRs may have renamed or moved it):
+
+```bash
+grep -A 5 "^  runtime-checks:" .github/workflows/validate.yml || echo "block absent — nothing to drop"
+```
+
 If the rollback PR also removes `runtime-checks`, drop the `runtime-checks` job block from `.github/workflows/validate.yml`.
 
 ### 5. Verify rollback
@@ -106,15 +144,58 @@ The existing iaGO review pipeline (`scripts/execute-pipeline.sh`) is unchanged b
 
 ### 6. Re-run Phase 1 after rollback (if desired)
 
+The correct re-apply path depends on HOW the rollback was done. Three branches:
+
+**Branch (a) — Phase 1 not yet merged to main; feature branches still exist on remote.**
+
 ```bash
-# If the Phase 1 branches still exist on the remote:
+git fetch origin
 git checkout feat/v2-runtime-skeleton-agent-runtime-interface
-git pull
-# Or merge the PRs in order: #40, #41, #42, #43, #44, #45, #46
+git pull --ff-only origin feat/v2-runtime-skeleton-agent-runtime-interface
+# Re-walk the stack via PR merges: open PRs #40, #41, ..., #46 in order and merge each.
 cd runtime && npm install
-npm test    # → 203+ passed, 5 skipped (per acceptance criterion #2)
-node runtime/daemon/main.js          # daemon starts; see runtime/README.md
+npm test    # → 285+ passed, 5 skipped (per acceptance criterion #2)
+npm start                            # daemon starts (npm start → node dist/daemon/main.js → main())
 ```
+
+**Branch (b) — Phase 1 was merged AND rolled back via `git revert`.**
+
+You cannot re-merge an already-merged PR — gh / GitHub will say "Already merged."
+Re-application is done by reverting the revert commits in REVERSE order so the
+original feature commits land back on main:
+
+```bash
+git checkout main
+git pull --ff-only origin main
+# Walk back through the revert commits (one per Phase 1 PR) in REVERSE.
+# Identify them via:
+git log --oneline --grep "Revert " --since="<rollback-date>" --reverse
+# Apply each in reverse order (the LAST revert is reverted FIRST):
+git revert <revert-sha-for-pr-46>
+git revert <revert-sha-for-pr-45>
+# ... continue through <revert-sha-for-pr-40>
+git push origin main
+cd runtime && npm install && npm test
+```
+
+**Branch (c) — Phase 1 was merged AND rolled back via `git reset --hard`.**
+
+```bash
+git checkout main
+# Locate the post-Phase-1 sha (last commit BEFORE the reset):
+git reflog | head -20
+git reset --hard <post-phase-1-sha>
+git push --force-with-lease origin main   # only if no other developer pulled the reset
+cd runtime && npm install && npm test
+```
+
+Verification command (same for all three branches):
+
+```bash
+cd runtime && npx tsc --noEmit && npx vitest run --coverage 2>&1 | tail -50
+```
+
+Expected exit 0 + ≥285 passed + coverage ≥80% per acceptance criterion #2.
 
 ## What rollback does NOT touch
 
