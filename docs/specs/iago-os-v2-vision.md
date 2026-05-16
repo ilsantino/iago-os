@@ -164,10 +164,18 @@ Cited file paths are in the upstream repos; iaGO ports land under `runtime/` (ne
 ```ts
 type AgentShape = "pty" | "http" | "mcp" | "event" | "daemon";
 
+type AgentMessage =
+  | { kind: "prompt"; payload: { text: string } }
+  | { kind: "approval"; payload: { approvalId: string; decision: "allow" | "deny" } }
+  | { kind: "abort"; payload: { reason?: string } }
+  | { kind: "inject"; payload: { text: string } }
+  | { kind: "custom"; payload: unknown };
+
 interface AgentRuntime {
   readonly shape: AgentShape;
   readonly id: string;            // e.g., "claude-pty", "anthropic-sdk", "hermes-mcp", "sentry-event", "imap-daemon"
   readonly version: string;
+  readonly interfaceVersion: "v1";
 
   spawn(opts: SpawnOpts): Promise<AgentHandle>;
   send(handle: AgentHandle, message: AgentMessage): Promise<void>;
@@ -186,12 +194,9 @@ interface SpawnOpts {
   org?: string;        // for multi-org cascade
   parentHandle?: AgentHandle;  // for subagent spawn semantics (cortextOS deeper-adoption)
 }
-
-interface AgentMessage {
-  kind: "prompt" | "approval" | "abort" | "inject" | "custom";
-  payload: unknown;
-}
 ```
+
+`AgentMessage` is a discriminated union — `kind` narrows the `payload` type at the type-checker level (Santiago decision 2026-05-15 PM, post-Plan-01-stress, replacing the prior `payload: unknown` shape). `custom` retains `unknown` as the explicit escape hatch.
 
 Common lifecycle (spawn → status → restore → shutdown) is enforced for every shape. Per-shape mechanics live in the adapter implementation. Adding a runtime is "implement `AgentRuntime` for the right shape, register in `runtime/agent-runtime/registry.ts`."
 

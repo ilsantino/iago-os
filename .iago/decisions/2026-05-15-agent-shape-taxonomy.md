@@ -47,10 +47,18 @@ Replace the `PTYAdapter` registry with a **polymorphic `AgentRuntime` interface*
 ```ts
 type AgentShape = "pty" | "http" | "mcp" | "event" | "daemon";
 
+type AgentMessage =
+  | { kind: "prompt"; payload: { text: string } }
+  | { kind: "approval"; payload: { approvalId: string; decision: "allow" | "deny" } }
+  | { kind: "abort"; payload: { reason?: string } }
+  | { kind: "inject"; payload: { text: string } }
+  | { kind: "custom"; payload: unknown };
+
 interface AgentRuntime {
   readonly shape: AgentShape;
   readonly id: string;
   readonly version: string;
+  readonly interfaceVersion: "v1";
 
   spawn(opts: SpawnOpts): Promise<AgentHandle>;
   send(handle: AgentHandle, message: AgentMessage): Promise<void>;
@@ -62,7 +70,7 @@ interface AgentRuntime {
 }
 ```
 
-Common lifecycle (spawn → status → restore → shutdown) is enforced for every shape. Per-shape mechanics live in the adapter implementation.
+Common lifecycle (spawn → status → restore → shutdown) is enforced for every shape. Per-shape mechanics live in the adapter implementation. `AgentMessage` is a discriminated union — `kind` narrows the `payload` type at the type-checker level (see § "AgentMessage typing — richer per-kind discriminated union" under § Decisions made under this amendment for the post-Plan-01-stress decision).
 
 ### Interface versioning + migration
 
@@ -240,6 +248,31 @@ Two related decisions land in the same amendment as the shape-taxonomy verdict:
 **Provisioning path:** use 1Password CLI as **provisioning input** (read once at deployment to populate the credential files), but never at runtime. systemd resolves `LoadCredential=` from `/etc/credstore.encrypted/` or a local key file populated by the deploy script.
 
 **Confirmation:** cross-model verdict (Codex GPT-5.5, 2026-05-15) independently agreed with leak-mode analysis.
+
+### AgentMessage typing — richer per-kind discriminated union (2026-05-15 PM)
+
+**Decided 2026-05-15** (post-Phase-1-plan-stress) — supersedes the flat `{ kind; payload: unknown }` definition in the original Common Interface block above (block has been updated in-place).
+
+**Verdict:** `AgentMessage` is a discriminated union with typed payloads per kind:
+
+```ts
+type AgentMessage =
+  | { kind: "prompt"; payload: { text: string } }
+  | { kind: "approval"; payload: { approvalId: string; decision: "allow" | "deny" } }
+  | { kind: "abort"; payload: { reason?: string } }
+  | { kind: "inject"; payload: { text: string } }
+  | { kind: "custom"; payload: unknown };
+```
+
+**Rationale:** Santiago direction 2026-05-15 — "cleaner and better long term." The richer typing gives type-narrowing on `kind` and removes the per-callsite type assertion that `payload: unknown` forces. The `custom` kind retains `unknown` as the explicit escape hatch for app-specific payloads — adapters that want to accept structured custom payloads can intersect their payload type at the adapter level. Plan 01 stress test surfaced the canon-vs-richer-typing conflict; Santiago resolved in favor of richer.
+
+**Migration impact:** No deployed code depends on the old flat shape (Phase 1 has not shipped). The Common Interface block was updated in-place. Adapters implementing `send(handle, message)` MUST use the discriminated union — TypeScript will type-narrow `message.payload` based on `message.kind`. The `custom` kind is the only one preserving `unknown` semantics.
+
+**2nd-pass stress additions (also 2026-05-15 PM):**
+
+- **`prompt` payload is intentionally narrow.** `{ text: string }` covers PTY stdin + MCP text-in. For Shape 2 (HTTP/SDK, Phase 3), Anthropic SDK calls need `system`, `messages` array, `model`, `maxTokens`. **Decision:** when Shape 2 lands in Phase 3, add a NEW kind (e.g., `kind: "sdk-request"` with structured payload) rather than extend `prompt`. This preserves Phase 1 + Phase 9 + Phase 11 adapter contracts as non-breaking. Record this here so Phase 3 planning does not re-litigate.
+- **`approval` kind is reserved, not active.** Today's dispatch flow is file-based polling: Telegram callback → `resolveApproval` → `approvals/resolved/<id>.json` rename → agent's `waitForApproval` polling loop unblocks. `runtime.send(handle, { kind: "approval", ... })` is NOT called by any Phase 1 caller. Plan 04 claude-pty correctly no-ops the `approval` arm. The kind exists on the interface as a reserved future channel (e.g., for adapters that want push-based approval notification instead of polling). Document `approval` as "RESERVED — file-bus polling is the active path" in each adapter's send() JSDoc.
+- **`custom` payload schema rule.** Adapters that accept structured `custom` payloads MUST document the expected payload shape in JSDoc on the adapter's `send()` override. Add this as an adapter-authoring rule in `runtime/agent-runtime/README.md`. Phase 9 Shape 4 (Webhook/event) is the first real consumer; the rule lands now to prevent drift.
 
 ---
 

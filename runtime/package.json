@@ -1,0 +1,25 @@
+{
+	"name": "@iago-os/runtime",
+	"version": "0.1.0",
+	"private": true,
+	"type": "module",
+	"description": "iaGO-OS v2 daemon runtime: polymorphic AgentRuntime + registry + per-shape adapters.",
+	"engines": {
+		"node": ">=20"
+	},
+	"scripts": {
+		"build": "tsc -p .",
+		"test": "vitest run",
+		"test:watch": "vitest",
+		"test:coverage": "vitest run --coverage",
+		"typecheck": "tsc --noEmit",
+		"lint": "biome check ."
+	},
+	"devDependencies": {
+		"@biomejs/biome": "^1.9.0",
+		"@types/node": "^20.14.0",
+		"@vitest/coverage-v8": "^2.1.0",
+		"typescript": "^5.6.0",
+		"vitest": "^2.1.0"
+	}
+}
