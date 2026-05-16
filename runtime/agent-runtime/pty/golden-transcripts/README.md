@@ -56,10 +56,14 @@ It is a thin bash script wrapping `script` (Linux/macOS) or PowerShell
 ./capture.sh running ~/path/to/cwd "Read README.md"
 ./capture.sh idle ~/path/to/cwd
 ./capture.sh exited ~/path/to/cwd
-
-# Windows PowerShell (run from this directory)
-pwsh ./capture.ps1 running C:\path\to\cwd "Read README.md"
 ```
+
+Windows: run `capture.sh` from a Git Bash or WSL shell. A native PowerShell
+capture script is not shipped yet — `script(1)` (Linux/macOS) and bash
+process semantics differ enough from PowerShell `Start-Transcript` that a
+side-by-side parity port is deferred to a follow-up (tracked in
+`runtime/agent-runtime/pty/claude-pty.md` § Known limitations). Until then,
+Windows operators must capture transcripts under WSL or Git Bash.
 
 The script writes to `claude-code-<scenario>.jsonl`. Commit the resulting
 files. Re-capture is a manual one-shot per supported Claude Code version

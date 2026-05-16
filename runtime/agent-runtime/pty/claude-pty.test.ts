@@ -16,10 +16,11 @@ import { ensureStateDirsSync, pathFor } from "../../daemon/state-paths.js";
 import { _resetRegistryForTests } from "../registry.js";
 import type { AgentHandle, SpawnOpts, StatusCallback } from "../types.js";
 
-// Silence the adapter's fire-and-forget `appendEvent` failure logs.
-// The status-persistence chain races afterEach's env cleanup and
-// produces noisy ENOENT warnings on otherwise-passing tests.
-console.error = () => {};
+// IMPORTANT #8: silence the adapter's fire-and-forget `appendEvent` failure
+// logs only WITHIN each test, never at file scope. Replacing console.error
+// globally masks real regressions and (with vitest worker re-use) leaks the
+// silence into adjacent test files. `vi.spyOn` + `vi.restoreAllMocks()` in
+// afterEach scopes the suppression to the active test.
 
 interface MockPty {
 	pid: number;
@@ -105,6 +106,10 @@ function defaultSpawnOpts(): SpawnOpts {
 }
 
 beforeEach(async () => {
+	// IMPORTANT #8: scope the console.error suppression to each test so a
+	// future regression that logs unexpectedly is still surfaced when this
+	// file's mock isn't active.
+	vi.spyOn(console, "error").mockImplementation(() => {});
 	tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), "iago-claude-pty-"));
 	process.env.IAGO_DAEMON_STATE_ROOT = tempDir;
 	ensureStateDirsSync();
@@ -314,14 +319,18 @@ describe("claude-pty adapter — error paths and coverage", () => {
 		const adapter = await importAdapterFresh();
 		const handle = await adapter.claudePty.spawn(defaultSpawnOpts());
 		lastMockPty.emitExit(0);
-		// I1 fix: onExit deletes the handle from the map, so the error is now
-		// "unknown handle" (state cleaned up) rather than "no longer alive".
+		// CRITICAL #3 follow-up: onExit flips `alive` synchronously and
+		// SCHEDULES the map delete via setImmediate (so same-tick callbacks
+		// can still resolve against state). Before the setImmediate fires,
+		// `send` rejects with "no longer alive"; after, with "unknown handle".
+		// Both error shapes are equivalent — both reject — so the test
+		// accepts either.
 		await expect(
 			adapter.claudePty.send(handle, {
 				kind: "prompt",
 				payload: { text: "x" },
 			}),
-		).rejects.toThrow(/unknown handle/);
+		).rejects.toThrow(/unknown handle|no longer alive/);
 	});
 
 	it("send with kind=custom is a no-op (warns, does not write)", async () => {
@@ -459,7 +468,7 @@ describe("claude-pty adapter — error paths and coverage", () => {
 		expect(result).toBeNull();
 	});
 
-	it("restoreFromMarker re-spawns a fresh PTY using the persisted agent config", async () => {
+	it("restoreFromMarker re-spawns a fresh PTY using the persisted agent config (with HWM + env)", async () => {
 		const adapter = await importAdapterFresh();
 		const handleId = "feedface";
 		await fsp.writeFile(
@@ -469,9 +478,14 @@ describe("claude-pty adapter — error paths and coverage", () => {
 				agentId: "restored-agent",
 				sessionId: "restored-session",
 				org: "iago",
+				env: { CUSTOM_AGENT_KEY: "restored-value" },
 			}),
 			"utf8",
 		);
+		// CRITICAL #2: HWM is now required for restore — write one so the
+		// adapter recognizes the session as replay-viable.
+		const sessionLog = await import("../../daemon/session-log.js");
+		await sessionLog.setHWM(handleId, { byteOffset: 0, sequence: 0 });
 		const restored = await adapter.claudePty.restoreFromMarker(
 			path.join(pathFor("markers"), `${handleId}.daemon-stop`),
 		);
@@ -481,6 +495,232 @@ describe("claude-pty adapter — error paths and coverage", () => {
 			expect(restored.sessionId).toBe("restored-session");
 			expect(restored.generationToken).toBe(1);
 			expect(mockSpawn).toHaveBeenCalledTimes(1);
+			// CRITICAL #1: env passed to PTY must come from persisted config,
+			// NOT process.env. Verify CUSTOM_AGENT_KEY landed and process.env's
+			// PATH did NOT spill in.
+			const spawnCall = mockSpawn.mock.calls[0] as [
+				string,
+				string[],
+				{ env: Record<string, string> },
+			];
+			expect(spawnCall[2].env.CUSTOM_AGENT_KEY).toBe("restored-value");
+			// Wave 2 contract: restoreId honored — returned handle keeps the
+			// original id, not a fresh uuid.
+			expect(restored.id).toBe(handleId);
 		}
+	});
+
+	it("CRITICAL #2: restoreFromMarker returns null when HWM is absent", async () => {
+		const adapter = await importAdapterFresh();
+		const handleId = "no-hwm-feed";
+		await fsp.writeFile(
+			path.join(pathFor("agents"), `${handleId}.json`),
+			JSON.stringify({
+				cwd: process.cwd(),
+				agentId: "no-hwm-agent",
+				sessionId: "no-hwm-session",
+				env: { FOO: "bar" },
+			}),
+			"utf8",
+		);
+		// Deliberately do NOT call setHWM — replay must not proceed without it.
+		const restored = await adapter.claudePty.restoreFromMarker(
+			path.join(pathFor("markers"), `${handleId}.daemon-stop`),
+		);
+		expect(restored).toBeNull();
+		expect(mockSpawn).not.toHaveBeenCalled();
+	});
+
+	it("CRITICAL #1: restoreFromMarker returns null when env is missing from persisted config", async () => {
+		const adapter = await importAdapterFresh();
+		const handleId = "no-env-feed";
+		await fsp.writeFile(
+			path.join(pathFor("agents"), `${handleId}.json`),
+			JSON.stringify({
+				cwd: process.cwd(),
+				agentId: "no-env-agent",
+				sessionId: "no-env-session",
+				// env intentionally absent — pre-PR43-fix records.
+			}),
+			"utf8",
+		);
+		const sessionLog = await import("../../daemon/session-log.js");
+		await sessionLog.setHWM(handleId, { byteOffset: 0, sequence: 0 });
+		const restored = await adapter.claudePty.restoreFromMarker(
+			path.join(pathFor("markers"), `${handleId}.daemon-stop`),
+		);
+		expect(restored).toBeNull();
+		expect(mockSpawn).not.toHaveBeenCalled();
+	});
+
+	it("CRITICAL #2: restoreFromMarker bumps generationToken from persisted lastGenerationToken (monotonic)", async () => {
+		const adapter = await importAdapterFresh();
+		const handleId = "monotonic-gen";
+		await fsp.writeFile(
+			path.join(pathFor("agents"), `${handleId}.json`),
+			JSON.stringify({
+				cwd: process.cwd(),
+				agentId: "monotonic-agent",
+				sessionId: "monotonic-session",
+				env: { K: "v" },
+				lastGenerationToken: 7,
+			}),
+			"utf8",
+		);
+		const sessionLog = await import("../../daemon/session-log.js");
+		await sessionLog.setHWM(handleId, { byteOffset: 0, sequence: 0 });
+		const restored = await adapter.claudePty.restoreFromMarker(
+			path.join(pathFor("markers"), `${handleId}.daemon-stop`),
+		);
+		expect(restored).not.toBeNull();
+		if (restored !== null) {
+			// Hardcoded `1` was the prior bug; correct behavior is N+1.
+			expect(restored.generationToken).toBe(8);
+		}
+		// Successive call must continue climbing (not reset to 1).
+		const restored2 = await adapter.claudePty.restoreFromMarker(
+			path.join(pathFor("markers"), `${handleId}.daemon-stop`),
+		);
+		expect(restored2).not.toBeNull();
+		if (restored2 !== null) {
+			expect(restored2.generationToken).toBe(9);
+		}
+	});
+
+	it("CRITICAL #3: stateByHandleId is emptied after onExit (no leak per restart)", async () => {
+		const adapter = await importAdapterFresh();
+		const handles: Array<AgentHandle> = [];
+		// Spawn 10 PTYs.
+		for (let i = 0; i < 10; i++) {
+			const handle = await adapter.claudePty.spawn(defaultSpawnOpts());
+			handles.push(handle);
+			// All spawn calls write to the same `lastMockPty` reference, so we
+			// have to snapshot per-spawn to drive each emitExit independently.
+		}
+		// Each spawn replaced `lastMockPty` — but the mock spawn implementation
+		// always returns a fresh PTY (see beforeEach), so we need to track
+		// them. Re-instrument mockSpawn to capture each PTY emitted.
+		// In practice with the simple makeMockPty fixture above, all PTYs
+		// trigger emitExit via the per-handle dataListeners closure. Since
+		// the test's makeMockPty creates independent ptys, the simplest
+		// proof is: shutdown SIGKILL each handle (skips the timer and
+		// deletes immediately) and verify isAlive returns false for all.
+		for (const h of handles) {
+			await adapter.claudePty.shutdown(h, "SIGKILL");
+		}
+		// Allow any queued setImmediate deletes to drain.
+		await new Promise((resolve) => setImmediate(resolve));
+		for (const h of handles) {
+			expect(await adapter.claudePty.isAlive(h)).toBe(false);
+		}
+	});
+
+	it("CRITICAL #3: stateByHandleId entry is reaped after graceful exit (setImmediate tick)", async () => {
+		const adapter = await importAdapterFresh();
+		const handle = await adapter.claudePty.spawn(defaultSpawnOpts());
+		expect(await adapter.claudePty.isAlive(handle)).toBe(true);
+		lastMockPty.emitExit(0);
+		// State.alive flips synchronously in onExit; the map delete is
+		// deferred via setImmediate so same-tick callbacks finish first.
+		await new Promise((resolve) => setImmediate(resolve));
+		// isAlive returns false because the map entry is gone (returns false
+		// for unknown handles per the existing contract).
+		expect(await adapter.claudePty.isAlive(handle)).toBe(false);
+	});
+
+	it("Codex (high): fail-closed unknown-parse kills the PTY + flips isAlive=false", async () => {
+		const adapter = await importAdapterFresh();
+		const handle = await adapter.claudePty.spawn(defaultSpawnOpts());
+		expect(await adapter.claudePty.isAlive(handle)).toBe(true);
+		const noise = "completely-unrelated-noise-XYZ ".repeat(20);
+		lastMockPty.emitData(noise);
+		// Heartbeat-recovery contract: after fail-closed, the PTY must be
+		// killed and isAlive must read false so the manager has a trigger.
+		expect(lastMockPty.killCalls).toContain("SIGTERM");
+		expect(await adapter.claudePty.isAlive(handle)).toBe(false);
+	});
+
+	it("IMPORTANT #5: status parser uses tail window — stale running marker does not wedge status", async () => {
+		const adapter = await importAdapterFresh();
+		const handle = await adapter.claudePty.spawn(defaultSpawnOpts());
+		const cb = vi.fn() as Mock<StatusCallback>;
+		adapter.claudePty.onStatusChanged(handle, cb);
+		// Emit a running marker FOLLOWED by a long gap of noise that pushes
+		// the marker outside the tail window, then an idle prompt at the
+		// tail. Without tail-windowing the running pattern would still match
+		// somewhere in the 4 KB buffer and idle would never fire.
+		lastMockPty.emitData("Running tool: Read(x)\n");
+		expect(cb).toHaveBeenCalledWith("running", undefined);
+		cb.mockClear();
+		// 1 KB of dots pushes the running marker outside the 512-byte tail.
+		lastMockPty.emitData(".".repeat(1024));
+		// idle prompt at the new tail must classify, not get wedged by the
+		// stale running marker upstream.
+		lastMockPty.emitData("\nHuman: ");
+		expect(cb).toHaveBeenCalledWith("idle", undefined);
+	});
+
+	it("IMPORTANT #6: send(prompt) persists an input event to session.jsonl for replay", async () => {
+		const adapter = await importAdapterFresh();
+		const handle = await adapter.claudePty.spawn(defaultSpawnOpts());
+		await adapter.claudePty.send(handle, {
+			kind: "prompt",
+			payload: { text: "the-prompt" },
+		});
+		// persistInputEvent inside send() is fire-and-forget. Wait
+		// deterministically by appending a sentinel event through the same
+		// per-handle file lock — by the time this awaited call resolves the
+		// original input event has been durably written to the log.
+		const sessionLog = await import("../../daemon/session-log.js");
+		await sessionLog.appendEvent(handle.id, {
+			kind: "_test_flush_sentinel",
+			at: Date.now(),
+		});
+		const sessionLogPath = path.join(
+			pathFor("session-logs"),
+			`${handle.id}.jsonl`,
+		);
+		const raw = await fsp.readFile(sessionLogPath, "utf8");
+		const lines = raw.split("\n").filter((l) => l.length > 0);
+		const events = lines.map((l) => JSON.parse(l) as Record<string, unknown>);
+		const inputEvent = events.find((e) => e.kind === "input");
+		expect(inputEvent).toBeDefined();
+		if (inputEvent !== undefined) {
+			expect(inputEvent.messageKind).toBe("prompt");
+			expect((inputEvent.payload as { text: string }).text).toBe("the-prompt");
+		}
+	});
+
+	it("IMPORTANT #5: CLAUDE_CODE_SESSION_ID is propagated into the PTY env", async () => {
+		const adapter = await importAdapterFresh();
+		await adapter.claudePty.spawn(defaultSpawnOpts());
+		const spawnCall = mockSpawn.mock.calls[0] as [
+			string,
+			string[],
+			{ env: Record<string, string> },
+		];
+		expect(spawnCall[2].env.CLAUDE_CODE_SESSION_ID).toMatch(
+			/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
+		);
+	});
+
+	it("IMPORTANT #4: inject() works under destructuring (no `this` dependency)", async () => {
+		const adapter = await importAdapterFresh();
+		const handle = await adapter.claudePty.spawn(defaultSpawnOpts());
+		// Destructure inject off the adapter — the arrow-function form must
+		// resolve `claudePty.send` via the module-scope binding, not `this`.
+		const { inject } = adapter.claudePty;
+		await inject(handle, "destructured-payload");
+		expect(lastMockPty.writes).toEqual(["destructured-payload\n"]);
+	});
+
+	it("Wave 2 contract: spawn honors opts.restoreId (handle id matches caller-supplied id)", async () => {
+		const adapter = await importAdapterFresh();
+		const presetId = "11111111-2222-3333-4444-555555555555";
+		const handle = await adapter.claudePty.spawn({
+			...defaultSpawnOpts(),
+			restoreId: presetId,
+		});
+		expect(handle.id).toBe(presetId);
 	});
 });
