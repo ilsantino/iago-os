@@ -313,6 +313,7 @@ export class IpcServer {
 			// connection now to bound memory.
 			if (Buffer.byteLength(buffer, "utf8") > this.maxLineBytes) {
 				this.rejectOversizedLine(socket);
+				return;
 			}
 		});
 
