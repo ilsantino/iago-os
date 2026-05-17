@@ -53,10 +53,22 @@ work that was killed only because its parent crashed.
 **Absent marker on next boot** means the daemon itself crashed (no chance to
 write a marker). The boot recovery branch treats this as `crash` for any
 agent listed in `knownConfigs` whose marker is absent and runs the same
-two-phase replay path as a `crash`-marker case (review Codex H1). The path
-is exercised whenever the Phase 1 entry point (Plan 07) supplies the
-`knownConfigs` map; without that map the case cannot fire because the
-daemon has no surviving record of which handles to recover.
+two-phase replay path as a `crash`-marker case (review Codex H1).
+
+The Phase 1 entry point (`runtime/daemon/main.ts`) supplies the
+`knownConfigs` map via `loadPersistedConfigs()` — it reads every
+`<state-root>/agents/<handleId>.json` written by
+`AgentManager.persistAgentConfig` during prior `registerAgent` calls and
+hands the resulting map to `bootRecovery({ knownConfigs })`. This means
+the daemon-crash-without-marker recovery branch IS now wired on the
+production startup path; a hard crash no longer strands formerly-registered
+agents (Codex H1 / Opus I2 fix).
+
+Integration test guard: `runtime/integration/hello-world.test.ts` >
+"bootRecovery uses persisted agent records" pre-seeds a persisted record
+WITHOUT a matching marker, starts the daemon, and asserts an
+`agent-exited` telemetry event with `reason: "crash"` for the persisted
+handleId — proving the recovery branch fires end-to-end.
 
 ## Boot recovery flow
 

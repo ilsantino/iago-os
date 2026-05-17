@@ -273,6 +273,12 @@ export async function createApprovalRequest(
  * with `..` or path separators would let an allowlisted user escape the
  * `approvals/` directory and unlink arbitrary daemon state.
  */
+// Process-level mutex per approvalId. Serializes concurrent resolveApproval
+// calls for the same id within ONE daemon process so the rename/publish
+// sequence is not interleaved. Cross-process race (multi-daemon, which we do
+// not support) still relies on the file-system rename semantics.
+const inProcessResolveLocks = new Map<string, Promise<unknown>>();
+
 export async function resolveApproval(
 	approvalId: string,
 	decision: "allow" | "deny",
@@ -281,6 +287,41 @@ export async function resolveApproval(
 	if (!isValidApprovalId(approvalId)) {
 		return { ok: false, reason: "invalid-id" };
 	}
+	const prior = inProcessResolveLocks.get(approvalId) ?? Promise.resolve();
+	let release!: () => void;
+	const myLock = new Promise<void>((resolve) => {
+		release = resolve;
+	});
+	inProcessResolveLocks.set(
+		approvalId,
+		prior.then(() => myLock).catch(() => undefined),
+	);
+	try {
+		await prior;
+	} catch {
+		// Prior holder rejected — claim the lock anyway.
+	}
+	try {
+		return await resolveApprovalLocked(approvalId, decision, resolvedBy);
+	} finally {
+		release();
+		// Clean up the map entry if no successor took the slot in the meantime
+		// (best-effort — Map.get may race with a new arrival but the new
+		// arrival will simply not find this entry and create its own).
+		if (
+			inProcessResolveLocks.get(approvalId) ===
+			prior.then(() => myLock).catch(() => undefined)
+		) {
+			inProcessResolveLocks.delete(approvalId);
+		}
+	}
+}
+
+async function resolveApprovalLocked(
+	approvalId: string,
+	decision: "allow" | "deny",
+	resolvedBy: string,
+): Promise<ResolveApprovalResult> {
 	const pendingPath = pendingFinalPath(approvalId);
 	const inflightPath = inflightFinalPath(approvalId);
 	const resolvedPath = resolvedFinalPath(approvalId);

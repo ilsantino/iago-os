@@ -57,6 +57,7 @@ import {
 	getErrnoCode,
 	pathFor,
 } from "./state-paths.js";
+import { emit } from "./telemetry.js";
 
 interface ClaimFileContents {
 	readonly ownerId: string;
@@ -262,6 +263,16 @@ export async function claimTask(opts: {
 		}
 		throw err;
 	}
+
+	// Telemetry: fire-and-forget. Emit failures must not block the
+	// file-bus hot path — `emit()` itself never throws (catches
+	// internally and writes to stderr).
+	void emit({
+		kind: "task-claimed",
+		taskId,
+		ownerId,
+		attemptId,
+	});
 
 	return { claimed: true, claimPath, ownerId, attemptId };
 }
