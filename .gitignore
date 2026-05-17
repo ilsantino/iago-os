@@ -40,3 +40,6 @@ docs/research/_drop-*/
 .iago/tmp-*.txt
 .iago/tmp-*.md
 .iago/pipeline-runs/
+
+# Agent transient worktrees (created by Agent tool isolation=worktree; auto-cleaned but admin dirs may linger on Windows)
+.claude/worktrees/
