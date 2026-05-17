@@ -10,6 +10,7 @@ import {
 	isValidApprovalId,
 	listInflightApprovals,
 	listPendingApprovals,
+	recoverStrandedApprovals,
 	resolveApproval,
 	waitForApproval,
 } from "./approval-bus.js";
@@ -369,6 +370,228 @@ describe("approval-bus / no-strand resolution (PR45 Codex HIGH fix)", () => {
 		expect(recovered).toHaveLength(1);
 		expect(recovered[0]?.approvalId).toBe(approvalId);
 		expect(recovered[0]?.agentId).toBe("agent-foo");
+	});
+});
+
+// PR48 HIGH (Codex) — dual-presence + inflight-only stranded recovery
+//
+// Codex flagged that the `atomicRename` claim primitive can leave the
+// approvalId in a stranded state if the daemon crashes between
+// `link(2)` (publishes inflight) and `unlink(2)` (removes pending).
+// The crash leaves a hardlink pair (pending + inflight both refer to
+// the same inode) with no `resolved` file. A fresh `resolveApproval`
+// call arriving in this state would, in the pre-fix implementation,
+// fail the strict CLAIM rename with EEXIST, observe inflight, poll
+// vainly for the never-coming resolved file, and finally return
+// `already-resolved` — silently absorbing the user's new decision.
+//
+// The fix: (a) `resolveApproval` itself rolls forward when it observes
+// a stranded inflight by taking ownership and publishing the current
+// caller's decision; (b) `recoverStrandedApprovals()` reconciles
+// dual-presence + inflight-only states at daemon boot before the
+// Telegram bot resumes polling.
+describe("approval-bus / dual-presence stranded recovery (PR48 Codex HIGH)", () => {
+	const inflightSubdir = (): string =>
+		path.join(pathFor("approvals/pending"), "..", "inflight");
+
+	async function simulateDualPresence(approvalId: string): Promise<{
+		pendingPath: string;
+		inflightPath: string;
+	}> {
+		// Build a real hardlink pair the same way a mid-CLAIM crash would.
+		const envelope = {
+			approvalId,
+			agentId: "agent-foo",
+			handleId: "h-stranded",
+			reason: "needs human go-ahead",
+			createdAt: Date.now(),
+		};
+		const pendingPath = path.join(
+			pathFor("approvals/pending"),
+			`${approvalId}.json`,
+		);
+		await fsp.mkdir(path.dirname(pendingPath), { recursive: true });
+		await fsp.writeFile(pendingPath, JSON.stringify(envelope), "utf8");
+		const dir = inflightSubdir();
+		await fsp.mkdir(dir, { recursive: true });
+		const inflightPath = path.join(dir, `${approvalId}.json`);
+		await fsp.link(pendingPath, inflightPath);
+		return { pendingPath, inflightPath };
+	}
+
+	async function simulateInflightOnly(approvalId: string): Promise<string> {
+		const envelope = {
+			approvalId,
+			agentId: "agent-foo",
+			handleId: "h-stranded",
+			reason: "needs human go-ahead",
+			createdAt: Date.now(),
+		};
+		const dir = inflightSubdir();
+		await fsp.mkdir(dir, { recursive: true });
+		const inflightPath = path.join(dir, `${approvalId}.json`);
+		await fsp.writeFile(inflightPath, JSON.stringify(envelope), "utf8");
+		return inflightPath;
+	}
+
+	it("resolveApproval rolls forward when pending + inflight both exist (no resolved)", async () => {
+		const approvalId = "44444444-1111-4222-8333-444444444444";
+		const { pendingPath, inflightPath } =
+			await simulateDualPresence(approvalId);
+
+		// Pre-conditions
+		await expect(fsp.access(pendingPath)).resolves.toBeUndefined();
+		await expect(fsp.access(inflightPath)).resolves.toBeUndefined();
+
+		const result = await resolveApproval(approvalId, "allow", "santiago");
+
+		expect(result.ok).toBe(true);
+		if (!result.ok) throw new Error("expected ok");
+
+		// Post: resolved file exists with our decision
+		const resolvedRaw = await fsp.readFile(result.resolvedPath, "utf8");
+		const decision = JSON.parse(resolvedRaw);
+		expect(decision.approvalId).toBe(approvalId);
+		expect(decision.decision).toBe("allow");
+		expect(decision.resolvedBy).toBe("santiago");
+
+		// Post: pending hardlink cleaned up, inflight cleaned up
+		await expect(fsp.access(pendingPath)).rejects.toBeDefined();
+		await expect(fsp.access(inflightPath)).rejects.toBeDefined();
+	});
+
+	it("resolveApproval rolls forward when only inflight exists (CLAIM-then-crash)", async () => {
+		const approvalId = "55555555-1111-4222-8333-555555555555";
+		const inflightPath = await simulateInflightOnly(approvalId);
+
+		const result = await resolveApproval(approvalId, "deny", "santiago");
+
+		expect(result.ok).toBe(true);
+		if (!result.ok) throw new Error("expected ok");
+
+		const resolvedRaw = await fsp.readFile(result.resolvedPath, "utf8");
+		const decision = JSON.parse(resolvedRaw);
+		expect(decision.decision).toBe("deny");
+		expect(decision.resolvedBy).toBe("santiago");
+
+		// inflight cleaned up after resolved committed
+		await expect(fsp.access(inflightPath)).rejects.toBeDefined();
+	});
+
+	it("recoverStrandedApprovals unlinks inflight hardlink on dual-presence; pending preserved", async () => {
+		const approvalId = "66666666-1111-4222-8333-666666666666";
+		const { pendingPath, inflightPath } =
+			await simulateDualPresence(approvalId);
+
+		const report = await recoverStrandedApprovals();
+
+		expect(report.cleaned).toContain(approvalId);
+		expect(report.republished).toEqual([]);
+		expect(report.resolvedSurvived).toEqual([]);
+		expect(report.failed).toEqual([]);
+
+		// pending preserved for re-broadcast
+		await expect(fsp.access(pendingPath)).resolves.toBeUndefined();
+		// inflight hardlink removed
+		await expect(fsp.access(inflightPath)).rejects.toBeDefined();
+
+		// The recovered pending must be re-resolvable through the normal CLAIM path
+		const followUp = await resolveApproval(approvalId, "allow", "santiago");
+		expect(followUp.ok).toBe(true);
+	});
+
+	it("recoverStrandedApprovals re-publishes inflight-only entries back to pending", async () => {
+		const approvalId = "77777777-1111-4222-8333-777777777777";
+		const inflightPath = await simulateInflightOnly(approvalId);
+
+		const report = await recoverStrandedApprovals();
+
+		expect(report.republished).toContain(approvalId);
+		expect(report.cleaned).toEqual([]);
+		expect(report.resolvedSurvived).toEqual([]);
+		expect(report.failed).toEqual([]);
+
+		// inflight gone, pending restored with the same envelope
+		await expect(fsp.access(inflightPath)).rejects.toBeDefined();
+		const pendingPath = path.join(
+			pathFor("approvals/pending"),
+			`${approvalId}.json`,
+		);
+		const raw = await fsp.readFile(pendingPath, "utf8");
+		const env = JSON.parse(raw);
+		expect(env.approvalId).toBe(approvalId);
+		expect(env.handleId).toBe("h-stranded");
+
+		// And it must still be resolvable through the normal CLAIM path
+		const followUp = await resolveApproval(approvalId, "deny", "santiago");
+		expect(followUp.ok).toBe(true);
+	});
+
+	it("recoverStrandedApprovals cleans inflight when resolved already exists; resolved wins", async () => {
+		const approvalId = "88888888-1111-4222-8333-888888888888";
+		const { pendingPath, inflightPath } =
+			await simulateDualPresence(approvalId);
+
+		// Pretend a prior resolved write committed before the crash but the
+		// inflight cleanup never ran.
+		const resolvedDir = pathFor("approvals/resolved");
+		await fsp.mkdir(resolvedDir, { recursive: true });
+		const resolvedPath = path.join(resolvedDir, `${approvalId}.json`);
+		const decision = {
+			approvalId,
+			decision: "allow",
+			resolvedBy: "santiago",
+			resolvedAt: Date.now(),
+		};
+		await fsp.writeFile(resolvedPath, JSON.stringify(decision), "utf8");
+
+		const report = await recoverStrandedApprovals();
+
+		expect(report.resolvedSurvived).toContain(approvalId);
+		expect(report.cleaned).toEqual([]);
+		expect(report.republished).toEqual([]);
+
+		await expect(fsp.access(inflightPath)).rejects.toBeDefined();
+		await expect(fsp.access(pendingPath)).rejects.toBeDefined();
+		await expect(fsp.access(resolvedPath)).resolves.toBeUndefined();
+
+		// Subsequent resolveApproval is correctly rejected as already-resolved
+		const followUp = await resolveApproval(approvalId, "deny", "santiago");
+		expect(followUp.ok).toBe(false);
+		if (!followUp.ok) {
+			expect(followUp.reason).toBe("already-resolved");
+		}
+	});
+
+	it("recoverStrandedApprovals is idempotent — second run is a no-op", async () => {
+		const approvalId = "99999999-1111-4222-8333-999999999999";
+		await simulateInflightOnly(approvalId);
+
+		const first = await recoverStrandedApprovals();
+		expect(first.republished).toContain(approvalId);
+
+		const second = await recoverStrandedApprovals();
+		expect(second.republished).toEqual([]);
+		expect(second.cleaned).toEqual([]);
+		expect(second.resolvedSurvived).toEqual([]);
+		expect(second.failed).toEqual([]);
+	});
+
+	it("recoverStrandedApprovals returns empty report when inflight dir is absent", async () => {
+		// Fresh tempDir already calls ensureStateDirsSync which creates
+		// approvals/pending and approvals/resolved but NOT approvals/inflight
+		// (the inflight subdir is created lazily by createApprovalRequest's
+		// flow). Confirm graceful no-op.
+		const dir = inflightSubdir();
+		await fsp.rm(dir, { recursive: true, force: true });
+
+		const report = await recoverStrandedApprovals();
+		expect(report).toEqual({
+			republished: [],
+			cleaned: [],
+			resolvedSurvived: [],
+			failed: [],
+		});
 	});
 });
 

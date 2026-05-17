@@ -11,7 +11,7 @@ lives in `runtime/agent-runtime/<shape>/`.
 
 | File | Purpose |
 |------|---------|
-| `state-paths.ts` | Cross-platform state-root resolution + `atomicRename` + identifier validation. Every other file calls `pathFor(kind)`. |
+| `state-paths.ts` | Cross-platform state-root resolution + atomic-rename primitives (`atomicRename` strict + `atomicRenameStaleDest` destructive) + identifier validation. Every other file calls `pathFor(kind)`. Per-caller variant audit in [`state-paths.md`](./state-paths.md). |
 | `file-bus.ts` | O_EXCL task claim files + atomic resolved-output writes with owner-ID validation. |
 | `session-log.ts` | Append-only NDJSON event log + two-phase replay primitive (`ReplayController`). |
 | `markers.ts` | `.daemon-stop` marker write/read/clear/list for graceful-vs-crash detection on next boot. |
@@ -293,6 +293,7 @@ ledger is canonical.
 | IPC connection idle | `ipc-server` destroys the socket after `idleTimeoutMs` (default 5 min). Phase 6 dashboard long-poll endpoints may raise the bound per-instance via the constructor option (PR #44 Important #3). |
 | IPC fleet-health upstream failure | `ipc-server` arms a 1s rejection cooldown. Calls during the cooldown short-circuit with `fleet-health: temporarily unavailable (retry in <Nms>)` without re-invoking the failing upstream (PR #44 Important #4). Cooldown does not persist across `stop()`/`start()`. |
 | IPC previous-tail write rejection | `ipc-server.processLine` swallows the prior tail's rejection with `.catch` so request N's write error does not bubble as an unhandled rejection on request N+1. The swallow logs to stderr so a real regression remains observable (PR #44 Important #2). |
+| Atomic-rename variant selection | Two named variants in `state-paths.ts`: `atomicRename` (strict, fail-on-EEXIST via `link+unlink`) for collision-hazard callers (approval-bus CLAIM); `atomicRenameStaleDest` (destructive, Windows EEXIST recovery via unlink+rename) for stale-dest callers (HWM marker, per-taskId resolved outputs, approval pending/resolved publishes). Per-caller classification audit in [`state-paths.md`](./state-paths.md). Single-process assumption documented per-row — multi-process callers must coordinate via file-lock. Windows EEXIST recovery window emits a `atomic-rename-stale-dest-window` telemetry event so Phase 7 has data to decide on stricter atomicity. |
 
 ## State directory layout
 
