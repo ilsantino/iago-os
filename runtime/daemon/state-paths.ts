@@ -15,7 +15,7 @@
  * `runtime/daemon/state-paths.md` for the full caller audit):
  *
  *   - `atomicRename(src, dst)` — STRICT. Throws `EEXIST` (POSIX) or
- *     `EEXIST`/`EPERM` (Windows) when `dst` already exists. Use when the
+ *     `EEXIST`/`EPERM`/`EBUSY` (Windows) when `dst` already exists. Use when the
  *     dst MUST NOT be destroyed because a concurrent writer's data there
  *     is a legitimate race winner (e.g., approval-bus CLAIM phase).
  *   - `atomicRenameStaleDest(src, dst)` — DESTRUCTIVE. Replaces `dst`
@@ -173,7 +173,8 @@ export function getErrnoCode(err: unknown): string | undefined {
  *
  * Implementation: `fsp.link(src, dst)` + `fsp.unlink(src)` on both
  * platforms. `link(2)` (POSIX) and `CreateHardLinkW` (Windows NTFS)
- * both fail atomically with `EEXIST` when `dst` exists — no
+ * both fail atomically with `EEXIST` when `dst` exists (`EBUSY` on
+ * Windows when `dst` is held open by another process, e.g. antivirus) — no
  * stat-then-rename TOCTOU race. Falling back to `fsp.rename` is unsafe
  * because POSIX `rename(2)` silently overwrites AND Node's Windows
  * `fs.rename` may also silently overwrite depending on the

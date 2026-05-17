@@ -28,6 +28,7 @@ vi.mock("node:fs/promises", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("node:fs/promises")>();
 	return {
 		...actual,
+		link: vi.fn(actual.link),
 		rename: vi.fn(actual.rename),
 		unlink: vi.fn(actual.unlink),
 	};
