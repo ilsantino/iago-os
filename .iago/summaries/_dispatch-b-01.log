@@ -1,0 +1,174 @@
+[23:06:03] STRESS TEST — skipped (plan already stress-tested)
+[23:06:04] IMPLEMENT — 01-ipc-server-hardening
+[23:11:03] Implementation complete
+[23:11:03] BUILD GATE — attempt 1 [mode: sequential]
+[23:11:03] Build passed (tsc 0ms / vite 0ms / mode sequential)
+[23:11:03] CONSOLE GATE — skipped (no Vite config)
+[23:11:04] REVIEW — 01-ipc-server-hardening
+warning: in the working copy of 'runtime/daemon/ipc-server.test.ts', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'runtime/daemon/ipc-server.ts', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of '.iago/summaries/_dispatch-b-01.log', LF will be replaced by CRLF the next time Git touches it
+[23:11:05]   review-checks: all modules loaded (209 lines)
+[23:13:32] Review output:
+## Review
+
+### Pass 1 — Plan Compliance
+
+| Task | Status | Notes |
+|---|---|---|
+| T1 `MAX_LINE_BYTES` cap | ✅ | `DEFAULT_MAX_LINE_BYTES = 64 * 1024` + `maxLineBytes` constructor option (stress C1 fix). Check at `ipc-server.ts:280` writes `parse-error: line-too-long`, destroys socket. |
+| T2 buffer-cap test | ✅ | "handleConnection drops…(H1)" covers default cap; added "respects custom maxLineBytes (C1)" covers override. |
+| T3 idle timeout | ✅ | `socket.setTimeout(this.idleTimeoutMs)` + `setTimeout(5*60*1000)` default + `idleTimeoutMs` constructor option (stress I1 fix). JSDoc updated H2. |
+| T4 idle-timeout test | ✅ | "idle connections destroyed (H2)" uses `idleTimeoutMs: 50` (avoids `vi.useFakeTimers` against `net` per stress I1). |
+| T5 `previousTail.catch` | ✅ | `safePrevious` with `console.error` log (stress I2 fix). Defensive bonus: also wraps `work` in `.catch().finally()` to handle the no-next-request path. |
+| T6 tail-isolation test | ✅ | Uses circular-ref → JSON.stringify throw inside write path (a stronger and correct test than the plan's "throwing dispatch" sketch — dispatch errors already become `{ok:false}` and never reject work). Registers `unhandledRejection` listener, drains microtasks, asserts 0 unhandled. |
+| T7 cooldown + JSDoc | ✅ | `cachedFleetHealthRejectionUntilMs` field + 1 s cooldown armed in catch, cleared on success and on `stop()` (I3 fix). Error message uses C2 form: `"fleet-health: temporarily unavailable (retry in <N>ms)"`. JSDoc explains layered posture. |
+| T8 README + cooldown tests | ✅ | README row 20 matches required string exactly. Three cooldown tests: thundering-herd, success-clears, stop/start does not persist (I3). |
+
+All 8 tasks land. All 2 Critical + 3 Important stress findings (C1, C2, I1, I2, I3) are addressed in code. Bonus: README "Failure modes" section gained four new rows naming each hardening hook.
+
+### Pass 2 — Domain Routing
+
+**Selected:** Baseline (always) + Pattern Consistency (always) + Backend (partial: error-response format consistency, unhandled-promise handling, hardcoded values).
+
+**Skipped:** Amplify, API client, Auth/Cognito, Data Integrity (KPI/money), i18n, Infra (CFN), React. No `amplify/`, `.tsx`, dashboards, currency, Spanish strings, or auth modules touched — IPC daemon over a `0o600` Unix socket / named pipe.
+
+### Pass 3 — Adversarial
+
+Read all three files in full. Cross-cutting concerns:
+
+- **Auth bypass** — N/A. Socket is owner-only (`chmod 0o600`); the new buffer cap is defense-in-depth on top of that perimeter.
+- **Data loss** — N/A. No durable writes. `stop()` correctly nulls cache + cooldown + in-flight promise.
+- **Race conditions** — Traced the cooldown vs in-flight herd: catch arms `cachedFleetHealthRejectionUntilMs` synchronously before rethrow; `finally` clears `cachedFleetHealthPromise` next. Concurrent same-tick `processLine` calls correctly share the in-flight promise via `existing` check. Concurrent `start()` already guarded via `startingPromise`. No TOCTOU window introduced.
+- **Rollback safety** — `stop()` resets all three pieces of cache state including the new cooldown field. Failed `doStart()` already leaves `this.server` null for retry.
+
+Baseline checks pass: no dead code; magic numbers all promoted to named module constants; failures surface via `console.error` (not swallowed); no business-logic errors.
+
+Pattern consistency: `_setNowForTests` seam reused by new cooldown tests; constructor-option pattern matches `cacheTtlMs`; new error-shape `{ok:false, error:string}` matches existing format. `work.catch(...).finally(...)` is a new shape in this file but a justified hardening shape (the plain `.finally` left an unhandled-rejection blast hole the moment any work path could reject).
+
+### Findings
+
+**Critical:** None.
+
+**Important:** None.
+
+**Minor:**
+
+- **M1 — H3 test does not assert `console.error` actually fires.** `vi.spyOn(console, "error").mockImplementation(() => {})` is created and restored but never `expect(errorSpy).toHaveBeenCalled()`. The stress I2 forward-list item 4 wanted the test to "capture the stderr output — if a real bug regressed, both assertions would still pass but stderr would carry the trace." Production code at `ipc-server.ts:331` and `:356` does log; the test just doesn't lock the contract, so a future refactor that drops the `console.error` would not fail this test. Add `expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining("previous tail rejected"), expect.anything())` to lock it.
+- **M2 — Buffer-cap check is per-data-event, not per-byte.** A single TCP `data` event carrying an early `\n` plus an arbitrarily-large trailing tail without another `\n` passes the top-of-handler check (because `buffer.includes("\n")` is true). After the parse loop the residual buffer can exceed `maxLineBytes`; the next `data` event catches it. Matches plan spec verbatim and the "hygiene on top of 0o600" framing — but a docstring or comment near the check noting "residual after the parse loop may exceed cap until next chunk; tighter bound is Phase 6 work" would set the next reader's expectations correctly.
+
+Verdict: PASS_WITH_CONCERNS
+[23:13:32] Findings detected — dispatching fix session (round 1)
+[23:18:37] Fix output (exit 0):
+Tests pass. Both Minor findings fixed:
+
+- **M1**: Added `expect(errorSpy).toHaveBeenCalledWith(...)` in H3 test at `ipc-server.test.ts:551-558` to lock the stderr-trace contract.
+- **M2**: Added explanatory comment near buffer-cap check at `ipc-server.ts:280-289` noting the per-data-event bound and that a tighter byte-precise bound is Phase 6 work.
+
+No Critical or Important findings to fix. All 79 tests pass.
+warning: in the working copy of '.iago/summaries/_dispatch-b-01.log', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'runtime/daemon/ipc-server.test.ts', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'runtime/daemon/ipc-server.ts', LF will be replaced by CRLF the next time Git touches it
+[23:18:38]   review-checks: all modules loaded (209 lines)
+[23:19:45] Re-review output:
+Verifying both round 1 Minor findings against the current source state.
+
+**M1 (test must assert `console.error` fires)** — Resolved at `ipc-server.test.ts:555-558`:
+```ts
+expect(errorSpy).toHaveBeenCalledWith(
+    expect.stringContaining("previous tail rejected"),
+    expect.anything(),
+);
+```
+Locks the I2 stderr contract — a future refactor dropping the `console.error` would now fail.
+
+**M2 (per-data-event cap caveat)** — Resolved at `ipc-server.ts:280-286`:
+```
+// NOTE: bound is per-data-event, not per-byte. A chunk
+// carrying an early `\n` plus a large trailing tail without
+// another `\n` passes this check (buffer.includes("\n") is
+// true), so the residual after the parse loop below may
+// briefly exceed `maxLineBytes` until the next chunk arrives.
+// A tighter byte-precise bound is Phase 6 work — the 0o600
+// socket permission is the primary perimeter.
+```
+Sets reader expectations correctly.
+
+**Domain routing**: Baseline + Pattern Consistency + Backend (no Amplify/Auth/Data-Integrity/React/i18n/Infra surface touched — IPC daemon over `0o600` Unix socket / named pipe).
+
+**Cross-cutting verification**:
+- Auth bypass: N/A — owner-only socket; buffer cap is defense-in-depth.
+- Data loss: N/A — no durable writes; `stop()` at `ipc-server.ts:254-260` resets `cachedFleetHealth`, `cachedFleetHealthPromise`, AND `cachedFleetHealthRejectionUntilMs`.
+- Race conditions: cooldown armed synchronously at line 476-477 BEFORE rethrow, so concurrent joiners falling through after settlement observe it; `cachedFleetHealthPromise` cleared in `finally`; concurrent `start()` guarded via `startingPromise`. No TOCTOU window.
+- Rollback safety: `stop()` resets all three pieces of cache state; failed `doStart()` leaves `this.server` null for retry.
+
+**Baseline**: magic numbers promoted (`DEFAULT_MAX_LINE_BYTES`, `DEFAULT_IDLE_TIMEOUT_MS`, `FLEET_HEALTH_REJECTION_COOLDOWN_MS`); failures logged via `console.error` (lines 338, 363); no dead code; no business-logic errors.
+
+**Pattern consistency**: `maxLineBytes` / `idleTimeoutMs` constructor options follow the `cacheTtlMs` shape; `{ok:false, error:string}` matches existing error format; `_setNowForTests` seam reused by new cooldown tests. The `work.catch().finally()` shape is new but justified — plain `.finally` left an unhandled-rejection hole on no-next-request paths.
+
+**Backend**: error-response format consistent across all paths; no unhandled promise rejections after H3 fix; no hardcoded ARNs (N/A — daemon code).
+
+All 2 Critical + 3 Important stress findings (C1, C2, I1, I2, I3) and both round-1 Minor findings (M1, M2) are resolved. No new findings.
+
+Verdict: PASS
+[23:19:46] Review passed
+[23:19:46] CODEX REVIEW — 01-ipc-server-hardening
+[23:19:47] Running codex-companion adversarial-review (model from ~/.codex/config.toml)
+[23:21:47] Codex findings:
+(node:43716) [DEP0190] DeprecationWarning: Passing args to a child process with shell option true can lead to security vulnerabilities, as the arguments are not escaped, only concatenated.
+(Use `node --trace-deprecation ...` to show where the warning was created)
+[codex] Starting Codex task thread.
+[codex] Thread ready (019e3460-7293-7570-abd2-0273f6383e37).
+[codex] Turn started (019e3460-790e-7cf2-a1a8-840ee753a316).
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git diff --stat c5...
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git diff --name-on...
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git status --short...
+[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git diff --name-on... (exit 0)
+[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git status --short... (exit 0)
+[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git diff --stat c5... (exit 0)
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git rev-parse HEAD'
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git diff --stat c5...
+[codex] Command declined: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git rev-parse HEAD' (exit -1)
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git diff --stat'
+[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git diff --stat' (exit 0)
+[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git diff --stat c5... (exit 0)
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git diff -- runtim...
+[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git diff -- runtim... (exit 0)
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git diff --cached ...
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git diff -- .iago/...
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git diff --cached ...
+[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git diff -- .iago/... (exit 0)
+[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git diff --cached ... (exit 0)
+[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git diff --cached ... (exit 0)
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command '$i=1; Get-Content ...
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command '$i=1; Get-Content ...
+[codex] Command declined: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command '$i=1; Get-Content ... (exit -1)
+[codex] Command declined: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command '$i=1; Get-Content ... (exit -1)
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'rg -n ".*" runtime...
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'rg -n ".*" runtime...
+[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'rg -n ".*" runtime... (exit 0)
+[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'rg -n ".*" runtime... (exit 0)
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git show c59a94a6d...
+[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git show c59a94a6d... (exit 0)
+[codex] Assistant message captured: {"verdict":"needs-attention","summary":"No ship: the hardening still permits protocol desynch...
+[codex] Turn completion inferred after the main thread finished and subagent work drained.
+# Codex Adversarial Review
+
+Target: branch diff against c59a94a6d3bc51a1284c79f0270358fdaefb7e8a
+Verdict: needs-attention
+
+No ship: the hardening still permits protocol desynchronization and does not actually enforce the advertised line-size bound.
+
+Findings:
+- [high] Serialization failures silently drop a response and let later responses masquerade as earlier ones (runtime/daemon/ipc-server.ts:340-364)
+  The response write serializes outside the try/catch that builds `response`; if `JSON.stringify(response)` throws for handler data such as a circular object or BigInt, `work` rejects before writing any line for that request. The new catch only logs and consumes the rejection, while `safePrevious` allows the next queued request to write normally. Because this newline protocol has no request IDs and promises one response per request in arrival order, a pipelined client can interpret request N+1's response as request N's response, while a single-request client can hang waiting for a line that will never come. The added H3 test explicitly accepts this lost-response behavior, so the regression is likely to persist.
+  Recommendation: Handle serialization/write failures as part of the per-request response path: serialize inside a try/catch and either send a guaranteed-serializable `{ ok:false, error:"internal: response serialization failed" }` for that request, or destroy the socket and prevent later queued responses from being emitted on the same connection. Add a test that the first request gets an error or the connection closes, not that its response disappears.
+- [medium] The line-size cap is bypassed whenever an oversized line arrives with a newline (runtime/daemon/ipc-server.ts:275-304)
+  The cap only destroys the socket when `buffer.length > maxLineBytes && !buffer.includes("\n")`. If an oversized complete line arrives with a newline in the same data event, this condition is false and the code immediately slices and dispatches that line without any length check. The implementation also advertises bytes but measures UTF-16 string length after `setEncoding("utf8")`, so multibyte input can exceed the byte budget before the guard fires. This leaves the new `maxLineBytes` protection dependent on packet/chunk boundaries instead of enforcing the configured bound, allowing oversized JSON.parse and handler work despite the hardening claim.
+  Recommendation: Enforce the cap on every extracted line before `processLine`, and enforce it on the residual buffer after the parse loop. Measure bytes with raw Buffer accounting or `Buffer.byteLength(..., "utf8")`, and add tests for an oversized newline-terminated line plus multibyte input.
+
+Next steps:
+- Fix the IPC response failure path so request ordering cannot be corrupted.
+- Make `maxLineBytes` a real byte bound independent of newline placement and stream chunking.
+[23:21:47] Codex review complete
+[23:21:47] CODEX FIX — fixing findings before PR
