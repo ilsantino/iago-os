@@ -115,3 +115,6 @@ No material findings.
 [21:00:49] Codex review complete
 [21:00:50] No actionable Codex findings — proceeding to PR
 [21:00:50] CREATE PR — 01-telemetry-session-id-and-learnings-write-path
+[21:03:35] PR creation output:
+Error: Reached max turns (15)
+[21:03:36] ERROR: PR creation failed (exit 1). Pipeline stopping.

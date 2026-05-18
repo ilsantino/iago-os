@@ -97,12 +97,22 @@ else
     echo $?
   )
   chmod 0700 "$TMP3/.iago/learnings" 2>/dev/null || true
+  # Opus PR #55 dual-review I1: verify the telemetry record's `err` field
+  # is non-empty. The prior buggy redirect order made $(...) capture
+  # nothing, so the event emitted `"err":""` even when chmod 0500 made
+  # the write fail. After the fix, the captured stderr must be present in
+  # the NDJSON record (the writer's whole point of existing).
+  ERR_FIELD_NONEMPTY=no
+  if grep -E '"err":"[^"]+"' "$RUN3" >/dev/null 2>&1; then
+    ERR_FIELD_NONEMPTY=yes
+  fi
   if [[ "$RC" == "1" ]] \
       && grep -q 'FAIL' "$ERR3" \
-      && grep -q 'learnings_write_failed' "$RUN3"; then
-    ok "perm-denied fail-loud: rc=1, stderr 'FAIL', telemetry event emitted"
+      && grep -q 'learnings_write_failed' "$RUN3" \
+      && [[ "$ERR_FIELD_NONEMPTY" == "yes" ]]; then
+    ok "perm-denied fail-loud: rc=1, stderr 'FAIL', telemetry event has non-empty err"
   else
-    nope "perm-denied fail-loud: rc=$RC stderr=$(cat "$ERR3") run=$(cat "$RUN3")"
+    nope "perm-denied fail-loud: rc=$RC stderr=$(cat "$ERR3") run=$(cat "$RUN3") err_field_nonempty=$ERR_FIELD_NONEMPTY"
   fi
   rm -rf "$TMP3"
 fi

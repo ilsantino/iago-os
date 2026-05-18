@@ -80,6 +80,12 @@ learnings_write() {
   # Best-effort mkdir — failure is not fatal here, the write will surface it.
   mkdir -p "$learnings_dir" 2>/dev/null || true
 
+  # Opus PR #55 dual-review I1: redirect order must put 2>&1 BEFORE >>
+  # so fd2 still points to the (captured) stdout when fd1 redirects to the
+  # file. With `>> $target 2>&1` (the prior buggy order), both fds went to
+  # the file and $(...) captured nothing, silently dropping the diagnostic
+  # the fail-loud writer was specifically created to surface. Matches the
+  # fallback path below which already had the correct order.
   local err
   err=$(printf '\n## %s — %s\n\n%s\n' "$ts" "$key" "$body" 2>&1 >> "$target")
   local write_rc=$?
@@ -95,7 +101,7 @@ learnings_write() {
     fb_ts=$(date -u +%Y%m%d-%H%M%S)
     local fb_path="$fallback_dir/learnings-fallback-${fb_ts}-$$.md"
     local fb_err
-    fb_err=$(printf '\n## %s — %s\n\n%s\n' "$ts" "$key" "$body" 2>&1 >> "$fb_path")
+    fb_err=$(printf '\n## %s — %s\n\n%s\n' "$ts" "$key" "$body" >> "$fb_path" 2>&1)
     local fb_rc=$?
     if (( fb_rc == 0 )); then
       echo "learnings_write: WARNING — primary write failed ($err); fell back to $fb_path" >&2
