@@ -32,12 +32,25 @@
  *   the scheduler reads `runningCount.get(agentId) ?? 0` and skips
  *   when it equals or exceeds `maxConcurrent` — emitting
  *   `cron-overlap-prevented`. The increment-on-fire path is paired
- *   with a decrement-on-resolve path via the `task-resolved`
- *   EventEmitter event on `AgentManager` (subscribed in the
- *   constructor). Plan 07b adds the emit side; without it,
- *   `runningCount` only ever grows and `maxConcurrent` permanently
- *   blocks after the first fire. The subscription is defensive —
- *   it is a no-op until 07b's emit happens.
+ *   with a decrement-on-terminal path via the `task-resolved`,
+ *   `task-poisoned`, and `task-unrouted` EventEmitter events on
+ *   `AgentManager` (all three subscribed in the constructor). Plan
+ *   07b adds the emit side; without it, `runningCount` only ever
+ *   grows and `maxConcurrent` permanently blocks after the first
+ *   fire. The subscription is defensive — it is a no-op until 07b's
+ *   emit happens.
+ *
+ * - **Per-cron filename filtering on terminal events.** A single
+ *   `AgentManager` instance may process tasks from multiple sources
+ *   (cron AND manual injection). Decrementing `runningCount` purely
+ *   by `agentId` would let unrelated task completions reopen cron
+ *   slots and defeat `maxConcurrent`. The scheduler tracks each
+ *   filename emitted by `fire()` in `outstandingFilenames` (keyed
+ *   by agentId) and the terminal listener only decrements when the
+ *   event's filename is in that set — non-cron terminations are
+ *   ignored. Subscribed to `task-resolved`, `task-poisoned`, AND
+ *   `task-unrouted` so every terminal outcome releases the slot
+ *   (otherwise a poisoned cron task would leak its slot forever).
  *
  * - **Atomic task-file emission (Windows-safe).** Task files are
  *   written via tmp → rename. The tmp path is on the same directory
@@ -77,10 +90,11 @@ export interface Logger {
 /**
  * Subset of `AgentManager` consumed by the scheduler. Typed as an
  * `EventEmitter` because the only behavior the scheduler needs is
- * subscribing to `'task-resolved'` (which 07b adds to AgentManager).
- * Using a type alias keeps the cross-plan coupling testable —
- * the test file constructs a bare `EventEmitter` and asserts the
- * decrement chain without standing up a full AgentManager.
+ * subscribing to `'task-resolved'` / `'task-poisoned'` /
+ * `'task-unrouted'` (which 07b adds to AgentManager). Using a type
+ * alias keeps the cross-plan coupling testable — the test file
+ * constructs a bare `EventEmitter` and asserts the decrement chain
+ * without standing up a full AgentManager.
  */
 export type CronAgentManager = EventEmitter;
 
@@ -113,10 +127,16 @@ interface RegisteredCron {
 	readonly maxConcurrent: number;
 }
 
-interface TaskResolvedEvent {
+interface TaskTerminalEvent {
 	readonly agentId: string;
 	readonly filename: string;
 }
+
+const TERMINAL_EVENTS = [
+	"task-resolved",
+	"task-poisoned",
+	"task-unrouted",
+] as const;
 
 const TICK_INTERVAL_MS = 60_000;
 const WAKE_CHECK_TIMEOUT_MS = 30_000;
@@ -223,6 +243,34 @@ export function matchesCron(expr: string, now: Date): boolean {
 	return domMatches || dowMatches;
 }
 
+/**
+ * Walk every field of a 5-field cron expression and throw `RangeError`
+ * if ANY field is malformed. Unlike `matchesCron`, this does NOT
+ * short-circuit on the first non-matching minute/hour — every field is
+ * parsed unconditionally so that deploy-time misconfiguration surfaces
+ * at registration regardless of the current time. Without this,
+ * `28 99 * * *` would register cleanly at any minute except :28 and
+ * only throw at runtime when the matching minute arrived, by which
+ * point the tick swallows the throw and the cron silently never fires.
+ *
+ * @internal — exported for test access only; do not use from outside
+ * the daemon module.
+ */
+export function validateScheduleSyntax(expr: string): void {
+	const fields = expr.trim().split(/\s+/);
+	if (fields.length !== 5) {
+		throw new RangeError(
+			`cron expression must have 5 fields (got ${fields.length}): "${expr}"`,
+		);
+	}
+	const tuple = toFiveTuple(fields);
+	parseField("minute", tuple[0]);
+	parseField("hour", tuple[1]);
+	parseField("day-of-month", tuple[2]);
+	parseField("month", tuple[3]);
+	parseField("day-of-week", tuple[4]);
+}
+
 function parseField(name: FieldName, raw: string): Set<number> {
 	const trimmed = raw.trim();
 	if (trimmed.length === 0) {
@@ -321,10 +369,17 @@ export class CronScheduler {
 	private readonly nowFn: () => Date;
 	private readonly registered: RegisteredCron[] = [];
 	private readonly runningCount = new Map<string, number>();
+	// Filenames currently outstanding per agentId (cron-emitted tasks that
+	// have not yet hit a terminal event). The terminal listener consults
+	// this set to ignore unrelated (non-cron) task completions for the
+	// same agent — otherwise a manual task resolution would lower the
+	// cron concurrency counter and let the next matching tick fire past
+	// `maxConcurrent`.
+	private readonly outstandingFilenames = new Map<string, Set<string>>();
 	private interval: NodeJS.Timeout | null = null;
 	private tickInFlight: Promise<void> | null = null;
 	private stopped = false;
-	private readonly resolvedListener: (event: TaskResolvedEvent) => void;
+	private readonly terminalListener: (event: TaskTerminalEvent) => void;
 
 	constructor(opts: CronSchedulerOpts) {
 		this.agentManager = opts.agentManager;
@@ -334,19 +389,33 @@ export class CronScheduler {
 		// Subscribe immediately so the decrement chain works for every fire,
 		// even if `start()` is deferred. Defensive: 07b's `AgentManager`
 		// emit-side may not exist yet, so the handler tolerates absent
-		// counter entries.
-		this.resolvedListener = (event: TaskResolvedEvent): void => {
+		// counter entries and unknown filenames.
+		this.terminalListener = (event: TaskTerminalEvent): void => {
 			if (
 				typeof event !== "object" ||
 				event === null ||
-				typeof event.agentId !== "string"
+				typeof event.agentId !== "string" ||
+				typeof event.filename !== "string"
 			) {
 				return;
+			}
+			const outstanding = this.outstandingFilenames.get(event.agentId);
+			if (outstanding === undefined || !outstanding.has(event.filename)) {
+				// Not a cron-emitted filename for this agent — manual task or
+				// a duplicate terminal event we already processed. Ignore so
+				// non-cron completions cannot reopen cron concurrency slots.
+				return;
+			}
+			outstanding.delete(event.filename);
+			if (outstanding.size === 0) {
+				this.outstandingFilenames.delete(event.agentId);
 			}
 			const current = this.runningCount.get(event.agentId) ?? 0;
 			this.runningCount.set(event.agentId, Math.max(0, current - 1));
 		};
-		this.agentManager.on("task-resolved", this.resolvedListener);
+		for (const evt of TERMINAL_EVENTS) {
+			this.agentManager.on(evt, this.terminalListener);
+		}
 	}
 
 	/**
@@ -368,8 +437,13 @@ export class CronScheduler {
 				);
 			}
 		}
-		// Eager parse — surfaces RangeError immediately.
-		matchesCron(opts.schedule, this.nowFn());
+		// Eager parse — walks ALL 5 fields unconditionally so that
+		// `28 99 * * *` throws at registration regardless of the current
+		// minute. `matchesCron` short-circuits at the first non-matching
+		// field, so using it here would skip later fields whenever the
+		// daemon happened to start outside the matching minute (Codex
+		// High #2 from PR #61 review).
+		validateScheduleSyntax(opts.schedule);
 		const maxConcurrent =
 			typeof opts.maxConcurrent === "number" && opts.maxConcurrent > 0
 				? Math.floor(opts.maxConcurrent)
@@ -417,7 +491,9 @@ export class CronScheduler {
 				// Swallow — tick errors are already logged via the logger.
 			}
 		}
-		this.agentManager.off("task-resolved", this.resolvedListener);
+		for (const evt of TERMINAL_EVENTS) {
+			this.agentManager.off(evt, this.terminalListener);
+		}
 	}
 
 	/**
@@ -434,6 +510,15 @@ export class CronScheduler {
 	 */
 	_runningCountForTests(): ReadonlyMap<string, number> {
 		return this.runningCount;
+	}
+
+	/**
+	 * Test-only: read the per-agent set of outstanding cron-emitted task
+	 * filenames. Used by tests verifying the terminal listener filter.
+	 * @internal
+	 */
+	_outstandingFilenamesForTests(): ReadonlyMap<string, ReadonlySet<string>> {
+		return this.outstandingFilenames;
 	}
 
 	private async runTickGuarded(): Promise<void> {
@@ -594,6 +679,17 @@ export class CronScheduler {
 
 		const next = (this.runningCount.get(cron.agentId) ?? 0) + 1;
 		this.runningCount.set(cron.agentId, next);
+		// Record the basename (not finalPath) — AgentManager (07b) emits
+		// task-{resolved,poisoned,unrouted} with the basename, so the
+		// terminal listener's `outstanding.has(event.filename)` compares
+		// like-for-like. Without this, the decrement path would never
+		// match and runningCount would only grow.
+		let outstanding = this.outstandingFilenames.get(cron.agentId);
+		if (outstanding === undefined) {
+			outstanding = new Set<string>();
+			this.outstandingFilenames.set(cron.agentId, outstanding);
+		}
+		outstanding.add(filename);
 		await emit({
 			kind: "cron-fired",
 			agentId: cron.agentId,

@@ -6,7 +6,11 @@ import * as path from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { CronScheduler, matchesCron } from "./cron-scheduler.js";
+import {
+	CronScheduler,
+	matchesCron,
+	validateScheduleSyntax,
+} from "./cron-scheduler.js";
 import type { DaemonEvent } from "./telemetry.js";
 
 // `spawnSync` is mocked at the module level — the scheduler reaches into
@@ -528,8 +532,17 @@ describe("CronScheduler — failure modes", () => {
 	});
 
 	it("cron-fired-write-failed does NOT increment runningCount", async () => {
+		// Force the atomic-write path to fail cross-platform. `chmod 0o444`
+		// on a directory is silently a no-op on Windows (NTFS ACL semantics
+		// differ from POSIX), so instead we point `stateRoot` at a regular
+		// file. `fire()` calls `fs.mkdirSync(<file>/tasks/pending, { recursive: true })`
+		// which throws ENOTDIR on both Linux and Windows, exercising the
+		// same catch block as a real disk-full or EACCES.
+		const blocker = path.join(tempDir, "stateroot-is-a-file");
+		fs.writeFileSync(blocker, "not a directory", "utf8");
 		const sch = new CronScheduler({
 			agentManager: new EventEmitter(),
+			stateRoot: blocker,
 			nowFn: () => new Date(Date.UTC(2026, 4, 18, 14, 0, 0)),
 		});
 		sch.registerCron({
@@ -539,16 +552,12 @@ describe("CronScheduler — failure modes", () => {
 			outputTaskNamePrefix: "pr-triage",
 		});
 		sch.start();
-		// Make `tasks/pending` unwritable so the atomic rename fails.
-		const pendingDir = path.join(tempDir, "tasks", "pending");
-		fs.chmodSync(pendingDir, 0o444);
-		try {
-			await sch._tickForTests();
-		} finally {
-			fs.chmodSync(pendingDir, 0o755);
-		}
+		await sch._tickForTests();
 		// The write failed — runningCount must stay at 0.
 		expect(sch._runningCountForTests().get("pr-triage") ?? 0).toBe(0);
+		// Telemetry still lives under the env-var-resolved tempDir (not the
+		// blocker path) because the telemetry module reads
+		// IAGO_DAEMON_STATE_ROOT directly — that's set in beforeEach.
 		const evts = await readTelemetry();
 		const writeFailed = evts.find((e) => e.kind === "cron-fired-write-failed");
 		expect(writeFailed).toBeDefined();
@@ -747,9 +756,15 @@ describe("CronScheduler — overlap + decrement", () => {
 		await sch._tickForTests();
 		expect(sch._runningCountForTests().get("pr-triage")).toBe(1);
 		// AgentManager (07b) emits when the task moves pending → resolved.
+		// The listener filters by filename, so we must echo back the actual
+		// emitted basename (computed from the unix suffix at fire time).
+		const pendingForResolve = await fsp.readdir(
+			path.join(tempDir, "tasks/pending"),
+		);
+		const emittedFilename = pendingForResolve[0] as string;
 		am.emit("task-resolved", {
 			agentId: "pr-triage",
-			filename: "pr-triage__1700000000.json",
+			filename: emittedFilename,
 		});
 		expect(sch._runningCountForTests().get("pr-triage")).toBe(0);
 		// Advance to next matching tick (same minute, +30s) so the
@@ -762,6 +777,163 @@ describe("CronScheduler — overlap + decrement", () => {
 		// No overlap event for the second tick.
 		const overlaps = evts.filter((e) => e.kind === "cron-overlap-prevented");
 		expect(overlaps).toHaveLength(0);
+		await sch.stop();
+	});
+});
+
+describe("validateScheduleSyntax — unconditional field parsing", () => {
+	// Regression for Codex High #2: registerCron used to call
+	// matchesCron(expr, now), which short-circuits at the first
+	// non-matching field. A schedule like "28 99 * * *" would register
+	// cleanly at any minute except :28 (minute parser matched, hour
+	// parser never ran) and only throw at the first matching tick. The
+	// scheduler then logged-and-skipped the throw, so the cron silently
+	// never fired. `validateScheduleSyntax` parses every field
+	// regardless of the current time.
+	it("throws on malformed hour field even when minute does not match current time", () => {
+		// Current minute is 0 — matchesCron("28 99 * * *", now) would
+		// short-circuit on the minute parse (28 !== 0) and never reach
+		// the malformed hour. validateScheduleSyntax must still throw.
+		expect(() => validateScheduleSyntax("28 99 * * *")).toThrow(/hour/);
+	});
+
+	it("throws on each of the 5 field positions individually", () => {
+		// Minute out of range
+		expect(() => validateScheduleSyntax("99 * * * *")).toThrow(/minute/);
+		// Hour out of range
+		expect(() => validateScheduleSyntax("0 99 * * *")).toThrow(/hour/);
+		// Day-of-month out of range
+		expect(() => validateScheduleSyntax("0 0 99 * *")).toThrow(/day-of-month/);
+		// Month out of range
+		expect(() => validateScheduleSyntax("0 0 1 99 *")).toThrow(/month/);
+		// Day-of-week out of range
+		expect(() => validateScheduleSyntax("0 0 1 1 9")).toThrow(/day-of-week/);
+	});
+
+	it("throws on wrong field count", () => {
+		expect(() => validateScheduleSyntax("* * * *")).toThrow(/5 fields/);
+		expect(() => validateScheduleSyntax("* * * * * *")).toThrow(/5 fields/);
+	});
+
+	it("registerCron rejects malformed hour field at registration even when current minute does not match", () => {
+		const sch = new CronScheduler({
+			agentManager: new EventEmitter(),
+			// nowFn returns minute=0 so matchesCron-based validation would
+			// have short-circuited before reaching the bad hour field. This
+			// proves registerCron uses the unconditional validator.
+			nowFn: () => new Date(Date.UTC(2026, 4, 18, 9, 0, 0)),
+		});
+		expect(() =>
+			sch.registerCron({
+				agentId: "pr-triage",
+				schedule: "28 99 * * *",
+				promptTemplatePath: writePromptTemplate("p.txt", "x"),
+				outputTaskNamePrefix: "pr-triage",
+			}),
+		).toThrow(RangeError);
+		void sch.stop();
+	});
+});
+
+describe("CronScheduler — terminal listener filename filter", () => {
+	// Regression for Codex Medium #1: previously the listener decremented
+	// runningCount on any task-resolved event for the matching agentId.
+	// An AgentManager that processes both cron-emitted and manually
+	// injected tasks for the same agent would have non-cron resolutions
+	// reopen the cron slot, defeating maxConcurrent.
+
+	it("non-cron filename does NOT decrement runningCount", async () => {
+		vi.useFakeTimers();
+		const am = new EventEmitter();
+		const sch = new CronScheduler({
+			agentManager: am,
+			nowFn: () => new Date(Date.UTC(2026, 4, 18, 14, 0, 0)),
+		});
+		sch.registerCron({
+			agentId: "pr-triage",
+			schedule: "0 14 * * *",
+			promptTemplatePath: writePromptTemplate("p.txt", "x"),
+			outputTaskNamePrefix: "pr-triage",
+			maxConcurrent: 1,
+		});
+		sch.start();
+		await sch._tickForTests();
+		expect(sch._runningCountForTests().get("pr-triage")).toBe(1);
+		// Manual / non-cron task for the same agent resolves. Listener
+		// must ignore it because the filename was never recorded in
+		// outstandingFilenames.
+		am.emit("task-resolved", {
+			agentId: "pr-triage",
+			filename: "manual-task__9999999999.json",
+		});
+		expect(sch._runningCountForTests().get("pr-triage")).toBe(1);
+		// Outstanding cron filename set is unchanged.
+		const outstanding = sch._outstandingFilenamesForTests().get("pr-triage");
+		expect(outstanding?.size).toBe(1);
+		await sch.stop();
+	});
+
+	it("matching cron filename decrements runningCount AND clears the outstanding set", async () => {
+		vi.useFakeTimers();
+		const am = new EventEmitter();
+		const sch = new CronScheduler({
+			agentManager: am,
+			nowFn: () => new Date(Date.UTC(2026, 4, 18, 14, 0, 0)),
+		});
+		sch.registerCron({
+			agentId: "pr-triage",
+			schedule: "0 14 * * *",
+			promptTemplatePath: writePromptTemplate("p.txt", "x"),
+			outputTaskNamePrefix: "pr-triage",
+			maxConcurrent: 1,
+		});
+		sch.start();
+		await sch._tickForTests();
+		const pending = await fsp.readdir(path.join(tempDir, "tasks/pending"));
+		expect(pending).toHaveLength(1);
+		const emitted = pending[0] as string;
+		// Sanity: scheduler recorded the emitted filename for filtering.
+		const outstandingBefore = sch
+			._outstandingFilenamesForTests()
+			.get("pr-triage");
+		expect(outstandingBefore?.has(emitted)).toBe(true);
+
+		am.emit("task-resolved", {
+			agentId: "pr-triage",
+			filename: emitted,
+		});
+		expect(sch._runningCountForTests().get("pr-triage")).toBe(0);
+		// Empty outstanding set is cleaned up (Map entry deleted).
+		expect(sch._outstandingFilenamesForTests().has("pr-triage")).toBe(false);
+		await sch.stop();
+	});
+
+	it("task-poisoned and task-unrouted also release the slot for cron-emitted filenames", async () => {
+		// Poison/unrouted are terminal outcomes too — without subscribing
+		// to them, a poisoned cron task would leak its concurrency slot
+		// forever and maxConcurrent would permanently wedge.
+		vi.useFakeTimers();
+		const am = new EventEmitter();
+		const sch = new CronScheduler({
+			agentManager: am,
+			nowFn: () => new Date(Date.UTC(2026, 4, 18, 14, 0, 0)),
+		});
+		sch.registerCron({
+			agentId: "pr-triage",
+			schedule: "0 14 * * *",
+			promptTemplatePath: writePromptTemplate("p.txt", "x"),
+			outputTaskNamePrefix: "pr-triage",
+			maxConcurrent: 1,
+		});
+		sch.start();
+		await sch._tickForTests();
+		const pending = await fsp.readdir(path.join(tempDir, "tasks/pending"));
+		const emitted = pending[0] as string;
+		am.emit("task-poisoned", {
+			agentId: "pr-triage",
+			filename: emitted,
+		});
+		expect(sch._runningCountForTests().get("pr-triage")).toBe(0);
 		await sch.stop();
 	});
 });
