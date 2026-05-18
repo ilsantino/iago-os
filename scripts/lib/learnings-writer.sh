@@ -95,7 +95,7 @@ learnings_write() {
     fb_ts=$(date -u +%Y%m%d-%H%M%S)
     local fb_path="$fallback_dir/learnings-fallback-${fb_ts}-$$.md"
     local fb_err
-    fb_err=$(printf '\n## %s — %s\n\n%s\n' "$ts" "$key" "$body" 2>&1 >> "$fb_path")
+    fb_err=$(printf '\n## %s — %s\n\n%s\n' "$ts" "$key" "$body" >> "$fb_path" 2>&1)
     local fb_rc=$?
     if (( fb_rc == 0 )); then
       echo "learnings_write: WARNING — primary write failed ($err); fell back to $fb_path" >&2
