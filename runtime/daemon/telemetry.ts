@@ -188,6 +188,85 @@ export type DaemonEvent =
 			readonly schedule: string;
 			readonly taskFile: string;
 			readonly errno: string;
+	  }
+	| {
+			/**
+			 * Plan 07b (AgentManager polling loop): `claimTask` successfully
+			 * moved a task file from `tasks/pending/` to `tasks/resolved/`.
+			 * Mirrors the EventEmitter `'task-resolved'` event the
+			 * CronScheduler subscribes to — closes the decrement chain so
+			 * cron `runningCount` releases its slot.
+			 */
+			readonly kind: "task-resolved";
+			readonly agentId: string;
+			readonly filename: string;
+	  }
+	| {
+			/**
+			 * Plan 07b (AgentManager polling loop): a pending task file was
+			 * unreadable JSON. The file was moved to `tasks/poisoned/` so
+			 * the polling loop does not re-trip on it. The matching
+			 * EventEmitter `'task-poisoned'` event releases the cron
+			 * concurrency slot (if any) via the CronScheduler listener.
+			 */
+			readonly kind: "task-poisoned";
+			readonly filename: string;
+			readonly reason: "json-parse-error" | "missing-agent-id";
+			readonly errno?: string;
+	  }
+	| {
+			/**
+			 * Plan 07b (AgentManager polling loop): a pending task references
+			 * an `agentId` that is not registered with the manager. The
+			 * file stays in pending (a later registration may pick it up).
+			 * Emitted once per (filename) until `stopPollingLoop()` clears
+			 * the suppression set; the matching EventEmitter
+			 * `'task-unrouted'` event releases the cron concurrency slot
+			 * (if any) so a cron-fired-then-deregistered agent does not
+			 * leak its slot forever.
+			 */
+			readonly kind: "task-unrouted";
+			readonly filename: string;
+			readonly agentId: string;
+	  }
+	| {
+			/**
+			 * Plan 07b (AgentManager polling loop): the suppression set for
+			 * repeated `task-unrouted` events hit the 1000-entry cap. From
+			 * this point until `stopPollingLoop()`, every unrouted file
+			 * emits `task-unrouted` again on each tick. Fires exactly once
+			 * per polling-loop lifetime (C2 stress-test mitigation).
+			 */
+			readonly kind: "task-unrouted-set-overflow";
+			readonly cap: number;
+	  }
+	| {
+			/**
+			 * Plan 07b (AgentManager polling loop): the tick body threw an
+			 * uncaught exception. The interval continues; the next tick
+			 * starts fresh. Surfacing this lets operators see polling-loop
+			 * health without scraping the daemon log.
+			 */
+			readonly kind: "polling-loop-error";
+			readonly errno?: string;
+			readonly message: string;
+	  }
+	| {
+			/**
+			 * Plan 07b (AgentManager polling loop): `claimTask`'s
+			 * `fs.rename` failed (ENOSPC, EACCES, EBUSY, etc.). The task
+			 * file is left in `tasks/pending/` so the next tick retries.
+			 * `'task-resolved'` is NOT emitted, so the cron `runningCount`
+			 * stays elevated — sustained failures eventually exhaust the
+			 * overlap budget and surface as `cron-overlap-prevented`
+			 * (intentional; the operator should be looking at this event
+			 * first).
+			 */
+			readonly kind: "claim-task-failed";
+			readonly agentId: string;
+			readonly filename: string;
+			readonly errno?: string;
+			readonly message: string;
 	  };
 
 let missingSessionIdWarned = false;

@@ -39,6 +39,7 @@ export type StateKind =
 	| "tasks/pending"
 	| "tasks/claimed"
 	| "tasks/resolved"
+	| "tasks/poisoned"
 	| "approvals/pending"
 	| "approvals/resolved"
 	| "agents"
@@ -50,6 +51,7 @@ const ALL_KINDS: ReadonlyArray<StateKind> = [
 	"tasks/pending",
 	"tasks/claimed",
 	"tasks/resolved",
+	"tasks/poisoned",
 	"approvals/pending",
 	"approvals/resolved",
 	"agents",
