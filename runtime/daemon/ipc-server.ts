@@ -282,7 +282,21 @@ export class IpcServer {
 			socket.destroy();
 		});
 
+		// Per-connection rejected flag: once an oversized line has been seen
+		// and the connection rejected, any subsequent `data` event must be a
+		// no-op. Node's stream contract is that no further `data` events
+		// fire after `socket.destroy()`, but Node has historically allowed
+		// already-queued microtask events to drain. Without this flag, a
+		// late `data` event would re-enter the parse loop on a destroyed
+		// socket: writes are short-circuited by `!socket.destroyed &&
+		// socket.writable` later, but `processLine` + `inflight.add(work)`
+		// still execute (Opus dual-review I1, PR #49). Clearing `buffer`
+		// AFTER the reject also bounds residual memory immediately.
+		let rejected = false;
 		socket.on("data", (chunk: string) => {
+			if (rejected) {
+				return;
+			}
 			buffer += chunk;
 			// EC3: parse complete lines only.
 			// H1 (Codex M): enforce `maxLineBytes` as a UTF-8 byte bound
@@ -301,6 +315,8 @@ export class IpcServer {
 				buffer = buffer.slice(newlineIdx + 1);
 				if (Buffer.byteLength(line, "utf8") > this.maxLineBytes) {
 					this.rejectOversizedLine(socket);
+					rejected = true;
+					buffer = "";
 					return;
 				}
 				if (line.length > 0) {
@@ -313,6 +329,8 @@ export class IpcServer {
 			// connection now to bound memory.
 			if (Buffer.byteLength(buffer, "utf8") > this.maxLineBytes) {
 				this.rejectOversizedLine(socket);
+				rejected = true;
+				buffer = "";
 				return;
 			}
 		});
