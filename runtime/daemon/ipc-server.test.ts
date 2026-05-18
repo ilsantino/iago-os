@@ -133,9 +133,7 @@ describe("IpcServer", () => {
 			getHandle: () => null,
 		});
 		expect(def.socketPath).toBe(
-			isWindows
-				? "\\\\.\\pipe\\iago-os-v2-daemon"
-				: "/tmp/iago-os-v2-daemon.sock",
+			isWindows ? "\\\\.\\pipe\\iago-os-v2-daemon" : "/tmp/iago-os-v2-daemon.sock",
 		);
 	});
 
@@ -661,9 +659,7 @@ describe("IpcServer", () => {
 		expect(probe).toHaveBeenCalledTimes(1);
 		for (const r of burst) {
 			expect(r.responses[0]).toMatchObject({ ok: false });
-			expect((r.responses[0] as { error: string }).error).toMatch(
-				/handler-error/,
-			);
+			expect((r.responses[0] as { error: string }).error).toMatch(/handler-error/);
 		}
 
 		// 6th request within the 1s cooldown window: cooldown fires →

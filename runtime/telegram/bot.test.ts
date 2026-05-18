@@ -1218,9 +1218,7 @@ describe("TelegramBot / /approve text form", () => {
 		const reply = fake.sendMessageCalls.map((c) => c.text).join("\n");
 		expect(reply).toContain(`Approval ${approvalId}`);
 		expect(reply).toContain("allow");
-		const kinds = emitSpy.mock.calls.map(
-			(c) => (c[0] as { kind: string }).kind,
-		);
+		const kinds = emitSpy.mock.calls.map((c) => (c[0] as { kind: string }).kind);
 		expect(kinds).toContain("approval-resolved");
 		await bot.stop();
 	});
@@ -1283,10 +1281,7 @@ describe("TelegramBot / /abort branches", () => {
 			handles: [],
 		});
 		await bot.start();
-		fake.emit(
-			"message",
-			fakeMessage({ userId: 42, text: "/abort agent-ghost" }),
-		);
+		fake.emit("message", fakeMessage({ userId: 42, text: "/abort agent-ghost" }));
 		await waitForSendMessage(fake);
 		expect(fake.sendMessageCalls[0]?.text).toContain("No handle found");
 		await bot.stop();
@@ -1324,10 +1319,7 @@ describe("TelegramBot / /status branches", () => {
 	it("/status with invalid agentId is rejected before lookup", async () => {
 		const { bot, fake } = buildBot({ allowed: [42], shape: "pty" });
 		await bot.start();
-		fake.emit(
-			"message",
-			fakeMessage({ userId: 42, text: "/status AGENT_BAD" }),
-		);
+		fake.emit("message", fakeMessage({ userId: 42, text: "/status AGENT_BAD" }));
 		await waitForSendMessage(fake);
 		expect(fake.sendMessageCalls[0]?.text).toContain("Invalid agent id");
 		await bot.stop();
@@ -1360,10 +1352,7 @@ describe("TelegramBot / /status branches", () => {
 			reason: "ship?",
 		});
 		await bot.start();
-		fake.emit(
-			"message",
-			fakeMessage({ userId: 42, text: "/status agent-foo" }),
-		);
+		fake.emit("message", fakeMessage({ userId: 42, text: "/status agent-foo" }));
 		await waitForSendMessage(fake);
 		const reply = fake.sendMessageCalls[0]?.text ?? "";
 		expect(reply).toContain("Agent agent-foo");

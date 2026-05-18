@@ -698,12 +698,10 @@ describe("Phase 1 hello-world end-to-end (mocked PTY + Telegram)", () => {
 		});
 		// Force heartbeat.stop to throw — the per-stage try/catch in main.ts
 		// (lines 348-354) must log to stderr and NOT propagate.
-		vi.spyOn(daemon.heartbeat, "stop").mockRejectedValueOnce(
-			new Error("heartbeat-boom"),
-		);
-		const errSpy = vi
-			.spyOn(console, "error")
-			.mockImplementation(() => undefined);
+		vi
+			.spyOn(daemon.heartbeat, "stop")
+			.mockRejectedValueOnce(new Error("heartbeat-boom"));
+		const errSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
 
 		await daemon.shutdown();
 
@@ -741,12 +739,10 @@ describe("Phase 1 hello-world end-to-end (mocked PTY + Telegram)", () => {
 		});
 
 		// heartbeat.stop hangs — never resolves.
-		vi.spyOn(daemon.heartbeat, "stop").mockReturnValue(
-			new Promise<void>(() => undefined),
-		);
-		const errSpy = vi
-			.spyOn(console, "error")
-			.mockImplementation(() => undefined);
+		vi
+			.spyOn(daemon.heartbeat, "stop")
+			.mockReturnValue(new Promise<void>(() => undefined));
+		const errSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
 
 		const start = Date.now();
 		await daemon.shutdown();
@@ -817,9 +813,7 @@ describe("Phase 1 hello-world end-to-end (mocked PTY + Telegram)", () => {
 		// Wipe the runtime registry so the listRuntimes() check at
 		// main.ts:222 finds no "claude-pty" entry and logs a warning.
 		_resetRegistryForTests();
-		const errSpy = vi
-			.spyOn(console, "error")
-			.mockImplementation(() => undefined);
+		const errSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
 
 		const daemon = await buildDaemon({ withBot: false, agents: [] });
 

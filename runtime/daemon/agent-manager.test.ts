@@ -71,9 +71,7 @@ interface CostQueueState {
 	queue: CostEvent[];
 	resolvers: Array<
 		(
-			value:
-				| { value: CostEvent; done: false }
-				| { value: undefined; done: true },
+			value: { value: CostEvent; done: false } | { value: undefined; done: true },
 		) => void
 	>;
 	closed: boolean;
@@ -153,9 +151,7 @@ function makeMockRuntime(id: string): MockRuntimeControls {
 			// moment shutdown was invoked — used by ordering assertions.
 			let markerSeen = false;
 			try {
-				await fsp.access(
-					path.join(pathFor("markers"), `${handle.id}.daemon-stop`),
-				);
+				await fsp.access(path.join(pathFor("markers"), `${handle.id}.daemon-stop`));
 				markerSeen = true;
 			} catch {
 				markerSeen = false;
@@ -419,9 +415,7 @@ describe("AgentManager / spawnSubagent", () => {
 		await waitForCondition(() =>
 			ctrl.shutdownCalls.some((c) => c.handleId === child.id),
 		);
-		const childShutdown = ctrl.shutdownCalls.find(
-			(c) => c.handleId === child.id,
-		);
+		const childShutdown = ctrl.shutdownCalls.find((c) => c.handleId === child.id);
 		expect(childShutdown).toBeDefined();
 	});
 });
@@ -504,10 +498,7 @@ describe("AgentManager / bootRecovery", () => {
 				org: undefined,
 				parentHandleId: undefined,
 				spawnedAt: Date.now(),
-				markerPath: path.join(
-					pathFor("markers"),
-					`${crashHandleId}.daemon-stop`,
-				),
+				markerPath: path.join(pathFor("markers"), `${crashHandleId}.daemon-stop`),
 			};
 		});
 
@@ -791,9 +782,7 @@ describe("AgentManager / shutdown cascade without status callback (Codex H2)", (
 		// callback semantics.
 		await mgr.shutdownAgent(parent.id, "SIGTERM");
 
-		const childShutdown = ctrl.shutdownCalls.find(
-			(s) => s.handleId === child.id,
-		);
+		const childShutdown = ctrl.shutdownCalls.find((s) => s.handleId === child.id);
 		expect(childShutdown).toBeDefined();
 		expect(mgr.getHandle(child.id)).toBeUndefined();
 		expect(mgr.getHandle(parent.id)).toBeUndefined();
@@ -823,9 +812,7 @@ describe("AgentManager / shutdown cascade without status callback (Codex H2)", (
 		// Child handle was shut down and removed; the new parent
 		// generation has no children linked (application layer must
 		// respawn).
-		const childShutdown = ctrl.shutdownCalls.find(
-			(s) => s.handleId === child.id,
-		);
+		const childShutdown = ctrl.shutdownCalls.find((s) => s.handleId === child.id);
 		expect(childShutdown).toBeDefined();
 		expect(mgr.getHandle(child.id)).toBeUndefined();
 		const link = mgr
@@ -870,10 +857,7 @@ describe("AgentManager / bootRecovery crash without marker (Codex H1)", () => {
 				org: undefined,
 				parentHandleId: undefined,
 				spawnedAt: Date.now(),
-				markerPath: path.join(
-					pathFor("markers"),
-					`${crashedHandleId}.daemon-stop`,
-				),
+				markerPath: path.join(pathFor("markers"), `${crashedHandleId}.daemon-stop`),
 			};
 		});
 
@@ -986,9 +970,7 @@ describe("AgentManager / EC5 cost event after parent teardown", () => {
 			provider: "anthropic",
 			model: "claude-opus-4-7",
 		});
-		await waitForCondition(
-			() => mgr.getCostSummary(parent.id).rolledUpCost > 0,
-		);
+		await waitForCondition(() => mgr.getCostSummary(parent.id).rolledUpCost > 0);
 		expect(mgr.getCostSummary(parent.id).rolledUpCost).toBeCloseTo(0.1, 6);
 
 		// Shut down the parent — cascade tears down the child too.

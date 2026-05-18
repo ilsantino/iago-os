@@ -64,10 +64,7 @@ import {
 export interface AgentManagerInterface {
 	getHandle(handleId: string): AgentHandle | undefined;
 	listHandles(): AgentHandle[];
-	shutdownAgent(
-		handleId: string,
-		signal?: "SIGTERM" | "SIGKILL",
-	): Promise<void>;
+	shutdownAgent(handleId: string, signal?: "SIGTERM" | "SIGKILL"): Promise<void>;
 	restartAgent?(handleId: string, reason: string): Promise<unknown>;
 	getShape(agent: string): Promise<AgentShape | null>;
 }
@@ -151,7 +148,10 @@ export function wrapSecretToken(raw: string): SecretToken {
  * Split a long reply into Telegram-safe chunks (<=4000 chars each).
  * Splits on newline where possible to keep messages readable.
  */
-export function chunkForTelegram(text: string, limit = TELEGRAM_CHUNK_LIMIT): string[] {
+export function chunkForTelegram(
+	text: string,
+	limit = TELEGRAM_CHUNK_LIMIT,
+): string[] {
 	if (text.length <= limit) return [text];
 	const chunks: string[] = [];
 	let remaining = text;
@@ -221,8 +221,7 @@ export class TelegramBot {
 		this.agentManager = opts.agentManager;
 		this.injectIntoAgent = opts.injectIntoAgent;
 		this.botFactory =
-			opts.botFactory ??
-			((token, options) => new TelegramBotApi(token, options));
+			opts.botFactory ?? ((token, options) => new TelegramBotApi(token, options));
 	}
 
 	/**
@@ -545,10 +544,7 @@ export class TelegramBot {
 		}
 		const handle = this.findHandleByAgentId(command.agent);
 		if (handle === null) {
-			await this.safeReply(
-				target,
-				`No handle found for agent ${command.agent}.`,
-			);
+			await this.safeReply(target, `No handle found for agent ${command.agent}.`);
 			return;
 		}
 		try {

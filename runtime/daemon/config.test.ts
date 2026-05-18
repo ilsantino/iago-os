@@ -71,7 +71,7 @@ describe("daemon/config loadConfig", () => {
 		expect(cfg.telegram?.allowedUserIds).toEqual([]);
 	});
 
-	it("IAGO_TELEGRAM_ALLOWED_USER_IDS=\"111,222\" parses to [111, 222]", async () => {
+	it('IAGO_TELEGRAM_ALLOWED_USER_IDS="111,222" parses to [111, 222]', async () => {
 		process.env.IAGO_TELEGRAM_BOT_TOKEN = "fake-token";
 		process.env.IAGO_TELEGRAM_ALLOWED_USER_IDS = "111,222";
 		const cfg = await loadConfig();
@@ -131,9 +131,7 @@ describe("daemon/config loadConfig", () => {
 	});
 
 	it("env overrides file when both are present", async () => {
-		const tempDir = await fsp.mkdtemp(
-			path.join(os.tmpdir(), "iago-config-ovr-"),
-		);
+		const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), "iago-config-ovr-"));
 		tempDirs.push(tempDir);
 		const cfgPath = path.join(tempDir, "daemon-config.json");
 		const payload = {
@@ -161,9 +159,7 @@ describe("daemon/config loadConfig", () => {
 	});
 
 	it("malformed JSON in config file throws an error mentioning the path", async () => {
-		const tempDir = await fsp.mkdtemp(
-			path.join(os.tmpdir(), "iago-config-bad-"),
-		);
+		const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), "iago-config-bad-"));
 		tempDirs.push(tempDir);
 		const cfgPath = path.join(tempDir, "daemon-config.json");
 		await fsp.writeFile(cfgPath, "{this is not json", "utf8");
@@ -180,11 +176,7 @@ describe("daemon/config loadConfig", () => {
 		);
 		tempDirs.push(tempDir);
 		const cfgPath = path.join(tempDir, "daemon-config.json");
-		await fsp.writeFile(
-			cfgPath,
-			JSON.stringify({ agents: [] }),
-			"utf8",
-		);
+		await fsp.writeFile(cfgPath, JSON.stringify({ agents: [] }), "utf8");
 		process.env.IAGO_DAEMON_CONFIG_PATH = cfgPath;
 
 		const cfg = await loadConfig();
