@@ -1,0 +1,86 @@
+[11:42:40] STRESS TEST — skipped (plan already stress-tested)
+[11:42:41] IMPLEMENT — 07a-cron-scheduler
+[12:00:19] Implementation complete
+[12:00:19] BUILD GATE — attempt 1 [mode: sequential]
+[12:00:19] Build passed (tsc 0ms / vite 0ms / mode sequential)
+[12:00:20] CONSOLE GATE — skipped (no Vite config)
+[12:00:20] REVIEW — 07a-cron-scheduler
+warning: in the working copy of '.iago/runs/round-1-dispatch/07a.log', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'runtime/daemon/cron-scheduler.README.md', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'runtime/daemon/cron-scheduler.test.ts', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'runtime/daemon/cron-scheduler.ts', LF will be replaced by CRLF the next time Git touches it
+[12:00:22]   review-checks: all modules loaded (209 lines)
+[12:04:16] Review output:
+## PASS 1 — Plan Compliance
+
+- **Task 1 (cron-scheduler.ts):** Implemented. `CronScheduler` + `matchesCron` exported; POSIX 5-field parser handles wildcards, integers, ranges, steps, comma lists; POSIX day-OR-weekday semantics correctly implemented with all-non-wildcard OR; 30s `spawnSync` timeout + SIGKILL→`wake-check-timeout` branch present; `runningCount`/`maxConcurrent` overlap prevention; `task-resolved` listener subscription in constructor with defensive payload guard; idempotent `start()`/`start-after-stop` throws; `stop()` awaits in-flight tick; atomic tmp→rename. ✅ Deviation: file is 599 lines vs plan's 220-380.
+- **Task 2 (cron-scheduler.test.ts):** 21 tests written (8 parser + 4 lifecycle + 2 overlap/decrement + 7 failure modes) covering all required cases including (11b) wake-check timeout. ✅ Deviation: 630 lines vs plan's 220-340.
+- **Task 3 (README.md):** 120 lines, 7 numbered sections, covers public API, syntax, OR-semantics, lifecycle, 5 telemetry kinds, failure modes, wiring example. ✅
+
+## PASS 2 — Domain Routing
+
+Selected: **Baseline**, **Pattern Consistency**, **Backend** (daemon-side Node/TS code with input validation, error handling, env-loop concerns).
+
+Skipped: React (no .tsx), Amplify (no amplify/), Auth (no Cognito/JWT), API (no client/HTTP), Data Integrity (no aggregates/UI), i18n (no Spanish), Infra (no resource definitions).
+
+## PASS 3 — Adversarial
+
+**Important**
+1. `as` cast violates explicit plan constraint. `runtime/daemon/cron-scheduler.ts:479` writes `spawnSync("bash", [cron.wakeCheck as string], ...)` despite Task 1 stating "NO `as` casts (use Zod-or-handwritten type guards)". Caller checks `!== undefined` at line 465 but TS does not narrow across the call boundary. Fix: either pass the narrowed string as a parameter to `runWakeCheck(cron, wakeCheckPath)`, or destructure `const { wakeCheck } = cron; if (wakeCheck === undefined) return true;` inside the helper.
+
+**Minor**
+1. Dead re-export at `cron-scheduler.ts:599` — `export type { ChildProcess };` is unused (no downstream consumer); the in-file `type ChildProcess` import is also unused. Remove both.
+2. Same-`outputTaskNamePrefix` cron collision: if two registered crons share a prefix and fire on the same minute, `atomicRenameStaleDest` would silently overwrite the first. Not in current scope (single pr-triage consumer) but undocumented hazard. Consider adding `process.pid`/random suffix to filename or rejecting duplicate prefixes at `registerCron`.
+3. Test (10) asserts `clearInterval` was called but does not actually prove `stop()` awaits the in-flight tick — could be strengthened with a deferred resolve.
+4. Empty interface `CronAgentManager extends EventEmitter {}` (line 85) is a stylistic anti-pattern; `type CronAgentManager = EventEmitter` is equivalent and avoids the Biome `noEmptyInterface` warning class.
+5. File-size deviations (Task 1: 599 vs 220-380; Task 2: 630 vs 220-340) — substantial content is doc/JSDoc, defensible but worth flagging.
+
+**Cross-cutting**
+- Auth bypass: N/A (daemon-internal, no exposed endpoints).
+- Data loss: `atomicRenameStaleDest` is destructive; per-second uniqueness + `runTickGuarded` make collisions rare but not impossible (see Minor #2).
+- Race conditions: `runTickGuarded` blocks tick re-entry; constructor subscribes before any tick; `stop()` awaits in-flight. ✅
+- Rollback safety: tmp file cleaned on rename failure; telemetry write swallows errors per Phase 1 posture. ✅
+
+Verdict: PASS_WITH_CONCERNS
+[12:04:16] Findings detected — dispatching fix session (round 1)
+[12:12:32] Fix output (exit 0):
+All 217 tests pass, typecheck clean. Summary of fixes applied:
+
+**Important #1** — Removed `as string` cast at `cron-scheduler.ts:479`. Changed `runWakeCheck(cron)` signature to `runWakeCheck(cron, wakeCheckPath: string)` so the caller's narrowed value is passed explicitly.
+
+**Minor #1** — Removed dead `export type { ChildProcess }` and the unused `type ChildProcess` import.
+
+**Minor #2** — Added duplicate-prefix rejection in `registerCron` (throws if `outputTaskNamePrefix` is already registered). New test `duplicate outputTaskNamePrefix at registerCron is rejected` covers it.
+
+**Minor #3** — Strengthened test (10) with a controllable `emit` barrier (mocked `./telemetry.js` with passthrough default) to genuinely prove `stop()` awaits the in-flight tick — assertion now verifies `stop` is unresolved while the tick is parked and only resolves after the barrier releases.
+
+**Minor #4** — Replaced `export interface CronAgentManager extends EventEmitter {}` with `export type CronAgentManager = EventEmitter`.
+
+**Minor #5** — File-size deviations are content/JSDoc-heavy and defensible; no action required (informational flag only).
+warning: in the working copy of '.iago/runs/round-1-dispatch/07a.log', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'runtime/daemon/cron-scheduler.test.ts', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'runtime/daemon/cron-scheduler.ts', LF will be replaced by CRLF the next time Git touches it
+[12:12:33]   review-checks: all modules loaded (209 lines)
+[12:15:07] Re-review output:
+All previous findings verified resolved:
+
+**Important #1** (`as string` cast at line 479): FIXED — `runWakeCheck(cron, wakeCheckPath)` now takes the narrowed string as a parameter (cron-scheduler.ts:485-496); no cast required.
+
+**Minor #1** (dead `ChildProcess` re-export): FIXED — no `ChildProcess` import or export remains.
+
+**Minor #2** (same-prefix collision): FIXED — `registerCron` rejects duplicate prefixes (cron-scheduler.ts:358-364); tmp filename includes `process.pid` + random suffix (cron-scheduler.ts:556-558).
+
+**Minor #3** (test 10 weak assertion): FIXED — test now uses `emitMock.mockImplementationOnce` barrier (cron-scheduler.test.ts:266-312); asserts `stopResolved === false` while parked, then `true` after release.
+
+**Minor #4** (empty interface): FIXED — `export type CronAgentManager = EventEmitter;` (cron-scheduler.ts:85).
+
+**Minor #5** (file-size deviation): Acknowledged as defensible content (JSDoc/contract notes); cron-scheduler.ts at 613 lines, test at 702 lines — same Minor severity, not a blocker.
+
+Cross-cutting: auth N/A (daemon-internal); data-loss mitigated by per-pid+random tmp suffix + duplicate-prefix rejection; races covered by `runTickGuarded` + constructor-subscription-before-tick + `stop()` await; rollback safe (tmp cleanup on rename failure).
+
+Verification: `tsc --noEmit` clean; 26/26 tests pass in 305ms.
+
+Verdict: PASS
+[12:15:07] Review passed
+[12:15:07] CODEX REVIEW — 07a-cron-scheduler
+[12:15:08] Running codex-companion adversarial-review (model from ~/.codex/config.toml)

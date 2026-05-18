@@ -123,6 +123,71 @@ export type DaemonEvent =
 			 */
 			readonly kind: "approval-claim-link-eperm";
 			readonly approvalIdHash: string;
+	  }
+	| {
+			/**
+			 * Plan 07a (CronScheduler): a registered cron expression matched
+			 * the current tick, wake-check (if any) passed, and the task
+			 * file was written to `tasks/pending/`. `runningCount` is the
+			 * value AFTER increment for this fire.
+			 */
+			readonly kind: "cron-fired";
+			readonly agentId: string;
+			readonly schedule: string;
+			readonly taskFile: string;
+			readonly runningCount: number;
+	  }
+	| {
+			/**
+			 * Plan 07a (CronScheduler): a cron-tick matched but was skipped
+			 * because the optional `wakeCheck` script returned non-zero or
+			 * was SIGKILL'd after the 30s `spawnSync` timeout. `exitCode`
+			 * is null when the script was timeout-killed (signal: SIGKILL).
+			 */
+			readonly kind: "cron-skipped";
+			readonly agentId: string;
+			readonly schedule: string;
+			readonly reason: "wake-check-failed" | "wake-check-timeout";
+			readonly exitCode: number | null;
+	  }
+	| {
+			/**
+			 * Plan 07a (CronScheduler): a cron-tick matched but was skipped
+			 * because the agent's in-flight task count
+			 * (`runningCount.get(agentId)`) already equals `maxConcurrent`.
+			 * Carries the production-breaking-overlap fix (Codex P1-8).
+			 */
+			readonly kind: "cron-overlap-prevented";
+			readonly agentId: string;
+			readonly schedule: string;
+			readonly runningCount: number;
+			readonly maxConcurrent: number;
+	  }
+	| {
+			/**
+			 * Plan 07a (CronScheduler): the prompt-template file referenced
+			 * by `registerCron({ promptTemplatePath })` could not be read
+			 * (ENOENT, EACCES, etc.). The cron-fire is aborted — no task
+			 * file is written and `runningCount` is NOT incremented.
+			 */
+			readonly kind: "cron-fired-prompt-missing";
+			readonly agentId: string;
+			readonly schedule: string;
+			readonly promptTemplatePath: string;
+			readonly errno: string;
+	  }
+	| {
+			/**
+			 * Plan 07a (CronScheduler): writing the task file into
+			 * `tasks/pending/` failed (ENOSPC, EACCES, EBUSY on tmp-rename,
+			 * etc.). The cron-fire is aborted — `runningCount` is NOT
+			 * incremented.
+			 */
+			readonly kind: "cron-fired-write-failed";
+			readonly agentId: string;
+			readonly schedule: string;
+			readonly taskFile: string;
+			readonly errno: string;
 	  };
 
 let missingSessionIdWarned = false;
