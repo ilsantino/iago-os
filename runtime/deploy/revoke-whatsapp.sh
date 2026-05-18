@@ -117,19 +117,52 @@ EOF
 }
 
 # ---------- Step 1/6: confirm OpenClaw stopped ----------
+# The OpenClaw user systemd unit runs on the VPS as `ilsantino`. When this
+# script is invoked from Santiago's operator host (no `ilsantino` user), a
+# local `systemctl --user is-active` check tells us nothing useful and used
+# to silently pass — defeating the only mechanical guard. Probe the VPS
+# remotely via Tailscale SSH (Opus dual-review I1 fix). Operators can
+# bypass the remote probe with `IAGO_OPENCLAW_STOPPED=1` if they have
+# already verified manually.
 echo "[1/6] Confirming OpenClaw is stopped (archive-openclaw.sh dependency)..."
-if id "$OPENCLAW_USER" > /dev/null 2>&1; then
+if [[ "${IAGO_OPENCLAW_STOPPED:-0}" == "1" ]]; then
+  echo "  NOTE: IAGO_OPENCLAW_STOPPED=1 — skipping remote probe per operator ack."
+  emit_ndjson "1/6" "ok" "operator ack via IAGO_OPENCLAW_STOPPED=1"
+elif id "$OPENCLAW_USER" > /dev/null 2>&1; then
   state=$(su - "$OPENCLAW_USER" -c "systemctl --user is-active $OPENCLAW_SERVICE" 2>/dev/null || echo "unknown")
   if [[ "$state" == "active" ]]; then
     echo "ERROR: $OPENCLAW_SERVICE is still active. Run archive-openclaw.sh first (Plan 02a)." >&2
-    emit_ndjson "1/6" "fail" "openclaw still active"
+    emit_ndjson "1/6" "fail" "openclaw still active (local check)"
     exit 1
   fi
-  echo "  OK OpenClaw state: $state (inactive/failed/unknown — safe to proceed)"
-  emit_ndjson "1/6" "ok" "openclaw state: $state"
+  echo "  OK OpenClaw state (local): $state (inactive/failed/unknown — safe to proceed)"
+  emit_ndjson "1/6" "ok" "openclaw state (local): $state"
+elif command -v tailscale > /dev/null 2>&1; then
+  VPS_USER="${VPS_USER:-root}"
+  VPS_HOST="${VPS_HOST:-srv1456441}"
+  echo "  Probing VPS via Tailscale SSH: ${VPS_USER}@${VPS_HOST}..."
+  remote_state=$(tailscale ssh "${VPS_USER}@${VPS_HOST}" -- \
+    "su - $OPENCLAW_USER -c 'systemctl --user is-active $OPENCLAW_SERVICE' 2>/dev/null || echo unknown" \
+    2>/dev/null || echo "ssh-failed")
+  remote_state=$(printf '%s' "$remote_state" | tr -d '\r\n')
+  if [[ "$remote_state" == "active" ]]; then
+    echo "ERROR: $OPENCLAW_SERVICE is still active on VPS. Run archive-openclaw.sh first (Plan 02a)." >&2
+    emit_ndjson "1/6" "fail" "openclaw still active (remote VPS)"
+    exit 1
+  fi
+  if [[ "$remote_state" == "ssh-failed" ]]; then
+    echo "ERROR: Tailscale SSH probe to ${VPS_USER}@${VPS_HOST} failed. Verify Tailscale is up, then re-run." >&2
+    echo "       Override with IAGO_OPENCLAW_STOPPED=1 if you have manually verified OpenClaw is stopped." >&2
+    emit_ndjson "1/6" "fail" "tailscale ssh probe failed"
+    exit 1
+  fi
+  echo "  OK OpenClaw state (remote VPS): $remote_state (inactive/failed/unknown — safe to proceed)"
+  emit_ndjson "1/6" "ok" "openclaw state (remote VPS): $remote_state"
 else
-  echo "  NOTE: user '$OPENCLAW_USER' not present on this host. Assuming OpenClaw never ran here."
-  emit_ndjson "1/6" "ok" "user $OPENCLAW_USER absent"
+  echo "ERROR: cannot verify OpenClaw stopped — user '$OPENCLAW_USER' absent locally AND tailscale CLI not installed." >&2
+  echo "       Either install tailscale, or set IAGO_OPENCLAW_STOPPED=1 after manually verifying via the VPS." >&2
+  emit_ndjson "1/6" "fail" "no local user and no tailscale"
+  exit 1
 fi
 
 # ---------- Step 2/6: DELETE webhook subscription ----------

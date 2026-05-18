@@ -60,6 +60,12 @@ hunting is the single most expensive failure mode of this runbook.
 
 ### Option A — invoke the script wrapper (recommended)
 
+**Run from:** Santiago's Windows box (Git Bash). The script's step 1
+OpenClaw-is-stopped guard probes the VPS via `tailscale ssh` when no
+local `ilsantino` user exists — so Tailscale must be up and authed
+before invoking. If you've already verified OpenClaw is stopped
+manually, set `IAGO_OPENCLAW_STOPPED=1` to bypass the probe.
+
 ```bash
 export WABA_ID="<paste from 1Password>"
 export APP_ID="<paste from 1Password>"
