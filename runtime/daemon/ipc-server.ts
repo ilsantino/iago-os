@@ -488,7 +488,7 @@ export class IpcServer {
 				const data = this.getHandle((params as { handleId: string }).handleId);
 				return { ok: true, data };
 			}
-			return { ok: false, error: `unknown-method: ${method}` };
+			return { ok: false, error: `unknown-method: ${method.slice(0, 64)}` };
 		} catch (err) {
 			// adv-pr44 M5 (Opus PR #56 dual-review I2): redact raw handler
 			// message before it leaves the daemon UNLESS it starts with a
@@ -499,11 +499,11 @@ export class IpcServer {
 			// gets redacted to "handler-error"; the full message stays in
 			// stderr for ops.
 			const message = err instanceof Error ? err.message : String(err);
-			const isSafeProtocolError =
-				message.startsWith("fleet-health:") ||
-				message.startsWith("parse-error:");
+			// Only fleet-health: is a designed-public throw; parse-error: is
+			// always returned (never thrown) so omitting it here is correct.
+			const isSafeProtocolError = message.startsWith("fleet-health:");
 			if (isSafeProtocolError) {
-				return { ok: false, error: `handler-error: ${message}` };
+				return { ok: false, error: message };
 			}
 			console.error(
 				"[ipc-server] handler-error (redacted from client):",

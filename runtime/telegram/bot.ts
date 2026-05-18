@@ -480,6 +480,14 @@ export class TelegramBot {
 		command: Extract<Command, { name: "start" }>,
 		target: ReplyTarget,
 	): Promise<void> {
+		const validation = validateAgentId(command.agent);
+		if (!validation.valid) {
+			await this.safeReply(
+				target,
+				`Invalid agent id "${command.agent.slice(0, 64)}": ${validation.reason}.`,
+			);
+			return;
+		}
 		await this.safeReply(
 			target,
 			`Phase 1 hello-world: agent "${command.agent}" must be pre-registered in config. Dynamic spawn lands in Phase 3.`,
