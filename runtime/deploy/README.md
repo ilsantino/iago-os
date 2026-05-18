@@ -56,8 +56,9 @@ The cutover script (`cutover.sh`, lands Plan 03a) orchestrates the full sequence
 2. **Provision Phase 2 active credentials** — `bash runtime/deploy/provision-credentials.sh telegram-token gh-token`. Run AFTER the BotFather `/revoke` rotation completes (Plan 02b). `telegram-token` is required for the Telegram control surface; `gh-token` is required by the Plan 04a/04b PR-triage agent (PTY adapter needs `GH_TOKEN` in the spawned shell environment). The `gh-token` value is a GitHub classic PAT with scopes `repo` + `read:org`, 90-day expiry; rotate via `bash runtime/deploy/provision-credentials.sh gh-token` (idempotent).
 3. **Provision Phase 3 credentials (provisioned-but-inactive in Phase 2)** — `bash runtime/deploy/provision-credentials.sh anthropic-default anthropic-ilsantino anthropic-iaguito`. These ciphertexts live in `/etc/credstore.encrypted/` but are NOT referenced by `LoadCredentialEncrypted=` lines in the unit (those lines stay commented until Phase 3 adapter wiring lands).
 
-The script's git mode is `100755`, so the `bash` prefix is belt-and-suspenders for users on filesystems that strip the exec bit (Windows NTFS via Git Bash with `core.filemode=false`). On a Linux/macOS clone the script is directly executable.
 4. **Enable + start** — `systemctl enable --now iago-os-v2-daemon.service`. (Plan 03a `cutover.sh`)
+
+The script's git mode is `100755`, so the `bash` prefix is belt-and-suspenders for users on filesystems that strip the exec bit (Windows NTFS via Git Bash with `core.filemode=false`). On a Linux/macOS clone the script is directly executable.
 
 ## 5. `deploy/` vs `migration/` dichotomy
 

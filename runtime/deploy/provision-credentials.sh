@@ -143,6 +143,7 @@ for key in "$@"; do
     | tailscale ssh "${VPS_USER}@${VPS_HOST}" -- "
         set -e
         tmpfile=\$(mktemp '${CREDSTORE}/.${cred_name}.XXXXXX.cred')
+        trap 'rm -f \"\$tmpfile\"' EXIT
         chmod 0600 \"\$tmpfile\"
         systemd-creds encrypt --name='${cred_name}' - \"\$tmpfile\"
         mv \"\$tmpfile\" '${CREDSTORE}/${cred_name}.cred'
