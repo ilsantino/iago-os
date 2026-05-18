@@ -1,0 +1,1619 @@
+diff --git a/.iago/runs/round-1-dispatch/07a.log b/.iago/runs/round-1-dispatch/07a.log
+new file mode 100644
+index 0000000..390de5a
+--- /dev/null
++++ b/.iago/runs/round-1-dispatch/07a.log
+@@ -0,0 +1,86 @@
++[11:42:40] STRESS TEST — skipped (plan already stress-tested)
++[11:42:41] IMPLEMENT — 07a-cron-scheduler
++[12:00:19] Implementation complete
++[12:00:19] BUILD GATE — attempt 1 [mode: sequential]
++[12:00:19] Build passed (tsc 0ms / vite 0ms / mode sequential)
++[12:00:20] CONSOLE GATE — skipped (no Vite config)
++[12:00:20] REVIEW — 07a-cron-scheduler
++warning: in the working copy of '.iago/runs/round-1-dispatch/07a.log', LF will be replaced by CRLF the next time Git touches it
++warning: in the working copy of 'runtime/daemon/cron-scheduler.README.md', LF will be replaced by CRLF the next time Git touches it
++warning: in the working copy of 'runtime/daemon/cron-scheduler.test.ts', LF will be replaced by CRLF the next time Git touches it
++warning: in the working copy of 'runtime/daemon/cron-scheduler.ts', LF will be replaced by CRLF the next time Git touches it
++[12:00:22]   review-checks: all modules loaded (209 lines)
++[12:04:16] Review output:
++## PASS 1 — Plan Compliance
++
++- **Task 1 (cron-scheduler.ts):** Implemented. `CronScheduler` + `matchesCron` exported; POSIX 5-field parser handles wildcards, integers, ranges, steps, comma lists; POSIX day-OR-weekday semantics correctly implemented with all-non-wildcard OR; 30s `spawnSync` timeout + SIGKILL→`wake-check-timeout` branch present; `runningCount`/`maxConcurrent` overlap prevention; `task-resolved` listener subscription in constructor with defensive payload guard; idempotent `start()`/`start-after-stop` throws; `stop()` awaits in-flight tick; atomic tmp→rename. ✅ Deviation: file is 599 lines vs plan's 220-380.
++- **Task 2 (cron-scheduler.test.ts):** 21 tests written (8 parser + 4 lifecycle + 2 overlap/decrement + 7 failure modes) covering all required cases including (11b) wake-check timeout. ✅ Deviation: 630 lines vs plan's 220-340.
++- **Task 3 (README.md):** 120 lines, 7 numbered sections, covers public API, syntax, OR-semantics, lifecycle, 5 telemetry kinds, failure modes, wiring example. ✅
++
++## PASS 2 — Domain Routing
++
++Selected: **Baseline**, **Pattern Consistency**, **Backend** (daemon-side Node/TS code with input validation, error handling, env-loop concerns).
++
++Skipped: React (no .tsx), Amplify (no amplify/), Auth (no Cognito/JWT), API (no client/HTTP), Data Integrity (no aggregates/UI), i18n (no Spanish), Infra (no resource definitions).
++
++## PASS 3 — Adversarial
++
++**Important**
++1. `as` cast violates explicit plan constraint. `runtime/daemon/cron-scheduler.ts:479` writes `spawnSync("bash", [cron.wakeCheck as string], ...)` despite Task 1 stating "NO `as` casts (use Zod-or-handwritten type guards)". Caller checks `!== undefined` at line 465 but TS does not narrow across the call boundary. Fix: either pass the narrowed string as a parameter to `runWakeCheck(cron, wakeCheckPath)`, or destructure `const { wakeCheck } = cron; if (wakeCheck === undefined) return true;` inside the helper.
++
++**Minor**
++1. Dead re-export at `cron-scheduler.ts:599` — `export type { ChildProcess };` is unused (no downstream consumer); the in-file `type ChildProcess` import is also unused. Remove both.
++2. Same-`outputTaskNamePrefix` cron collision: if two registered crons share a prefix and fire on the same minute, `atomicRenameStaleDest` would silently overwrite the first. Not in current scope (single pr-triage consumer) but undocumented hazard. Consider adding `process.pid`/random suffix to filename or rejecting duplicate prefixes at `registerCron`.
++3. Test (10) asserts `clearInterval` was called but does not actually prove `stop()` awaits the in-flight tick — could be strengthened with a deferred resolve.
++4. Empty interface `CronAgentManager extends EventEmitter {}` (line 85) is a stylistic anti-pattern; `type CronAgentManager = EventEmitter` is equivalent and avoids the Biome `noEmptyInterface` warning class.
++5. File-size deviations (Task 1: 599 vs 220-380; Task 2: 630 vs 220-340) — substantial content is doc/JSDoc, defensible but worth flagging.
++
++**Cross-cutting**
++- Auth bypass: N/A (daemon-internal, no exposed endpoints).
++- Data loss: `atomicRenameStaleDest` is destructive; per-second uniqueness + `runTickGuarded` make collisions rare but not impossible (see Minor #2).
++- Race conditions: `runTickGuarded` blocks tick re-entry; constructor subscribes before any tick; `stop()` awaits in-flight. ✅
++- Rollback safety: tmp file cleaned on rename failure; telemetry write swallows errors per Phase 1 posture. ✅
++
++Verdict: PASS_WITH_CONCERNS
++[12:04:16] Findings detected — dispatching fix session (round 1)
++[12:12:32] Fix output (exit 0):
++All 217 tests pass, typecheck clean. Summary of fixes applied:
++
++**Important #1** — Removed `as string` cast at `cron-scheduler.ts:479`. Changed `runWakeCheck(cron)` signature to `runWakeCheck(cron, wakeCheckPath: string)` so the caller's narrowed value is passed explicitly.
++
++**Minor #1** — Removed dead `export type { ChildProcess }` and the unused `type ChildProcess` import.
++
++**Minor #2** — Added duplicate-prefix rejection in `registerCron` (throws if `outputTaskNamePrefix` is already registered). New test `duplicate outputTaskNamePrefix at registerCron is rejected` covers it.
++
++**Minor #3** — Strengthened test (10) with a controllable `emit` barrier (mocked `./telemetry.js` with passthrough default) to genuinely prove `stop()` awaits the in-flight tick — assertion now verifies `stop` is unresolved while the tick is parked and only resolves after the barrier releases.
++
++**Minor #4** — Replaced `export interface CronAgentManager extends EventEmitter {}` with `export type CronAgentManager = EventEmitter`.
++
++**Minor #5** — File-size deviations are content/JSDoc-heavy and defensible; no action required (informational flag only).
++warning: in the working copy of '.iago/runs/round-1-dispatch/07a.log', LF will be replaced by CRLF the next time Git touches it
++warning: in the working copy of 'runtime/daemon/cron-scheduler.test.ts', LF will be replaced by CRLF the next time Git touches it
++warning: in the working copy of 'runtime/daemon/cron-scheduler.ts', LF will be replaced by CRLF the next time Git touches it
++[12:12:33]   review-checks: all modules loaded (209 lines)
++[12:15:07] Re-review output:
++All previous findings verified resolved:
++
++**Important #1** (`as string` cast at line 479): FIXED — `runWakeCheck(cron, wakeCheckPath)` now takes the narrowed string as a parameter (cron-scheduler.ts:485-496); no cast required.
++
++**Minor #1** (dead `ChildProcess` re-export): FIXED — no `ChildProcess` import or export remains.
++
++**Minor #2** (same-prefix collision): FIXED — `registerCron` rejects duplicate prefixes (cron-scheduler.ts:358-364); tmp filename includes `process.pid` + random suffix (cron-scheduler.ts:556-558).
++
++**Minor #3** (test 10 weak assertion): FIXED — test now uses `emitMock.mockImplementationOnce` barrier (cron-scheduler.test.ts:266-312); asserts `stopResolved === false` while parked, then `true` after release.
++
++**Minor #4** (empty interface): FIXED — `export type CronAgentManager = EventEmitter;` (cron-scheduler.ts:85).
++
++**Minor #5** (file-size deviation): Acknowledged as defensible content (JSDoc/contract notes); cron-scheduler.ts at 613 lines, test at 702 lines — same Minor severity, not a blocker.
++
++Cross-cutting: auth N/A (daemon-internal); data-loss mitigated by per-pid+random tmp suffix + duplicate-prefix rejection; races covered by `runTickGuarded` + constructor-subscription-before-tick + `stop()` await; rollback safe (tmp cleanup on rename failure).
++
++Verification: `tsc --noEmit` clean; 26/26 tests pass in 305ms.
++
++Verdict: PASS
++[12:15:07] Review passed
++[12:15:07] CODEX REVIEW — 07a-cron-scheduler
++[12:15:08] Running codex-companion adversarial-review (model from ~/.codex/config.toml)
+diff --git a/runtime/daemon/cron-scheduler.README.md b/runtime/daemon/cron-scheduler.README.md
+new file mode 100644
+index 0000000..8ddad11
+--- /dev/null
++++ b/runtime/daemon/cron-scheduler.README.md
+@@ -0,0 +1,120 @@
++# CronScheduler
++
++## 1. Purpose
++
++`CronScheduler` is a 60s-tick scheduler that fires registered cron entries into the file-bus `tasks/pending/` directory. Each tick: match the registered schedules against the current UTC time, run an optional bash wake-check, then atomically emit a task file the agent-manager polling loop will pick up. It exists so Phase 2+ agents can declare cron-driven dispatch (e.g., `pr-triage` daily at 14:00 UTC) without depending on host cron or a third-party `node-cron` package — Phase 2 dep-bloat constraint forbids adding a parser dep for ~80 LOC of logic.
++
++The decrement side of the overlap-prevention counter is split across Plan 07a (this file — subscribes to `task-resolved`) and Plan 07b (extends `AgentManager` to emit `task-resolved` when a task moves from `pending/` to `resolved/`). Until 07b ships, the subscription is a defensive no-op and `maxConcurrent > 1` is the safe registration default for any consumer wiring CronScheduler ahead of 07b.
++
++## 2. Public API
++
++```ts
++class CronScheduler {
++  constructor(opts: {
++    agentManager: CronAgentManager;   // EventEmitter; subscribes to 'task-resolved'
++    stateRoot?: string;               // overrides pathFor('tasks/pending'); test-only in practice
++    logger?: Logger;
++    nowFn?: () => Date;               // @internal — test override only
++  });
++
++  registerCron(opts: {
++    agentId: string;                  // validated via assertSafeIdentifier
++    schedule: string;                 // 5-field POSIX cron expression; eagerly parsed
++    wakeCheck?: string;               // path to a bash script run via spawnSync
++    promptTemplatePath: string;       // read on each fire; missing → cron-fired-prompt-missing
++    outputTaskNamePrefix: string;     // task filename = <prefix>__<unix>.json
++    maxConcurrent?: number;           // default 1 (Codex P1-8 fix carrier)
++  }): void;
++
++  start(): void;                      // idempotent; second call is no-op
++  stop(): Promise<void>;              // clears interval AND awaits any in-flight tick
++}
++
++// @internal — exported for test access only.
++function matchesCron(expr: string, now: Date): boolean;
++```
++
++`registerCron` validates eagerly: a bad `agentId` (path separators, NUL bytes, > 200 chars) throws `TypeError`; a malformed `schedule` throws `RangeError` with the offending field named. `start()` after `stop()` throws — instances are single-use.
++
++## 3. Cron expression syntax
++
++5-field POSIX format: `minute hour day-of-month month day-of-week`. Non-standard second and year fields are NOT supported.
++
++| Token | Example | Notes |
++|-------|---------|-------|
++| `*` | `* * * * *` | Any value in range |
++| Integer literal | `0 14 * * *` | 14:00 UTC daily |
++| Range | `1-5` | Inclusive; `lo` must be ≤ `hi` |
++| Step | `*/15`, `1-30/5` | Stride within range or `*` |
++| Comma list | `1,3,5` | Union of values |
++
++Time is interpreted as **UTC**. The pr-triage convention is `0 14 * * *` → 14:00 UTC.
++
++**POSIX day-OR-weekday semantics (C1 from stress test).** When BOTH `day-of-month` AND `day-of-week` are non-wildcard, the match is `dayOfMonth OR dayOfWeek` — not AND. Example: `0 0 1-7 * 1` matches the 1st-7th of every month OR every Monday. This is the POSIX standard and what `cron(8)` does on Linux. If you need "first Monday of the month only," register `0 0 1-7 * *` and add a `wakeCheck` that exits 1 when `date +%u` is not 1.
++
++**Drift tolerance.** `setInterval` is best-effort; long ticks can shift the next fire by sub-seconds. Because the scheduler matches by minute, up to ~59s of cumulative drift is fine — a tick that fires at 13:59:58 vs 14:00:02 both produce the same UTC-minute match against `0 14 * * *`.
++
++## 4. Lifecycle
++
++1. **Instantiate** with an `agentManager` (any `EventEmitter`-compatible object). The constructor subscribes to `'task-resolved'` immediately — defensive listener that no-ops on malformed payloads.
++2. **`registerCron(...)`** per agent. Validation is eager: malformed schedules and unsafe identifiers fail here, not at the first tick.
++3. **`start()`** opens the 60s interval. The interval handle is `unref`'d so a forgotten `stop()` in tests does not pin the Node event loop.
++4. **On each tick**: iterate registered crons; for each match, check `runningCount[agentId] >= maxConcurrent` (skip + emit `cron-overlap-prevented`); else run `wakeCheck` if defined; else read the prompt template and write the task file via tmp → rename.
++5. **`stop()`** clears the interval and awaits any in-flight tick. After `await stop()` returns, no more `cron-fired` events will surface. The `'task-resolved'` listener is removed so the instance can be GC'd.
++
++The `task-resolved` decrement chain closes the overlap loop. Plan 07b extends `AgentManager` to emit `{ agentId, filename }` when a task moves from `pending/` to `resolved/`; the listener here decrements `runningCount[agentId]` (clamped at 0). Until 07b ships, increments accumulate and `maxConcurrent` permanently blocks after the Nth fire — register with high `maxConcurrent` if wiring early.
++
++## 5. Telemetry kinds emitted
++
++All events flow through `runtime/daemon/telemetry.ts` (`emit(event)`) and land in `pathFor('telemetry')/<yyyy-mm-dd>.ndjson`. The 5 cron-specific kinds:
++
++| Kind | Extras | When |
++|------|--------|------|
++| `cron-fired` | `agentId, schedule, taskFile, runningCount` | Task file successfully written; `runningCount` is post-increment |
++| `cron-skipped` | `agentId, schedule, reason, exitCode` | `reason ∈ 'wake-check-failed' \| 'wake-check-timeout'`; `exitCode` is `null` for the SIGKILL timeout branch |
++| `cron-overlap-prevented` | `agentId, schedule, runningCount, maxConcurrent` | `runningCount >= maxConcurrent` at tick time; spawn skipped |
++| `cron-fired-prompt-missing` | `agentId, schedule, promptTemplatePath, errno` | `fs.readFileSync(promptTemplatePath)` threw (ENOENT, EACCES, etc.); `runningCount` NOT incremented |
++| `cron-fired-write-failed` | `agentId, schedule, taskFile, errno` | tmp-write or atomic-rename failed (ENOSPC, EBUSY, etc.); `runningCount` NOT incremented |
++
++Plan 07b adds matching agent-manager kinds the cron loop is paired with: `task-resolved`, `task-poisoned`, `task-unrouted`, `polling-loop-error`. Cross-reference the README that ships with 07b for those payloads.
++
++## 6. Failure modes
++
++| Failure | Manifestation | Telemetry |
++|---------|---------------|-----------|
++| Wake-check script missing executable bit | `spawnSync` returns exit 126 | `cron-skipped { reason: 'wake-check-failed', exitCode: 126 }` |
++| Wake-check exceeds 30s | `spawnSync` returns `signal: 'SIGKILL'`, `status: null` (C2 fix) | `cron-skipped { reason: 'wake-check-timeout', exitCode: null }` |
++| `bash` not on PATH | `spawnSync` returns `error: { code: 'ENOENT' }` | `cron-skipped { reason: 'wake-check-failed', exitCode: null }` |
++| Prompt template missing | `fs.readFileSync` throws ENOENT | `cron-fired-prompt-missing` — fire aborted |
++| `tasks/pending/` not writable | tmp-write or rename throws | `cron-fired-write-failed` — fire aborted |
++| Malformed cron expression at tick | `matchesCron` throws inside try/catch | Logged via `logger.error`; tick continues with next registered cron |
++| Malformed `task-resolved` payload | Defensive listener short-circuits | None (silently ignored) |
++
++The fire path is "fail-aborted, not fail-loud" by design: a single broken cron must not stop the tick loop or crash the daemon.
++
++## 7. Wiring example
++
++Plan 04b's daemon-boot wiring (matching `AgentManager.startPollingLoop` from 07b):
++
++```ts
++import { CronScheduler } from "./cron-scheduler.js";
++
++const scheduler = new CronScheduler({ agentManager });
++
++scheduler.registerCron({
++  agentId: "pr-triage",
++  schedule: "0 14 * * *",                      // 14:00 UTC daily
++  wakeCheck: "/opt/iago/bin/pr-triage-gate.sh",
++  promptTemplatePath: "/opt/iago/prompts/pr-triage.md",
++  outputTaskNamePrefix: "pr-triage",
++  maxConcurrent: 1,
++});
++
++scheduler.start();
++
++process.on("SIGTERM", async () => {
++  await scheduler.stop();
++});
++```
++
++`maxConcurrent: 1` is the daily-cron default — second fire while the first is still in-flight emits `cron-overlap-prevented` and skips. Raise it for crons that legitimately fan out (e.g., per-customer batch fires triggered by the same minute). The eager `registerCron` parse will reject the schedule at boot if it is malformed, so deploy-time misconfiguration surfaces in the daemon-start log rather than at the first scheduled minute.
+diff --git a/runtime/daemon/cron-scheduler.test.ts b/runtime/daemon/cron-scheduler.test.ts
+new file mode 100644
+index 0000000..55b56f0
+--- /dev/null
++++ b/runtime/daemon/cron-scheduler.test.ts
+@@ -0,0 +1,701 @@
++import { EventEmitter } from "node:events";
++import * as fs from "node:fs";
++import * as fsp from "node:fs/promises";
++import * as os from "node:os";
++import * as path from "node:path";
++
++import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
++
++import { CronScheduler, matchesCron } from "./cron-scheduler.js";
++import type { DaemonEvent } from "./telemetry.js";
++
++// `spawnSync` is mocked at the module level — the scheduler reaches into
++// `node:child_process` for wake-check execution. Tests that need a
++// specific result inject it via `spawnSyncMock.mockReturnValue(...)`.
++const spawnSyncMock = vi.hoisted(() => vi.fn());
++vi.mock("node:child_process", async () => {
++	const actual =
++		await vi.importActual<typeof import("node:child_process")>(
++			"node:child_process",
++		);
++	return {
++		...actual,
++		spawnSync: spawnSyncMock,
++	};
++});
++
++// Mock the telemetry module so test (10) can park `await emit(...)` on a
++// controllable barrier (proving `stop()` awaits the in-flight tick). By
++// default the mock passes through to the real `emit` so other tests that
++// observe telemetry files via `readTelemetry()` still work.
++const { emitMock, emitState } = vi.hoisted(() => ({
++	emitMock: vi.fn(),
++	emitState: {
++		real: null as ((e: DaemonEvent) => Promise<void>) | null,
++	},
++}));
++vi.mock("./telemetry.js", async () => {
++	const actual =
++		await vi.importActual<typeof import("./telemetry.js")>("./telemetry.js");
++	emitState.real = actual.emit;
++	return {
++		...actual,
++		emit: emitMock,
++	};
++});
++
++let tempDir: string;
++
++async function readTelemetry(): Promise<Array<Record<string, unknown>>> {
++	const dir = path.join(tempDir, "telemetry");
++	let files: string[];
++	try {
++		files = await fsp.readdir(dir);
++	} catch {
++		return [];
++	}
++	const events: Array<Record<string, unknown>> = [];
++	for (const f of files) {
++		if (!f.endsWith(".ndjson")) continue;
++		const raw = await fsp.readFile(path.join(dir, f), "utf8");
++		for (const line of raw.split("\n")) {
++			if (line.length === 0) continue;
++			events.push(JSON.parse(line) as Record<string, unknown>);
++		}
++	}
++	return events;
++}
++
++function writePromptTemplate(name: string, body: string): string {
++	const p = path.join(tempDir, name);
++	fs.writeFileSync(p, body, "utf8");
++	return p;
++}
++
++beforeEach(async () => {
++	tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), "iago-cron-"));
++	process.env.IAGO_DAEMON_STATE_ROOT = tempDir;
++	for (const sub of [
++		"tasks/pending",
++		"tasks/claimed",
++		"tasks/resolved",
++		"telemetry",
++		"agents",
++		"session-logs",
++		"markers",
++		"approvals/pending",
++		"approvals/resolved",
++	]) {
++		fs.mkdirSync(path.join(tempDir, sub), { recursive: true });
++	}
++	spawnSyncMock.mockReset();
++	emitMock.mockReset();
++	// Default: pass through to the real telemetry write.
++	emitMock.mockImplementation((e: DaemonEvent) => {
++		if (emitState.real === null) return Promise.resolve();
++		return emitState.real(e);
++	});
++	vi.spyOn(console, "error").mockImplementation(() => {});
++});
++
++afterEach(async () => {
++	vi.useRealTimers();
++	vi.restoreAllMocks();
++	delete process.env.IAGO_DAEMON_STATE_ROOT;
++	await fsp.rm(tempDir, { recursive: true, force: true });
++});
++
++describe("matchesCron — parser", () => {
++	it("(1) '* * * * *' matches every minute", () => {
++		const now = new Date(Date.UTC(2026, 4, 18, 13, 27, 0));
++		expect(matchesCron("* * * * *", now)).toBe(true);
++		const other = new Date(Date.UTC(2026, 6, 4, 0, 0, 0));
++		expect(matchesCron("* * * * *", other)).toBe(true);
++	});
++
++	it("(2) '0 14 * * *' matches at 14:00 UTC, not 14:01 or 13:00", () => {
++		expect(
++			matchesCron("0 14 * * *", new Date(Date.UTC(2026, 4, 18, 14, 0, 0))),
++		).toBe(true);
++		expect(
++			matchesCron("0 14 * * *", new Date(Date.UTC(2026, 4, 18, 14, 1, 0))),
++		).toBe(false);
++		expect(
++			matchesCron("0 14 * * *", new Date(Date.UTC(2026, 4, 18, 13, 0, 0))),
++		).toBe(false);
++	});
++
++	it("(3) '*/15 * * * *' matches at :00 :15 :30 :45 and not :07", () => {
++		for (const m of [0, 15, 30, 45]) {
++			expect(
++				matchesCron("*/15 * * * *", new Date(Date.UTC(2026, 4, 18, 9, m, 0))),
++			).toBe(true);
++		}
++		expect(
++			matchesCron("*/15 * * * *", new Date(Date.UTC(2026, 4, 18, 9, 7, 0))),
++		).toBe(false);
++	});
++
++	it("(4) '0 0 * * 1-5' matches Mon-Fri midnight, NOT Sat/Sun", () => {
++		// 2026-05-18 is a Monday — getUTCDay() === 1.
++		expect(
++			matchesCron("0 0 * * 1-5", new Date(Date.UTC(2026, 4, 18, 0, 0, 0))),
++		).toBe(true);
++		// 2026-05-22 Friday (day=5)
++		expect(
++			matchesCron("0 0 * * 1-5", new Date(Date.UTC(2026, 4, 22, 0, 0, 0))),
++		).toBe(true);
++		// 2026-05-23 Saturday (day=6)
++		expect(
++			matchesCron("0 0 * * 1-5", new Date(Date.UTC(2026, 4, 23, 0, 0, 0))),
++		).toBe(false);
++		// 2026-05-24 Sunday (day=0)
++		expect(
++			matchesCron("0 0 * * 1-5", new Date(Date.UTC(2026, 4, 24, 0, 0, 0))),
++		).toBe(false);
++	});
++
++	it("(5) '1,3,5 * * * *' matches at minutes 1, 3, 5 only", () => {
++		for (const m of [1, 3, 5]) {
++			expect(
++				matchesCron("1,3,5 * * * *", new Date(Date.UTC(2026, 4, 18, 9, m, 0))),
++			).toBe(true);
++		}
++		for (const m of [0, 2, 4, 6, 30]) {
++			expect(
++				matchesCron("1,3,5 * * * *", new Date(Date.UTC(2026, 4, 18, 9, m, 0))),
++			).toBe(false);
++		}
++	});
++
++	it("(6) '0 0 1-7 * 1' POSIX day-OR-weekday: matches when EITHER 1-7 OR Mon", () => {
++		// 2026-05-04 Monday day-of-month=4 — both OR branches match.
++		expect(
++			matchesCron("0 0 1-7 * 1", new Date(Date.UTC(2026, 4, 4, 0, 0, 0))),
++		).toBe(true);
++		// 2026-05-11 Monday day-of-month=11 — weekday matches, DOM does not — OR still true.
++		expect(
++			matchesCron("0 0 1-7 * 1", new Date(Date.UTC(2026, 4, 11, 0, 0, 0))),
++		).toBe(true);
++		// 2026-05-03 Sunday day-of-month=3 — DOM matches, weekday does not — OR still true.
++		expect(
++			matchesCron("0 0 1-7 * 1", new Date(Date.UTC(2026, 4, 3, 0, 0, 0))),
++		).toBe(true);
++		// 2026-05-08 Friday day-of-month=8 — NEITHER matches — false.
++		expect(
++			matchesCron("0 0 1-7 * 1", new Date(Date.UTC(2026, 4, 8, 0, 0, 0))),
++		).toBe(false);
++	});
++
++	it("(7) '0 9-17/2 * * *' matches 9, 11, 13, 15, 17 UTC", () => {
++		for (const h of [9, 11, 13, 15, 17]) {
++			expect(
++				matchesCron("0 9-17/2 * * *", new Date(Date.UTC(2026, 4, 18, h, 0, 0))),
++			).toBe(true);
++		}
++		for (const h of [10, 12, 14, 16, 8, 18]) {
++			expect(
++				matchesCron("0 9-17/2 * * *", new Date(Date.UTC(2026, 4, 18, h, 0, 0))),
++			).toBe(false);
++		}
++	});
++
++	it("(8) malformed expression throws RangeError naming the offending field", () => {
++		expect(() => matchesCron("bogus expression", new Date())).toThrow(
++			RangeError,
++		);
++		expect(() =>
++			matchesCron("0 99 * * *", new Date(Date.UTC(2026, 4, 18, 0, 0, 0))),
++		).toThrow(/hour/);
++		expect(() => matchesCron("* * * *", new Date())).toThrow(/5 fields/);
++	});
++
++	it("(8b) parser error-paths surface as RangeError with informative messages", () => {
++		// Fixed Date with minute=0 so parser advances PAST minute field and
++		// reaches the hour-field error sites in tests that target hour parsing.
++		const t = new Date(Date.UTC(2026, 4, 18, 9, 0, 0));
++		// Empty step ("*/")
++		expect(() => matchesCron("*/ * * * *", t)).toThrow(/step/);
++		// Step of zero
++		expect(() => matchesCron("*/0 * * * *", t)).toThrow(/step/);
++		// Non-integer step
++		expect(() => matchesCron("*/abc * * * *", t)).toThrow(/step/);
++		// Non-integer literal
++		expect(() => matchesCron("xyz * * * *", t)).toThrow(/non-numeric/);
++		// Range with non-numeric bound (hour field — needs minute=0 to reach)
++		expect(() => matchesCron("0 a-b * * *", t)).toThrow(/non-numeric range/);
++		// Inverted range (hour field — needs minute=0 to reach)
++		expect(() => matchesCron("0 5-2 * * *", t)).toThrow(/out of bounds/);
++		// Empty comma element
++		expect(() => matchesCron("0,,5 * * * *", t)).toThrow(/comma-list/);
++		// Value above max for field
++		expect(() => matchesCron("60 * * * *", t)).toThrow(/minute/);
++	});
++
++	it("(8c) day-only and weekday-only branches", () => {
++		// DOW wildcard, DOM restricted — should match by DOM alone.
++		expect(
++			matchesCron("0 0 15 * *", new Date(Date.UTC(2026, 4, 15, 0, 0, 0))),
++		).toBe(true);
++		expect(
++			matchesCron("0 0 15 * *", new Date(Date.UTC(2026, 4, 14, 0, 0, 0))),
++		).toBe(false);
++		// DOM wildcard, DOW restricted — should match by DOW alone.
++		// 2026-05-20 Wednesday (day=3)
++		expect(
++			matchesCron("0 0 * * 3", new Date(Date.UTC(2026, 4, 20, 0, 0, 0))),
++		).toBe(true);
++		expect(
++			matchesCron("0 0 * * 3", new Date(Date.UTC(2026, 4, 21, 0, 0, 0))),
++		).toBe(false);
++	});
++});
++
++describe("CronScheduler — lifecycle", () => {
++	it("(9) start() called twice does not duplicate the interval", () => {
++		vi.useFakeTimers();
++		const spy = vi.spyOn(globalThis, "setInterval");
++		const sch = new CronScheduler({ agentManager: new EventEmitter() });
++		sch.start();
++		sch.start();
++		expect(spy).toHaveBeenCalledTimes(1);
++		// `stop` here is sync-fast because no tick has fired.
++		void sch.stop();
++	});
++
++	it("(10) stop() clears the interval AND awaits in-flight tick", async () => {
++		const clearSpy = vi.spyOn(globalThis, "clearInterval");
++		// Park the tick at `await emit(cron-fired)` by replacing the emit
++		// mock for the next call with a controllable barrier. This proves
++		// `stop()` genuinely awaits the in-flight tick — not just clears
++		// the interval and races past it.
++		let releaseEmit: () => void = () => {};
++		const emitBarrier = new Promise<void>((resolve) => {
++			releaseEmit = resolve;
++		});
++		emitMock.mockImplementationOnce(async (_e: DaemonEvent) => {
++			await emitBarrier;
++		});
++
++		const am = new EventEmitter();
++		const sch = new CronScheduler({
++			agentManager: am,
++			nowFn: () => new Date(Date.UTC(2026, 4, 18, 14, 0, 0)),
++		});
++		const prompt = writePromptTemplate("p.txt", "do the thing");
++		sch.registerCron({
++			agentId: "pr-triage",
++			schedule: "* * * * *",
++			promptTemplatePath: prompt,
++			outputTaskNamePrefix: "pr-triage",
++		});
++		sch.start();
++		// Kick a tick — it will park inside `fire()` at the cron-fired emit.
++		const tickP = sch._tickForTests();
++		// Yield enough microtasks for fire() to reach the parked emit call.
++		for (let i = 0; i < 10; i++) await Promise.resolve();
++
++		// Now call stop() — must NOT resolve while the tick is parked.
++		let stopResolved = false;
++		const stopP = sch.stop().then(() => {
++			stopResolved = true;
++		});
++		for (let i = 0; i < 10; i++) await Promise.resolve();
++		expect(stopResolved).toBe(false);
++		expect(clearSpy).toHaveBeenCalled();
++
++		// Release the emit barrier — tick completes, then stop resolves.
++		releaseEmit();
++		await tickP;
++		await stopP;
++		expect(stopResolved).toBe(true);
++	});
++
++	it("(11) wake-check exit 0 fires; exit 1 emits cron-skipped(wake-check-failed)", async () => {
++		vi.useFakeTimers();
++		const am = new EventEmitter();
++		const prompt = writePromptTemplate("p.txt", "do thing");
++		const wake = path.join(tempDir, "wake.sh");
++		fs.writeFileSync(wake, "#!/bin/bash\nexit 0\n");
++
++		// First: wake-check passes.
++		spawnSyncMock.mockReturnValueOnce({
++			status: 0,
++			signal: null,
++			error: undefined,
++			stdout: "",
++			stderr: "",
++			pid: 1234,
++			output: [],
++		});
++		const sch = new CronScheduler({
++			agentManager: am,
++			nowFn: () => new Date(Date.UTC(2026, 4, 18, 14, 0, 0)),
++		});
++		sch.registerCron({
++			agentId: "pr-triage",
++			schedule: "0 14 * * *",
++			wakeCheck: wake,
++			promptTemplatePath: prompt,
++			outputTaskNamePrefix: "pr-triage",
++		});
++		sch.start();
++		await sch._tickForTests();
++
++		const pendingFiles = await fsp.readdir(path.join(tempDir, "tasks/pending"));
++		expect(pendingFiles).toHaveLength(1);
++		expect(pendingFiles[0]).toMatch(/^pr-triage__\d+\.json$/);
++		const events = await readTelemetry();
++		expect(events.some((e) => e.kind === "cron-fired")).toBe(true);
++
++		// Reset and exercise the exit-1 branch.
++		await fsp.rm(path.join(tempDir, "tasks/pending"), {
++			recursive: true,
++			force: true,
++		});
++		fs.mkdirSync(path.join(tempDir, "tasks/pending"), { recursive: true });
++		await fsp.rm(path.join(tempDir, "telemetry"), {
++			recursive: true,
++			force: true,
++		});
++		fs.mkdirSync(path.join(tempDir, "telemetry"), { recursive: true });
++		spawnSyncMock.mockReset();
++		spawnSyncMock.mockReturnValueOnce({
++			status: 1,
++			signal: null,
++			error: undefined,
++			stdout: "",
++			stderr: "",
++			pid: 1235,
++			output: [],
++		});
++		// Need a fresh scheduler because runningCount accumulated from the
++		// first fire — start fresh so the second tick is overlap-clean.
++		const sch2 = new CronScheduler({
++			agentManager: new EventEmitter(),
++			nowFn: () => new Date(Date.UTC(2026, 4, 18, 14, 0, 0)),
++		});
++		sch2.registerCron({
++			agentId: "pr-triage",
++			schedule: "0 14 * * *",
++			wakeCheck: wake,
++			promptTemplatePath: prompt,
++			outputTaskNamePrefix: "pr-triage",
++		});
++		sch2.start();
++		await sch2._tickForTests();
++		const pendingAfter = await fsp.readdir(path.join(tempDir, "tasks/pending"));
++		expect(pendingAfter).toHaveLength(0);
++		const evtsAfter = await readTelemetry();
++		const skipped = evtsAfter.find((e) => e.kind === "cron-skipped");
++		expect(skipped).toBeDefined();
++		expect(skipped?.reason).toBe("wake-check-failed");
++		expect(skipped?.exitCode).toBe(1);
++
++		await sch.stop();
++		await sch2.stop();
++	});
++
++	it("(11b) wake-check timeout (signal SIGKILL) emits cron-skipped(wake-check-timeout)", async () => {
++		vi.useFakeTimers();
++		const wake = path.join(tempDir, "wake.sh");
++		fs.writeFileSync(wake, "#!/bin/bash\nsleep 35\n");
++		spawnSyncMock.mockReturnValueOnce({
++			status: null,
++			signal: "SIGKILL",
++			error: undefined,
++			stdout: "",
++			stderr: "",
++			pid: 9999,
++			output: [],
++		});
++		const sch = new CronScheduler({
++			agentManager: new EventEmitter(),
++			nowFn: () => new Date(Date.UTC(2026, 4, 18, 14, 0, 0)),
++		});
++		const prompt = writePromptTemplate("p.txt", "do thing");
++		sch.registerCron({
++			agentId: "pr-triage",
++			schedule: "0 14 * * *",
++			wakeCheck: wake,
++			promptTemplatePath: prompt,
++			outputTaskNamePrefix: "pr-triage",
++		});
++		sch.start();
++		await sch._tickForTests();
++		const evts = await readTelemetry();
++		const skipped = evts.find((e) => e.kind === "cron-skipped");
++		expect(skipped).toBeDefined();
++		expect(skipped?.reason).toBe("wake-check-timeout");
++		expect(skipped?.exitCode).toBeNull();
++		// No task file produced.
++		const pending = await fsp.readdir(path.join(tempDir, "tasks/pending"));
++		expect(pending).toHaveLength(0);
++		await sch.stop();
++	});
++
++	it("(12) tick WITHOUT wakeCheck writes the task file and emits cron-fired", async () => {
++		vi.useFakeTimers();
++		const prompt = writePromptTemplate("p.txt", "do thing");
++		const sch = new CronScheduler({
++			agentManager: new EventEmitter(),
++			nowFn: () => new Date(Date.UTC(2026, 4, 18, 14, 0, 0)),
++		});
++		sch.registerCron({
++			agentId: "pr-triage",
++			schedule: "0 14 * * *",
++			promptTemplatePath: prompt,
++			outputTaskNamePrefix: "pr-triage",
++		});
++		sch.start();
++		await sch._tickForTests();
++		expect(spawnSyncMock).not.toHaveBeenCalled();
++		const pending = await fsp.readdir(path.join(tempDir, "tasks/pending"));
++		expect(pending).toHaveLength(1);
++		const body = await fsp.readFile(
++			path.join(tempDir, "tasks/pending", pending[0] as string),
++			"utf8",
++		);
++		const parsed = JSON.parse(body) as Record<string, unknown>;
++		expect(parsed.agentId).toBe("pr-triage");
++		expect(parsed.prompt).toBe("do thing");
++		expect(parsed.needsApproval).toBe(false);
++		const evts = await readTelemetry();
++		const fired = evts.find((e) => e.kind === "cron-fired");
++		expect(fired).toBeDefined();
++		expect(fired?.runningCount).toBe(1);
++		await sch.stop();
++	});
++});
++
++describe("CronScheduler — failure modes", () => {
++	it("missing prompt template emits cron-fired-prompt-missing", async () => {
++		const sch = new CronScheduler({
++			agentManager: new EventEmitter(),
++			nowFn: () => new Date(Date.UTC(2026, 4, 18, 14, 0, 0)),
++		});
++		sch.registerCron({
++			agentId: "pr-triage",
++			schedule: "0 14 * * *",
++			promptTemplatePath: path.join(tempDir, "does-not-exist.txt"),
++			outputTaskNamePrefix: "pr-triage",
++		});
++		sch.start();
++		await sch._tickForTests();
++		const evts = await readTelemetry();
++		const missing = evts.find((e) => e.kind === "cron-fired-prompt-missing");
++		expect(missing).toBeDefined();
++		expect(missing?.errno).toBe("ENOENT");
++		await sch.stop();
++	});
++
++	it("wake-check spawn error (no bash) emits cron-skipped(wake-check-failed)", async () => {
++		spawnSyncMock.mockReturnValueOnce({
++			status: null,
++			signal: null,
++			error: Object.assign(new Error("bash not found"), { code: "ENOENT" }),
++			stdout: "",
++			stderr: "",
++			pid: 0,
++			output: [],
++		});
++		const sch = new CronScheduler({
++			agentManager: new EventEmitter(),
++			nowFn: () => new Date(Date.UTC(2026, 4, 18, 14, 0, 0)),
++		});
++		const wake = path.join(tempDir, "wake.sh");
++		fs.writeFileSync(wake, "#!/bin/bash\nexit 0\n");
++		sch.registerCron({
++			agentId: "pr-triage",
++			schedule: "0 14 * * *",
++			wakeCheck: wake,
++			promptTemplatePath: writePromptTemplate("p.txt", "x"),
++			outputTaskNamePrefix: "pr-triage",
++		});
++		sch.start();
++		await sch._tickForTests();
++		const evts = await readTelemetry();
++		const skipped = evts.find((e) => e.kind === "cron-skipped");
++		expect(skipped).toBeDefined();
++		expect(skipped?.reason).toBe("wake-check-failed");
++		await sch.stop();
++	});
++
++	it("default nowFn (undefined opts.nowFn) registers without throwing", () => {
++		const sch = new CronScheduler({ agentManager: new EventEmitter() });
++		sch.registerCron({
++			agentId: "default-now",
++			schedule: "* * * * *",
++			promptTemplatePath: writePromptTemplate("p.txt", "x"),
++			outputTaskNamePrefix: "default-now",
++		});
++		// _tickForTests with default nowFn must not throw.
++		expect(() => sch._tickForTests()).not.toThrow();
++		void sch.stop();
++	});
++
++	it("start() after stop() throws — instance is single-use", async () => {
++		const sch = new CronScheduler({ agentManager: new EventEmitter() });
++		sch.start();
++		await sch.stop();
++		expect(() => sch.start()).toThrow(/after stop/);
++	});
++
++	it("invalid agentId at registerCron is rejected", () => {
++		const sch = new CronScheduler({ agentManager: new EventEmitter() });
++		expect(() =>
++			sch.registerCron({
++				agentId: "bad/agent",
++				schedule: "* * * * *",
++				promptTemplatePath: writePromptTemplate("p.txt", "x"),
++				outputTaskNamePrefix: "bad",
++			}),
++		).toThrow();
++		void sch.stop();
++	});
++
++	it("invalid schedule at registerCron is rejected eagerly", () => {
++		const sch = new CronScheduler({ agentManager: new EventEmitter() });
++		expect(() =>
++			sch.registerCron({
++				agentId: "pr-triage",
++				schedule: "not a cron expression",
++				promptTemplatePath: writePromptTemplate("p.txt", "x"),
++				outputTaskNamePrefix: "pr-triage",
++			}),
++		).toThrow(RangeError);
++		void sch.stop();
++	});
++
++	it("duplicate outputTaskNamePrefix at registerCron is rejected", () => {
++		const sch = new CronScheduler({ agentManager: new EventEmitter() });
++		const prompt = writePromptTemplate("p.txt", "x");
++		sch.registerCron({
++			agentId: "pr-triage",
++			schedule: "* * * * *",
++			promptTemplatePath: prompt,
++			outputTaskNamePrefix: "pr-triage",
++		});
++		expect(() =>
++			sch.registerCron({
++				agentId: "pr-triage-2",
++				schedule: "* * * * *",
++				promptTemplatePath: prompt,
++				outputTaskNamePrefix: "pr-triage",
++			}),
++		).toThrow(/already registered/);
++		void sch.stop();
++	});
++
++	it("malformed task-resolved event is ignored (defensive listener)", () => {
++		const am = new EventEmitter();
++		const sch = new CronScheduler({ agentManager: am });
++		// Should not throw.
++		am.emit("task-resolved", "not-an-object");
++		am.emit("task-resolved", null);
++		am.emit("task-resolved", { agentId: 42 });
++		expect(sch._runningCountForTests().size).toBe(0);
++		void sch.stop();
++	});
++
++	it("overlapping tick (runTickGuarded re-entry) skips the second call", async () => {
++		const sch = new CronScheduler({
++			agentManager: new EventEmitter(),
++			nowFn: () => new Date(Date.UTC(2026, 4, 18, 14, 0, 0)),
++		});
++		sch.registerCron({
++			agentId: "pr-triage",
++			schedule: "0 14 * * *",
++			promptTemplatePath: writePromptTemplate("p.txt", "x"),
++			outputTaskNamePrefix: "pr-triage",
++			maxConcurrent: 5,
++		});
++		sch.start();
++		// Fire two ticks concurrently — the second must short-circuit while
++		// the first is still in flight.
++		const a = sch._tickForTests();
++		const b = sch._tickForTests();
++		await Promise.all([a, b]);
++		// First tick incremented runningCount to 1; second was skipped, NOT
++		// because of overlap-prevented (that's per-agent), but because the
++		// re-entry guard returned early.
++		expect(sch._runningCountForTests().get("pr-triage")).toBe(1);
++		await sch.stop();
++	});
++});
++
++describe("CronScheduler — overlap + decrement", () => {
++	it("(13) overlap-prevented when runningCount equals maxConcurrent", async () => {
++		vi.useFakeTimers();
++		const prompt = writePromptTemplate("p.txt", "go");
++		const sch = new CronScheduler({
++			agentManager: new EventEmitter(),
++			nowFn: () => new Date(Date.UTC(2026, 4, 18, 14, 0, 0)),
++		});
++		sch.registerCron({
++			agentId: "pr-triage",
++			schedule: "0 14 * * *",
++			promptTemplatePath: prompt,
++			outputTaskNamePrefix: "pr-triage",
++			maxConcurrent: 1,
++		});
++		sch.start();
++		// First fire — runningCount becomes 1.
++		await sch._tickForTests();
++		spawnSyncMock.mockReset();
++		// Second matching tick — overlap should prevent the spawn.
++		await sch._tickForTests();
++		// Only one task file should exist (the first fire's).
++		const pending = await fsp.readdir(path.join(tempDir, "tasks/pending"));
++		expect(pending).toHaveLength(1);
++		const evts = await readTelemetry();
++		const overlap = evts.find((e) => e.kind === "cron-overlap-prevented");
++		expect(overlap).toBeDefined();
++		expect(overlap?.runningCount).toBe(1);
++		expect(overlap?.maxConcurrent).toBe(1);
++		expect(overlap?.agentId).toBe("pr-triage");
++		await sch.stop();
++	});
++
++	it("(14) task-resolved decrement re-opens the slot for the next tick", async () => {
++		vi.useFakeTimers();
++		const am = new EventEmitter();
++		const prompt = writePromptTemplate("p.txt", "go");
++		// Both ticks must match `0 14 * * *` AND produce distinct unix
++		// suffixes so the second task file does not overwrite the first.
++		// registerCron also calls nowFn for eager validation, so we use
++		// a mutable holder updated between ticks rather than a call counter.
++		let nowHolder = new Date(Date.UTC(2026, 4, 18, 14, 0, 0));
++		const sch = new CronScheduler({
++			agentManager: am,
++			nowFn: () => nowHolder,
++		});
++		sch.registerCron({
++			agentId: "pr-triage",
++			schedule: "0 14 * * *",
++			promptTemplatePath: prompt,
++			outputTaskNamePrefix: "pr-triage",
++			maxConcurrent: 1,
++		});
++		sch.start();
++		await sch._tickForTests();
++		expect(sch._runningCountForTests().get("pr-triage")).toBe(1);
++		// AgentManager (07b) emits when the task moves pending → resolved.
++		am.emit("task-resolved", {
++			agentId: "pr-triage",
++			filename: "pr-triage__1700000000.json",
++		});
++		expect(sch._runningCountForTests().get("pr-triage")).toBe(0);
++		// Advance to next matching tick (same minute, +30s) so the
++		// unix suffix differs and the second write does not overwrite.
++		nowHolder = new Date(Date.UTC(2026, 4, 18, 14, 0, 30));
++		await sch._tickForTests();
++		const pending = await fsp.readdir(path.join(tempDir, "tasks/pending"));
++		expect(pending.length).toBe(2);
++		const evts = await readTelemetry();
++		// No overlap event for the second tick.
++		const overlaps = evts.filter((e) => e.kind === "cron-overlap-prevented");
++		expect(overlaps).toHaveLength(0);
++		await sch.stop();
++	});
++});
+diff --git a/runtime/daemon/cron-scheduler.ts b/runtime/daemon/cron-scheduler.ts
+new file mode 100644
+index 0000000..4db4b71
+--- /dev/null
++++ b/runtime/daemon/cron-scheduler.ts
+@@ -0,0 +1,612 @@
++/**
++ * CronScheduler — 60s-tick scheduler that fires registered cron entries,
++ * optionally gated by a bash wake-check script, into the file-bus
++ * `tasks/pending/` directory.
++ *
++ * Plan 07a contract notes (binding for callers and future maintainers):
++ *
++ * - **Inline 5-field POSIX parser.** No third-party cron dep (Phase 2
++ *   dep-bloat constraint). Supports `*`, integer literals, ranges
++ *   `1-5`, step `*​/15` AND `1-30/5` (step with range), comma lists
++ *   `1,3,5`, and combinations thereof. The fields are
++ *   `minute hour day-of-month month day-of-week` exactly — non-standard
++ *   second/year fields are NOT supported.
++ *
++ * - **POSIX day-OR-weekday OR semantics (C1 from stress test).** When
++ *   BOTH `day-of-month` AND `day-of-week` are non-`*`, the match is
++ *   `dayOfMonth OR dayOfWeek`, not AND. This is the POSIX standard
++ *   (and what cron(8) does). Example: `0 0 1-7 * 1` matches the 1st-7th
++ *   of EVERY month OR every Monday — NOT "the first Monday of the
++ *   month". Agent authors needing "first Monday only" semantics should
++ *   register the cron at `0 0 1-7 * *` and add a `wakeCheck` that
++ *   exits 1 when day-of-week is not Monday.
++ *
++ * - **`spawnSync` 30s timeout (C2).** Wake-check scripts that exceed
++ *   30s are SIGKILL'd; the cron-fire emits
++ *   `cron-skipped { reason: 'wake-check-timeout', exitCode: null }`
++ *   and the tick proceeds. This bounds the time the daemon's main
++ *   thread is blocked per tick.
++ *
++ * - **Overlap prevention via `runningCount` (Codex P1-8).** Each cron
++ *   entry has a `maxConcurrent` ceiling (default 1). Before firing,
++ *   the scheduler reads `runningCount.get(agentId) ?? 0` and skips
++ *   when it equals or exceeds `maxConcurrent` — emitting
++ *   `cron-overlap-prevented`. The increment-on-fire path is paired
++ *   with a decrement-on-resolve path via the `task-resolved`
++ *   EventEmitter event on `AgentManager` (subscribed in the
++ *   constructor). Plan 07b adds the emit side; without it,
++ *   `runningCount` only ever grows and `maxConcurrent` permanently
++ *   blocks after the first fire. The subscription is defensive —
++ *   it is a no-op until 07b's emit happens.
++ *
++ * - **Atomic task-file emission (Windows-safe).** Task files are
++ *   written via tmp → rename. The tmp path is on the same directory
++ *   as the destination so the rename is a single-FS atomic op on
++ *   POSIX and an NTFS-atomic `MOVEFILE_REPLACE_EXISTING` op on
++ *   Windows. The destination is unique per fire
++ *   (`<prefix>__<unix>.json`) so EEXIST should never surface; if it
++ *   does (e.g., two ticks fire in the same second), we use
++ *   `atomicRenameStaleDest` to recover.
++ *
++ * - **`start`/`stop` idempotency + stop-while-in-flight.** Second
++ *   `start()` is a no-op (interval handle is single-instance). `stop()`
++ *   clears the interval AND awaits any in-flight tick — callers can
++ *   rely on "after `await stop()` returns, no more `cron-fired`
++ *   events will surface".
++ */
++
++import { spawnSync } from "node:child_process";
++import type { EventEmitter } from "node:events";
++import * as fs from "node:fs";
++import * as path from "node:path";
++
++import {
++	assertSafeIdentifier,
++	atomicRenameStaleDest,
++	getErrnoCode,
++	pathFor,
++} from "./state-paths.js";
++import { emit } from "./telemetry.js";
++
++/** Minimal logger surface — pluggable, defaults to console.error for warnings. */
++export interface Logger {
++	readonly warn: (msg: string) => void;
++	readonly error: (msg: string) => void;
++}
++
++/**
++ * Subset of `AgentManager` consumed by the scheduler. Typed as an
++ * `EventEmitter` because the only behavior the scheduler needs is
++ * subscribing to `'task-resolved'` (which 07b adds to AgentManager).
++ * Using a type alias keeps the cross-plan coupling testable —
++ * the test file constructs a bare `EventEmitter` and asserts the
++ * decrement chain without standing up a full AgentManager.
++ */
++export type CronAgentManager = EventEmitter;
++
++export interface CronSchedulerOpts {
++	readonly agentManager: CronAgentManager;
++	readonly stateRoot?: string;
++	readonly logger?: Logger;
++	/**
++	 * Test-only override for `Date.now()`. Production code MUST omit.
++	 * @internal
++	 */
++	readonly nowFn?: () => Date;
++}
++
++export interface RegisterCronOpts {
++	readonly agentId: string;
++	readonly schedule: string;
++	readonly wakeCheck?: string;
++	readonly promptTemplatePath: string;
++	readonly outputTaskNamePrefix: string;
++	readonly maxConcurrent?: number;
++}
++
++interface RegisteredCron {
++	readonly agentId: string;
++	readonly schedule: string;
++	readonly wakeCheck: string | undefined;
++	readonly promptTemplatePath: string;
++	readonly outputTaskNamePrefix: string;
++	readonly maxConcurrent: number;
++}
++
++interface TaskResolvedEvent {
++	readonly agentId: string;
++	readonly filename: string;
++}
++
++const TICK_INTERVAL_MS = 60_000;
++const WAKE_CHECK_TIMEOUT_MS = 30_000;
++
++const FIELD_NAMES = [
++	"minute",
++	"hour",
++	"day-of-month",
++	"month",
++	"day-of-week",
++] as const;
++type FieldName = (typeof FIELD_NAMES)[number];
++
++const FIELD_RANGES: Record<FieldName, { min: number; max: number }> = {
++	minute: { min: 0, max: 59 },
++	hour: { min: 0, max: 23 },
++	"day-of-month": { min: 1, max: 31 },
++	month: { min: 1, max: 12 },
++	"day-of-week": { min: 0, max: 6 },
++};
++
++/**
++ * Type guard that narrows a `(string | undefined)[]` (the shape
++ * `split` produces under `noUncheckedIndexedAccess`) into a
++ * `[string, string, string, string, string]` tuple.
++ *
++ * Throws `RangeError` if any slot is unexpectedly missing — caller
++ * has already validated `length === 5`, so this branch is unreachable
++ * at runtime; the throw exists purely to satisfy strict TS without an
++ * `as` cast.
++ */
++function toFiveTuple(
++	xs: ReadonlyArray<string | undefined>,
++): readonly [string, string, string, string, string] {
++	const a = xs[0];
++	const b = xs[1];
++	const c = xs[2];
++	const d = xs[3];
++	const e = xs[4];
++	if (
++		a === undefined ||
++		b === undefined ||
++		c === undefined ||
++		d === undefined ||
++		e === undefined
++	) {
++		throw new RangeError("internal: expected 5 cron fields after length check");
++	}
++	return [a, b, c, d, e];
++}
++
++/**
++ * Match a 5-field POSIX cron expression against a `Date`. Returns
++ * `true` when the date's minute/hour/dom/month/dow all match.
++ *
++ * Implements the POSIX day-OR-weekday semantics: when BOTH
++ * `day-of-month` AND `day-of-week` are non-wildcard, the match is
++ * `dayOfMonth OR dayOfWeek`. When either is `*`, only the other is
++ * consulted. See class-level JSDoc for the rationale.
++ *
++ * Time interpretation is **UTC** to match daemon-side cron registrations
++ * documented in UTC (e.g., `pr-triage` at `0 14 * * *` → 14:00 UTC).
++ * If a future caller needs local-time matching, register against a
++ * UTC-equivalent schedule.
++ *
++ * Throws `RangeError` with the offending field named when the
++ * expression is malformed (wrong field count, non-numeric token, out
++ * of range, etc.).
++ *
++ * @internal — exported for test access only; do not use from outside
++ * the daemon module.
++ */
++export function matchesCron(expr: string, now: Date): boolean {
++	const fields = expr.trim().split(/\s+/);
++	if (fields.length !== 5) {
++		throw new RangeError(
++			`cron expression must have 5 fields (got ${fields.length}): "${expr}"`,
++		);
++	}
++	// Hand-coded type guard converts `(string | undefined)[]` (from
++	// noUncheckedIndexedAccess) into a typed 5-tuple without `as` casts.
++	// Mirrors the JSON-parse type-guard pattern used elsewhere in the
++	// daemon (plan 07a Task 1 constraint: NO `as` casts).
++	const tuple = toFiveTuple(fields);
++
++	const minuteOk = parseField("minute", tuple[0]).has(now.getUTCMinutes());
++	if (!minuteOk) return false;
++	const hourOk = parseField("hour", tuple[1]).has(now.getUTCHours());
++	if (!hourOk) return false;
++	const monthOk = parseField("month", tuple[3]).has(now.getUTCMonth() + 1);
++	if (!monthOk) return false;
++
++	const dom = parseField("day-of-month", tuple[2]);
++	const dow = parseField("day-of-week", tuple[4]);
++	const domWildcard = tuple[2].trim() === "*";
++	const dowWildcard = tuple[4].trim() === "*";
++	const domMatches = dom.has(now.getUTCDate());
++	const dowMatches = dow.has(now.getUTCDay());
++
++	if (domWildcard && dowWildcard) return true;
++	if (domWildcard) return dowMatches;
++	if (dowWildcard) return domMatches;
++	// POSIX OR semantics — when both are restricted, EITHER may match.
++	return domMatches || dowMatches;
++}
++
++function parseField(name: FieldName, raw: string): Set<number> {
++	const trimmed = raw.trim();
++	if (trimmed.length === 0) {
++		throw new RangeError(`empty field "${name}"`);
++	}
++	const { min, max } = FIELD_RANGES[name];
++	const out = new Set<number>();
++	for (const part of trimmed.split(",")) {
++		parsePart(name, part, min, max, out);
++	}
++	return out;
++}
++
++function parsePart(
++	name: FieldName,
++	part: string,
++	min: number,
++	max: number,
++	out: Set<number>,
++): void {
++	if (part.length === 0) {
++		throw new RangeError(`empty comma-list element in field "${name}"`);
++	}
++	let stepStr: string | undefined;
++	let rangeStr = part;
++	const slashIdx = part.indexOf("/");
++	if (slashIdx !== -1) {
++		rangeStr = part.slice(0, slashIdx);
++		stepStr = part.slice(slashIdx + 1);
++		if (stepStr.length === 0) {
++			throw new RangeError(`empty step in field "${name}": "${part}"`);
++		}
++	}
++	const step = stepStr === undefined ? 1 : Number.parseInt(stepStr, 10);
++	if (!Number.isInteger(step) || step <= 0) {
++		throw new RangeError(`invalid step in field "${name}": "${part}"`);
++	}
++
++	let lo: number;
++	let hi: number;
++	if (rangeStr === "*" || rangeStr === "") {
++		lo = min;
++		hi = max;
++	} else {
++		const dashIdx = rangeStr.indexOf("-");
++		if (dashIdx === -1) {
++			const v = Number.parseInt(rangeStr, 10);
++			if (!Number.isInteger(v)) {
++				throw new RangeError(`non-numeric value in field "${name}": "${part}"`);
++			}
++			if (v < min || v > max) {
++				throw new RangeError(
++					`value out of range in field "${name}": ${v} not in ${min}-${max}`,
++				);
++			}
++			if (stepStr === undefined) {
++				out.add(v);
++				return;
++			}
++			// integer with step → treat as "v to max step step"
++			lo = v;
++			hi = max;
++		} else {
++			const loStr = rangeStr.slice(0, dashIdx);
++			const hiStr = rangeStr.slice(dashIdx + 1);
++			lo = Number.parseInt(loStr, 10);
++			hi = Number.parseInt(hiStr, 10);
++			if (!Number.isInteger(lo) || !Number.isInteger(hi)) {
++				throw new RangeError(`non-numeric range in field "${name}": "${part}"`);
++			}
++			if (lo < min || hi > max || lo > hi) {
++				throw new RangeError(
++					`range out of bounds in field "${name}": ${lo}-${hi} not in ${min}-${max}`,
++				);
++			}
++		}
++	}
++	for (let v = lo; v <= hi; v += step) {
++		out.add(v);
++	}
++}
++
++/**
++ * CronScheduler — see file header for the contract.
++ */
++export class CronScheduler {
++	private readonly agentManager: CronAgentManager;
++	private readonly stateRoot: string | undefined;
++	private readonly logger: Logger;
++	private readonly nowFn: () => Date;
++	private readonly registered: RegisteredCron[] = [];
++	private readonly runningCount = new Map<string, number>();
++	private interval: NodeJS.Timeout | null = null;
++	private tickInFlight: Promise<void> | null = null;
++	private stopped = false;
++	private readonly resolvedListener: (event: TaskResolvedEvent) => void;
++
++	constructor(opts: CronSchedulerOpts) {
++		this.agentManager = opts.agentManager;
++		this.stateRoot = opts.stateRoot;
++		this.logger = opts.logger ?? defaultLogger();
++		this.nowFn = opts.nowFn ?? (() => new Date());
++		// Subscribe immediately so the decrement chain works for every fire,
++		// even if `start()` is deferred. Defensive: 07b's `AgentManager`
++		// emit-side may not exist yet, so the handler tolerates absent
++		// counter entries.
++		this.resolvedListener = (event: TaskResolvedEvent): void => {
++			if (
++				typeof event !== "object" ||
++				event === null ||
++				typeof event.agentId !== "string"
++			) {
++				return;
++			}
++			const current = this.runningCount.get(event.agentId) ?? 0;
++			this.runningCount.set(event.agentId, Math.max(0, current - 1));
++		};
++		this.agentManager.on("task-resolved", this.resolvedListener);
++	}
++
++	/**
++	 * Register a cron entry. Validates `agentId` and `schedule` at the
++	 * boundary so a bad spec fails loudly at registration, not at the
++	 * first tick.
++	 */
++	registerCron(opts: RegisterCronOpts): void {
++		assertSafeIdentifier(opts.agentId, "agentId");
++		assertSafeIdentifier(opts.outputTaskNamePrefix, "outputTaskNamePrefix");
++		// Two crons sharing an `outputTaskNamePrefix` that fire on the same
++		// minute would land at the same `<prefix>__<unix>.json` destination
++		// and `atomicRenameStaleDest` would silently overwrite the first.
++		// Reject at registration so the collision surfaces loudly.
++		for (const existing of this.registered) {
++			if (existing.outputTaskNamePrefix === opts.outputTaskNamePrefix) {
++				throw new Error(
++					`outputTaskNamePrefix "${opts.outputTaskNamePrefix}" already registered (agent "${existing.agentId}"); prefixes must be unique to prevent task-file collisions`,
++				);
++			}
++		}
++		// Eager parse — surfaces RangeError immediately.
++		matchesCron(opts.schedule, this.nowFn());
++		const maxConcurrent =
++			typeof opts.maxConcurrent === "number" && opts.maxConcurrent > 0
++				? Math.floor(opts.maxConcurrent)
++				: 1;
++		this.registered.push({
++			agentId: opts.agentId,
++			schedule: opts.schedule,
++			wakeCheck: opts.wakeCheck,
++			promptTemplatePath: opts.promptTemplatePath,
++			outputTaskNamePrefix: opts.outputTaskNamePrefix,
++			maxConcurrent,
++		});
++	}
++
++	/** Start the 60s tick. Idempotent — second call is a no-op. */
++	start(): void {
++		if (this.interval !== null) return;
++		if (this.stopped) {
++			throw new Error(
++				"CronScheduler.start() called after stop(); construct a fresh instance",
++			);
++		}
++		this.interval = setInterval(() => {
++			void this.runTickGuarded();
++		}, TICK_INTERVAL_MS);
++		// `unref` so the interval does not pin the Node event loop during
++		// test teardown if a test forgets to call `stop()`. Production
++		// daemon main loop has its own keepalive sources (IPC server, etc.).
++		if (typeof this.interval.unref === "function") {
++			this.interval.unref();
++		}
++	}
++
++	/** Stop the scheduler. Clears the interval and awaits any in-flight tick. */
++	async stop(): Promise<void> {
++		this.stopped = true;
++		if (this.interval !== null) {
++			clearInterval(this.interval);
++			this.interval = null;
++		}
++		if (this.tickInFlight !== null) {
++			try {
++				await this.tickInFlight;
++			} catch {
++				// Swallow — tick errors are already logged via the logger.
++			}
++		}
++		this.agentManager.off("task-resolved", this.resolvedListener);
++	}
++
++	/**
++	 * Test-only: synchronously fire a tick and await it. Allows tests to
++	 * drive the scheduler deterministically without running the actual
++	 * `setInterval` loop. @internal
++	 */
++	async _tickForTests(): Promise<void> {
++		await this.runTickGuarded();
++	}
++
++	/**
++	 * Test-only: read the runningCount map. @internal
++	 */
++	_runningCountForTests(): ReadonlyMap<string, number> {
++		return this.runningCount;
++	}
++
++	private async runTickGuarded(): Promise<void> {
++		// Refuse overlapping ticks — if the previous tick is still in
++		// flight (e.g., a long-running wakeCheck pushed past the 60s
++		// interval), skip this tick. Without this guard, two ticks could
++		// race the file-bus write.
++		if (this.tickInFlight !== null) return;
++		const p = this.runTick();
++		this.tickInFlight = p;
++		try {
++			await p;
++		} finally {
++			this.tickInFlight = null;
++		}
++	}
++
++	private async runTick(): Promise<void> {
++		const now = this.nowFn();
++		for (const cron of this.registered) {
++			let matched: boolean;
++			try {
++				matched = matchesCron(cron.schedule, now);
++			} catch (err) {
++				this.logger.error(
++					`[cron-scheduler] matchesCron threw for agent ${cron.agentId} schedule "${cron.schedule}": ${
++						err instanceof Error ? err.message : String(err)
++					}`,
++				);
++				continue;
++			}
++			if (!matched) continue;
++
++			const current = this.runningCount.get(cron.agentId) ?? 0;
++			if (current >= cron.maxConcurrent) {
++				await emit({
++					kind: "cron-overlap-prevented",
++					agentId: cron.agentId,
++					schedule: cron.schedule,
++					runningCount: current,
++					maxConcurrent: cron.maxConcurrent,
++				});
++				continue;
++			}
++
++			if (cron.wakeCheck !== undefined) {
++				const wakeOk = await this.runWakeCheck(cron, cron.wakeCheck);
++				if (!wakeOk) continue;
++			}
++
++			await this.fire(cron, now);
++		}
++	}
++
++	private async runWakeCheck(
++		cron: RegisteredCron,
++		wakeCheckPath: string,
++	): Promise<boolean> {
++		// `spawnSync` blocks the event loop — bounded by WAKE_CHECK_TIMEOUT_MS
++		// (30s) per C2 stress fix. The synchronous variant is intentional:
++		// we want to serialize wake-check execution against the tick so
++		// follow-up writes happen after the gate decision.
++		// `wakeCheckPath` is the caller-narrowed `cron.wakeCheck` — passing
++		// it as a separate parameter avoids an `as string` cast (plan 07a
++		// constraint: NO `as` casts).
++		const result = spawnSync("bash", [wakeCheckPath], {
++			env: process.env,
++			encoding: "utf8",
++			timeout: WAKE_CHECK_TIMEOUT_MS,
++		});
++		// `signal: "SIGKILL"` indicates timeout (Node's `spawnSync` kills
++		// the child with SIGKILL when `timeout` elapses).
++		if (result.signal === "SIGKILL") {
++			await emit({
++				kind: "cron-skipped",
++				agentId: cron.agentId,
++				schedule: cron.schedule,
++				reason: "wake-check-timeout",
++				exitCode: null,
++			});
++			return false;
++		}
++		if (result.error !== undefined) {
++			// Spawn-level error (e.g., bash not on PATH). Treat as failure.
++			await emit({
++				kind: "cron-skipped",
++				agentId: cron.agentId,
++				schedule: cron.schedule,
++				reason: "wake-check-failed",
++				exitCode: typeof result.status === "number" ? result.status : null,
++			});
++			return false;
++		}
++		if (result.status !== 0) {
++			await emit({
++				kind: "cron-skipped",
++				agentId: cron.agentId,
++				schedule: cron.schedule,
++				reason: "wake-check-failed",
++				exitCode: typeof result.status === "number" ? result.status : null,
++			});
++			return false;
++		}
++		return true;
++	}
++
++	private async fire(cron: RegisteredCron, now: Date): Promise<void> {
++		let prompt: string;
++		try {
++			prompt = fs.readFileSync(cron.promptTemplatePath, "utf8");
++		} catch (err) {
++			await emit({
++				kind: "cron-fired-prompt-missing",
++				agentId: cron.agentId,
++				schedule: cron.schedule,
++				promptTemplatePath: cron.promptTemplatePath,
++				errno: getErrnoCode(err) ?? "EUNKNOWN",
++			});
++			return;
++		}
++
++		const unix = Math.floor(now.getTime() / 1000);
++		const filename = `${cron.outputTaskNamePrefix}__${unix}.json`;
++		const pendingDir = this.resolvePendingDir();
++		const finalPath = path.join(pendingDir, filename);
++		const tmpName = `.${cron.outputTaskNamePrefix}__${unix}.${process.pid}.${Math.random()
++			.toString(36)
++			.slice(2, 10)}.tmp`;
++		const tmpPath = path.join(pendingDir, tmpName);
++
++		const body = JSON.stringify({
++			prompt,
++			agentId: cron.agentId,
++			needsApproval: false,
++		});
++
++		try {
++			fs.mkdirSync(pendingDir, { recursive: true });
++			fs.writeFileSync(tmpPath, body, { encoding: "utf8" });
++			await atomicRenameStaleDest(tmpPath, finalPath);
++		} catch (err) {
++			// Best-effort tmp cleanup.
++			try {
++				fs.unlinkSync(tmpPath);
++			} catch {
++				// Already gone or never created — fine.
++			}
++			await emit({
++				kind: "cron-fired-write-failed",
++				agentId: cron.agentId,
++				schedule: cron.schedule,
++				taskFile: finalPath,
++				errno: getErrnoCode(err) ?? "EUNKNOWN",
++			});
++			return;
++		}
++
++		const next = (this.runningCount.get(cron.agentId) ?? 0) + 1;
++		this.runningCount.set(cron.agentId, next);
++		await emit({
++			kind: "cron-fired",
++			agentId: cron.agentId,
++			schedule: cron.schedule,
++			taskFile: finalPath,
++			runningCount: next,
++		});
++	}
++
++	private resolvePendingDir(): string {
++		if (this.stateRoot !== undefined && this.stateRoot.length > 0) {
++			return path.join(this.stateRoot, "tasks", "pending");
++		}
++		return pathFor("tasks/pending");
++	}
++}
++
++function defaultLogger(): Logger {
++	return {
++		warn: (msg) => console.error(msg),
++		error: (msg) => console.error(msg),
++	};
++}
+diff --git a/runtime/daemon/telemetry.ts b/runtime/daemon/telemetry.ts
+index 7b5720b..7ff9103 100644
+--- a/runtime/daemon/telemetry.ts
++++ b/runtime/daemon/telemetry.ts
+@@ -123,6 +123,71 @@ export type DaemonEvent =
+ 			 */
+ 			readonly kind: "approval-claim-link-eperm";
+ 			readonly approvalIdHash: string;
++	  }
++	| {
++			/**
++			 * Plan 07a (CronScheduler): a registered cron expression matched
++			 * the current tick, wake-check (if any) passed, and the task
++			 * file was written to `tasks/pending/`. `runningCount` is the
++			 * value AFTER increment for this fire.
++			 */
++			readonly kind: "cron-fired";
++			readonly agentId: string;
++			readonly schedule: string;
++			readonly taskFile: string;
++			readonly runningCount: number;
++	  }
++	| {
++			/**
++			 * Plan 07a (CronScheduler): a cron-tick matched but was skipped
++			 * because the optional `wakeCheck` script returned non-zero or
++			 * was SIGKILL'd after the 30s `spawnSync` timeout. `exitCode`
++			 * is null when the script was timeout-killed (signal: SIGKILL).
++			 */
++			readonly kind: "cron-skipped";
++			readonly agentId: string;
++			readonly schedule: string;
++			readonly reason: "wake-check-failed" | "wake-check-timeout";
++			readonly exitCode: number | null;
++	  }
++	| {
++			/**
++			 * Plan 07a (CronScheduler): a cron-tick matched but was skipped
++			 * because the agent's in-flight task count
++			 * (`runningCount.get(agentId)`) already equals `maxConcurrent`.
++			 * Carries the production-breaking-overlap fix (Codex P1-8).
++			 */
++			readonly kind: "cron-overlap-prevented";
++			readonly agentId: string;
++			readonly schedule: string;
++			readonly runningCount: number;
++			readonly maxConcurrent: number;
++	  }
++	| {
++			/**
++			 * Plan 07a (CronScheduler): the prompt-template file referenced
++			 * by `registerCron({ promptTemplatePath })` could not be read
++			 * (ENOENT, EACCES, etc.). The cron-fire is aborted — no task
++			 * file is written and `runningCount` is NOT incremented.
++			 */
++			readonly kind: "cron-fired-prompt-missing";
++			readonly agentId: string;
++			readonly schedule: string;
++			readonly promptTemplatePath: string;
++			readonly errno: string;
++	  }
++	| {
++			/**
++			 * Plan 07a (CronScheduler): writing the task file into
++			 * `tasks/pending/` failed (ENOSPC, EACCES, EBUSY on tmp-rename,
++			 * etc.). The cron-fire is aborted — `runningCount` is NOT
++			 * incremented.
++			 */
++			readonly kind: "cron-fired-write-failed";
++			readonly agentId: string;
++			readonly schedule: string;
++			readonly taskFile: string;
++			readonly errno: string;
+ 	  };
+ 
+ let missingSessionIdWarned = false;

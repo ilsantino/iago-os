@@ -1,0 +1,221 @@
+[11:42:37] STRESS TEST — skipped (plan already stress-tested)
+[11:42:38] IMPLEMENT — 01a-deploy-unit-and-provision-script
+[11:49:19] Implementation complete
+[11:49:20] BUILD GATE — attempt 1 [mode: sequential]
+[11:49:20] Build passed (tsc 0ms / vite 0ms / mode sequential)
+[11:49:22] CONSOLE GATE — skipped (no Vite config)
+[11:49:32] REVIEW — 01a-deploy-unit-and-provision-script
+warning: in the working copy of '.iago/runs/round-1-dispatch/01a.log', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'runtime/deploy/README.md', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'runtime/deploy/iago-os-v2-daemon.service', LF will be replaced by CRLF the next time Git touches it
+[11:50:27]   review-checks: all modules loaded (209 lines)
+[11:53:10] Review output:
+Reviewing the three files in full now, plus checklist.
+
+## PASS 1 — PLAN COMPLIANCE
+
+| Task | Status | Notes |
+|------|--------|-------|
+| Task 1: systemd unit file | ✅ Complete | First-line path comment present; User=iago, Group=iago; both `LoadCredentialEncrypted=` (telegram + gh-token) active; 3 Anthropic + 2 webhook commented; full sandboxing flag set present (NoNewPrivileges, PrivateTmp, PrivateDevices, ProtectSystem=strict, ProtectHome, ProtectKernel{Tunables,Modules}, ProtectControlGroups, ProtectClock, ProtectHostname, LockPersonality, RestrictNamespaces, RestrictSUIDSGID, RestrictRealtime, MemoryDenyWriteExecute, SystemCallArchitectures=native, empty CapabilityBoundingSet/AmbientCapabilities); ReadWritePaths for state + log; Environment lines including `TZ=UTC` and `__SANTIAGO_TELEGRAM_USER_ID__` placeholder; MemoryMax=2G, TasksMax=512; [Install] WantedBy=multi-user.target. |
+| Task 2: provision-credentials.sh | ✅ Mostly | Shebang, `set -euo pipefail`, header comments, 4 top-level constants, CRED_MAP with all 5 keys (incl. gh-token entry per C1), usage(), arg validation before remote actions, op whoami / tailscale -- true pre-flights, mkdir credstore, op read → ssh → systemd-creds encrypt pipeline, length round-trip check, daemon-reload at end. **Plan said "chmod 0755 the script"** — not done in-script and the file mode appears default 644 in the diff. Minor (README invocations call via `bash …` anyway; only the "Examples" line in README assumes +x). |
+| Task 3: bats tests | ✅ Complete | All 9 specified tests present with stub fixtures; setup/teardown manage PATH and a stub.log. |
+| Task 4: README.md | ✅ Complete | 139 lines (within 120–200), 9 top-level sections (≥7), gh-token + provision-credentials + iago-os-v2-daemon referenced repeatedly; § 5 deploy-vs-migration dichotomy, § 8 bats-on-Windows, § 9 out-of-scope present. |
+
+C1 (gh-token alignment across CRED_MAP, unit file, test 9), C2 (path-existence not asserted on build box), I1 (bats-on-Windows § 8), I2 (`User=iago` literal preserved), I3 — all forward-list items addressed.
+
+## PASS 2 — DOMAIN ROUTING
+
+Selected: **Baseline**, **Pattern Consistency** (always), and a small slice of **Backend** + **Infra** (script is server-side automation / sandboxing config).
+
+Skipped: **React/Auth/API/Amplify/Data Integrity/i18n** — no React/TSX, no Cognito/Lambda/Amplify, no HTTP client, no dashboards, no Spanish strings. The systemd unit has no `amplify/` surface, so Amplify floors do not apply.
+
+## PASS 3 — ADVERSARIAL
+
+### Critical
+None.
+
+### Important
+None — placement and integrity-check concerns are lint-grade.
+
+### Minor
+- **M1 — `StartLimitIntervalSec=` / `StartLimitBurst=` placed in `[Service]`** (lines 70–71). Per `systemd.unit(5)` these directives live in the `[Unit]` section. systemd ≥230 still accepts them under `[Service]` for back-compat, but `systemd-analyze verify` warns. Cosmetic on Debian 13; consider moving to the `[Unit]` block alongside `Requires=tailscaled.service`.
+- **M2 — `chmod 0755` step from plan Task 2 not performed in-script.** Diff shows the file with default mode (no `100755` in the diff header). README § 4 step 2 prints `provision-credentials.sh telegram-token gh-token` without a `bash` prefix; users following the README literally need exec bit. Either set the file mode to 755 in the commit or update README to prefix with `bash`.
+- **M3 — `op read` invoked twice for each key** (lines 128 + 142). TOCTOU if 1Password's value changes between the two reads (e.g., concurrent rotation). Capture once into a variable before the SSH pipe, then reuse the captured length. Also halves 1Password API calls.
+- **M4 — Round-trip check is byte-length only.** Two different ciphertext-survivors of equal length pass. Acceptable given systemd-creds is AEAD (corruption surfaces as decryption failure, not silent garbage) and the plan asked for length-comparison verbatim, but a `sha256sum` round-trip would catch more failure modes.
+- **M5 — `mktemp '${CREDSTORE}/.${cred_name}.XXXXXX.cred'`** (line 131) places a suffix after `XXXXXX`. Supported on GNU coreutils ≥8.0 (Debian 13 OK), but non-portable to BSD `mktemp`. Documented constraint, not a defect on the target.
+
+### Cross-cutting (per instructions)
+- **Auth bypass:** SSH access is Tailscale-fronted root SSH per Phase 0 audit; systemd-creds decryption requires root + host key. No bypass surface introduced.
+- **Data loss:** `mv tmpfile final.cred` overwrites prior credential by design (rotation). Same-filesystem mv inside `/etc/credstore.encrypted/` is atomic. Prior encrypted blob is intentionally discarded; no rollback path needed since plaintext is in 1Password.
+- **Race conditions:** Two concurrent script runs against the same cred could race the mv; unrealistic operational pattern. The `mv` is atomic enough that the worst outcome is one of the two writes winning cleanly.
+- **Rollback safety:** Script only `daemon-reload`s, no restart. If reload fails, credentials remain provisioned and pick up on next boot. No partial-write hazard.
+
+Verdict: PASS_WITH_CONCERNS
+[11:53:10] Findings detected — dispatching fix session (round 1)
+[12:12:56] Fix output (exit 1):
+[12:12:52] ERROR: claude session exceeded 900s; tree-killing PID 766048
+warning: in the working copy of '.iago/runs/round-1-dispatch/01a.log', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'runtime/deploy/README.md', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'runtime/deploy/iago-os-v2-daemon.service', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of '.iago/reviews/2026-05-18-dual-phase2-round1/pr60-codex.md', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of '.iago/reviews/2026-05-18-dual-phase2-round1/pr60-diff.patch', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of '.iago/reviews/2026-05-18-dual-phase2-round1/pr60-opus.md', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of '.iago/reviews/2026-05-18-dual-phase2-round1/pr60-opus.session.log', LF will be replaced by CRLF the next time Git touches it
+[12:12:58]   review-checks: all modules loaded (209 lines)
+[12:17:46] Re-review output:
+I have all the context needed. Let me verify the round-1 fix outcomes by re-examining what was supposed to be resolved.
+
+## Re-review after fix round 1
+
+### Previous findings status
+
+**Critical:** None reported.
+**Important:** None reported.
+**Minor:**
+
+- **M1 — `StartLimit*` in `[Service]`** → **FIXED.** `runtime/deploy/iago-os-v2-daemon.service:35-46` now places `StartLimitIntervalSec=120` and `StartLimitBurst=5` in `[Unit]` (per `systemd.unit(5)`), with comments explaining the placement. `Restart=` / `RestartSec=` correctly remain in `[Service]`.
+- **M2 — `chmod 0755` not set; README "Examples" line assumes exec bit** → **FIXED.** Diff header for `provision-credentials.sh` is `new file mode 100755` (line 1484 of diff); `git ls-files --stage` confirms `100755`. README §4 line 59 documents the dual approach: file is executable in git, and `bash` prefix in step 2 is belt-and-suspenders for `core.filemode=false` clones on Windows.
+- **M3 — `op read` invoked twice (TOCTOU)** → **FIXED.** Script lines 116-128 capture plaintext once via `plaintext_marker=$(op read "$op_ref"; printf 'X'); plaintext="${plaintext_marker%X}"` (the `X`-sentinel preserves trailing newlines). Local length computed once from the captured value, then encrypt pipe uses the same captured value. Halves `op read` invocations and closes the rotation-race window. `unset plaintext_marker` / `unset plaintext` after use.
+- **M4 — Length-only round-trip check** → **Acknowledged-as-acceptable in original review** ("Acceptable given systemd-creds is AEAD … plan asked for length-comparison verbatim"). Not required to fix.
+- **M5 — `mktemp` suffix after `XXXXXX` (GNU-only)** → **Documented constraint** ("not a defect on the target" — Debian 13 has GNU coreutils). Not required to fix.
+
+### Fresh adversarial pass (full source read)
+
+**Domain routing:** Baseline (always) + Infra-adjacent (sysadmin bash + systemd unit on VPS). Skipped: Amplify/React/Auth/API/Data-Integrity/i18n (no React, no Lambda, no AppSync, no Cognito, no application HTTP path, no Spanish strings).
+
+**Cross-cutting:**
+- Auth bypass — Tailscale-fronted root SSH; systemd-creds decryption requires root + host. No bypass surface added.
+- Data loss — `mv` overwrites prior ciphertext by design (rotation); 1Password remains authoritative source.
+- Race conditions — `set -e` in the remote heredoc + atomic same-FS `mv` adequately guard the single-key path; two concurrent script runs on the same key are an unrealistic operational pattern.
+- Rollback safety — only `daemon-reload`, no restart, so reload failure leaves credentials in place and picked up on next boot.
+
+**`set -e` correctness on the `op read` capture (M3 fix):** Subshell `$(op read "$op_ref"; printf 'X')` inherits `set -e`; failure of `op read` aborts the subshell before `printf X` runs, propagates non-zero to the parent assignment, and `set -e` in the parent aborts the script — so the fix does NOT introduce a silent empty-credential failure mode.
+
+### New findings
+
+**Minor:**
+- **N1 — Stale tmpfile on encrypt failure.** Remote heredoc (script lines 142-151) creates `mktemp` then runs `systemd-creds encrypt`. If `encrypt` succeeds but `mv` fails (extremely unlikely on same-FS atomic rename), the `.iago-xxx.XXXXXX.cred` tmpfile remains in `/etc/credstore.encrypted/` (0700 root:root). No security impact; housekeeping debt only.
+- **N2 — README §4 numbered list interrupted.** The chmod/exec-bit explanatory paragraph at line 59 sits between list items 3 and 4, breaking the auto-numbering in some markdown renderers. Cosmetic.
+
+Both new findings are Minor and not blockers.
+
+Verdict: PASS
+[12:17:55] Review passed
+[12:18:13] CODEX REVIEW — 01a-deploy-unit-and-provision-script
+[12:18:14] Running codex-companion adversarial-review (model from ~/.codex/config.toml)
+[12:24:24] Codex findings:
+(node:22584) [DEP0190] DeprecationWarning: Passing args to a child process with shell option true can lead to security vulnerabilities, as the arguments are not escaped, only concatenated.
+(Use `node --trace-deprecation ...` to show where the warning was created)
+[codex] Starting Codex task thread.
+[codex] Thread ready (019e3c4f-8787-7140-9d3b-52dd47667b27).
+[codex] Turn started (019e3c4f-8cfd-77e0-b366-cad71a6f1c38).
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git diff --stat a6...
+[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git diff --stat a6... (exit 0)
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git rev-parse --ve...
+[codex] Command declined: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git rev-parse --ve... (exit -1)
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git diff --stat a6...
+[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git diff --stat a6... (exit 0)
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git rev-parse --ve...
+[codex] Command declined: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git rev-parse --ve... (exit -1)
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git rev-parse HEAD'
+[codex] Command declined: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git rev-parse HEAD' (exit -1)
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git status --short'
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git diff --stat a6...
+[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git diff --stat a6... (exit 0)
+[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git status --short' (exit 0)
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git diff -- runtim...
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git diff --cached ...
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command "Get-ChildItem runt...
+[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git diff -- runtim... (exit 0)
+[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git diff --cached ... (exit 0)
+[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command "Get-ChildItem runt... (exit 0)
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command '$i=0; Get-Content ...
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command '$i=0; Get-Content ...
+[codex] Command declined: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command '$i=0; Get-Content ... (exit -1)
+[codex] Command declined: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command '$i=0; Get-Content ... (exit -1)
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command "Select-String -Pat...
+[codex] Command declined: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command "Select-String -Pat... (exit -1)
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'rg -n "Requires=ta...
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'rg -n "remote_len|...
+[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'rg -n "Requires=ta... (exit 0)
+[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'rg -n "remote_len|... (exit 0)
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'rg -n "''^diff --g...
+[codex] Command declined: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'rg -n "''^diff --g... (exit -1)
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'Get-Content .iago/...
+[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'Get-Content .iago/... (exit 0)
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'rg -n "MemoryDenyW...
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'rg -n "''^diff --g...
+[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'rg -n "''^diff --g... (exit 0)
+[codex] Command failed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'rg -n "MemoryDenyW... (exit 1)
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'Get-Content .iago/...
+[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'Get-Content .iago/... (exit 0)
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command "@' from pathlib im...
+[codex] Command declined: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command "@' from pathlib im... (exit -1)
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command "findstr /n /c:\"Ex...
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command "findstr /n /c:\"BO...
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command "findstr /n /c:\"sh...
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command "findstr /n /c:\"EX...
+[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command "findstr /n /c:\"Ex... (exit 0)
+[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command "findstr /n /c:\"sh... (exit 0)
+[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command "findstr /n /c:\"BO... (exit 0)
+[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command "findstr /n /c:\"EX... (exit 0)
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command "Get-Content .iago\...
+[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command "Get-Content .iago\... (exit 0)
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command "Get-Content .iago\...
+[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command "Get-Content .iago\... (exit 0)
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command "findstr /n /c:\"su...
+[codex] Command declined: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command "findstr /n /c:\"su... (exit -1)
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command "findstr /n /c:\"wr...
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command "findstr /n /c:\"if...
+[codex] Command declined: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command "findstr /n /c:\"if... (exit -1)
+[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command "findstr /n /c:\"wr... (exit 0)
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'rg -n "systemctl -...
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'rg -n "BOGUS_KEY|P...
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'rg -n "EXISTING_TO...
+[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'rg -n "systemctl -... (exit 0)
+[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'rg -n "BOGUS_KEY|P... (exit 0)
+[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'rg -n "EXISTING_TO... (exit 0)
+[codex] Assistant message captured: {"verdict":"needs-attention","summary":"No-ship: the archive path can produce an unrecoverabl...
+[codex] Turn completion inferred after the main thread finished and subagent work drained.
+# Codex Adversarial Review
+
+Target: branch diff against a63b2bb84240cd0c9602fcc865a252189e5a2683
+Verdict: needs-attention
+
+No-ship: the archive path can produce an unrecoverable or falsely successful OpenClaw retirement under realistic cutover failures.
+
+Findings:
+- [critical] Wrong-recipient archive is accepted as recoverable (runtime/deploy/archive-openclaw.sh:280-323)
+  The script encrypts to whatever key is present at $PUBKEY, shreds the raw tarball, then validates by trying to decrypt with a newly generated bogus key and expecting failure. That does not prove Santiago can decrypt it; any valid but wrong recipient key will also reject the bogus identity with "no identity matched" and the script will report success. Impact: the only rollback archive can be permanently undecryptable after OpenClaw is retired.
+  Recommendation: Replace the bogus-identity check with a real recoverability proof: verify a pinned known-good pubkey fingerprint before encryption and/or require an actual decrypt round-trip with Santiago's private key before shredding the raw tarball and appending the manifest row.
+- [high] User-systemd errors are treated as safe inactive states (runtime/deploy/archive-openclaw.sh:226-245)
+  Both systemctl --user probes are inside simple if statements, so any failure to connect to the user bus via su - ilsantino is interpreted as "already stopped" or "already disabled". The later pgrep only catches a currently running process; it does not prove the unit was disabled. Inference: on VPS/user-systemd setups where XDG_RUNTIME_DIR or the user manager is unavailable to su, OpenClaw can remain enabled and restart after login/reboot, racing the v2 daemon on the same control surface.
+  Recommendation: Handle systemctl exit codes explicitly and fail on bus/manager errors. Invoke the user manager with an explicit runtime dir or machinectl/runuser pattern, then verify the unit is inactive and disabled/masked after the stop/disable operations.
+- [high] Same-day sentinel can freeze a partial archive as success (runtime/deploy/archive-openclaw.sh:216-221)
+  The idempotency check skips when any matching .age file exists for today. A prior run can create ENCRYPTED_PATH and then fail later in header validation, bogus-key probing, or manifest append. A retry without --force-new-archive then exits 0 before repairing or replacing that unverified archive, leaving operators with a false successful state.
+  Recommendation: Write archives to a .partial/.tmp name excluded from the sentinel, validate recoverability, append the manifest, then atomically rename to the final .age name. Make the sentinel require a valid manifest row or revalidate the existing archive before skipping.
+
+Next steps:
+- Fix recoverability validation before cutover use.
+- Make OpenClaw stop/disable verification fail closed on user-systemd errors.
+- Make archive publication atomic so idempotent retries cannot bless partial output.
+[12:24:24] Codex review complete
+[12:24:25] CODEX FIX — fixing findings before PR
+[12:30:34] Codex fix output (exit 0):
+Confirmed. All three Codex findings target `runtime/deploy/archive-openclaw.sh` — a file that does not exist in the repo and is Plan 02a's deliverable, not 01a's. Plan 01a's diff contains only the systemd unit, `provision-credentials.sh`, its bats tests, and the README.
+
+I checked the actual 01a files for analogous patterns:
+
+1. **"Wrong-recipient archive accepted as recoverable"** — Does not apply. `provision-credentials.sh` already implements a real round-trip recoverability proof: it captures the plaintext locally once, sends it to the VPS, then decrypts on the VPS and compares byte-length against the captured plaintext (lines 153-165). The capture-once pattern even closes the TOCTOU window a fresh `op read` would re-open. Not analogous to the bogus-key check Codex flagged.
+
+2. **"User-systemd errors treated as safe inactive"** — Does not apply. The 01a script has zero `systemctl --user` probes. It performs only one `systemctl daemon-reload` as the final step.
+
+3. **"Same-day sentinel can freeze partial archive"** — Does not apply. The 01a script has no sentinel-based idempotency. Atomic publish is already correct: `mktemp` → encrypt to tmp → `mv` to final → chmod root:root (lines 142-151) — exactly the pattern Codex recommends for the archive script.
+
+The Codex review's findings are off-target — it reviewed and hallucinated content for a file that does not exist in this plan's diff (the file lives in the Plan 02a scope, which has not yet been implemented).
+
+No fixes applicable. The 01a files do not contain the patterns flagged, and the file Codex reviewed does not exist. Exiting fix session clean — no edits made, build state unchanged.
+SessionEnd hook [node "${CLAUDE_PLUGIN_ROOT}/scripts/session-lifecycle-hook.mjs" SessionEnd] failed: Hook cancelled
+[12:30:34] BUILD GATE (post-codex-fix)
+[12:30:35] Build passed after Codex fix
+warning: in the working copy of '.iago/runs/round-1-dispatch/01a.log', LF will be replaced by CRLF the next time Git touches it

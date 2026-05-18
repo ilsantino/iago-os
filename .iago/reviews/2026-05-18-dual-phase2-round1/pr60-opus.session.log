@@ -1,0 +1,9 @@
+Review written to `.iago/reviews/2026-05-18-dual-phase2-round1/pr60-opus.md`.
+
+**Verdict: NEEDS_FIXES** — one Important test bug, two Important findings overall, eight Minor.
+
+Headline finding: **Test 9 is broken**. `archive-openclaw.test.sh:329` greps stderr (`$pub`) for the pattern `# public key:`, but per upstream `age-keygen` source, stderr contains `Public key: ...` (no `#` prefix) — the `# public key:` comment lives in the **private-key file** (`$priv`). `REAL_PUBKEY` ends up empty, the next assertion fails the test. The C2 stress-test fix's gold-standard recipient-correctness verification has never actually run (pipeline executes on Windows where bats is absent), and the local pipeline review couldn't see this.
+
+Other Important: `step4-encrypt "ok"` NDJSON event fires *before* the 4a/4b probes run, so the cutover-evidence log can show `step4 ok → step4a error` — internally inconsistent for spec § 10 criterion 5 forensics.
+
+All C1/C2/C3 + I1-I4 stress items are addressed in the script itself; the runtime probe still catches wrong-but-valid pubkeys in production. Fix I1, re-run bats on Linux, and the verdict moves to APPROVE_WITH_NOTES.

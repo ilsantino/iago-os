@@ -1,0 +1,230 @@
+# /etc/systemd/system/iago-os-v2-daemon.service
+#
+# iaGO-OS v2 daemon — multi-agent runtime hosting AgentRuntime adapters
+# across 5 shapes (PTY/HTTP-SDK/MCP/Webhook/Daemon). Replaces OpenClaw
+# (which ran as user systemd unit openclaw-gateway.service under
+# user@1001.service for user ilsantino).
+#
+# Cutover 2026-05-16 (Santiago override): FAST single-hour cutover.
+# OpenClaw stopped + archived; v2 daemon takes over Telegram control
+# surface. Rollback path: stop this unit, systemctl --user start
+# openclaw-gateway under ilsantino.
+#
+# Sandboxing: per ADR 2026-05-15 agent-shape-taxonomy § HTTP-shape
+# adapter authentication. systemd LoadCredential= with strict unit
+# sandboxing is the smallest blast radius under the threat model
+# (single-VPS, Tailscale-only inbound, systemd-managed daemon).
+#
+# State root: /var/lib/iago-os/daemon-state (set via
+# IAGO_DAEMON_STATE_ROOT). Logs: journald only.
+#
+# Credentials: loaded from /etc/credstore.encrypted/ via
+# LoadCredentialEncrypted. Provisioned by
+# runtime/deploy/provision-credentials.sh.
+
+[Unit]
+Description=iaGO-OS v2 daemon — multi-agent runtime
+Documentation=https://github.com/ilsantino/iago-os/blob/main/runtime/README.md
+Documentation=file:///opt/iago-os/runtime/README.md
+After=network-online.target tailscaled.service
+Wants=network-online.target
+# tailscaled is the inbound auth path for dashboard + IPC clients;
+# without it Santiago cannot reach the IPC server from his phone.
+Requires=tailscaled.service
+
+# Restart rate limit — StartLimit* directives belong in [Unit] per
+# systemd.unit(5) (systemd ≥230 tolerates them in [Service] for
+# back-compat but `systemd-analyze verify` warns). Restart= /
+# RestartSec= stay in [Service] where they belong.
+# 5 restarts in 120s and systemd gives up. This catches the
+# "malformed daemon-config.json" case (which throws immediately on
+# every startup attempt) instead of looping forever. When this trips,
+# `systemctl status iago-os-v2-daemon.service` shows
+# "start-limit-hit" and Santiago gets a clear signal via Telegram
+# heartbeat absence within 10 minutes.
+StartLimitIntervalSec=120
+StartLimitBurst=5
+
+[Service]
+Type=exec
+# Type=exec waits until the binary has been exec'd before considering
+# the service started. Type=notify would require sd_notify hooks in
+# the daemon code (Phase 6+ TODO when the dashboard wires Type=notify
+# for fast-startup signaling). exec is the right Phase 2 default.
+
+User=iago
+Group=iago
+# Dedicated unprivileged user. NOT ilsantino (which ran OpenClaw as a
+# user-systemd unit). System-level unit + dedicated user gives:
+#   1. Cleaner /home isolation (daemon does not read ilsantino's $HOME)
+#   2. ProtectHome=true is meaningful (denies access to ALL /home dirs)
+#   3. No collision with ilsantino's interactive shells / cron / PM2
+# Provisioning script creates the user with --system --no-create-home
+# --shell /usr/sbin/nologin. UID assigned automatically (typically <1000).
+
+WorkingDirectory=/opt/iago-os
+# /opt/iago-os/runtime/dist/daemon/main.js is the compiled entry point.
+# Repo checkout lives at /opt/iago-os, owned root:iago mode 0755.
+# Runtime user has read+exec on the tree; write only on state-root
+# (separate path, see ReadWritePaths below).
+
+ExecStartPre=/usr/bin/test -d /var/lib/iago-os/daemon-state
+ExecStartPre=/usr/bin/test -f /opt/iago-os/runtime/dist/daemon/main.js
+# Hard fail at startup if either prerequisite is missing rather than
+# letting Node throw an opaque error 200ms in. State dir + dist tree
+# are CREATED by Plan 03a's cutover.sh; this unit does not provision
+# them — only verifies their presence at start.
+
+ExecStart=/usr/bin/node --experimental-specifier-resolution=node /opt/iago-os/runtime/dist/daemon/main.js
+
+# Restart policy — survive transient crashes but DON'T mask config errors.
+# StartLimitIntervalSec / StartLimitBurst live in the [Unit] block above
+# (per systemd.unit(5)).
+Restart=on-failure
+RestartSec=5s
+
+# Graceful shutdown — daemon's SIGTERM handler writes .daemon-stop
+# markers for every live handle (runtime/daemon/main.ts lines 162-206)
+KillMode=mixed
+KillSignal=SIGTERM
+TimeoutStopSec=30s
+# 30s gives the daemon time to: stop heartbeat, stop bot polling,
+# stop IPC server, shutdown every agent (each SIGTERM → 30s wait
+# → SIGKILL in adapter code per Plan 04). After 30s systemd SIGKILLs
+# anything remaining. Phase 3+ may need to extend this if HTTP-shape
+# adapters need longer for in-flight request draining.
+
+# ====== Credentials (per ADR 2026-05-15) ======
+LoadCredentialEncrypted=iago-telegram-token:/etc/credstore.encrypted/iago-telegram-token.cred
+LoadCredentialEncrypted=iago-gh-token:/etc/credstore.encrypted/iago-gh-token.cred
+# iago-gh-token is ACTIVE in Phase 2 — Plan 04a/04b PR-triage agent
+# spawns `gh pr list` via PTY adapter and needs GH_TOKEN in the env.
+# Future Phase 3 additions land here (provisioned by 01a script but
+# kept commented in this unit until Phase 3 adapter wiring lands):
+# LoadCredentialEncrypted=iago-anthropic-default:/etc/credstore.encrypted/iago-anthropic-default.cred
+# LoadCredentialEncrypted=iago-anthropic-ilsantino:/etc/credstore.encrypted/iago-anthropic-ilsantino.cred
+# LoadCredentialEncrypted=iago-anthropic-iaguito:/etc/credstore.encrypted/iago-anthropic-iaguito.cred
+# Phase 9 webhook secrets:
+# LoadCredentialEncrypted=iago-sentry-webhook-secret:/etc/credstore.encrypted/iago-sentry-webhook-secret.cred
+# LoadCredentialEncrypted=iago-github-webhook-secret:/etc/credstore.encrypted/iago-github-webhook-secret.cred
+
+# Credentials appear inside the unit at $CREDENTIALS_DIRECTORY/<name>.
+# The daemon reads them via a small bootstrap helper that runs BEFORE
+# loadConfig() and sets IAGO_TELEGRAM_BOT_TOKEN / IAGO_GH_TOKEN from
+# the credential file (see runtime/daemon/cred-bootstrap.ts — landed
+# in Plan 01b).
+
+# ====== Sandboxing (per ADR threat model — required) ======
+NoNewPrivileges=true
+# Prevents the daemon (or any child process it spawns) from gaining
+# capabilities via setuid/setgid binaries. Hard wall against PTY
+# adapters that might inadvertently exec setuid tools.
+
+PrivateTmp=true
+# Each invocation gets a private /tmp + /var/tmp. node-pty default
+# socket paths default to /tmp; isolating prevents leaking PTY socket
+# names across daemon restarts or to other system users.
+
+PrivateDevices=true
+# Daemon does not need /dev access beyond standard pipe/socket. Cuts
+# off /dev/mem, /dev/kmem, raw block devices, USB. Adapters that need
+# a PTY get /dev/ptmx via PrivateDevices's whitelist (TIOCSPTLCK
+# unaffected).
+
+ProtectSystem=strict
+# / and /usr/ mounted read-only inside the unit. Daemon CANNOT write
+# anywhere except paths explicitly listed in ReadWritePaths.
+
+ProtectHome=true
+# /home, /root, /run/user invisible to the daemon. Critical for FAST
+# cutover safety — the daemon never touches ilsantino's home directory
+# (where OpenClaw lived). Eliminates an entire class of "v2 daemon
+# corrupted my OpenClaw state" failure mode.
+
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+# Defense-in-depth. Daemon does not write to /proc/sys, does not need
+# to load kernel modules, does not write to cgroups.
+
+ProtectClock=true
+ProtectHostname=true
+# Daemon does not adjust clock or hostname.
+
+LockPersonality=true
+# Prevents personality(2) syscalls — defends against ROP-style
+# personality switches.
+
+RestrictNamespaces=true
+# Cannot create new user/pid/net/mount namespaces. Container escape
+# defenses become moot if you can never create a container in the
+# first place.
+
+RestrictSUIDSGID=true
+RestrictRealtime=true
+# Cannot create setuid files (defense alongside NoNewPrivileges).
+# Cannot acquire SCHED_RR/FIFO priority.
+
+MemoryDenyWriteExecute=true
+# W^X enforced — pages cannot be both writable and executable. JIT
+# code (V8 uses W^X by default since Node 18+) still works because
+# V8 mprotects between W and X phases; this just prevents anonymous
+# writable+executable mappings.
+
+SystemCallArchitectures=native
+# x86_64 only. Prevents 32-bit syscall trampolines bypass.
+
+CapabilityBoundingSet=
+AmbientCapabilities=
+# No capabilities. Daemon does not need CAP_NET_BIND_SERVICE (IPC
+# server binds /tmp/iago-os-v2-daemon.sock, not a privileged port).
+
+# ====== ReadWritePaths — explicit writable surfaces ======
+ReadWritePaths=/var/lib/iago-os/daemon-state
+ReadWritePaths=/var/log/iago-os
+# State root + log dir. Everything else read-only via ProtectSystem.
+
+# ====== Environment ======
+Environment=NODE_ENV=production
+Environment=TZ=UTC
+# TZ=UTC locks cron schedules in "0 14 * * *" semantics regardless of
+# host tz default (Codex P2-2 fix). Plan 04a PR-triage cron fires at
+# 14:00 UTC = 09:00 EST = 08:00 CST(MX); without TZ=UTC the host's
+# /etc/timezone (Hostinger default America/New_York or Europe/Madrid)
+# would silently shift the schedule.
+Environment=IAGO_DAEMON_STATE_ROOT=/var/lib/iago-os/daemon-state
+Environment=IAGO_DAEMON_IPC_SOCKET_PATH=/var/lib/iago-os/daemon-state/ipc.sock
+# Override the Phase 1 default of /tmp/iago-os-v2-daemon.sock —
+# with PrivateTmp=true the /tmp default would not survive across
+# IPC clients on the same host. Place IPC socket under state-root
+# so Santiago's CLI (run as ilsantino over Tailscale SSH) can
+# reach it via group-readable ACL.
+Environment=IAGO_TELEGRAM_ALLOWED_USER_IDS=__SANTIAGO_TELEGRAM_USER_ID__
+# Single integer — Santiago's Telegram user ID. Plan 03a cutover.sh
+# substitutes this from a value Santiago provides at deploy time.
+# Future multi-user support (Sebas joins Phase 6) extends to
+# comma-separated.
+
+# ====== Logging ======
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=iago-os-v2-daemon
+# journald handles rotation + compression. View with:
+#   journalctl -u iago-os-v2-daemon.service -f
+# Rate-limit at the journald layer (global /etc/systemd/journald.conf
+# defaults: 10000 messages per 30s per service). Daemon NDJSON
+# telemetry is the canonical event stream — journald is a backup +
+# debugging surface.
+
+# ====== Resource limits ======
+MemoryMax=2G
+# 8GB total VPS, OpenClaw archived, dashboard reserved for Phase 6.
+# 2G is generous for Phase 2 single-agent hello-world; revisit when
+# Phase 3 multi-shape adapters land.
+
+TasksMax=512
+# Generous ceiling — node-pty spawns child processes per agent;
+# subagent semantics add more.
+
+[Install]
+WantedBy=multi-user.target

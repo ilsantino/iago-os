@@ -1,0 +1,915 @@
+diff --git a/.iago/runs/round-1-dispatch/02a.log b/.iago/runs/round-1-dispatch/02a.log
+new file mode 100644
+index 0000000..86c9b91
+--- /dev/null
++++ b/.iago/runs/round-1-dispatch/02a.log
+@@ -0,0 +1,88 @@
++[11:42:39] STRESS TEST — skipped (plan already stress-tested)
++[11:42:40] IMPLEMENT — 02a-archive-openclaw
++[11:47:21] Implementation complete
++[11:47:22] BUILD GATE — attempt 1 [mode: sequential]
++[11:47:22] Build passed (tsc 0ms / vite 0ms / mode sequential)
++[11:47:23] CONSOLE GATE — skipped (no Vite config)
++[11:47:23] REVIEW — 02a-archive-openclaw
++warning: in the working copy of '.iago/runs/round-1-dispatch/02a.log', LF will be replaced by CRLF the next time Git touches it
++warning: in the working copy of 'runtime/deploy/MANIFEST.template.md', LF will be replaced by CRLF the next time Git touches it
++[11:47:26]   review-checks: all modules loaded (209 lines)
++[11:50:30] Review output:
++PASS 1 — PLAN COMPLIANCE
++
++Task 1 (archive-openclaw.sh): All required elements present. Constants, pre-flight (root, age, jq, sha256sum, pubkey), idempotency day-sentinel with --force-new-archive, six numbered steps + 4a/4b probes, NDJSON per step, flock-guarded manifest append, prune service with logger, summary block. Header comments include all five rationales required by plan.
++
++Task 2 (archive-openclaw.test.sh): 11 @test blocks. Plan's tests (1)-(9), (8b), (8c) collapse into impl tests 1-10 (impl test 7 = plan 8b; original plan test 7 was obviated by day-sentinel addition — acceptable merge). Test 9 properly skips when age/age-keygen absent and uses real binaries when present.
++
++Task 3 (MANIFEST.template.md): 45 lines (30-60 range), header + separator table rows present, scp/age-d/tar-xzf recipe present, includes Audit + Template-note sections that exceed the inline heredoc (acknowledged in plan).
++
++PASS 2 — DOMAIN ROUTING
++
++Selected: **Baseline** + cross-cutting (auth bypass / data loss / races / rollback). Skipped: amplify, api, auth, backend, data-integrity, i18n, infra (AWS), react, pattern-consistency — this is a sysadmin bash script touching systemd/age/tar on a VPS; no React, no Lambda, no AppSync, no Amplify-managed CFN, no application auth, no aggregates. The cross-cutting auth-bypass concerns map to "must run as root" enforcement, not Cognito.
++
++PASS 3 — ADVERSARIAL
++
++Important:
++- **Partial-failure recovery gap (step 6).** If `systemctl daemon-reload` or `enable --now` fails after raw tarball is shredded + encrypted file written + manifest row appended, the script exits 1 with the retention timer never installed. Re-run without `--force-new-archive` hits the day-sentinel and exits 0 before reaching step 6 — the timer remains uninstalled silently. Re-run *with* `--force` creates a duplicate archive. Consider: run step 6 unconditionally (its own idempotency check `-f $PRUNE_SERVICE && -f $PRUNE_TIMER` already guards re-execution) by moving step 6 above the day-sentinel exit, OR add a `--repair-timer` flag.
++- **`age-keygen` invoked at step 4b without pre-flight check (line 257).** If `age-keygen` is missing the script fails *after* `shred -u "$TARBALL_PATH"` at line 225 has already destroyed the raw tarball. On Debian 13 age + age-keygen ship together so likelihood is low, but the script's defensive posture for jq/sha256sum justifies the same for age-keygen — adds 4 lines, prevents a mid-script failure on a minimal/unusual image.
++
++Minor:
++- Test 5 line 257 / Test 7 line 287 / Test 8 lines 293,303 grep `"^| 2026"` — year-pinned. Will silently fail in 2027 (rows count = 0, test fails on `-eq 1` with no clear signal that the pattern is the bug). Use `grep -cE "^\| [0-9]{8}-"` instead.
++- `head -c 21` (line 235) is a magic number = `len("age-encryption.org/v1")`. Inline acceptable but a named constant would be self-documenting.
++- Defensive pre-flight checks for `flock`, `shred`, `pgrep` would mirror the jq/sha256sum guards already present (all coreutils/util-linux/procps on Debian — defensive only).
++- NDJSON cutover.ndjson write is not flock-guarded; plan acknowledges this is OK because 03a invokes sibling scripts sequentially.
++
++Cross-cutting verdict:
++- Auth bypass: root check present, no application auth surface — clean.
++- Data loss: shred-before-probe is intentional per plan (raw plaintext credentials MUST not persist); the probe is the trip-wire for wrong-but-valid pubkey corruption. Acceptable per documented design.
++- Races: manifest flock-protected. Day-sentinel + first-archive create is theoretically TOCTOU but the failure mode equals `--force-new-archive` behavior anyway.
++- Rollback safety: see "partial-failure recovery gap" above — only real concern.
++
++Verdict: PASS_WITH_CONCERNS
++[11:50:31] Findings detected — dispatching fix session (round 1)
++[11:54:37] Fix output (exit 0):
++All 4 grep patterns updated to year-agnostic. All review findings fixed:
++
++**Important (2 fixed):**
++- Step 6 (timer install) moved above day-sentinel exit — runs unconditionally on every invocation, idempotent guard intact, closes partial-failure recovery gap
++- `age-keygen` pre-flight check added mirroring `age` check — prevents mid-script failure after `shred -u` destroys raw tarball
++
++**Minor (2 fixed):**
++- `head -c 21` magic number replaced with `AGE_HEADER_LEN` constant derived from `AGE_HEADER_MAGIC`
++- All 4 year-pinned `"^| 2026"` test grep patterns replaced with year-agnostic `"^\| [0-9]{8}-"` regex
++
++Bash syntax checks clean on the main script. Test file uses bats `@test` blocks (not pure bash), so its parse error from `bash -n` is expected.
++
++Skipped (per reviewer):
++- Defensive pre-flight checks for `flock`/`shred`/`pgrep` — reviewer marked defensive-only on standard Debian packages, no real-world risk
++- NDJSON flock guard — plan explicitly acknowledges 03a invokes sibling scripts sequentially
++warning: in the working copy of '.iago/runs/round-1-dispatch/02a.log', LF will be replaced by CRLF the next time Git touches it
++[11:54:39]   review-checks: all modules loaded (209 lines)
++[11:56:24] Re-review output:
++All previous findings verified resolved:
++
++**Important (both fixed):**
++- Step 6 partial-failure recovery — Step 6 now runs unconditionally near top of script (lines 167-205), before the OpenClaw-dir check and day-sentinel. Re-runs that hit the day-sentinel still execute the timer install (idempotency-guarded by file existence).
++- `age-keygen` pre-flight check — Added at lines 202-205 with rationale comment about avoiding mid-script failure after shred.
++
++**Minor (fixed in this round):**
++- Year-pinned grep `"^| 2026"` → now `^\| [0-9]{8}-` in all 4 test sites (lines 731, 760, 767, 776). Year-agnostic.
++- `head -c 21` magic number → `AGE_HEADER_MAGIC` + `AGE_HEADER_LEN` constants (lines 143-145, 363).
++
++**Minor (accepted by design):**
++- Defensive pre-flight for `flock`/`shred`/`pgrep` not added — these are base Debian util-linux/coreutils/procps. Original review marked as "defensive only."
++- NDJSON not flock-guarded — plan explicitly accepts (03a invokes sibling scripts sequentially).
++
++Cross-cutting re-check:
++- Auth bypass: root check enforced (line 186-189), test 1 verifies. Clean.
++- Data loss: shred-before-probe is intentional design; original `~/.openclaw/` content unaffected, operator re-runs after fixing pubkey.
++- Races: manifest flock present (line 438). Day-sentinel TOCTOU window is the `--force-new-archive` equivalent — acceptable.
++- Rollback safety: step 6 early-run addresses the previously-flagged gap; timer install no longer dependent on archive success path.
++
++No new issues introduced. Test 9 ephemeral-keypair round-trip uses real `age` binaries and properly skips if absent.
++
++Verdict: PASS
++[11:56:24] Review passed
++[11:56:25] CODEX REVIEW — 02a-archive-openclaw
++[11:56:25] Running codex-companion adversarial-review (model from ~/.codex/config.toml)
+diff --git a/runtime/deploy/MANIFEST.template.md b/runtime/deploy/MANIFEST.template.md
+new file mode 100644
+index 0000000..fe1a304
+--- /dev/null
++++ b/runtime/deploy/MANIFEST.template.md
+@@ -0,0 +1,45 @@
++# OpenClaw Archive Manifest
++
++Archives created by `runtime/deploy/archive-openclaw.sh`. Encrypted to
++Santiago's age pubkey at `/etc/iago-os/santiago-age.pub`. Retention: 30 days
++from creation. Deletion by `iago-archive-prune.timer` (systemd timer; lives
++at `/etc/systemd/system/iago-archive-prune.timer` on the VPS).
++
++## Decryption recipe
++
++```bash
++# From Santiago's Windows box (private key at ~/.age/santiago.key):
++scp santiago@srv1456441:/var/lib/iago-os/openclaw-archive/<file>.age .
++age -d -i ~/.age/santiago.key <file>.age > <file>.tar.gz
++tar -xzf <file>.tar.gz
++```
++
++## Audit
++
++To see prune events:
++
++```bash
++journalctl -t iago-archive-prune
++```
++
++To see timer state:
++
++```bash
++systemctl status iago-archive-prune.timer
++journalctl -u iago-archive-prune.timer
++```
++
++## Template note
++
++This file is the human-readable source of truth for the manifest header.
++`runtime/deploy/archive-openclaw.sh` step 5 contains the same header inlined
++as a heredoc — when the script runs on a VPS where this template file is not
++present, it writes the inlined copy. If you edit this template, also update
++the heredoc inside `archive-openclaw.sh` (or refactor the script to `cat`
++this file — preferred for DRY but requires the script to know its install
++path on the VPS, which it doesn't, so we keep them duplicated for now).
++
++## Archives
++
++| Timestamp (UTC) | File | Raw size | Raw SHA256 | Encrypted size | Encrypted SHA256 |
++| --- | --- | --- | --- | --- | --- |
+diff --git a/runtime/deploy/archive-openclaw.sh b/runtime/deploy/archive-openclaw.sh
+new file mode 100644
+index 0000000..ab84cbf
+--- /dev/null
++++ b/runtime/deploy/archive-openclaw.sh
+@@ -0,0 +1,397 @@
++#!/usr/bin/env bash
++#
++# archive-openclaw.sh — Stop, archive, encrypt, and retain the legacy OpenClaw
++# user-systemd deployment on the Hostinger VPS at FAST cutover-time.
++#
++# Purpose:
++#   Phase 2 cutover retires `openclaw-gateway.service` (user systemd unit under
++#   user@1001.service for ilsantino). This script captures the entire
++#   ~ilsantino/.openclaw/ tree (sessions + credentials + LanceDB content),
++#   age-encrypts the tarball to Santiago's pubkey, records a SHA256 manifest
++#   row, and installs a systemd timer for 30-day retention pruning.
++#
++# Idempotency:
++#   Same UTC date → same final state. Default behavior: if an encrypted archive
++#   already exists for today (matching openclaw-pre-cutover-YYYYMMDD-*.age), the
++#   script exits 0 without doing anything. Pass --force-new-archive to override
++#   and create a second snapshot (distinguished by HHMMSS portion of timestamp);
++#   the manifest gets a second row for the same date. Repeated invocations
++#   without the flag are no-ops once the day's archive exists.
++#
++# Encryption rationale:
++#   ~/.openclaw/ contains plaintext Anthropic credentials, Telegram bot tokens,
++#   and ~12 MiB of session state. Local-only retention on the VPS is unsafe
++#   (any future root compromise reads the tarball). age-encrypted with
++#   Santiago's pubkey means the private key (stored offline on Santiago's
++#   Windows box at ~/.age/santiago.key) is required to decrypt — VPS state is
++#   safe at rest.
++#
++# Retention rationale:
++#   30 days is the FAST-cutover rollback window. After 30 days, OpenClaw
++#   rollback is no longer the documented recovery path (re-provision a fresh
++#   VPS from Phase 0 audit + Phase 2 plans instead). systemd timer (NOT cron —
++#   VPS has no crontab per Phase 0 audit) prunes *.age files older than 30
++#   days. Pruning logs to journal via `logger -t iago-archive-prune` for
++#   audit (`journalctl -t iago-archive-prune`).
++#
++# OpenClaw mid-task semantics:
++#   SIGTERM to the user systemd unit (`systemctl --user stop
++#   openclaw-gateway.service`) interrupts any in-flight Claude session inside
++#   OpenClaw. Acceptable per FAST cutover — rollback restores the session
++#   state from ~/.openclaw/sessions/ which is captured inside the encrypted
++#   tarball. Operator MUST run this script ONLY at the agreed cutover window
++#   when Santiago is at keyboard and acknowledges any in-flight OpenClaw work
++#   will be lost. Do not run this script in a maintenance window without
++#   confirming with Santiago first.
++#
++# Wrong-but-valid pubkey hazard:
++#   A pubkey that is syntactically valid age (age1...) but corresponds to a
++#   private key Santiago does NOT possess produces age-encryption.org/v1-
++#   formatted ciphertext that passes the magic-byte header check yet is
++#   permanently unrecoverable. Step 4b runs a bogus-identity probe against
++#   the produced ciphertext, expecting age to fail with "no identity matched".
++#   Any other response (silent success, hang, different error) means the
++#   pubkey isn't behaving like a real age recipient — abort, do not proceed.
++#
++# Source of truth: .iago/research/2026-05-16-phase-2-vps-bootstrap-spec.md § 4
++#
++set -euo pipefail
++
++# ---------- Constants ----------
++OPENCLAW_USER="ilsantino"
++OPENCLAW_HOME="/home/ilsantino"
++OPENCLAW_DIR="${OPENCLAW_HOME}/.openclaw"
++ARCHIVE_ROOT="/var/lib/iago-os/openclaw-archive"
++MANIFEST="${ARCHIVE_ROOT}/MANIFEST.md"
++MANIFEST_LOCK="${MANIFEST}.lock"
++PUBKEY="/etc/iago-os/santiago-age.pub"
++SERVICE="openclaw-gateway.service"
++NDJSON_LOG="/var/log/iago-os/cutover.ndjson"
++PRUNE_SERVICE="/etc/systemd/system/iago-archive-prune.service"
++PRUNE_TIMER="/etc/systemd/system/iago-archive-prune.timer"
++RETENTION_DAYS=30
++# age v1 file format magic bytes (literal header at byte 0 of any age ciphertext).
++AGE_HEADER_MAGIC="age-encryption.org/v1"
++AGE_HEADER_LEN=${#AGE_HEADER_MAGIC}
++
++# ---------- Argv ----------
++FORCE=0
++for arg in "$@"; do
++	case "$arg" in
++		--force-new-archive) FORCE=1 ;;
++		-h|--help)
++			cat <<'EOF'
++Usage: archive-openclaw.sh [--force-new-archive]
++
++Stops openclaw-gateway.service (user@1001), archives ~ilsantino/.openclaw/,
++encrypts to Santiago's age pubkey, records a manifest row, and installs a
++30-day retention timer. Idempotent: same UTC date → same final state unless
++--force-new-archive is passed.
++
++Run as root, on the VPS, during the agreed cutover window.
++EOF
++			exit 0
++			;;
++	esac
++done
++
++# ---------- NDJSON helper ----------
++ndjson_event() {
++	# Args: kind, step, status, extra_json (optional, must already be JSON-shaped)
++	local kind="$1" step="$2" status="$3" extra="${4:-}"
++	local ts
++	ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
++	mkdir -p "$(dirname "$NDJSON_LOG")"
++	if [[ -n "$extra" ]]; then
++		printf '{"ts":"%s","script":"archive-openclaw.sh","kind":"%s","step":"%s","status":"%s","extra":%s}\n' \
++			"$ts" "$kind" "$step" "$status" "$extra" >> "$NDJSON_LOG"
++	else
++		printf '{"ts":"%s","script":"archive-openclaw.sh","kind":"%s","step":"%s","status":"%s"}\n' \
++			"$ts" "$kind" "$step" "$status" >> "$NDJSON_LOG"
++	fi
++}
++
++# ---------- Pre-flight ----------
++# Must run as root (we touch /etc/systemd/system + /var/lib + su to ilsantino).
++if [[ "$(id -u)" -ne 0 ]]; then
++	echo "ERROR: must run as root (sudo bash $0)" >&2
++	exit 1
++fi
++
++# age is the encryption tool — abort early if missing.
++if ! command -v age > /dev/null; then
++	echo "ERROR: 'age' not installed. apt install age (Debian 13 has it in main)" >&2
++	exit 1
++fi
++
++# age-keygen is invoked at step 4b for the bogus-identity probe. Pre-flight
++# check mirrors the `age` guard above so a missing age-keygen does NOT cause
++# the script to fail at step 4b *after* shred -u has already destroyed the
++# raw tarball at step 4. age + age-keygen typically ship together on Debian
++# 13, but a minimal/unusual image could trim one without the other.
++if ! command -v age-keygen > /dev/null; then
++	echo "ERROR: 'age-keygen' not installed (typically ships with age). apt install age" >&2
++	exit 1
++fi
++
++# jq required for response parsing in sibling cutover scripts; defensive guard
++# here in case a future minimal VPS image trims base packages.
++if ! command -v jq > /dev/null; then
++	echo "ERROR: jq required for response parsing. apt install jq" >&2
++	exit 1
++fi
++
++# sha256sum is part of coreutils on Debian — defensive guard.
++if ! command -v sha256sum > /dev/null; then
++	echo "ERROR: sha256sum required (coreutils). apt install coreutils" >&2
++	exit 1
++fi
++
++# Pubkey must exist. If missing, operator forgot the provisioning step.
++if [[ ! -f "$PUBKEY" ]]; then
++	echo "ERROR: age pubkey not found at $PUBKEY" >&2
++	echo "       scp ~/.age/santiago.pub santiago@srv1456441:/tmp/ and" >&2
++	echo "       sudo install -m 0644 /tmp/santiago.pub $PUBKEY" >&2
++	exit 1
++fi
++
++# Ensure the archive root exists with safe perms before we touch it.
++mkdir -p "$ARCHIVE_ROOT"
++chmod 0700 "$ARCHIVE_ROOT"
++
++# ---------- Step 6 (run early): install retention timer ----------
++# The retention timer install runs UNCONDITIONALLY on every invocation, before
++# the OpenClaw-dir-exists check and the day-sentinel exit. It has its own
++# idempotency guard (file existence) so re-runs are no-ops. Running it early
++# closes a partial-failure gap: if steps 1-5 succeed but the original step 6
++# fails (e.g., systemctl is wedged), a same-day re-run without
++# --force-new-archive would hit the day-sentinel exit and the timer would
++# remain uninstalled silently. Running it early means every invocation
++# re-attempts the install, even idempotent skips, so a stuck timer recovers
++# on the next run.
++echo "[6/6] install iago-archive-prune.{service,timer} (${RETENTION_DAYS}-day retention)"
++ndjson_event "archive-openclaw" "step6-timer" "begin"
++if [[ -f "$PRUNE_SERVICE" && -f "$PRUNE_TIMER" ]]; then
++	echo "      already installed"
++	ndjson_event "archive-openclaw" "step6-timer" "already-installed"
++else
++	cat > "$PRUNE_SERVICE" <<EOF
++[Unit]
++Description=Prune iago-os OpenClaw archives older than ${RETENTION_DAYS} days
++Documentation=file://${ARCHIVE_ROOT}/MANIFEST.md
++
++[Service]
++Type=oneshot
++ExecStart=/usr/bin/bash -c 'count=\$(find ${ARCHIVE_ROOT} -name "*.age" -mtime +${RETENTION_DAYS} -print -delete | wc -l); logger -t iago-archive-prune "pruned \$count archives"'
++EOF
++	cat > "$PRUNE_TIMER" <<'EOF'
++[Unit]
++Description=Daily prune of iago-os OpenClaw archives
++Documentation=file:///var/lib/iago-os/openclaw-archive/MANIFEST.md
++
++[Timer]
++OnCalendar=daily
++Persistent=true
++Unit=iago-archive-prune.service
++
++[Install]
++WantedBy=timers.target
++EOF
++	chmod 0644 "$PRUNE_SERVICE" "$PRUNE_TIMER"
++	systemctl daemon-reload
++	systemctl enable --now iago-archive-prune.timer
++	echo "      installed + enabled"
++	ndjson_event "archive-openclaw" "step6-timer" "ok"
++fi
++
++# If OpenClaw was never installed (e.g., re-running script on a fresh VPS), exit 0.
++if [[ ! -d "$OPENCLAW_DIR" ]]; then
++	echo "[0/6] $OPENCLAW_DIR does not exist — nothing to archive. exiting 0."
++	ndjson_event "archive-openclaw" "preflight" "nothing-to-archive"
++	exit 0
++fi
++
++# Idempotency day-sentinel check (Codex P1-3 fix).
++TODAY_UTC=$(date -u +%Y%m%d)
++EXISTING_TODAY=$(find "$ARCHIVE_ROOT" -name "openclaw-pre-cutover-${TODAY_UTC}-*.age" 2>/dev/null | head -1)
++if [[ -n "$EXISTING_TODAY" && "$FORCE" -ne 1 ]]; then
++	echo "archive for today already exists at $EXISTING_TODAY — re-run skipped (use --force-new-archive to override)"
++	ndjson_event "archive-openclaw" "preflight" "idempotent-skip" "{\"existing\":\"$EXISTING_TODAY\"}"
++	exit 0
++fi
++
++# ---------- Step 1: stop openclaw-gateway.service ----------
++echo "[1/6] stop openclaw-gateway.service (user systemd, ilsantino)"
++ndjson_event "archive-openclaw" "step1-stop" "begin"
++if su - "$OPENCLAW_USER" -c "systemctl --user is-active --quiet $SERVICE"; then
++	su - "$OPENCLAW_USER" -c "systemctl --user stop $SERVICE"
++	echo "      stopped"
++else
++	echo "      already stopped"
++fi
++ndjson_event "archive-openclaw" "step1-stop" "ok"
++
++# ---------- Step 2: disable + verify no leftover process ----------
++echo "[2/6] disable $SERVICE + verify no leftover process"
++ndjson_event "archive-openclaw" "step2-disable" "begin"
++if su - "$OPENCLAW_USER" -c "systemctl --user is-enabled --quiet $SERVICE"; then
++	su - "$OPENCLAW_USER" -c "systemctl --user disable $SERVICE"
++	echo "      disabled"
++else
++	echo "      already disabled"
++fi
++# Belt-and-braces: the systemd unit may have stopped, but a stray python
++# subprocess could still be running. pgrep finds any remaining process.
++if pgrep -u "$OPENCLAW_USER" -f openclaw-gateway > /dev/null; then
++	echo "ERROR: openclaw-gateway process still running under $OPENCLAW_USER — aborting" >&2
++	ndjson_event "archive-openclaw" "step2-disable" "error" '{"reason":"process-still-running"}'
++	exit 1
++fi
++ndjson_event "archive-openclaw" "step2-disable" "ok"
++
++# ---------- Step 3: tar the OpenClaw home ----------
++echo "[3/6] tar ${OPENCLAW_DIR} → ${ARCHIVE_ROOT}/openclaw-pre-cutover-<ts>.tar.gz"
++ndjson_event "archive-openclaw" "step3-tar" "begin"
++TIMESTAMP=$(date -u +%Y%m%d-%H%M%S)
++TARBALL_NAME="openclaw-pre-cutover-${TIMESTAMP}.tar.gz"
++TARBALL_PATH="${ARCHIVE_ROOT}/${TARBALL_NAME}"
++# tar exit 1 = warnings only (e.g., file changed during read — expected briefly
++# after the systemd stop); 2+ = hard errors. We tolerate 1, fail on >=2.
++set +e
++tar -czf "$TARBALL_PATH" --warning=no-file-changed -C / "home/${OPENCLAW_USER}/.openclaw"
++rc=$?
++set -e
++if [[ $rc -ne 0 && $rc -ne 1 ]]; then
++	echo "ERROR: tar failed with exit code $rc" >&2
++	ndjson_event "archive-openclaw" "step3-tar" "error" "{\"rc\":$rc}"
++	exit $rc
++fi
++RAW_SIZE=$(stat -c %s "$TARBALL_PATH")
++RAW_SHA=$(sha256sum "$TARBALL_PATH" | awk '{print $1}')
++echo "      tar ok (rc=$rc); raw size=${RAW_SIZE} bytes; raw sha256=${RAW_SHA}"
++ndjson_event "archive-openclaw" "step3-tar" "ok" "{\"rc\":$rc,\"raw_size\":$RAW_SIZE,\"raw_sha\":\"$RAW_SHA\"}"
++
++# ---------- Step 4: age-encrypt + shred raw + chmod/chown ----------
++echo "[4/6] age-encrypt → ${TARBALL_NAME}.age; shred raw tarball"
++ndjson_event "archive-openclaw" "step4-encrypt" "begin"
++ENCRYPTED_NAME="${TARBALL_NAME}.age"
++ENCRYPTED_PATH="${ARCHIVE_ROOT}/${ENCRYPTED_NAME}"
++age -R "$PUBKEY" -o "$ENCRYPTED_PATH" "$TARBALL_PATH"
++ENC_SIZE=$(stat -c %s "$ENCRYPTED_PATH")
++ENC_SHA=$(sha256sum "$ENCRYPTED_PATH" | awk '{print $1}')
++# Raw tarball MUST NOT persist on disk — contains plaintext credentials.
++shred -u "$TARBALL_PATH"
++chmod 0600 "$ENCRYPTED_PATH"
++chown root:root "$ENCRYPTED_PATH"
++echo "      encrypted ok; enc size=${ENC_SIZE} bytes; enc sha256=${ENC_SHA}"
++ndjson_event "archive-openclaw" "step4-encrypt" "ok" "{\"enc_size\":$ENC_SIZE,\"enc_sha\":\"$ENC_SHA\"}"
++
++# Step 4a: magic-byte header check — catches silent encryption failures where
++# age exits 0 but produces empty/random output. age v1 file format starts with
++# the literal string "age-encryption.org/v1".
++echo "[4a/6] verify age header magic bytes"
++if head -c "$AGE_HEADER_LEN" "$ENCRYPTED_PATH" | grep -qF "$AGE_HEADER_MAGIC"; then
++	echo "      ✓ age header present"
++else
++	echo "ERROR: encrypted file lacks age header — encryption may have silently failed" >&2
++	ndjson_event "archive-openclaw" "step4a-magic" "error"
++	exit 1
++fi
++ndjson_event "archive-openclaw" "step4a-magic" "ok"
++
++# Step 4b: bogus-identity probe (C2 fix). Generate a syntactically valid but
++# wrong age private key in-memory, attempt to decrypt the ciphertext, and
++# REQUIRE that age fails with the specific "no identity matched" error. Any
++# other outcome (silent success, hang, different error) means the recipient
++# wasn't behaving as a real age recipient — the actual pubkey may be wrong-
++# but-valid and Santiago will never be able to decrypt.
++echo "[4b/6] bogus-identity probe (proves recipient is a real age recipient)"
++BOGUS_KEY="/tmp/iago-bogus-age.key.$$"
++# Use a fresh, ephemeral throwaway keypair generated by age-keygen so the
++# bogus identity is guaranteed to be syntactically valid and accepted by age
++# as a real identity, yet (by construction) different from the pubkey on the
++# archive — guaranteeing the "no identity matched" branch is the correct
++# expected response.
++age-keygen -o "$BOGUS_KEY" 2>/dev/null
++chmod 0600 "$BOGUS_KEY"
++set +e
++PROBE_OUT=$(age -d -i "$BOGUS_KEY" "$ENCRYPTED_PATH" 2>&1 1>/dev/null)
++PROBE_RC=$?
++set -e
++shred -u "$BOGUS_KEY"
++if [[ $PROBE_RC -ne 0 ]] && echo "$PROBE_OUT" | grep -q "no identity matched"; then
++	echo "      ✓ encrypted with correct pubkey (bogus identity correctly rejected: 'no identity matched')"
++	ndjson_event "archive-openclaw" "step4b-probe" "ok"
++else
++	echo "ERROR: age decryption with bogus identity returned unexpected response (rc=$PROBE_RC)" >&2
++	echo "       output: $PROBE_OUT" >&2
++	echo "       pubkey at $PUBKEY may be wrong-but-valid; encrypted archive may be unrecoverable" >&2
++	ndjson_event "archive-openclaw" "step4b-probe" "error" "{\"rc\":$PROBE_RC}"
++	exit 1
++fi
++
++# ---------- Step 5: append manifest row (flock-guarded) ----------
++echo "[5/6] append manifest row → ${MANIFEST}"
++ndjson_event "archive-openclaw" "step5-manifest" "begin"
++# Create manifest with header if absent. This duplicates the content of
++# runtime/deploy/MANIFEST.template.md — if you edit one, edit the other (or
++# refactor the script to cat the template; see template note for why we
++# duplicate today).
++if [[ ! -f "$MANIFEST" ]]; then
++	cat > "$MANIFEST" <<'MANIFEST_HEADER'
++# OpenClaw Archive Manifest
++
++Archives created by `runtime/deploy/archive-openclaw.sh`. Encrypted to
++Santiago's age pubkey at `/etc/iago-os/santiago-age.pub`. Retention: 30 days
++from creation. Deletion by `iago-archive-prune.timer` (systemd timer; lives
++at `/etc/systemd/system/iago-archive-prune.timer` on the VPS).
++
++## Decryption recipe
++
++```bash
++# From Santiago's Windows box (private key at ~/.age/santiago.key):
++scp santiago@srv1456441:/var/lib/iago-os/openclaw-archive/<file>.age .
++age -d -i ~/.age/santiago.key <file>.age > <file>.tar.gz
++tar -xzf <file>.tar.gz
++```
++
++## Archives
++
++| Timestamp (UTC) | File | Raw size | Raw SHA256 | Encrypted size | Encrypted SHA256 |
++| --- | --- | --- | --- | --- | --- |
++MANIFEST_HEADER
++	chmod 0600 "$MANIFEST"
++fi
++# flock-guarded append: prevents row corruption if two operators run the
++# script simultaneously (e.g., Santiago + Sebas during a debug session).
++(
++	flock -w 5 200 || {
++		echo "ERROR: could not acquire $MANIFEST_LOCK within 5s" >&2
++		exit 1
++	}
++	printf '| %s | %s | %s | %s | %s | %s |\n' \
++		"$TIMESTAMP" "$ENCRYPTED_NAME" "$RAW_SIZE" "$RAW_SHA" "$ENC_SIZE" "$ENC_SHA" \
++		>> "$MANIFEST"
++) 200>"$MANIFEST_LOCK"
++echo "      manifest row appended"
++ndjson_event "archive-openclaw" "step5-manifest" "ok"
++
++# Step 6 (retention timer install) already ran near top of script — see
++# block above. Located early so that a partial failure between steps 1-5
++# and step 6 cannot leave the VPS without a prune timer on a same-day
++# re-run (the day-sentinel would otherwise exit 0 before reaching it).
++
++# ---------- Summary ----------
++cat <<EOF
++
++archive-openclaw.sh: done
++  encrypted archive : ${ENCRYPTED_PATH}
++  raw size          : ${RAW_SIZE} bytes
++  raw sha256        : ${RAW_SHA}
++  encrypted size    : ${ENC_SIZE} bytes
++  encrypted sha256  : ${ENC_SHA}
++  manifest          : ${MANIFEST}
++  retention         : ${RETENTION_DAYS} days (iago-archive-prune.timer)
++  audit prune log   : journalctl -t iago-archive-prune
++EOF
++ndjson_event "archive-openclaw" "done" "ok"
+diff --git a/runtime/deploy/archive-openclaw.test.sh b/runtime/deploy/archive-openclaw.test.sh
+new file mode 100644
+index 0000000..bd73841
+--- /dev/null
++++ b/runtime/deploy/archive-openclaw.test.sh
+@@ -0,0 +1,361 @@
++#!/usr/bin/env bats
++#
++# bats-core tests for runtime/deploy/archive-openclaw.sh
++#
++# Strategy: each test builds an isolated temp dir, populates it with a fake
++# layout (HOME, age pubkey, OpenClaw dir, ARCHIVE_ROOT, etc.), and prepends a
++# stubs/ directory to PATH so all external commands the script invokes —
++# systemctl, su, pgrep, tar, age, shred, find, logger — are replaced with
++# scripts that record their invocations to per-stub log files and return
++# scripted exit codes. We then `bash archive-openclaw.sh` (NOT source, since
++# `set -euo pipefail` would propagate into bats) and inspect the recorded
++# logs + the temp ARCHIVE_ROOT contents.
++#
++# The one exception is Test 9 (ephemeral-keypair round-trip): instead of
++# stubbing `age`, that test executes the REAL age binary against a generated
++# throwaway keypair and proves the ciphertext is recoverable. It skips
++# automatically if `age` and `age-keygen` are absent.
++#
++# Run: bats runtime/deploy/archive-openclaw.test.sh
++# On Windows: bats is documented but not pipeline-gated (Plan 01a I1 carry-over).
++
++# ───────────────────────────── Helpers ─────────────────────────────
++
++# Build a stub script at $STUBS_DIR/<name>. The stub records every invocation
++# to $LOG_DIR/<name>.log (one line per call, with argv) and then executes the
++# body passed as the second argument (default: `exit 0`).
++mkstub() {
++	local name="$1" body="${2:-exit 0}"
++	cat > "$STUBS_DIR/$name" <<EOF
++#!/usr/bin/env bash
++printf '%s\n' "\$*" >> "$LOG_DIR/$name.log"
++$body
++EOF
++	chmod +x "$STUBS_DIR/$name"
++}
++
++# Patch the SUT into a temp copy with overridden constants so the script
++# writes into our scratch tree instead of /var/lib, /etc/systemd, etc.
++prepare_sut() {
++	cp "$SUT_SRC" "$SUT_COPY"
++	sed -i \
++		-e "s|^OPENCLAW_USER=.*|OPENCLAW_USER=\"$(whoami)\"|" \
++		-e "s|^OPENCLAW_HOME=.*|OPENCLAW_HOME=\"$FAKE_HOME\"|" \
++		-e "s|^OPENCLAW_DIR=.*|OPENCLAW_DIR=\"$FAKE_OPENCLAW\"|" \
++		-e "s|^ARCHIVE_ROOT=.*|ARCHIVE_ROOT=\"$ARCHIVE_ROOT\"|" \
++		-e "s|^MANIFEST=.*|MANIFEST=\"$ARCHIVE_ROOT/MANIFEST.md\"|" \
++		-e "s|^MANIFEST_LOCK=.*|MANIFEST_LOCK=\"$ARCHIVE_ROOT/MANIFEST.md.lock\"|" \
++		-e "s|^PUBKEY=.*|PUBKEY=\"$FAKE_PUBKEY\"|" \
++		-e "s|^NDJSON_LOG=.*|NDJSON_LOG=\"$NDJSON_LOG\"|" \
++		-e "s|^PRUNE_SERVICE=.*|PRUNE_SERVICE=\"$ETC_SYSTEMD/iago-archive-prune.service\"|" \
++		-e "s|^PRUNE_TIMER=.*|PRUNE_TIMER=\"$ETC_SYSTEMD/iago-archive-prune.timer\"|" \
++		"$SUT_COPY"
++	# Neuter the root check — bats runs as a regular user.
++	sed -i 's|^if \[\[ "\$(id -u)" -ne 0 \]\]; then|if false; then|' "$SUT_COPY"
++}
++
++# ───────────────────────────── Setup ─────────────────────────────
++
++setup() {
++	SUT_SRC="$BATS_TEST_DIRNAME/archive-openclaw.sh"
++	TMPDIR_TEST=$(mktemp -d -t iago-archive.XXXXXX)
++	export TMPDIR_TEST
++
++	STUBS_DIR="$TMPDIR_TEST/stubs"
++	LOG_DIR="$TMPDIR_TEST/logs"
++	FAKE_HOME="$TMPDIR_TEST/home"
++	FAKE_OPENCLAW="$FAKE_HOME/.openclaw"
++	ARCHIVE_ROOT="$TMPDIR_TEST/var/lib/iago-os/openclaw-archive"
++	NDJSON_LOG="$TMPDIR_TEST/var/log/iago-os/cutover.ndjson"
++	ETC_SYSTEMD="$TMPDIR_TEST/etc/systemd/system"
++	FAKE_PUBKEY="$TMPDIR_TEST/etc/iago-os/santiago-age.pub"
++	SUT_COPY="$TMPDIR_TEST/archive-openclaw.sh"
++
++	mkdir -p "$STUBS_DIR" "$LOG_DIR" "$FAKE_HOME" "$FAKE_OPENCLAW" \
++		"$(dirname "$NDJSON_LOG")" "$ETC_SYSTEMD" "$(dirname "$FAKE_PUBKEY")"
++
++	# Default OpenClaw content (real files, not just empty dir).
++	echo '{"placeholder":"openclaw-cred"}' > "$FAKE_OPENCLAW/openclaw.json"
++	mkdir -p "$FAKE_OPENCLAW/sessions"
++	echo 'session-state' > "$FAKE_OPENCLAW/sessions/2026-05-18.json"
++
++	# Default age pubkey (any non-empty file — pre-flight only checks existence).
++	echo 'age1exampleexampleexampleexampleexampleexampleexampleexample' > "$FAKE_PUBKEY"
++
++	# Default stubs — every test gets these; individual tests override as needed.
++	mkstub systemctl 'exit 0'
++	# su shim — emulates `su - user -c "<cmd>"`. argv is: `- user -c <cmd>`.
++	# We just succeed; record the invocation. For is-active / is-enabled we
++	# return success by default (so the script takes the "stop" / "disable"
++	# branch); individual tests override.
++	mkstub su 'exit 0'
++	mkstub pgrep 'exit 1'  # default: no matching process
++	# tar stub: creates the file passed via -f, recording argv.
++	cat > "$STUBS_DIR/tar" <<'EOF'
++#!/usr/bin/env bash
++printf '%s\n' "$*" >> "$TMPDIR_TEST/logs/tar.log"
++# Find -f arg
++prev=""
++for a in "$@"; do
++	if [[ "$prev" == "-f" || "$prev" == "--file" ]]; then
++		printf 'fake-tarball-content\n' > "$a"
++		break
++	fi
++	# also handle -czf style
++	if [[ "$a" == -*f* && "$a" != *=* ]]; then
++		: # next arg is the file
++	fi
++	prev="$a"
++done
++# Also handle the combined -czf form: find first non-flag arg after a -*f*.
++for ((i=1; i<=$#; i++)); do
++	cur="${!i}"
++	if [[ "$cur" == -*f* ]]; then
++		j=$((i+1))
++		if [[ $j -le $# ]]; then
++			fpath="${!j}"
++			printf 'fake-tarball-content\n' > "$fpath"
++		fi
++		break
++	fi
++done
++exit 0
++EOF
++	chmod +x "$STUBS_DIR/tar"
++	# age stub: writes age-encryption.org/v1 header to -o target.
++	cat > "$STUBS_DIR/age" <<'EOF'
++#!/usr/bin/env bash
++printf '%s\n' "$*" >> "$TMPDIR_TEST/logs/age.log"
++# -d means decrypt; for the bogus-identity probe the script EXPECTS failure.
++for a in "$@"; do
++	if [[ "$a" == "-d" ]]; then
++		echo "age: error decrypting: no identity matched any of the recipients" >&2
++		exit 1
++	fi
++done
++# Encrypt path: find -o arg, write a valid age v1 header.
++prev=""
++for a in "$@"; do
++	if [[ "$prev" == "-o" ]]; then
++		printf 'age-encryption.org/v1\n-> X25519 fakedata\n--- fakemac\nciphertextciphertext' > "$a"
++		exit 0
++	fi
++	prev="$a"
++done
++exit 0
++EOF
++	chmod +x "$STUBS_DIR/age"
++	# age-keygen stub — produces an ephemeral key file.
++	cat > "$STUBS_DIR/age-keygen" <<'EOF'
++#!/usr/bin/env bash
++printf '%s\n' "$*" >> "$TMPDIR_TEST/logs/age-keygen.log"
++prev=""
++for a in "$@"; do
++	if [[ "$prev" == "-o" ]]; then
++		printf '# created: stub\n# public key: age1fakefakefakefake\nAGE-SECRET-KEY-1FAKEFAKEFAKEFAKE\n' > "$a"
++		exit 0
++	fi
++	prev="$a"
++done
++exit 0
++EOF
++	chmod +x "$STUBS_DIR/age-keygen"
++	# shred stub: just deletes the last arg.
++	cat > "$STUBS_DIR/shred" <<'EOF'
++#!/usr/bin/env bash
++printf '%s\n' "$*" >> "$TMPDIR_TEST/logs/shred.log"
++last="${!#}"
++[[ -f "$last" ]] && rm -f "$last"
++exit 0
++EOF
++	chmod +x "$STUBS_DIR/shred"
++	# find stub — passes through to real find (we need actual filesystem
++	# scanning for the day-sentinel idempotency check). Implementation: just
++	# exec the real find binary.
++	REAL_FIND=$(command -v find)
++	cat > "$STUBS_DIR/find" <<EOF
++#!/usr/bin/env bash
++printf '%s\n' "\$*" >> "$LOG_DIR/find.log"
++exec "$REAL_FIND" "\$@"
++EOF
++	chmod +x "$STUBS_DIR/find"
++	# logger stub
++	mkstub logger 'exit 0'
++
++	# Note: do NOT stub `command` — it's a bash builtin and stubbing breaks
++	# the script's own `command -v` checks. Provide age/jq/sha256sum via PATH.
++
++	# Provide real jq + sha256sum from the host so `command -v` succeeds.
++	# (bats's PATH is parent-shell PATH; we PREPEND stubs so real coreutils
++	# remain reachable.)
++	export PATH="$STUBS_DIR:$PATH"
++
++	prepare_sut
++}
++
++teardown() {
++	rm -rf "$TMPDIR_TEST"
++}
++
++# ───────────────────────────── Tests ─────────────────────────────
++
++@test "1: not-root → exits 1 with 'must run as root'" {
++	# Un-neuter the root check so it actually fires.
++	sed -i 's|^if false; then|if [[ "$(id -u)" -ne 99999 ]]; then|' "$SUT_COPY"
++	run bash "$SUT_COPY"
++	[ "$status" -eq 1 ]
++	[[ "$output" == *"must run as root"* ]]
++}
++
++@test "2: age missing → exits 1 with \"'age' not installed\"" {
++	rm -f "$STUBS_DIR/age"
++	# Also need to hide the real age binary if present. Easiest: clobber PATH
++	# to only contain stubs.
++	PATH="$STUBS_DIR" run bash "$SUT_COPY"
++	[ "$status" -eq 1 ]
++	[[ "$output" == *"'age' not installed"* ]]
++}
++
++@test "3: pubkey missing → exits 1 with helpful scp hint" {
++	rm -f "$FAKE_PUBKEY"
++	run bash "$SUT_COPY"
++	[ "$status" -eq 1 ]
++	[[ "$output" == *"age pubkey not found"* ]]
++	[[ "$output" == *"scp"* ]]
++}
++
++@test "4: OpenClaw dir absent → exits 0 with 'nothing to archive'" {
++	rm -rf "$FAKE_OPENCLAW"
++	run bash "$SUT_COPY"
++	[ "$status" -eq 0 ]
++	[[ "$output" == *"nothing to archive"* ]]
++}
++
++@test "5: happy path → all 6 steps execute, raw tarball is shredded, manifest row appended" {
++	run bash "$SUT_COPY"
++	[ "$status" -eq 0 ]
++	# Step 1: systemctl is-active + stop
++	grep -q "is-active" "$LOG_DIR/su.log"
++	grep -q "stop openclaw-gateway" "$LOG_DIR/su.log"
++	# Step 2: disable
++	grep -q "disable openclaw-gateway" "$LOG_DIR/su.log"
++	# Step 3: tar
++	[[ -s "$LOG_DIR/tar.log" ]]
++	# Step 4: age + shred
++	[[ -s "$LOG_DIR/age.log" ]]
++	[[ -s "$LOG_DIR/shred.log" ]]
++	# Step 6: systemctl daemon-reload + enable timer
++	grep -q "daemon-reload" "$LOG_DIR/systemctl.log"
++	grep -q "enable --now iago-archive-prune.timer" "$LOG_DIR/systemctl.log"
++	# Encrypted file exists, raw .tar.gz (sans .age) does NOT
++	enc=$(find "$ARCHIVE_ROOT" -name "*.age" | head -1)
++	[[ -n "$enc" ]]
++	raw="${enc%.age}"
++	[[ ! -f "$raw" ]]
++	# Manifest has header + 1 data row (6 pipes per row = 7 columns).
++	# Year-agnostic match: data rows start with "| YYYYMMDD-" (8 digits, dash).
++	[[ -f "$ARCHIVE_ROOT/MANIFEST.md" ]]
++	rows=$(grep -cE "^\| [0-9]{8}-" "$ARCHIVE_ROOT/MANIFEST.md" || true)
++	[ "$rows" -eq 1 ]
++	# NDJSON log has step-by-step entries.
++	grep -q '"step":"step1-stop"' "$NDJSON_LOG"
++	grep -q '"step":"step3-tar"' "$NDJSON_LOG"
++	grep -q '"step":"step6-timer"' "$NDJSON_LOG"
++}
++
++@test "6: retention timer already installed → step 6 says 'already installed'" {
++	# Pre-create the unit files.
++	touch "$ETC_SYSTEMD/iago-archive-prune.service" "$ETC_SYSTEMD/iago-archive-prune.timer"
++	run bash "$SUT_COPY"
++	[ "$status" -eq 0 ]
++	[[ "$output" == *"already installed"* ]]
++	# daemon-reload should NOT have been called (already-installed branch).
++	! grep -q "daemon-reload" "$LOG_DIR/systemctl.log" 2>/dev/null
++}
++
++@test "7: idempotent re-run with --force-new-archive → second archive + 2 manifest rows" {
++	run bash "$SUT_COPY"
++	[ "$status" -eq 0 ]
++	# Need a different HHMMSS for the second run; sleep 1s.
++	sleep 1
++	run bash "$SUT_COPY" --force-new-archive
++	[ "$status" -eq 0 ]
++	# 2 .age files for today
++	count=$(find "$ARCHIVE_ROOT" -name "*.age" | wc -l)
++	[ "$count" -eq 2 ]
++	# Manifest has 2 data rows (year-agnostic match).
++	rows=$(grep -cE "^\| [0-9]{8}-" "$ARCHIVE_ROOT/MANIFEST.md" || true)
++	[ "$rows" -eq 2 ]
++}
++
++@test "8: idempotent re-run (same UTC date) → exits 0, no second archive, manifest unchanged" {
++	run bash "$SUT_COPY"
++	[ "$status" -eq 0 ]
++	rows_before=$(grep -cE "^\| [0-9]{8}-" "$ARCHIVE_ROOT/MANIFEST.md" || true)
++	manifest_before=$(sha256sum "$ARCHIVE_ROOT/MANIFEST.md" | awk '{print $1}')
++	sleep 1
++	run bash "$SUT_COPY"
++	[ "$status" -eq 0 ]
++	[[ "$output" == *"re-run skipped"* ]]
++	# Still 1 archive, manifest unchanged (year-agnostic row match).
++	count=$(find "$ARCHIVE_ROOT" -name "*.age" | wc -l)
++	[ "$count" -eq 1 ]
++	rows_after=$(grep -cE "^\| [0-9]{8}-" "$ARCHIVE_ROOT/MANIFEST.md" || true)
++	[ "$rows_before" -eq "$rows_after" ]
++	manifest_after=$(sha256sum "$ARCHIVE_ROOT/MANIFEST.md" | awk '{print $1}')
++	[ "$manifest_before" = "$manifest_after" ]
++}
++
++@test "8c: pgrep returns running PID → script exits 1 with 'still running'" {
++	# Override pgrep to report a running process.
++	mkstub pgrep 'echo 12345; exit 0'
++	run bash "$SUT_COPY"
++	[ "$status" -eq 1 ]
++	[[ "$output" == *"still running"* ]]
++}
++
++@test "9: ephemeral keypair real-age round-trip (recipient correctness)" {
++	if ! command -v age > /dev/null || ! command -v age-keygen > /dev/null; then
++		skip "real age/age-keygen not available on PATH"
++	fi
++	# Use the REAL age binaries by removing our stubs and rebuilding PATH.
++	rm -f "$STUBS_DIR/age" "$STUBS_DIR/age-keygen"
++
++	# Generate a real keypair.
++	priv="$TMPDIR_TEST/test-priv.key"
++	pub="$TMPDIR_TEST/test-pub.txt"
++	age-keygen -o "$priv" 2> "$pub"
++	chmod 0600 "$priv"
++	REAL_PUBKEY=$(grep '# public key:' "$pub" | sed 's/^# public key: //' | tr -d '[:space:]')
++	[[ -n "$REAL_PUBKEY" ]]
++	# Install the real pubkey at the script's expected location.
++	echo "$REAL_PUBKEY" > "$FAKE_PUBKEY"
++
++	# Run with the real age binary in the loop (stub tar still produces our
++	# sentinel content, which is fine — age will encrypt whatever the file
++	# contains).
++	run bash "$SUT_COPY"
++	[ "$status" -eq 0 ]
++	enc=$(find "$ARCHIVE_ROOT" -name "*.age" | head -1)
++	[[ -n "$enc" ]]
++	# Real decryption with the matching private key MUST succeed.
++	decrypted="$TMPDIR_TEST/decrypted.bin"
++	age -d -i "$priv" "$enc" > "$decrypted"
++	[[ -s "$decrypted" ]]
++	# Decrypted content matches what our tar stub wrote ("fake-tarball-content").
++	grep -q "fake-tarball-content" "$decrypted"
++	# Cleanup
++	shred -u "$priv" "$pub" "$decrypted" 2>/dev/null || rm -f "$priv" "$pub" "$decrypted"
++}
++
++@test "10: jq missing → exits 1 with apt install hint" {
++	# Shadow real jq with a non-executable stub-named file is awkward — easier:
++	# clobber PATH to only contain stubs minus jq (and we never installed a jq
++	# stub).
++	# Need age + the rest of stubs; remove access to real jq by setting PATH
++	# to just $STUBS_DIR.
++	PATH="$STUBS_DIR" run bash "$SUT_COPY"
++	# When PATH is only stubs, `command -v jq` fails (we don't ship a jq stub).
++	[ "$status" -eq 1 ]
++	[[ "$output" == *"jq required"* ]]
++}
