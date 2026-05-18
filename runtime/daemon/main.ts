@@ -60,11 +60,6 @@ import type {
 	AgentMessage,
 	AgentShape,
 } from "../agent-runtime/types.js";
-// Side-effect import — registers `claude-pty` in the polymorphic registry at
-// module load time. Adapter registration failures are fail-isolated inside
-// the adapter module itself; the daemon detects missing registration via
-// `listRuntimes()` at startup (Codex H1 + Opus C2 fix).
-import "../agent-runtime/pty/claude-pty.js";
 import {
 	type ApprovalRequest,
 	listPendingApprovals,
@@ -88,6 +83,59 @@ import { emit } from "./telemetry.js";
  * (heartbeat + bot + ipc + handle loop ≈ 4 stages × 10s, fits under 30s).
  */
 export const SHUTDOWN_STAGE_TIMEOUT_MS = 10_000;
+
+/**
+ * Adapter modules that the daemon loads via `loadAdapterFailIsolated()`. Each
+ * entry is a runtime specifier importable from `runtime/daemon/main.ts`.
+ * Adding a new built-in adapter only requires appending its specifier here.
+ *
+ * Codex H1 + Opus C2: switching from a top-level `import "..."` (which would
+ * crash the daemon if the module threw at registerRuntime) to dynamic
+ * imports inside a try/catch makes the registration boundary explicitly
+ * fail-isolated — per `runtime/agent-runtime/README.md` § "Fail-isolated
+ * policy". A broken adapter still throws at the registry layer, the daemon
+ * catches it here, emits `runtime-registration-failed` telemetry, and boots
+ * with the remaining adapters.
+ */
+const BUILT_IN_ADAPTER_MODULES: readonly string[] = [
+	"../agent-runtime/pty/claude-pty.js",
+];
+
+/**
+ * Dynamically import an adapter module so that a top-level throw (from
+ * `registerRuntime` failures, broken imports, or module-evaluation errors) is
+ * caught at the boundary and converted into a stderr log + a
+ * `runtime-registration-failed` telemetry event. The daemon continues
+ * booting with whichever adapters did register.
+ *
+ * The stack trace is truncated to the first 3 lines — enough for triage
+ * without bloating the telemetry NDJSON line or leaking PII from a deep
+ * stack.
+ */
+export async function loadAdapterFailIsolated(
+	adapterModule: string,
+): Promise<{ loaded: boolean; error?: Error }> {
+	try {
+		await import(adapterModule);
+		return { loaded: true };
+	} catch (err) {
+		const error = err instanceof Error ? err : new Error(String(err));
+		const stackTrace = (error.stack ?? error.message)
+			.split("\n")
+			.slice(0, 3)
+			.join("\n");
+		console.error(
+			`[daemon] adapter ${adapterModule} failed to register: ${error.message}`,
+		);
+		await emit({
+			kind: "runtime-registration-failed",
+			adapterModule,
+			message: error.message,
+			stackTrace,
+		});
+		return { loaded: false, error };
+	}
+}
 
 export async function withTimeout<T>(
 	label: string,
@@ -212,13 +260,14 @@ export async function startDaemon(
 
 	const config = overrideConfig ?? (await loadConfig());
 
-	// Codex H1 + Opus C2: claude-pty is registered via the top-level
-	// side-effect `import "../agent-runtime/pty/claude-pty.js"` (see
-	// imports above — guarantees registration at module load, not at
-	// startDaemon() call time). Validate registration so the operator
-	// sees an explicit error if the adapter failed to register rather
-	// than discovering it via a "No AgentRuntime registered for id"
-	// surprise on first registerAgent().
+	// Codex H1 + Opus C2 + Plan 04 fail-isolation: dynamically import every
+	// built-in adapter module wrapped in `loadAdapterFailIsolated` so a single
+	// broken adapter does NOT crash the daemon — the daemon logs the failure
+	// to stderr, emits `runtime-registration-failed` telemetry, and continues
+	// booting with the adapters that did register.
+	for (const specifier of BUILT_IN_ADAPTER_MODULES) {
+		await loadAdapterFailIsolated(specifier);
+	}
 	const loadedRuntimes = listRuntimes().map((r) => r.id);
 	if (!loadedRuntimes.includes("claude-pty")) {
 		console.error(

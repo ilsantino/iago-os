@@ -34,6 +34,18 @@
  *   Cost is bounded — fires only on Windows when EEXIST/EPERM recovers
  *   a stale dest. Phase 7 will use the collected window data to decide
  *   whether to harden the Windows path to a strictly-atomic primitive.
+ *
+ * Plan feature-phase-1-deferred-hardening/04 added:
+ *   `runtime-registration-failed` — emitted from `daemon/main.ts` when an
+ *   adapter side-effect import throws at the import boundary. Fields:
+ *     - `adapterModule` (the module specifier that failed to load — e.g.,
+ *       `"../agent-runtime/pty/claude-pty.js"`)
+ *     - `message` (Error.message; non-Error values get `String(value)`)
+ *     - `stackTrace` (first 3 lines of the stack — truncated to avoid
+ *       blowing up the NDJSON line and to keep PII surface low)
+ *   Fail-isolated: the daemon continues with the remaining registered
+ *   runtimes. Operators monitor this event to triage adapter regressions
+ *   without scraping stderr.
  */
 
 import * as fsp from "node:fs/promises";
@@ -123,6 +135,12 @@ export type DaemonEvent =
 			 */
 			readonly kind: "approval-claim-link-eperm";
 			readonly approvalIdHash: string;
+	  }
+	| {
+			readonly kind: "runtime-registration-failed";
+			readonly adapterModule: string;
+			readonly message: string;
+			readonly stackTrace: string;
 	  };
 
 let missingSessionIdWarned = false;

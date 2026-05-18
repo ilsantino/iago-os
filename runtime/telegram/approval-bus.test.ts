@@ -235,11 +235,7 @@ describe("approval-bus / concurrent resolveApproval", () => {
 
 		const N = 10;
 		const calls = Array.from({ length: N }, (_, i) =>
-			resolveApproval(
-				approvalId,
-				i % 2 === 0 ? "allow" : "deny",
-				`caller-${i}`,
-			),
+			resolveApproval(approvalId, i % 2 === 0 ? "allow" : "deny", `caller-${i}`),
 		);
 		const results = await Promise.all(calls);
 
@@ -258,12 +254,8 @@ describe("approval-bus / concurrent resolveApproval", () => {
 // PR45 CRITICAL — approvalId validation closes path-traversal surface
 describe("approval-bus / approvalId validation (PR45 security fix)", () => {
 	it("isValidApprovalId accepts UUID v4 format from crypto.randomUUID()", () => {
-		expect(isValidApprovalId("11111111-2222-4333-8444-555555555555")).toBe(
-			true,
-		);
-		expect(isValidApprovalId("aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee")).toBe(
-			true,
-		);
+		expect(isValidApprovalId("11111111-2222-4333-8444-555555555555")).toBe(true);
+		expect(isValidApprovalId("aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee")).toBe(true);
 	});
 
 	it("isValidApprovalId rejects path-traversal payloads", () => {
@@ -278,9 +270,9 @@ describe("approval-bus / approvalId validation (PR45 security fix)", () => {
 		expect(isValidApprovalId("abc123")).toBe(false);
 		expect(isValidApprovalId("")).toBe(false);
 		expect(isValidApprovalId("xyz")).toBe(false);
-		expect(
-			isValidApprovalId("11111111-2222-4333-8444-555555555555.extra"),
-		).toBe(false);
+		expect(isValidApprovalId("11111111-2222-4333-8444-555555555555.extra")).toBe(
+			false,
+		);
 		// UUID with NUL byte
 		expect(isValidApprovalId("11111111-2222-4333-8444-555555555555\0")).toBe(
 			false,
@@ -295,11 +287,7 @@ describe("approval-bus / approvalId validation (PR45 security fix)", () => {
 	});
 
 	it("resolveApproval('../../agents/foo', ...) returns invalid-id WITHOUT touching the filesystem", async () => {
-		const result = await resolveApproval(
-			"../../agents/foo",
-			"allow",
-			"santiago",
-		);
+		const result = await resolveApproval("../../agents/foo", "allow", "santiago");
 		expect(result.ok).toBe(false);
 		if (!result.ok) {
 			expect(result.reason).toBe("invalid-id");
@@ -350,11 +338,7 @@ describe("approval-bus / no-strand resolution (PR45 Codex HIGH fix)", () => {
 		// file directly. The previous-impl strand-window bug would have lost
 		// this approval entirely.
 		const approvalId = "33333333-4444-4555-8666-777777777777";
-		const inflightDir = path.join(
-			pathFor("approvals/pending"),
-			"..",
-			"inflight",
-		);
+		const inflightDir = path.join(pathFor("approvals/pending"), "..", "inflight");
 		await fsp.mkdir(inflightDir, { recursive: true });
 		const inflightPath = path.join(inflightDir, `${approvalId}.json`);
 		const envelope = {
@@ -436,8 +420,7 @@ describe("approval-bus / dual-presence stranded recovery (PR48 Codex HIGH)", () 
 
 	it("resolveApproval rolls forward when pending + inflight both exist (no resolved)", async () => {
 		const approvalId = "44444444-1111-4222-8333-444444444444";
-		const { pendingPath, inflightPath } =
-			await simulateDualPresence(approvalId);
+		const { pendingPath, inflightPath } = await simulateDualPresence(approvalId);
 
 		// Pre-conditions
 		await expect(fsp.access(pendingPath)).resolves.toBeUndefined();
@@ -480,8 +463,7 @@ describe("approval-bus / dual-presence stranded recovery (PR48 Codex HIGH)", () 
 
 	it("recoverStrandedApprovals unlinks inflight hardlink on dual-presence; pending preserved", async () => {
 		const approvalId = "66666666-1111-4222-8333-666666666666";
-		const { pendingPath, inflightPath } =
-			await simulateDualPresence(approvalId);
+		const { pendingPath, inflightPath } = await simulateDualPresence(approvalId);
 
 		const report = await recoverStrandedApprovals();
 
@@ -529,8 +511,7 @@ describe("approval-bus / dual-presence stranded recovery (PR48 Codex HIGH)", () 
 
 	it("recoverStrandedApprovals cleans inflight when resolved already exists; resolved wins", async () => {
 		const approvalId = "88888888-1111-4222-8333-888888888888";
-		const { pendingPath, inflightPath } =
-			await simulateDualPresence(approvalId);
+		const { pendingPath, inflightPath } = await simulateDualPresence(approvalId);
 
 		// Pretend a prior resolved write committed before the crash but the
 		// inflight cleanup never ran.

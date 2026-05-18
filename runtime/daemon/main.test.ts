@@ -124,9 +124,7 @@ describe("loadPersistedConfigs", () => {
 		// throws "Cannot redefine property" on `fsp.readdir` under Node 20.
 		await fsp.rm(pathFor("agents"), { recursive: true, force: true });
 		await fsp.writeFile(pathFor("agents"), "not a directory");
-		const errSpy = vi
-			.spyOn(console, "error")
-			.mockImplementation(() => undefined);
+		const errSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
 		const result = await loadPersistedConfigs();
 		expect(result.size).toBe(0);
 		const logs = errSpy.mock.calls.map((c) => String(c[0])).join("\n");
@@ -146,9 +144,7 @@ describe("loadPersistedConfigs", () => {
 		await fsp.mkdir(path.join(pathFor("agents"), "h-eisdir.json"), {
 			recursive: true,
 		});
-		const errSpy = vi
-			.spyOn(console, "error")
-			.mockImplementation(() => undefined);
+		const errSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
 		const result = await loadPersistedConfigs();
 		expect(result.size).toBe(0);
 		const logs = errSpy.mock.calls.map((c) => String(c[0])).join("\n");
@@ -158,9 +154,7 @@ describe("loadPersistedConfigs", () => {
 
 	it("logs and continues on a JSON parse error", async () => {
 		await fsp.writeFile(path.join(pathFor("agents"), "bad.json"), "{not-json");
-		const errSpy = vi
-			.spyOn(console, "error")
-			.mockImplementation(() => undefined);
+		const errSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
 		const result = await loadPersistedConfigs();
 		expect(result.size).toBe(0);
 		const logs = errSpy.mock.calls.map((c) => String(c[0])).join("\n");
@@ -183,9 +177,7 @@ describe("loadPersistedConfigs", () => {
 			cwd: "/tmp",
 			sessionId: "s-1",
 		});
-		const errSpy = vi
-			.spyOn(console, "error")
-			.mockImplementation(() => undefined);
+		const errSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
 		const result = await loadPersistedConfigs();
 		expect(result.size).toBe(0);
 		const logs = errSpy.mock.calls.map((c) => String(c[0])).join("\n");
@@ -295,9 +287,7 @@ describe("withTimeout", () => {
 	});
 
 	it('returns "timeout" and writes a stderr warning when the op exceeds the timeout', async () => {
-		const errSpy = vi
-			.spyOn(console, "error")
-			.mockImplementation(() => undefined);
+		const errSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
 		const result = await withTimeout(
 			"slow-op",
 			() => new Promise<number>((resolve) => setTimeout(() => resolve(1), 200)),

@@ -164,10 +164,7 @@ describe("file-bus / writeResolvedOutput", () => {
 		});
 		// Plant a directory at the final path so rename(file → dir) fails on
 		// every platform; on Windows the unlink-fallback also fails.
-		const finalPath = path.join(
-			pathFor("tasks/resolved"),
-			"t-tmp-cleanup.json",
-		);
+		const finalPath = path.join(pathFor("tasks/resolved"), "t-tmp-cleanup.json");
 		await fsp.mkdir(finalPath);
 
 		await expect(
@@ -311,10 +308,7 @@ describe("file-bus / reclaimIfStale", () => {
 		// never reach it.
 		const taskId = "t-zero-byte";
 		await makePendingTask(taskId);
-		const claimPath = path.join(
-			pathFor("tasks/claimed"),
-			`${taskId}.claim.json`,
-		);
+		const claimPath = path.join(pathFor("tasks/claimed"), `${taskId}.claim.json`);
 		// Pre-plant an empty claim file (no contents at all).
 		await fsp.writeFile(claimPath, "");
 		expect((await fsp.stat(claimPath)).size).toBe(0);
@@ -329,10 +323,7 @@ describe("file-bus / reclaimIfStale", () => {
 	it("recovers a malformed (non-JSON) claim file (C1)", async () => {
 		const taskId = "t-malformed-claim";
 		await makePendingTask(taskId);
-		const claimPath = path.join(
-			pathFor("tasks/claimed"),
-			`${taskId}.claim.json`,
-		);
+		const claimPath = path.join(pathFor("tasks/claimed"), `${taskId}.claim.json`);
 		await fsp.writeFile(claimPath, "{partial json");
 
 		expect(await reclaimIfStale(taskId, 60_000)).toBe(true);
@@ -342,10 +333,7 @@ describe("file-bus / reclaimIfStale", () => {
 	it("after recovering a malformed claim, a fresh claimTask succeeds (C1 end-to-end)", async () => {
 		const taskId = "t-c1-recovery";
 		await makePendingTask(taskId);
-		const claimPath = path.join(
-			pathFor("tasks/claimed"),
-			`${taskId}.claim.json`,
-		);
+		const claimPath = path.join(pathFor("tasks/claimed"), `${taskId}.claim.json`);
 		await fsp.writeFile(claimPath, "");
 
 		// First, simulate boot-recovery: reclaimIfStale clears the orphan.
@@ -391,9 +379,7 @@ describe("file-bus / taskId path-traversal guard", () => {
 	});
 
 	it("readResolvedOutput / readClaim / reclaimIfStale reject unsafe taskIds", async () => {
-		await expect(readResolvedOutput("../etc/passwd")).rejects.toThrow(
-			TypeError,
-		);
+		await expect(readResolvedOutput("../etc/passwd")).rejects.toThrow(TypeError);
 		await expect(readClaim("a/b")).rejects.toThrow(TypeError);
 		await expect(reclaimIfStale("foo\0bar", 1_000)).rejects.toThrow(TypeError);
 	});

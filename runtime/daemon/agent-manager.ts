@@ -688,10 +688,7 @@ export class AgentManager {
 				// matches the marker's handleId. Adapters MAY return a handle
 				// with a different id (e.g., generation suffix); the recovered
 				// listing reflects what was actually tracked.
-				const recoveredId = await this.attemptCrashReplay(
-					handleId,
-					knownConfigs,
-				);
+				const recoveredId = await this.attemptCrashReplay(handleId, knownConfigs);
 				if (recoveredId !== null && this.handles.has(recoveredId)) {
 					recovered.push(recoveredId);
 				}
@@ -709,10 +706,7 @@ export class AgentManager {
 				for (const handleId of knownConfigs.keys()) {
 					if (seenHandleIds.has(handleId)) continue;
 					crashes.push(handleId);
-					const recoveredId = await this.attemptCrashReplay(
-						handleId,
-						knownConfigs,
-					);
+					const recoveredId = await this.attemptCrashReplay(handleId, knownConfigs);
 					if (recoveredId !== null && this.handles.has(recoveredId)) {
 						recovered.push(recoveredId);
 					}
@@ -1316,11 +1310,7 @@ export class AgentManager {
 			if (tracked.handle.agentId !== agentId) continue;
 			const existingOrg = tracked.org;
 			if (existingOrg !== attemptedOrg) {
-				throw new AgentIdAlreadyRegisteredError(
-					agentId,
-					existingOrg,
-					attemptedOrg,
-				);
+				throw new AgentIdAlreadyRegisteredError(agentId, existingOrg, attemptedOrg);
 			}
 		}
 
@@ -1357,11 +1347,7 @@ export class AgentManager {
 			const orgVal = (parsed as { org?: unknown }).org;
 			const existingOrg = typeof orgVal === "string" ? orgVal : null;
 			if (existingOrg !== attemptedOrg) {
-				throw new AgentIdAlreadyRegisteredError(
-					agentId,
-					existingOrg,
-					attemptedOrg,
-				);
+				throw new AgentIdAlreadyRegisteredError(agentId, existingOrg, attemptedOrg);
 			}
 		}
 	}
