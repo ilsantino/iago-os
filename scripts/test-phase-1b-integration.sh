@@ -355,7 +355,7 @@ echo ""
 overall=0
 for r in "$S1_RESULT" "$S2_RESULT" "$S3_RESULT" "$S4_RESULT"; do
   case "$r" in
-    PASS|"?" ) ;;
+    PASS|"?" ) ;; # "?" = not run (--section N partial run), counts as non-failure
     *) overall=1 ;;
   esac
 done

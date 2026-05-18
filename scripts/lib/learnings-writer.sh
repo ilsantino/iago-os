@@ -80,15 +80,14 @@ learnings_write() {
   # Best-effort mkdir — failure is not fatal here, the write will surface it.
   mkdir -p "$learnings_dir" 2>/dev/null || true
 
-  # Opus PR #55 dual-review I1: redirect order must put 2>&1 BEFORE >>
-  # so fd2 still points to the (captured) stdout when fd1 redirects to the
-  # file. With `>> $target 2>&1` (the prior buggy order), both fds went to
-  # the file and $(...) captured nothing, silently dropping the diagnostic
-  # the fail-loud writer was specifically created to surface. Matches the
-  # fallback path below which already had the correct order.
-  local err
-  err=$(printf '\n## %s — %s\n\n%s\n' "$ts" "$key" "$body" 2>&1 >> "$target")
+  # Use a tmpfile to capture bash's redirect-error (e.g. "$target" is a directory).
+  # The 2>&1 >> pattern does NOT capture bash's own file-open error — it goes to
+  # the shell's real stderr, not through the command's fd2. Tmpfile redirect catches it.
+  local err _etmp
+  _etmp=$(mktemp)
+  printf '\n## %s — %s\n\n%s\n' "$ts" "$key" "$body" >> "$target" 2>"$_etmp"
   local write_rc=$?
+  err=$(<"$_etmp"); rm -f "$_etmp"
 
   if (( write_rc == 0 )); then
     __learnings_emit_event "learnings_written" "$target" ""
@@ -100,9 +99,11 @@ learnings_write() {
     local fb_ts
     fb_ts=$(date -u +%Y%m%d-%H%M%S)
     local fb_path="$fallback_dir/learnings-fallback-${fb_ts}-$$.md"
-    local fb_err
-    fb_err=$(printf '\n## %s — %s\n\n%s\n' "$ts" "$key" "$body" >> "$fb_path" 2>&1)
+    local fb_err _fb_etmp
+    _fb_etmp=$(mktemp)
+    printf '\n## %s — %s\n\n%s\n' "$ts" "$key" "$body" >> "$fb_path" 2>"$_fb_etmp"
     local fb_rc=$?
+    fb_err=$(<"$_fb_etmp"); rm -f "$_fb_etmp"
     if (( fb_rc == 0 )); then
       echo "learnings_write: WARNING — primary write failed ($err); fell back to $fb_path" >&2
       __learnings_emit_event "learnings_written_to_fallback" "$fb_path" "$err"
