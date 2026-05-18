@@ -45,6 +45,30 @@
  *   External overrides (env vars whose current value differs from
  *   what this helper last wrote, including values set before the
  *   first call) are preserved across reloads.
+ *
+ * Forward-notes for Plan 06 (SIGHUP credential-reload handler):
+ *   - I1 (dual-review): the `credentialsLoaded` field on `main.ts`'s
+ *     `cred-bootstrap-loaded` telemetry event is computed by diffing
+ *     env-var keys-of-interest (before-unset && after-set). On cold
+ *     boot this works because the before-set is always empty. On a
+ *     SIGHUP-triggered reload where the env was already populated by
+ *     a prior call, the diff returns `[]` — telemetry no longer
+ *     reflects which credentials the helper actually replaced.
+ *     Plan 06 should either change the criterion to `after !== before`
+ *     (captures rotation) or have this helper return the list of file
+ *     names it wrote on each call and pass that through to telemetry.
+ *   - I2 (dual-review): the `lastWrittenByCredstore` map distinguishes
+ *     credstore-sourced env vars from external overrides by tracking
+ *     what we last wrote. If an env var was set externally to a value
+ *     coincidentally equal to the credstore file contents on first
+ *     boot, this helper treats it as external on every subsequent
+ *     reload and the value never updates. Edge case in practice
+ *     (operator would need to set systemd `Environment=` to the same
+ *     literal as the credstore file). If Plan 06 surfaces this in the
+ *     field, gate on "first invocation only" — track whether the
+ *     helper has ever been called for this envVar in this process
+ *     and on first sight accept the file value as ours regardless of
+ *     match.
  */
 
 import * as fs from "node:fs";
