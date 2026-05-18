@@ -87,9 +87,9 @@ import { emit } from "./telemetry.js";
  * matches the 30s budget documented in `runtime/migration/phase-1-rollback.md`
  * (heartbeat + bot + ipc + handle loop ≈ 4 stages × 10s, fits under 30s).
  */
-const SHUTDOWN_STAGE_TIMEOUT_MS = 10_000;
+export const SHUTDOWN_STAGE_TIMEOUT_MS = 10_000;
 
-async function withTimeout<T>(
+export async function withTimeout<T>(
 	label: string,
 	op: () => Promise<T>,
 	timeoutMs = SHUTDOWN_STAGE_TIMEOUT_MS,
@@ -328,6 +328,34 @@ export async function startDaemon(
 		resolveShutdownPromise = resolve;
 	});
 
+	// Stress note I1 (plan feature-phase-1-deferred-hardening/03): allow
+	// tests to pass a small timeout so the shutdown-hang integration test
+	// completes in <200ms instead of blocking on the 10s production
+	// default. Production callers omit the override entirely.
+	//
+	// Codex PR #51 high-finding (dual-review): validate the override before
+	// using it. An unvalidated 0 / negative / NaN / non-finite value makes
+	// every `withTimeout` stage fire immediately, so daemon-stop telemetry
+	// reports clean shutdown while heartbeat / IPC / bot / per-agent stop
+	// promises are still pending — subprocesses may outlive the daemon and
+	// observability becomes a lie. Reject obviously-broken values up front;
+	// fall back to the production default. The minimum (1ms) is permissive
+	// enough to keep the integration test affordance working while blocking
+	// the dangerous values.
+	const rawStageTimeout = config.shutdownStageTimeoutMs;
+	const stageTimeoutMs =
+		typeof rawStageTimeout === "number" &&
+		Number.isFinite(rawStageTimeout) &&
+		Number.isInteger(rawStageTimeout) &&
+		rawStageTimeout >= 1
+			? rawStageTimeout
+			: SHUTDOWN_STAGE_TIMEOUT_MS;
+	if (rawStageTimeout !== undefined && stageTimeoutMs !== rawStageTimeout) {
+		console.error(
+			`[daemon] ignoring invalid shutdownStageTimeoutMs=${String(rawStageTimeout)}; using ${SHUTDOWN_STAGE_TIMEOUT_MS}ms default`,
+		);
+	}
+
 	const shutdown = async (): Promise<void> => {
 		if (shuttingDown) return;
 		shuttingDown = true;
@@ -335,55 +363,71 @@ export async function startDaemon(
 		// (heartbeat sweep, bot polling, IPC drain, or per-handle
 		// shutdown) would otherwise block the entire daemon and the
 		// rollback runbook's `kill -KILL` step was the only escape.
-		await withTimeout("heartbeat.stop", async () => {
-			try {
-				await heartbeat.stop();
-			} catch (err) {
-				console.error(
-					`[daemon] heartbeat.stop failed: ${err instanceof Error ? err.message : String(err)}`,
-				);
-			}
-		});
+		await withTimeout(
+			"heartbeat.stop",
+			async () => {
+				try {
+					await heartbeat.stop();
+				} catch (err) {
+					console.error(
+						`[daemon] heartbeat.stop failed: ${err instanceof Error ? err.message : String(err)}`,
+					);
+				}
+			},
+			stageTimeoutMs,
+		);
 		if (bot !== null) {
 			const botRef = bot;
-			await withTimeout("bot.stop", async () => {
+			await withTimeout(
+				"bot.stop",
+				async () => {
+					try {
+						await botRef.stop();
+					} catch (err) {
+						console.error(
+							`[daemon] bot.stop failed: ${err instanceof Error ? err.message : String(err)}`,
+						);
+					}
+				},
+				stageTimeoutMs,
+			);
+		}
+		await withTimeout(
+			"ipcServer.stop",
+			async () => {
 				try {
-					await botRef.stop();
+					await ipcServer.stop();
 				} catch (err) {
 					console.error(
-						`[daemon] bot.stop failed: ${err instanceof Error ? err.message : String(err)}`,
+						`[daemon] ipcServer.stop failed: ${err instanceof Error ? err.message : String(err)}`,
 					);
 				}
-			});
-		}
-		await withTimeout("ipcServer.stop", async () => {
-			try {
-				await ipcServer.stop();
-			} catch (err) {
-				console.error(
-					`[daemon] ipcServer.stop failed: ${err instanceof Error ? err.message : String(err)}`,
-				);
-			}
-		});
+			},
+			stageTimeoutMs,
+		);
 		const handles = agentManager.listHandles();
 		for (const handle of handles) {
-			await withTimeout(`shutdownAgent(${handle.id})`, async () => {
-				try {
-					await agentManager.shutdownAgent(handle.id, "SIGTERM");
-					// Telemetry — shutdown is the canonical "graceful exit" hook;
-					// without this, the 7-canonical-event PHASE-1-EVIDENCE.md
-					// matrix (Opus I5) lacks `agent-exited` on the happy path.
-					await emit({
-						kind: "agent-exited",
-						handleId: handle.id,
-						reason: "graceful",
-					});
-				} catch (err) {
-					console.error(
-						`[daemon] shutdownAgent(${handle.id}) failed: ${err instanceof Error ? err.message : String(err)}`,
-					);
-				}
-			});
+			await withTimeout(
+				`shutdownAgent(${handle.id})`,
+				async () => {
+					try {
+						await agentManager.shutdownAgent(handle.id, "SIGTERM");
+						// Telemetry — shutdown is the canonical "graceful exit" hook;
+						// without this, the 7-canonical-event PHASE-1-EVIDENCE.md
+						// matrix (Opus I5) lacks `agent-exited` on the happy path.
+						await emit({
+							kind: "agent-exited",
+							handleId: handle.id,
+							reason: "graceful",
+						});
+					} catch (err) {
+						console.error(
+							`[daemon] shutdownAgent(${handle.id}) failed: ${err instanceof Error ? err.message : String(err)}`,
+						);
+					}
+				},
+				stageTimeoutMs,
+			);
 		}
 		try {
 			await emit({
@@ -502,7 +546,7 @@ export async function main(): Promise<void> {
 	await daemon.shutdownPromise;
 }
 
-async function buildFleetHealth(
+export async function buildFleetHealth(
 	manager: AgentManager,
 ): Promise<Array<Record<string, unknown>>> {
 	const handles = manager.listHandles();
@@ -515,7 +559,7 @@ async function buildFleetHealth(
 	}));
 }
 
-async function getShapeForAgent(
+export async function getShapeForAgent(
 	manager: AgentManager,
 	agentId: string,
 ): Promise<AgentShape | null> {
@@ -525,7 +569,7 @@ async function getShapeForAgent(
 	return null;
 }
 
-async function injectIntoAgent(
+export async function injectIntoAgent(
 	manager: AgentManager,
 	agentId: string,
 	text: string,
@@ -539,7 +583,7 @@ async function injectIntoAgent(
 	await runtime.send(handle, message);
 }
 
-function findHandleForAgent(
+export function findHandleForAgent(
 	manager: AgentManager,
 	agentId: string,
 ): AgentHandle | null {
@@ -549,7 +593,7 @@ function findHandleForAgent(
 	return null;
 }
 
-function resolveSessionId(cfg: AgentConfig): string {
+export function resolveSessionId(cfg: AgentConfig): string {
 	const envSession = cfg.env.CLAUDE_CODE_SESSION_ID;
 	if (typeof envSession === "string" && envSession.length > 0) {
 		return envSession;
@@ -575,7 +619,7 @@ export { listPendingApprovals };
  * `main()`. On import-as-library (the test path): the URL of the importer
  * differs from `argv[1]`, so this branch does not fire.
  */
-function isDirectlyExecuted(): boolean {
+export function isDirectlyExecuted(): boolean {
 	const argv1 = process.argv[1];
 	if (argv1 === undefined) return false;
 	try {

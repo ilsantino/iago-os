@@ -58,6 +58,14 @@ export interface DaemonConfig {
 	readonly agents: AgentConfig[];
 	readonly heartbeat: DaemonHeartbeatConfig;
 	readonly ipc: DaemonIpcConfig;
+	/**
+	 * Per-stage shutdown timeout (ms). Stress note I1 (plan
+	 * feature-phase-1-deferred-hardening/03): exposed as a test-affordance
+	 * so the shutdown-hang integration test can pass 50ms instead of
+	 * blocking on the 10s production default. Optional; omit to inherit
+	 * `SHUTDOWN_STAGE_TIMEOUT_MS` in `daemon/main.ts`.
+	 */
+	readonly shutdownStageTimeoutMs?: number;
 }
 
 const DEFAULT_HEARTBEAT: DaemonHeartbeatConfig = {
@@ -117,6 +125,7 @@ interface FilePayload {
 		readonly socketPath?: unknown;
 		readonly cacheTtlMs?: unknown;
 	};
+	readonly shutdownStageTimeoutMs?: unknown;
 }
 
 function ensureRecord(value: unknown, label: string): Record<string, unknown> {
@@ -162,8 +171,7 @@ function parseAgents(value: unknown, sourcePath: string): AgentConfig[] {
 			}
 		}
 		const autoStartRaw = entry.autoStart;
-		const autoStart =
-			typeof autoStartRaw === "boolean" ? autoStartRaw : false;
+		const autoStart = typeof autoStartRaw === "boolean" ? autoStartRaw : false;
 		out.push({ agentId, runtimeId, org, cwd, env, autoStart });
 	}
 	return out;
@@ -178,7 +186,10 @@ function parseHeartbeat(
 	const intervalMs =
 		rec.intervalMs === undefined
 			? DEFAULT_HEARTBEAT.intervalMs
-			: requireFiniteNumber(rec.intervalMs, `${sourcePath}: heartbeat.intervalMs`);
+			: requireFiniteNumber(
+					rec.intervalMs,
+					`${sourcePath}: heartbeat.intervalMs`,
+				);
 	const rssLimitBytes =
 		rec.rssLimitBytes === undefined
 			? DEFAULT_HEARTBEAT.rssLimitBytes
@@ -302,9 +313,7 @@ export async function loadConfig(): Promise<DaemonConfig> {
 
 	const sourcePath = file === null ? "<defaults>" : file.sourcePath;
 	const fileTelegram =
-		file === null
-			? null
-			: parseTelegramFile(file.payload.telegram, sourcePath);
+		file === null ? null : parseTelegramFile(file.payload.telegram, sourcePath);
 	const fileAgents =
 		file === null ? [] : parseAgents(file.payload.agents, sourcePath);
 	const fileHeartbeat =
@@ -366,11 +375,30 @@ export async function loadConfig(): Promise<DaemonConfig> {
 		),
 	};
 
+	// Opus PR #51 dual-review I1: round-trip shutdownStageTimeoutMs from
+	// the JSON file. The prior version declared the field on DaemonConfig
+	// but stripped it at parse time, so writing
+	// `"shutdownStageTimeoutMs": 5000` in `runtime/daemon-config.json` was
+	// a silent no-op. main.ts validates the value (rejects 0/NaN/negative/
+	// non-integer/non-finite) and falls back to SHUTDOWN_STAGE_TIMEOUT_MS
+	// with a stderr warning, so unsafe operator input is bounded.
+	let shutdownStageTimeoutMs: number | undefined;
+	if (file !== null && file.payload.shutdownStageTimeoutMs !== undefined) {
+		const raw = file.payload.shutdownStageTimeoutMs;
+		if (typeof raw !== "number") {
+			throw new RangeError(
+				`${sourcePath}: shutdownStageTimeoutMs must be a number`,
+			);
+		}
+		shutdownStageTimeoutMs = raw;
+	}
+
 	return {
 		telegram,
 		agents: fileAgents,
 		heartbeat,
 		ipc,
+		...(shutdownStageTimeoutMs !== undefined ? { shutdownStageTimeoutMs } : {}),
 	};
 }
 

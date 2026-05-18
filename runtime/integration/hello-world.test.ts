@@ -631,4 +631,201 @@ describe("Phase 1 hello-world end-to-end (mocked PTY + Telegram)", () => {
 		expect(marker.reason).toBe("graceful");
 		expect(marker.pid).toBe(process.pid);
 	});
+
+	// -------------------------------------------------------------------
+	// Plan feature-phase-1-deferred-hardening/03 — startDaemon wire-path
+	// coverage. Each test below exercises a specific main.ts branch that
+	// the pure-helper tests in daemon/main.test.ts cannot reach.
+	// -------------------------------------------------------------------
+
+	it("startDaemon emits cleanShutdowns + crashes telemetry from bootRecovery", async () => {
+		// Pre-seed TWO persisted records: one with a graceful marker
+		// (cleanShutdowns path) and one without a marker (crash path).
+		const cleanHandleId = "handle-clean-1";
+		const crashHandleId = "handle-crash-1";
+		const baseCfg = {
+			agentId: "claude-recovered",
+			runtimeId: "claude-pty",
+			org: null,
+			cwd: stateRoot,
+			sessionId: "hello-world-session",
+			runtimeVersion: "1.0.0",
+			env: { CLAUDE_CODE_SESSION_ID: "hello-world-session" },
+		};
+		await fs.writeFile(
+			path.join(pathFor("agents"), `${cleanHandleId}.json`),
+			JSON.stringify(baseCfg),
+		);
+		await fs.writeFile(
+			path.join(pathFor("agents"), `${crashHandleId}.json`),
+			JSON.stringify(baseCfg),
+		);
+		// Marker for the clean handle only — crash handle deliberately omits.
+		await fs.writeFile(
+			path.join(pathFor("markers"), `${cleanHandleId}.daemon-stop`),
+			JSON.stringify({
+				reason: "graceful",
+				at: Date.now(),
+				pid: process.pid,
+			}),
+		);
+
+		const daemon = await buildDaemon({ withBot: false, agents: [] });
+
+		const lines = await readTelemetryLines();
+		const cleanExits = lines.filter(
+			(l) =>
+				l.kind === "agent-exited" &&
+				(l as { handleId?: string }).handleId === cleanHandleId &&
+				(l as { reason?: string }).reason === "graceful",
+		);
+		const crashExits = lines.filter(
+			(l) =>
+				l.kind === "agent-exited" &&
+				(l as { handleId?: string }).handleId === crashHandleId &&
+				(l as { reason?: string }).reason === "crash",
+		);
+		expect(cleanExits.length).toBe(1);
+		expect(crashExits.length).toBe(1);
+
+		await daemon.shutdown();
+	});
+
+	it("startDaemon shutdown swallows per-stage failures and still emits daemon-stop", async () => {
+		const daemon = await buildDaemon({
+			withBot: false,
+			agents: [],
+		});
+		// Force heartbeat.stop to throw — the per-stage try/catch in main.ts
+		// (lines 348-354) must log to stderr and NOT propagate.
+		vi.spyOn(daemon.heartbeat, "stop").mockRejectedValueOnce(
+			new Error("heartbeat-boom"),
+		);
+		const errSpy = vi
+			.spyOn(console, "error")
+			.mockImplementation(() => undefined);
+
+		await daemon.shutdown();
+
+		const logs = errSpy.mock.calls.map((c) => String(c[0])).join("\n");
+		expect(logs).toContain("heartbeat.stop failed");
+		expect(logs).toContain("heartbeat-boom");
+
+		// daemon-stop telemetry must still have been emitted (post-shutdown
+		// even with a per-stage failure).
+		const kinds = await readTelemetryKinds();
+		expect(kinds.has("daemon-stop")).toBe(true);
+	});
+
+	it("startDaemon shutdown bounds each stage at shutdownStageTimeoutMs", async () => {
+		// Construct a daemon with a tiny per-stage timeout, then make
+		// heartbeat.stop hang forever. The withTimeout wrapper in main.ts
+		// must bound the wait and let shutdown complete via "timeout".
+		const { startDaemon } = await import("../daemon/main.js");
+		const daemon = await startDaemon({
+			telegram: null,
+			agents: [],
+			heartbeat: {
+				intervalMs: 60_000,
+				rssLimitBytes: 512 * 1024 * 1024,
+				stallThresholdMs: 5 * 60_000,
+			},
+			ipc: {
+				socketPath:
+					process.platform === "win32"
+						? `\\\\.\\pipe\\iago-test-stagehang-${Date.now()}`
+						: path.join(stateRoot, `ipc-stagehang-${Date.now()}.sock`),
+				cacheTtlMs: 30_000,
+			},
+			shutdownStageTimeoutMs: 50,
+		});
+
+		// heartbeat.stop hangs — never resolves.
+		vi.spyOn(daemon.heartbeat, "stop").mockReturnValue(
+			new Promise<void>(() => undefined),
+		);
+		const errSpy = vi
+			.spyOn(console, "error")
+			.mockImplementation(() => undefined);
+
+		const start = Date.now();
+		await daemon.shutdown();
+		const elapsed = Date.now() - start;
+
+		// Each stage bounded at 50ms → total well under 1s even with 3-4
+		// stages in series. Confirms the withTimeout wrapper fired.
+		expect(elapsed).toBeLessThan(1_000);
+		const logs = errSpy.mock.calls.map((c) => String(c[0])).join("\n");
+		expect(logs).toContain("heartbeat.stop");
+		expect(logs).toContain("exceeded 50ms");
+	});
+
+	it.each([
+		["zero", 0],
+		["negative", -100],
+		["NaN", Number.NaN],
+		["fractional", 12.5],
+		["Infinity", Number.POSITIVE_INFINITY],
+	])(
+		"rejects invalid shutdownStageTimeoutMs (%s) and uses production default (Codex PR #51 high)",
+		async (_label, badValue) => {
+			// Codex PR #51 dual-review high finding: an unvalidated
+			// shutdownStageTimeoutMs of 0/NaN/negative would make every
+			// `withTimeout` stage fire immediately; daemon-stop telemetry
+			// reports clean shutdown while subprocesses may still be alive.
+			// Verify the validation rejects these values and falls back to
+			// SHUTDOWN_STAGE_TIMEOUT_MS (10_000ms). We also assert the
+			// stderr warning fires so the misuse is observable.
+			const { startDaemon } = await import("../daemon/main.js");
+			const errSpy = vi
+				.spyOn(console, "error")
+				.mockImplementation(() => undefined);
+
+			const daemon = await startDaemon({
+				telegram: null,
+				agents: [],
+				heartbeat: {
+					intervalMs: 60_000,
+					rssLimitBytes: 512 * 1024 * 1024,
+					stallThresholdMs: 5 * 60_000,
+				},
+				ipc: {
+					socketPath:
+						process.platform === "win32"
+							? `\\\\.\\pipe\\iago-test-validation-${Date.now()}-${Math.random()}`
+							: path.join(
+									stateRoot,
+									`ipc-validation-${Date.now()}-${Math.random()}.sock`,
+								),
+					cacheTtlMs: 30_000,
+				},
+				shutdownStageTimeoutMs: badValue as number,
+			});
+
+			const warningFired = errSpy.mock.calls.some((call) =>
+				String(call[0]).includes("ignoring invalid shutdownStageTimeoutMs"),
+			);
+			expect(warningFired).toBe(true);
+
+			// Shutdown should complete normally (default 10s timeout
+			// applies; with no hung adapters it returns immediately).
+			await daemon.shutdown();
+		},
+	);
+
+	it("daemon emits warning when claude-pty adapter is not registered", async () => {
+		// Wipe the runtime registry so the listRuntimes() check at
+		// main.ts:222 finds no "claude-pty" entry and logs a warning.
+		_resetRegistryForTests();
+		const errSpy = vi
+			.spyOn(console, "error")
+			.mockImplementation(() => undefined);
+
+		const daemon = await buildDaemon({ withBot: false, agents: [] });
+
+		const logs = errSpy.mock.calls.map((c) => String(c[0])).join("\n");
+		expect(logs).toContain("claude-pty adapter is not registered");
+		expect(daemon).toBeDefined();
+		await daemon.shutdown();
+	});
 });
