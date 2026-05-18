@@ -119,12 +119,32 @@ for key in "$@"; do
   #      rotation in 1Password and ship encrypted value A while
   #      comparing length against value B.
   #   2. Halves 1Password API calls (matters for `all`, which loops 5×).
-  # The `; printf X` + `${var%X}` trick preserves trailing newlines
-  # which bash command substitution would otherwise strip — keeps the
-  # bytes shipped identical to what `op read` produces verbatim.
-  plaintext_marker=$(op read "$op_ref"; printf 'X')
+  #
+  # Two-step capture (status check, THEN trailing-newline marker):
+  #   Step 1: `plaintext_raw=$(op read ...)` so the subshell exit status
+  #     IS `op read`'s status. Earlier `$(op read; printf X)` masked
+  #     failures because printf always returns 0, letting set -e through
+  #     and silently rotating live tokens to empty values when 1Password
+  #     items were missing, permissions failed, or op had a transient.
+  #   Step 2: append-X then strip-X preserves any trailing newline that
+  #     bash command substitution would otherwise strip — keeps the bytes
+  #     shipped identical to what `op read` produces verbatim.
+  # Empty-value guard: after the strip, a zero-length plaintext means
+  # the 1Password item exists but the field is empty (op exits 0). Without
+  # this guard, an empty value would encrypt + publish + pass the
+  # round-trip length check (0==0) and silently brick the credential.
+  if ! plaintext_raw=$(op read "$op_ref"); then
+    echo "ERROR: op read failed for $op_ref" >&2
+    exit 1
+  fi
+  plaintext_marker="${plaintext_raw}X"
+  unset plaintext_raw
   plaintext="${plaintext_marker%X}"
   unset plaintext_marker
+  if [[ -z "$plaintext" ]]; then
+    echo "ERROR: op read returned empty value for $op_ref (1Password item exists but field is empty)" >&2
+    exit 1
+  fi
   local_len=$(printf '%s' "$plaintext" | wc -c | tr -d ' \n')
 
   # 1Password → systemd-creds encrypt → /etc/credstore.encrypted/

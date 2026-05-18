@@ -28,6 +28,7 @@ setup() {
   # Default stub behavior — each test can override before `run`.
   export OP_WHOAMI_RC=0
   export OP_READ_OUTPUT="fake-token-1234567890"
+  export OP_READ_RC=0
   export TAILSCALE_TRUE_RC=0
   export SYSTEMD_CREDS_DECRYPT_OUTPUT="fake-token-1234567890"
 
@@ -37,7 +38,7 @@ setup() {
 echo "op $*" >> "${STUB_LOG}"
 case "$1" in
   whoami) exit "${OP_WHOAMI_RC:-0}" ;;
-  read)   printf '%s' "${OP_READ_OUTPUT:-fake-token}"; exit 0 ;;
+  read)   printf '%s' "${OP_READ_OUTPUT:-fake-token}"; exit "${OP_READ_RC:-0}" ;;
   *)      exit 0 ;;
 esac
 EOF
@@ -145,4 +146,23 @@ teardown() {
   run bash "${SCRIPT_UNDER_TEST}" gh-token
   [ "${status}" -eq 0 ]
   [[ "${output}" == *"iago-gh-token provisioned"* ]]
+}
+
+# Test 10 — op whoami passes but op read fails (missing item, permissions,
+# transient API error). Prior bug: subshell exit status was printf's (0),
+# so set -e ignored the failure and silently published an empty credential.
+@test "op read failure exits 1 with helpful error" {
+  OP_READ_RC=1 OP_READ_OUTPUT="" run bash "${SCRIPT_UNDER_TEST}" telegram-token
+  [ "${status}" -eq 1 ]
+  [[ "${output}" == *"op read failed"* ]]
+}
+
+# Test 11 — op read succeeds (exit 0) but returns empty stdout (1Password
+# item exists, field is empty). Prior bug: empty plaintext encrypted +
+# published; round-trip length check compared 0==0 and reported success,
+# silently rotating a live token to an unusable empty credential.
+@test "op read empty value exits 1 with empty-value error" {
+  OP_READ_OUTPUT="" run bash "${SCRIPT_UNDER_TEST}" telegram-token
+  [ "${status}" -eq 1 ]
+  [[ "${output}" == *"empty value"* ]]
 }
