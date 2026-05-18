@@ -1,0 +1,13 @@
+Review written to `.iago/reviews/2026-05-18-dual-phase2-round1/pr61-opus.md`.
+
+**Verdict: APPROVE_WITH_NOTES** — no Critical, 1 Important, 7 Minor.
+
+Key findings:
+- **I1**: Same-second filename collision possible under `maxConcurrent>1` — unix-seconds precision in `<prefix>__<unix>.json` collides, `atomicRenameStaleDest` silently overwrites. Test (14) had to manually advance time by 30s to dodge it — the bug surfacing as a test workaround. Recommend ms precision or pid+rand suffix in final filename.
+- **M1**: 4 `as` casts in test file violate plan/CLAUDE.md (impl itself is clean).
+- **M2**: `maxConcurrent: 0` silently coerced to 1 instead of throwing.
+- **M5**: No fsync on tmp before rename — diverges from file-bus.ts durability pattern.
+- **M6**: `runTickGuarded` overlap-skip emits no telemetry → operators can't see drift.
+- **M7**: Constructor signature diverges from plan (no `fileBus`, `stateRoot` optional, `nowFn` added) — defensible but Plan 04b consumers will trip on it.
+
+All stress test items C1/C2/C3 + I1/I2/I3 properly addressed in code.
