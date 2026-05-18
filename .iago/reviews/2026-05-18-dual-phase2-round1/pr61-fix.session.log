@@ -1,0 +1,9 @@
+Pushed.
+
+**HEAD: `2ced6b4`**
+
+- **Codex High #2 (FIXED):** Added `validateScheduleSyntax()` that walks all 5 fields unconditionally; `registerCron` calls it instead of `matchesCron(expr, now)`. Malformed fields now throw at registration regardless of current time.
+- **Codex Medium #1 (FIXED):** Added per-agent `outstandingFilenames` set tracking each filename emitted by `fire()`; terminal listener decrements only when `event.filename` matches a recorded cron filename. Subscribed to `task-resolved`, `task-poisoned`, AND `task-unrouted` so poison/unrouted outcomes also release the slot.
+- **Codex High #1 (DEFERRED):** `AgentManager` extends `EventEmitter` in 07b per Plan 07a stress test C3; documented in commit body. Plan 04b's `depends_on=[04a, 07a, 07b]` enforces the ordering.
+
+Tests: 35/35 pass, tsc clean. Also fixed pre-existing Windows-flaky `cron-fired-write-failed` test (chmod 0o444 is a no-op on NTFS).

@@ -1,0 +1,6 @@
+Fix landed and pushed.
+
+- **New HEAD SHA:** `43d60d0`
+- **Grep result:** `18` (was 17)
+- **Change:** added `RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6` with explanatory comment after `RestrictRealtime=true` in `runtime/deploy/iago-os-v2-daemon.service`
+- **Effect:** closes Opus I-1 plan verify gate + tightens daemon socket attack surface (blocks AF_NETLINK, AF_PACKET, raw sockets)

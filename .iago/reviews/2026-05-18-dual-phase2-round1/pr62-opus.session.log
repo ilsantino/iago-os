@@ -1,0 +1,11 @@
+Review written. **Verdict: APPROVE_WITH_NOTES.**
+
+Key findings:
+- **Critical: none.** Stress-test C1 (gh-token in CRED_MAP + unit + bats test) and C2 (no build-time path assertion) both fully addressed.
+- **Important I-1:** Plan's own grep `≥18` will fail (actual=17 hardening-prefixed lines). Fix by adding `RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6` (tightens security AND makes the gate green) or adjust threshold to 17.
+- **Important I-2:** Round-trip verification is length-only; consider sha256sum for completeness.
+- **Minor:** Node flag deprecation, comment/path inconsistency, README §4 numbering glitch, looser stub-log assertions in tests.
+- **Highlight:** Capture-once-plaintext pattern + `; printf 'X'` newline-preservation trick are strict improvements over spec (close a TOCTOU window). Worth landing as-is.
+
+Dimension verdicts all PASS (plan compliance PASS_WITH_NOTES on the one off-by-one gate). Full review at `.iago/reviews/2026-05-18-dual-phase2-round1/pr62-opus.md`.
+SessionEnd hook [node "${CLAUDE_PLUGIN_ROOT}/scripts/session-lifecycle-hook.mjs" SessionEnd] failed: Hook cancelled

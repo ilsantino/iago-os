@@ -219,3 +219,18 @@ SessionEnd hook [node "${CLAUDE_PLUGIN_ROOT}/scripts/session-lifecycle-hook.mjs"
 [12:30:34] BUILD GATE (post-codex-fix)
 [12:30:35] Build passed after Codex fix
 warning: in the working copy of '.iago/runs/round-1-dispatch/01a.log', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of '.iago/reviews/2026-05-18-dual-phase2-round1/pr60-fix.session.log', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of '.iago/reviews/2026-05-18-dual-phase2-round1/pr61-codex.md', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of '.iago/reviews/2026-05-18-dual-phase2-round1/pr61-diff.patch', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of '.iago/reviews/2026-05-18-dual-phase2-round1/pr61-opus.md', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of '.iago/reviews/2026-05-18-dual-phase2-round1/pr61-opus.session.log', LF will be replaced by CRLF the next time Git touches it
+[12:30:37] CREATE PR — 01a-deploy-unit-and-provision-script
+[12:34:29] PR creation output:
+PR created: **https://github.com/ilsantino/iago-os/pull/62**
+
+Branch `feat/phase2-vps-deploy-unit-provision-script` pushed, 15 files committed (4 `runtime/deploy/` deliverables + review session logs). PR #62 is open and ready for review.
+[12:34:30] TAGGING @claude on PR #62
+https://github.com/ilsantino/iago-os/pull/62#issuecomment-4480758545
+[12:36:29] SUMMARY — 01a-deploy-unit-and-provision-script
+[12:36:30] Summary written to .iago/summaries/01a-deploy-unit-and-provision-script.md
+[12:36:30] PIPELINE COMPLETE — 01a-deploy-unit-and-provision-script
