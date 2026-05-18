@@ -332,8 +332,29 @@ export async function startDaemon(
 	// tests to pass a small timeout so the shutdown-hang integration test
 	// completes in <200ms instead of blocking on the 10s production
 	// default. Production callers omit the override entirely.
+	//
+	// Codex PR #51 high-finding (dual-review): validate the override before
+	// using it. An unvalidated 0 / negative / NaN / non-finite value makes
+	// every `withTimeout` stage fire immediately, so daemon-stop telemetry
+	// reports clean shutdown while heartbeat / IPC / bot / per-agent stop
+	// promises are still pending — subprocesses may outlive the daemon and
+	// observability becomes a lie. Reject obviously-broken values up front;
+	// fall back to the production default. The minimum (1ms) is permissive
+	// enough to keep the integration test affordance working while blocking
+	// the dangerous values.
+	const rawStageTimeout = config.shutdownStageTimeoutMs;
 	const stageTimeoutMs =
-		config.shutdownStageTimeoutMs ?? SHUTDOWN_STAGE_TIMEOUT_MS;
+		typeof rawStageTimeout === "number" &&
+		Number.isFinite(rawStageTimeout) &&
+		Number.isInteger(rawStageTimeout) &&
+		rawStageTimeout >= 1
+			? rawStageTimeout
+			: SHUTDOWN_STAGE_TIMEOUT_MS;
+	if (rawStageTimeout !== undefined && stageTimeoutMs !== rawStageTimeout) {
+		console.error(
+			`[daemon] ignoring invalid shutdownStageTimeoutMs=${String(rawStageTimeout)}; using ${SHUTDOWN_STAGE_TIMEOUT_MS}ms default`,
+		);
+	}
 
 	const shutdown = async (): Promise<void> => {
 		if (shuttingDown) return;

@@ -760,6 +760,59 @@ describe("Phase 1 hello-world end-to-end (mocked PTY + Telegram)", () => {
 		expect(logs).toContain("exceeded 50ms");
 	});
 
+	it.each([
+		["zero", 0],
+		["negative", -100],
+		["NaN", Number.NaN],
+		["fractional", 12.5],
+		["Infinity", Number.POSITIVE_INFINITY],
+	])(
+		"rejects invalid shutdownStageTimeoutMs (%s) and uses production default (Codex PR #51 high)",
+		async (_label, badValue) => {
+			// Codex PR #51 dual-review high finding: an unvalidated
+			// shutdownStageTimeoutMs of 0/NaN/negative would make every
+			// `withTimeout` stage fire immediately; daemon-stop telemetry
+			// reports clean shutdown while subprocesses may still be alive.
+			// Verify the validation rejects these values and falls back to
+			// SHUTDOWN_STAGE_TIMEOUT_MS (10_000ms). We also assert the
+			// stderr warning fires so the misuse is observable.
+			const { startDaemon } = await import("../daemon/main.js");
+			const errSpy = vi
+				.spyOn(console, "error")
+				.mockImplementation(() => undefined);
+
+			const daemon = await startDaemon({
+				telegram: null,
+				agents: [],
+				heartbeat: {
+					intervalMs: 60_000,
+					rssLimitBytes: 512 * 1024 * 1024,
+					stallThresholdMs: 5 * 60_000,
+				},
+				ipc: {
+					socketPath:
+						process.platform === "win32"
+							? `\\\\.\\pipe\\iago-test-validation-${Date.now()}-${Math.random()}`
+							: path.join(
+									stateRoot,
+									`ipc-validation-${Date.now()}-${Math.random()}.sock`,
+								),
+					cacheTtlMs: 30_000,
+				},
+				shutdownStageTimeoutMs: badValue as number,
+			});
+
+			const warningFired = errSpy.mock.calls.some((call) =>
+				String(call[0]).includes("ignoring invalid shutdownStageTimeoutMs"),
+			);
+			expect(warningFired).toBe(true);
+
+			// Shutdown should complete normally (default 10s timeout
+			// applies; with no hung adapters it returns immediately).
+			await daemon.shutdown();
+		},
+	);
+
 	it("daemon emits warning when claude-pty adapter is not registered", async () => {
 		// Wipe the runtime registry so the listRuntimes() check at
 		// main.ts:222 finds no "claude-pty" entry and logs a warning.
