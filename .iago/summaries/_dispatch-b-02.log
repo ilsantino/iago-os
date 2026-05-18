@@ -1,0 +1,190 @@
+[23:28:53] STRESS TEST — skipped (plan already stress-tested)
+[23:28:53] IMPLEMENT — 02-atomic-rename-audit
+[23:36:17] Implementation complete
+[23:36:18] BUILD GATE — attempt 1 [mode: sequential]
+[23:36:18] Build passed (tsc 0ms / vite 0ms / mode sequential)
+[23:36:18] CONSOLE GATE — skipped (no Vite config)
+[23:36:19] REVIEW — 02-atomic-rename-audit
+warning: in the working copy of '.iago/summaries/_dispatch-b-01.log', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'runtime/daemon/file-bus.ts', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'runtime/daemon/session-log.ts', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'runtime/daemon/state-paths.test.ts', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'runtime/daemon/state-paths.ts', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'runtime/daemon/telemetry.ts', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'runtime/telegram/approval-bus.ts', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of '.iago/summaries/01-ipc-server-hardening.md', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of '.iago/summaries/_dispatch-b-02.log', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'runtime/daemon/state-paths.md', LF will be replaced by CRLF the next time Git touches it
+[23:36:20]   review-checks: all modules loaded (209 lines)
+[23:37:57] Review output:
+Review complete. I've read the plan, diff, review checklist, and every changed source file in full.
+
+## PASS 1 — Plan Compliance
+
+All 7 tasks implemented faithfully:
+- **Task 1 (Inventory)** — `state-paths.md` § Inventory has 5 rows (4 atomicRename + 1 raw bypass), all 5 columns populated.
+- **Task 2 (Classification)** — 4 stale-dest + 1 collision-hazard; rationale + chosen API per row; single-process assumption documented.
+- **Task 3 (API split)** — `atomicRename` (strict, link+unlink) + `atomicRenameStaleDest` (destructive with Windows EEXIST recovery) both exported; file-header JSDoc updated with reference to audit doc.
+- **Task 4 (Caller migration)** — file-bus.ts:344, session-log.ts:394, approval-bus.ts:245 + 447 all on `atomicRenameStaleDest`; approval-bus.ts:370 CLAIM migrated from raw `fsp.rename` to strict `atomicRename`.
+- **Task 5 (Tests)** — 7 new tests for variant API surface; POSIX/Windows skip-conditionals correct; strict-EEXIST test asserts dst NOT overwritten + src still exists.
+- **Task 6 (Telemetry)** — `atomic-rename-stale-dest-window` event added to discriminated union; emit fire-and-forget on Windows EEXIST recovery; basename-only privacy guard.
+- **Task 7 (Docs)** — README Failure Modes row added; PHASE-1-EVIDENCE line 246 flipped to `[x]` with reference.
+
+## PASS 2 — Domain Routing
+
+Selected: **Baseline**, **Backend** (loosely — daemon runtime, not Lambda, but error-handling/input-validation concerns apply), **Pattern Consistency**. Skipped: Amplify (no `amplify/` touched), API (no client code), Auth (no Cognito/JWT), Data Integrity (no UI/money), i18n (no Spanish), Infra (no IaC), React (no .tsx).
+
+## PASS 3 — Adversarial Findings
+
+### Important
+
+1. **Doc-code contradiction in `state-paths.md` § Notes (line 238)**: The audit doc claims the strict `atomicRename` is "as direct `fsp.rename` on Windows (where the native call already throws EEXIST/EPERM when dst exists)." But the actual implementation in `state-paths.ts:196-199` uses `fsp.link + fsp.unlink` on BOTH platforms — no Windows branch. Same contradiction in `approval-bus.ts:367` JSDoc ("Windows fsp.rename already throws EEXIST/EPERM natively") — that statement is true of raw `fsp.rename` but is not what the new strict `atomicRename` actually invokes. Either update the audit + approval-bus JSDoc to describe the actual link+unlink-on-both-platforms implementation, or add the Windows branch the doc describes. Doc-code drift in a security-adjacent atomicity primitive is a maintenance hazard.
+
+2. **Crash-mid-CLAIM semantic regression on POSIX**: The prior raw `fsp.rename(pending, inflight)` on POSIX was a single atomic syscall — either pending moves or it doesn't. The new strict `atomicRename` is two syscalls (`link` then `unlink`). A crash between them leaves BOTH `pending/<id>.json` and `inflight/<id>.json` on disk pointing to the same inode. A subsequent `resolveApproval` for that id will hit `EEXIST` on the link (because dst exists), enter the EEXIST branch at `approval-bus.ts:386`, find inflight present, poll for 5s, then return `{ ok: false, reason: "already-resolved" }` (line 403 — "Long-stuck inflight") — falsely classifying an abandoned-mid-claim approval as resolved when no decision was ever recorded. The audit doc § state-paths.ts JSDoc line 188-190 claims "the orphan src is harmless — readers consume dst", but does NOT address that `listPendingApprovals` would surface dual-presence and `resolveApprovalLocked` would mis-classify. Trade-off vs prior raw rename is still net-positive (prior raw rename had its own bug: silent-overwrite of concurrent winner's inflight on POSIX), but the residual should either be (a) mitigated with a best-effort `fsp.unlink(dst)` rollback if `unlink(src)` fails after a successful link, OR (b) explicitly documented in `state-paths.md` § Notes as a known crash-recovery edge case that Plan 07 boot recovery MUST reconcile (detect dual-presence pending+inflight on boot, prefer inflight, unlink pending).
+
+### Minor
+
+3. **No test for telemetry emission shape**: Task 6 added `atomic-rename-stale-dest-window` but no test verifies the emit fires on the Windows recovery path with the expected shape (`dst` basename-only, `windowMs` numeric, `platform: "win32"`), or that it does NOT fire on the POSIX happy path. Fire-and-forget makes this awkward but a spy on `emit` would close the gap.
+
+4. **`atomicRename` no rollback on link-success + unlink-failure**: If `fsp.link(src, dst)` succeeds but `fsp.unlink(src)` then fails (e.g., AV lock on Windows, EACCES), the function throws and leaves both files on disk — same dual-presence scenario as Important #2 but narrower (no crash needed). Caller's catch block can't clean up dst because dst is the intended target. Best-effort `fsp.unlink(dst).catch(...)` before re-throwing would tighten this.
+
+5. **Pattern consistency**: ✓ — error-handling shape (try/catch + `getErrnoCode`), naming (verb-first camelCase), JSDoc style all match existing file conventions.
+
+### Cross-cutting
+
+- **Auth bypass**: N/A (runtime daemon, no JWT/Cognito).
+- **Data loss**: Concerns #2 + #4 are dual-presence regressions, not data loss — the original envelope content survives via the hardlink pair.
+- **Race conditions**: Strict `atomicRename` is correctly TOCTOU-free at the `link` step (single syscall, fail-on-EEXIST). The split into 2 syscalls is the trade-off documented in concern #2.
+- **Rollback safety**: `file-bus.ts:346` and `session-log.ts:396` both have `fsp.unlink(tmpPath).catch(...)` in catch blocks ✓. `approval-bus.ts:449` CLAIM phase relies on boot recovery for the post-link/pre-unlink crash window (concern #2).
+
+Verdict: PASS_WITH_CONCERNS
+[23:37:57] Findings detected — dispatching fix session (round 1)
+[23:45:26] Fix output (exit 1):
+Error: Reached max turns (40)
+warning: in the working copy of '.iago/summaries/_dispatch-b-02.log', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'runtime/daemon/state-paths.md', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'runtime/daemon/state-paths.test.ts', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'runtime/daemon/state-paths.ts', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'runtime/telegram/approval-bus.ts', LF will be replaced by CRLF the next time Git touches it
+[23:45:27]   review-checks: all modules loaded (209 lines)
+[23:47:04] Re-review output:
+All previous findings from review round 1 are resolved. Summary of verification:
+
+**Important #1 (Doc-code contradiction)** — RESOLVED
+- `state-paths.md` § Notes (line 39) now correctly describes `link+unlink` on BOTH platforms (NTFS `CreateHardLinkW` matches POSIX `link(2)` semantics).
+- `approval-bus.ts:360-373` CLAIM comment block describes the cross-platform link+unlink implementation accurately.
+- `state-paths.ts:174-180` JSDoc explicitly states the implementation.
+
+**Important #2 (Crash-mid-CLAIM dual-presence regression)** — RESOLVED via doc + rollback
+- `state-paths.md:40` documents the dual-presence window AND the Plan 07 boot recovery reconciliation requirement (prefer inflight, unlink pending).
+- `state-paths.ts:188-201` JSDoc documents crash-window vs in-process recovery distinctions.
+- `state-paths.ts:209-219` implements best-effort `fsp.unlink(dst)` rollback when `unlink(src)` fails after a successful link.
+
+**Minor #3 (No telemetry test)** — RESOLVED
+- `state-paths.test.ts:354-390` asserts emission shape (`kind`, `dst` basename-only, `windowMs` numeric, `platform: "win32"`) on the Windows EEXIST recovery branch.
+- `state-paths.test.ts:392-403` asserts non-emission on the POSIX happy path.
+
+**Minor #4 (No rollback on link-success + unlink-failure)** — RESOLVED
+- Implementation at `state-paths.ts:209-219`; test at `state-paths.test.ts:405-437` validates rollback (dst removed, src preserved, original `EACCES` propagates).
+
+**Minor #5 (Pattern consistency)** — already PASS.
+
+**Cross-cutting:** auth bypass N/A; data loss residual documented for crash-mid-CLAIM with Plan 07 owner; races now have telemetry instrumentation; rollback safety implemented for in-process unlink failure.
+
+**One minor observation, not a defect:** `state-paths.ts` now imports `emit` from `telemetry.js`, and `telemetry.ts` already imports `pathFor` from `state-paths.js` — a new circular import in the daemon module graph. ESM live bindings make this safe (both references are runtime-only), and the test file's mock-before-import ordering accommodates it, but worth tracking if the daemon module graph grows.
+
+Verdict: PASS
+[23:47:05] Review passed
+[23:47:05] CODEX REVIEW — 02-atomic-rename-audit
+[23:47:05] Running codex-companion adversarial-review (model from ~/.codex/config.toml)
+[23:48:50] Codex findings:
+(node:11456) [DEP0190] DeprecationWarning: Passing args to a child process with shell option true can lead to security vulnerabilities, as the arguments are not escaped, only concatenated.
+(Use `node --trace-deprecation ...` to show where the warning was created)
+[codex] Starting Codex task thread.
+[codex] Thread ready (019e3479-6922-7f01-966f-50f49da22205).
+[codex] Turn started (019e3479-6c26-7ee3-b9ac-490e6317edcd).
+[codex] Assistant message captured: {"verdict":"approve","summary":"No branch diff was provided, so there is no changed code path...
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git diff --name-on...
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git diff --stat e6...
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git rev-parse --sh...
+[codex] Command declined: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git rev-parse --sh... (exit -1)
+[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git diff --name-on... (exit 0)
+[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git diff --stat e6... (exit 0)
+[codex] Assistant message captured: {"verdict":"approve","summary":"The local branch does have a non-empty diff despite the suppl...
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git diff --unified...
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git diff --unified...
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git diff --unified...
+[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git diff --unified... (exit 0)
+[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git diff --unified... (exit 0)
+[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git diff --unified... (exit 0)
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git diff --unified...
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command '$i=0; Get-Content ...
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command '$i=0; Get-Content ...
+[codex] Command declined: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command '$i=0; Get-Content ... (exit -1)
+[codex] Command declined: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command '$i=0; Get-Content ... (exit -1)
+[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git diff --unified... (exit 0)
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command "rg -n \"export asy...
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command "rg -n \"await atom...
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'rg -n "function in...
+[codex] Command failed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command "rg -n \"await atom... (exit 1)
+[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command "rg -n \"export asy... (exit 0)
+[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'rg -n "function in... (exit 0)
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'rg -n "await atomi...
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command "rg -n \"Long-stuck...
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'rg -n "reconcile|l...
+[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'rg -n "await atomi... (exit 0)
+[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command "rg -n \"Long-stuck... (exit 0)
+[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'rg -n "reconcile|l... (exit 0)
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command "rg -n \"from \\\"\...
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'rg -n "inflight|li...
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command "rg -n \"link\\+unl...
+[codex] Command failed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'rg -n "inflight|li... (exit 1)
+[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command "rg -n \"link\\+unl... (exit 0)
+[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command "rg -n \"from \\\"\... (exit 0)
+[codex] Assistant message captured: {"verdict":"needs-attention","summary":"No-ship: the new approval claim primitive introduces ...
+[codex] Turn completion inferred after the main thread finished and subagent work drained.
+# Codex Adversarial Review
+
+Target: branch diff against e6ffc2c7a646ba8ce1842e986468c26b6b9964c4
+Verdict: needs-attention
+
+No-ship: the new approval claim primitive introduces a crash window that can permanently strand approvals, and the required recovery path is only documented, not wired.
+
+Findings:
+- [high] Approval claims can strand after crash between hardlink and unlink (runtime/telegram/approval-bus.ts:374)
+  `resolveApproval` now claims by calling `atomicRename(pendingPath, inflightPath)`, and `atomicRename` is implemented as `link(src,dst)` followed by `unlink(src)`. A process crash after the hardlink succeeds but before the pending file is unlinked leaves both `approvals/pending/<id>.json` and `approvals/inflight/<id>.json`. The code itself documents that this state must be reconciled, but runtime search only finds `listInflightApprovals` used in tests and `main.ts` exports `listPendingApprovals` only. In this dual-presence state, later resolution attempts hit `EEXIST`, observe inflight, poll, then report `already-resolved` even though no resolved decision exists, while the waiting agent times out. This is user-visible approval loss after a daemon crash.
+  Recommendation: Do not ship this claim path until dual-presence recovery is actually executed on daemon startup and covered by an end-to-end test. Also make `resolveApproval` handle pending+inflight+no-resolved directly, for example by detecting the hardlink-pair state and safely rolling it forward instead of returning `already-resolved`.
+
+Next steps:
+- Add a regression test that simulates `pending` and `inflight` both existing with no `resolved` file, then verifies a later approval decision can still produce `approvals/resolved/<id>.json`.
+- Wire boot recovery to reconcile `listInflightApprovals`/dual-presence states before Telegram approval polling resumes.
+[23:48:50] Codex review complete
+[23:48:50] CODEX FIX — fixing findings before PR
+[23:54:08] Codex fix output (exit 0):
+Fix complete. Summary:
+
+**Codex HIGH finding fixed**: Approval claims no longer strand after a crash between `link(2)` and `unlink(2)` inside the strict `atomicRename`.
+
+**Changes:**
+
+1. **`runtime/telegram/approval-bus.ts`**
+   - `resolveApprovalLocked` rewritten: detects inflight present at entry (after mutex) and rolls forward by taking ownership, unlinking the orphan pending hardlink, and publishing the current caller's decision. Long-stuck inflight after the 5s race-loser poll triggers the same recovery instead of returning `already-resolved`.
+   - New exported `recoverStrandedApprovals()` reconciles dual-presence + inflight-only states at boot (matrix: resolved-wins → cleanup; dual-presence → unlink inflight; inflight-only → rename back to pending). Idempotent, structured report.
+   - File-header + `resolveApproval` JSDoc updated to document the recovery contract.
+
+2. **`runtime/daemon/main.ts`**
+   - `startDaemon` calls `recoverStrandedApprovals()` between `bootRecovery()` and `IpcServer.start()` (well before the bot polls), with stderr logging on non-empty report. Header startup sequence (step 6b) documents the order.
+
+3. **`runtime/telegram/approval-bus.test.ts`** (+7 tests)
+   - `resolveApproval` rolls forward dual-presence → resolved/<id>.json written with current decision.
+   - `resolveApproval` rolls forward inflight-only → same.
+   - `recoverStrandedApprovals` cleanup of dual-presence preserves pending for re-broadcast + subsequent normal CLAIM works.
+   - `recoverStrandedApprovals` re-publishes inflight-only → pending + subsequent resolve works.
+   - resolved-wins cleanup.
+   - Idempotent (second call is no-op).
+   - Empty inflight dir → empty report.
+
+**Verification:** `npx tsc --noEmit` exit 0; `npx vitest run` 321 passed, 5 skipped, 0 failed.
+[23:54:08] BUILD GATE (post-codex-fix)
+[23:54:08] Build passed after Codex fix
+warning: in the working copy of '.iago/summaries/_dispatch-b-02.log', LF will be replaced by CRLF the next time Git touches it

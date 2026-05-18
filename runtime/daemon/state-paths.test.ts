@@ -5,15 +5,47 @@ import * as path from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+// Mock the telemetry module BEFORE state-paths.ts imports it so the
+// destructured `emit` binding inside state-paths.ts resolves to our
+// vi.fn(). This lets us assert the fire-and-forget telemetry call shape
+// without racing the filesystem appendFile.
+vi.mock("./telemetry.js", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("./telemetry.js")>();
+	return {
+		...actual,
+		emit: vi.fn().mockResolvedValue(undefined),
+	};
+});
+
+// Mock node:fs/promises with passthrough wrappers around `rename` and
+// `unlink` so individual tests can flip them to fail via
+// `mockImplementationOnce(...)`. All other fsp.* APIs spread through
+// unchanged. Required because vi.spyOn cannot redefine ESM module exports
+// — and we need to deterministically force the Windows EEXIST recovery
+// branch (modern Node `fsp.rename` on Windows overwrites silently) and
+// the `atomicRename` rollback branch.
+vi.mock("node:fs/promises", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("node:fs/promises")>();
+	return {
+		...actual,
+		link: vi.fn(actual.link),
+		rename: vi.fn(actual.rename),
+		unlink: vi.fn(actual.unlink),
+	};
+});
+
 import {
 	type StateKind,
 	assertSafeIdentifier,
 	atomicRename,
+	atomicRenameStaleDest,
 	ensureStateDirsSync,
+	getErrnoCode,
 	getStateRoot,
 	pathFor,
 	validateAgentId,
 } from "./state-paths.js";
+import { emit as mockedEmit } from "./telemetry.js";
 
 const ALL_KINDS: ReadonlyArray<StateKind> = [
 	"tasks/pending",
@@ -193,8 +225,10 @@ describe("state-paths", () => {
 		});
 	});
 
-	describe("atomicRename", () => {
-		it("renames over an existing destination (cross-platform parity)", async () => {
+	describe("atomicRename (strict) + atomicRenameStaleDest (destructive)", () => {
+		const isWindows = process.platform === "win32";
+
+		it("atomicRenameStaleDest renames over an existing destination (cross-platform parity)", async () => {
 			const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), "iago-atom-"));
 			tempDirs.push(tempDir);
 			const src = path.join(tempDir, "src.txt");
@@ -202,11 +236,205 @@ describe("state-paths", () => {
 			await fsp.writeFile(src, "new");
 			await fsp.writeFile(dst, "old");
 
-			await atomicRename(src, dst);
+			await atomicRenameStaleDest(src, dst);
 
 			const dstContent = await fsp.readFile(dst, "utf8");
 			expect(dstContent).toBe("new");
 			await expect(fsp.stat(src)).rejects.toThrow();
+		});
+
+		it("atomicRenameStaleDest renames when destination does NOT exist", async () => {
+			const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), "iago-atom-"));
+			tempDirs.push(tempDir);
+			const src = path.join(tempDir, "src.txt");
+			const dst = path.join(tempDir, "dst.txt");
+			await fsp.writeFile(src, "payload");
+
+			await atomicRenameStaleDest(src, dst);
+
+			expect(await fsp.readFile(dst, "utf8")).toBe("payload");
+			await expect(fsp.stat(src)).rejects.toThrow();
+		});
+
+		it("atomicRenameStaleDest re-throws non-EEXIST/EPERM errors (e.g. ENOENT on src)", async () => {
+			const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), "iago-atom-"));
+			tempDirs.push(tempDir);
+			const src = path.join(tempDir, "missing.txt");
+			const dst = path.join(tempDir, "dst.txt");
+
+			let caughtCode: string | undefined;
+			try {
+				await atomicRenameStaleDest(src, dst);
+				throw new Error("expected rename to reject");
+			} catch (err) {
+				caughtCode = getErrnoCode(err);
+			}
+			expect(caughtCode).toBe("ENOENT");
+		});
+
+		it("atomicRename succeeds when destination does NOT exist (cross-platform)", async () => {
+			const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), "iago-atom-"));
+			tempDirs.push(tempDir);
+			const src = path.join(tempDir, "src.txt");
+			const dst = path.join(tempDir, "dst.txt");
+			await fsp.writeFile(src, "claim-payload");
+
+			await atomicRename(src, dst);
+
+			expect(await fsp.readFile(dst, "utf8")).toBe("claim-payload");
+			await expect(fsp.stat(src)).rejects.toThrow();
+		});
+
+		it("atomicRename throws when destination exists (POSIX)", async () => {
+			if (isWindows) {
+				return;
+			}
+			const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), "iago-atom-"));
+			tempDirs.push(tempDir);
+			const src = path.join(tempDir, "src.txt");
+			const dst = path.join(tempDir, "dst.txt");
+			await fsp.writeFile(src, "new");
+			await fsp.writeFile(dst, "old");
+
+			let caughtCode: string | undefined;
+			try {
+				await atomicRename(src, dst);
+				throw new Error("expected EEXIST");
+			} catch (err) {
+				caughtCode = getErrnoCode(err);
+			}
+			expect(caughtCode).toBe("EEXIST");
+			// Strict semantics: dst MUST NOT be overwritten.
+			expect(await fsp.readFile(dst, "utf8")).toBe("old");
+			// And src must still exist (link failed before unlink).
+			expect(await fsp.readFile(src, "utf8")).toBe("new");
+		});
+
+		it("atomicRename throws when destination exists (Windows EEXIST or EPERM)", async () => {
+			if (!isWindows) {
+				return;
+			}
+			const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), "iago-atom-"));
+			tempDirs.push(tempDir);
+			const src = path.join(tempDir, "src.txt");
+			const dst = path.join(tempDir, "dst.txt");
+			await fsp.writeFile(src, "new");
+			await fsp.writeFile(dst, "old");
+
+			let caughtCode: string | undefined;
+			try {
+				await atomicRename(src, dst);
+				throw new Error("expected EEXIST/EPERM");
+			} catch (err) {
+				caughtCode = getErrnoCode(err);
+			}
+			expect(["EEXIST", "EPERM"]).toContain(caughtCode);
+			// Strict semantics: dst MUST NOT be overwritten.
+			expect(await fsp.readFile(dst, "utf8")).toBe("old");
+		});
+
+		it("atomicRenameStaleDest re-throws non-EEXIST/EPERM errors on Windows (skipped on POSIX)", async () => {
+			if (!isWindows) {
+				return;
+			}
+			const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), "iago-atom-"));
+			tempDirs.push(tempDir);
+			const src = path.join(tempDir, "missing.txt");
+			const dst = path.join(tempDir, "dst.txt");
+
+			let caughtCode: string | undefined;
+			try {
+				await atomicRenameStaleDest(src, dst);
+				throw new Error("expected ENOENT");
+			} catch (err) {
+				caughtCode = getErrnoCode(err);
+			}
+			expect(caughtCode).toBe("ENOENT");
+		});
+
+		it("atomicRenameStaleDest emits atomic-rename-stale-dest-window on Windows EEXIST recovery (skipped on POSIX)", async () => {
+			if (!isWindows) {
+				return;
+			}
+			const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), "iago-atom-"));
+			tempDirs.push(tempDir);
+			const src = path.join(tempDir, "src.txt");
+			const dst = path.join(tempDir, "dst.txt");
+			await fsp.writeFile(src, "new");
+			await fsp.writeFile(dst, "old");
+
+			// Modern Node `fsp.rename` on Windows often overwrites silently,
+			// so the EEXIST recovery branch is normally only reachable when
+			// the dst is locked. Force the branch by making the first
+			// `rename` throw EEXIST, then let subsequent calls pass through.
+			vi.mocked(fsp.rename).mockImplementationOnce(() => {
+				const err = new Error("synthetic EEXIST for test") as Error & {
+					code?: string;
+				};
+				err.code = "EEXIST";
+				return Promise.reject(err);
+			});
+
+			vi.mocked(mockedEmit).mockClear();
+			await atomicRenameStaleDest(src, dst);
+			expect(await fsp.readFile(dst, "utf8")).toBe("new");
+
+			expect(vi.mocked(mockedEmit)).toHaveBeenCalledTimes(1);
+			const [event] = vi.mocked(mockedEmit).mock.calls[0]!;
+			expect(event.kind).toBe("atomic-rename-stale-dest-window");
+			if (event.kind === "atomic-rename-stale-dest-window") {
+				expect(event.dst).toBe("dst.txt");
+				expect(typeof event.windowMs).toBe("number");
+				expect(event.windowMs).toBeGreaterThanOrEqual(0);
+				expect(event.platform).toBe("win32");
+			}
+		});
+
+		it("atomicRenameStaleDest does NOT emit telemetry on the happy path (no EEXIST recovery)", async () => {
+			const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), "iago-atom-"));
+			tempDirs.push(tempDir);
+			const src = path.join(tempDir, "src.txt");
+			const dst = path.join(tempDir, "dst.txt");
+			await fsp.writeFile(src, "payload");
+			// dst absent — no EEXIST recovery on either platform.
+
+			vi.mocked(mockedEmit).mockClear();
+			await atomicRenameStaleDest(src, dst);
+			expect(vi.mocked(mockedEmit)).not.toHaveBeenCalled();
+		});
+
+		it("atomicRename rolls back dst when link succeeds but unlink(src) fails (cross-platform)", async () => {
+			const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), "iago-atom-"));
+			tempDirs.push(tempDir);
+			const src = path.join(tempDir, "src.txt");
+			const dst = path.join(tempDir, "dst.txt");
+			await fsp.writeFile(src, "payload");
+
+			// Force the FIRST unlink (the src unlink inside atomicRename) to
+			// fail with EACCES. The next unlink call — the rollback unlink of
+			// dst — passes through to the real implementation so dst is
+			// actually removed.
+			vi.mocked(fsp.unlink).mockImplementationOnce(() => {
+				const err = new Error("synthetic EACCES on src unlink") as Error & {
+					code?: string;
+				};
+				err.code = "EACCES";
+				return Promise.reject(err);
+			});
+
+			let caughtCode: string | undefined;
+			try {
+				await atomicRename(src, dst);
+				throw new Error("expected unlink failure to propagate");
+			} catch (err) {
+				caughtCode = getErrnoCode(err);
+			}
+			expect(caughtCode).toBe("EACCES");
+
+			// Rollback semantics: dst MUST be gone (rollback succeeded), src
+			// MUST still exist (the failing unlink left it on disk).
+			await expect(fsp.stat(dst)).rejects.toThrow();
+			expect(await fsp.readFile(src, "utf8")).toBe("payload");
 		});
 	});
 });

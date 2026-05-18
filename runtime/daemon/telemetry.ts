@@ -22,6 +22,18 @@
  *   daemon-start, daemon-stop, agent-registered, agent-spawned,
  *   task-claimed, approval-requested, approval-resolved, agent-exited,
  *   agent-restarted, heartbeat.
+ *
+ * Plan feature-phase-1-deferred-hardening/02 added:
+ *   `atomic-rename-stale-dest-window` — emitted from
+ *   `state-paths.ts::atomicRenameStaleDest` on the Windows
+ *   `EEXIST`/`EPERM` unlink-then-rename recovery path. Fields:
+ *     - `dst` (basename only — full path elided to avoid leaking
+ *       state-root layout)
+ *     - `windowMs` (number of ms between unlink and the second rename)
+ *     - `platform` ("win32")
+ *   Cost is bounded — fires only on Windows when EEXIST/EPERM recovers
+ *   a stale dest. Phase 7 will use the collected window data to decide
+ *   whether to harden the Windows path to a strictly-atomic primitive.
  */
 
 import * as fsp from "node:fs/promises";
@@ -30,8 +42,16 @@ import * as path from "node:path";
 import { pathFor } from "./state-paths.js";
 
 export type DaemonEvent =
-	| { readonly kind: "daemon-start"; readonly pid: number; readonly nodeVersion: string }
-	| { readonly kind: "daemon-stop"; readonly pid: number; readonly reason?: string }
+	| {
+			readonly kind: "daemon-start";
+			readonly pid: number;
+			readonly nodeVersion: string;
+	  }
+	| {
+			readonly kind: "daemon-stop";
+			readonly pid: number;
+			readonly reason?: string;
+	  }
 	| {
 			readonly kind: "agent-registered";
 			readonly agentId: string;
@@ -81,6 +101,28 @@ export type DaemonEvent =
 			readonly handleId: string;
 			readonly alive: boolean;
 			readonly rssBytes?: number;
+	  }
+	| {
+			readonly kind: "atomic-rename-stale-dest-window";
+			readonly dst: string;
+			readonly windowMs: number;
+			readonly platform: "win32";
+	  }
+	| {
+			/**
+			 * Emitted when CLAIM's `link(2)` returns EPERM AND no winning
+			 * resolver state exists on disk. On Linux with
+			 * `fs.protected_hardlinks=1` (kernel default on modern distros),
+			 * `link(2)` returns EPERM when the caller cannot hard-link the
+			 * source — a permission/configuration problem, not a lost race.
+			 * Surfacing this as telemetry distinguishes the two: a healthy
+			 * loss-of-race resolves elsewhere within milliseconds; a true
+			 * EPERM-no-winner means every approval for this approvalId will
+			 * silently report `not-found` until the misconfig is fixed.
+			 * Opus dual-review I2 of PR #50.
+			 */
+			readonly kind: "approval-claim-link-eperm";
+			readonly approvalIdHash: string;
 	  };
 
 let missingSessionIdWarned = false;
@@ -105,7 +147,7 @@ function resolveSessionId(): string {
 	if (!missingSessionIdWarned) {
 		missingSessionIdWarned = true;
 		console.error(
-			"[telemetry] CLAUDE_CODE_SESSION_ID is unset; using \"no-session-id\" sentinel.",
+			'[telemetry] CLAUDE_CODE_SESSION_ID is unset; using "no-session-id" sentinel.',
 		);
 	}
 	return "no-session-id";

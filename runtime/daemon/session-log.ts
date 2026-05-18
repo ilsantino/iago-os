@@ -39,10 +39,12 @@
  *   or proceed direct — order is preserved for any pre-flag-flip
  *   arrivals.
  * - **HWM atomicity:** `setHWM` writes to `<handleId>.hwm.tmp` then
- *   `atomicRename`s to `<handleId>.hwm.json`. A crash between tmp
- *   write and rename leaves the marker absent; `getHWM` returns
+ *   `atomicRenameStaleDest`s to `<handleId>.hwm.json`. A crash between
+ *   tmp write and rename leaves the marker absent; `getHWM` returns
  *   `null` and replay starts from the beginning of the log
- *   (idempotent if events are).
+ *   (idempotent if events are). Classification: the prior HWM at dst
+ *   is stale by definition (single-process assumption — see
+ *   `state-paths.md` audit).
  * - **Malformed lines:** `readEventsUpToHWM` skips lines whose JSON
  *   parse fails, logging a warning to `console.error`. Sequence is
  *   incremented ONLY on successful parse — this matches `appendEvent`
@@ -74,7 +76,7 @@ import * as readline from "node:readline";
 
 import {
 	assertSafeIdentifier,
-	atomicRename,
+	atomicRenameStaleDest,
 	getErrnoCode,
 	pathFor,
 } from "./state-paths.js";
@@ -389,7 +391,7 @@ export async function setHWM(
 		await handle.close();
 	}
 	try {
-		await atomicRename(tmp, final);
+		await atomicRenameStaleDest(tmp, final);
 	} catch (err) {
 		await fsp.unlink(tmp).catch(() => undefined);
 		throw err;

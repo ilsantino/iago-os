@@ -11,6 +11,11 @@
  *   6. `agentManager.bootRecovery()` — scans `.daemon-stop` markers,
  *      reclaims stale claims (Plan 02 stress-test E1), replays
  *      session.jsonl up to HWM for crash entries (Plan 03).
+ *   6b. `recoverStrandedApprovals()` — reconciles any approval
+ *      inflight/pending dual-presence or inflight-only crashes from a
+ *      prior daemon run (Codex PR48 HIGH). MUST run before the bot
+ *      starts polling so stranded approvals do not absorb the user's
+ *      next decision as `already-resolved`.
  *   7. Construct + start `IpcServer`. `IpcServer.start()` preemptively
  *      unlinks any stale socket file on POSIX (Plan 05 EC1).
  *   8. If `config.telegram` is non-null, construct + start `TelegramBot`.
@@ -63,6 +68,7 @@ import "../agent-runtime/pty/claude-pty.js";
 import {
 	type ApprovalRequest,
 	listPendingApprovals,
+	recoverStrandedApprovals,
 } from "../telegram/approval-bus.js";
 import { TelegramBot } from "../telegram/bot.js";
 
@@ -254,6 +260,32 @@ export async function startDaemon(
 			handleId,
 			reason: "crash",
 		});
+	}
+
+	// Codex PR48 HIGH: reconcile any stranded approval state (dual-presence
+	// hardlink pairs or inflight-only crashes from a previous daemon run)
+	// BEFORE the Telegram bot starts polling. Without this, a stranded
+	// inflight file from a prior crash would silently absorb the user's
+	// next decision as `already-resolved` and time out the waiting agent.
+	try {
+		const recovery = await recoverStrandedApprovals();
+		if (
+			recovery.republished.length > 0 ||
+			recovery.cleaned.length > 0 ||
+			recovery.resolvedSurvived.length > 0 ||
+			recovery.failed.length > 0
+		) {
+			console.error(
+				`[daemon] recoverStrandedApprovals: republished=${recovery.republished.length} cleaned=${recovery.cleaned.length} resolvedSurvived=${recovery.resolvedSurvived.length} failed=${recovery.failed.length}`,
+			);
+		}
+	} catch (err) {
+		// Boot recovery is best-effort; surface the error but do not block
+		// daemon startup. A failed recovery leaves stranded files in place
+		// for the next boot to retry or for an operator to clean up.
+		console.error(
+			`[daemon] recoverStrandedApprovals failed: ${err instanceof Error ? err.message : String(err)}`,
+		);
 	}
 
 	const ipcServer = new IpcServer({

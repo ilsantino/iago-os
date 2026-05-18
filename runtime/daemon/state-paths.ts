@@ -10,11 +10,19 @@
  *   2. <cwd>/runtime/state if path.basename(cwd) === "iago-os"
  *   3. <homedir>/.iago-os/daemon-state
  *
- * Plan 02 stress-test E2: `atomicRename(src, dst)` exposed here so every
- * tmp→final rename across the daemon (resolved outputs, HWM markers,
- * approvals, telemetry checkpoints) goes through the Windows EEXIST
- * handler. Acceptable small race on Windows between unlink and rename
- * — revisit in Phase 7 if a paying client needs strict atomicity.
+ * Atomic-rename API (Plan feature-phase-1-deferred-hardening/02 — two
+ * variants, named for self-documenting callsites; see
+ * `runtime/daemon/state-paths.md` for the full caller audit):
+ *
+ *   - `atomicRename(src, dst)` — STRICT. Throws `EEXIST` (POSIX) or
+ *     `EEXIST`/`EPERM`/`EBUSY` (Windows) when `dst` already exists. Use when the
+ *     dst MUST NOT be destroyed because a concurrent writer's data there
+ *     is a legitimate race winner (e.g., approval-bus CLAIM phase).
+ *   - `atomicRenameStaleDest(src, dst)` — DESTRUCTIVE. Replaces `dst`
+ *     atomically; on Windows uses unlink-then-rename to recover from
+ *     `EEXIST`/`EPERM`. Use when the dst is by definition stale (e.g.,
+ *     HWM markers, per-taskId resolved outputs already serialized by an
+ *     owner-ID check upstream).
  *
  * Plan 02 stress-test 2nd-pass: `validateAgentId(id)` enforces the
  * filename safety contract for `<agentId>__<taskId>.json` task files
@@ -26,6 +34,8 @@ import * as fs from "node:fs";
 import * as fsp from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
+
+import { emit } from "./telemetry.js";
 
 export type StateKind =
 	| "tasks/pending"
@@ -152,19 +162,97 @@ export function getErrnoCode(err: unknown): string | undefined {
 }
 
 /**
- * Atomic rename across platforms.
+ * STRICT atomic rename across platforms — throws if `dst` already exists.
  *
- * On POSIX, `rename(2)` overwrites the destination atomically.
- * On Windows, Node's `fs.promises.rename` does not pass
- * MOVEFILE_REPLACE_EXISTING and returns EEXIST/EPERM when the target
- * exists; we unlink then rename. This opens a small race window —
- * acceptable for Phase 1; revisit in Phase 7 if strict atomicity is
- * required.
+ * Use when the destination MUST NOT be destroyed because a concurrent
+ * writer's data there is a legitimate race winner. The canonical caller
+ * is the approval-bus CLAIM phase: two callers racing to claim the same
+ * approval id rename `pending/<id>.json` → `inflight/<id>.json`; the
+ * loser MUST observe EEXIST so it knows the winner has already claimed,
+ * not silently overwrite the winner's inflight file.
  *
- * Used by Plan 02 (resolved outputs, HWM markers) and Plans 03/05/06
- * for any tmp→final publish.
+ * Implementation: `fsp.link(src, dst)` + `fsp.unlink(src)` on both
+ * platforms. `link(2)` (POSIX) and `CreateHardLinkW` (Windows NTFS)
+ * both fail atomically with `EEXIST` when `dst` exists (`EBUSY` on
+ * Windows when `dst` is held open by another process, e.g. antivirus) — no
+ * stat-then-rename TOCTOU race. Falling back to `fsp.rename` is unsafe
+ * because POSIX `rename(2)` silently overwrites AND Node's Windows
+ * `fs.rename` may also silently overwrite depending on the
+ * `MOVEFILE_REPLACE_EXISTING` flag selection.
+ *
+ * Limitations:
+ *   - POSIX: src and dst MUST be on the same filesystem (a state-root
+ *     invariant — every caller composes paths from the same root).
+ *   - Windows: requires NTFS (the daemon's state root is on the local
+ *     disk; ReFS and FAT32 do not appear in supported deployments).
+ *
+ * Crash safety: a crash strictly between `link` and `unlink` (no chance
+ * for the catch-block rollback below to run) leaves a hardlink pair (src
+ * and dst point to the same inode). Boot recovery (Plan 07+) MUST
+ * reconcile dual-presence — see `runtime/daemon/state-paths.md` §
+ * Notes for the documented requirement (prefer the dst as the claim
+ * winner's intent, unlink the src orphan).
+ *
+ * In-process unlink failure (e.g., AV lock on Windows, EACCES on src
+ * after a successful link): the catch block below best-effort unlinks
+ * `dst` to roll back the publish, so the caller observes a clean
+ * "src exists, dst does not" failure state rather than dual-presence.
+ * Rollback failures are swallowed; the original unlink error always
+ * propagates so callers can classify (e.g., the CLAIM phase treats it
+ * as "race lost" or surfaces it via the EBUSY/EPERM branch).
+ *
+ * Callers needing destructive replace-on-stale-dest semantics MUST use
+ * `atomicRenameStaleDest` instead — see `runtime/daemon/state-paths.md`
+ * for the per-caller classification audit.
  */
 export async function atomicRename(src: string, dst: string): Promise<void> {
+	await fsp.link(src, dst);
+	try {
+		await fsp.unlink(src);
+	} catch (unlinkErr) {
+		// link succeeded so dst was published, but the orphan-src removal
+		// failed. Best-effort rollback: unlink dst so the caller observes
+		// a clean failure (src still on disk, dst gone) instead of
+		// dual-presence. Rollback errors are non-fatal — the original
+		// unlink failure is what the caller needs to classify.
+		await fsp.unlink(dst).catch(() => undefined);
+		throw unlinkErr;
+	}
+}
+
+/**
+ * DESTRUCTIVE atomic rename across platforms — replaces `dst` if it exists.
+ *
+ * Use when the destination is by definition stale (e.g., the prior HWM
+ * marker that we are deliberately replacing, or a per-taskId resolved
+ * output whose only legitimate writer was already serialized upstream by
+ * an owner-ID check). The "loser" of a rename race here was about to be
+ * replaced anyway, so unlink-then-rename recovery is safe.
+ *
+ * Platform implementations:
+ *   - POSIX: `rename(2)` overwrites the destination atomically (single
+ *     syscall, no observable intermediate state).
+ *   - Windows: Node's `fs.promises.rename` (libuv `uv_fs_rename`) DOES
+ *     pass `MOVEFILE_REPLACE_EXISTING | MOVEFILE_COPY_ALLOWED` on Node
+ *     ≥ 14, so an ordinary overwrite is atomic. The recovery branch fires
+ *     only when the destination handle is held by another process
+ *     (sharing-violation surfacing as EEXIST/EPERM); the unlink-then-
+ *     rename retry races the holder's release. This opens a small race
+ *     window (acceptable for Phase 1; revisit in Phase 7 if strict
+ *     atomicity under contention becomes a requirement). The window size
+ *     is recorded via the `atomic-rename-stale-dest-window` telemetry
+ *     event — read the counter as a **handle-contention signal** (not as
+ *     a "Node bug" indicator), so a high count means "another process is
+ *     fighting for this path" not "Windows rename is broken."
+ *
+ * Callers needing fail-on-EEXIST semantics MUST use `atomicRename`
+ * (strict) instead — see `runtime/daemon/state-paths.md` for the
+ * per-caller classification audit.
+ */
+export async function atomicRenameStaleDest(
+	src: string,
+	dst: string,
+): Promise<void> {
 	if (!isWindows) {
 		await fsp.rename(src, dst);
 		return;
@@ -176,7 +264,20 @@ export async function atomicRename(src: string, dst: string): Promise<void> {
 		if (code !== "EEXIST" && code !== "EPERM") {
 			throw err;
 		}
+		const windowStart = Date.now();
 		await fsp.unlink(dst);
 		await fsp.rename(src, dst);
+		const windowMs = Date.now() - windowStart;
+		// Fire-and-forget telemetry: only the basename of dst leaks to the
+		// event so the state-root layout is not exposed. emit() swallows
+		// its own errors so a telemetry write failure cannot block the
+		// rename completion. No recursion: telemetry uses fsp.appendFile,
+		// not rename.
+		void emit({
+			kind: "atomic-rename-stale-dest-window",
+			dst: path.basename(dst),
+			windowMs,
+			platform: "win32",
+		});
 	}
 }

@@ -44,8 +44,13 @@
  *   agent-manager's `bootRecovery` (Plan 03) invoking
  *   `reclaimIfStale(taskId, maxAgeMs)`.
  * - **Atomic resolved publish via tmp→rename:** every resolved-output
- *   write goes through `atomicRename` from state-paths.ts, which
- *   handles the Windows EEXIST case (E2).
+ *   write goes through `atomicRenameStaleDest` from state-paths.ts,
+ *   which handles the Windows EEXIST case (E2). Classification: the
+ *   per-taskId resolved file is by definition stale-dest — owner-ID
+ *   validation already rejected any zombie writer above, so any pre-
+ *   existing dst can only be a stale prior write of the same logical
+ *   record (single-process assumption). See `state-paths.md` for the
+ *   full audit.
  */
 
 import * as fsp from "node:fs/promises";
@@ -53,7 +58,7 @@ import * as path from "node:path";
 
 import {
 	assertSafeIdentifier,
-	atomicRename,
+	atomicRenameStaleDest,
 	getErrnoCode,
 	pathFor,
 } from "./state-paths.js";
@@ -294,9 +299,9 @@ export async function readClaim(taskId: string): Promise<{
  * This rejects zombie writes from a force-killed-and-restarted agent.
  *
  * Steps: read claim → validate owner-ID → write tmp + datasync →
- * atomicRename(tmp, final). The tmp+rename pattern guarantees either
- * a fully-published output or no output at all (modulo the Windows
- * unlink+rename race documented on `atomicRename`).
+ * atomicRenameStaleDest(tmp, final). The tmp+rename pattern guarantees
+ * either a fully-published output or no output at all (modulo the
+ * Windows unlink+rename race documented on `atomicRenameStaleDest`).
  */
 export async function writeResolvedOutput(opts: {
 	readonly taskId: string;
@@ -336,7 +341,7 @@ export async function writeResolvedOutput(opts: {
 		await handle.close();
 	}
 	try {
-		await atomicRename(tmpPath, finalPath);
+		await atomicRenameStaleDest(tmpPath, finalPath);
 	} catch (err) {
 		await fsp.unlink(tmpPath).catch(() => undefined);
 		throw err;

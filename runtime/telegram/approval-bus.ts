@@ -16,31 +16,64 @@
  * for in-process push delivery (Phase 3+). Phase 1 does NOT push approvals
  * via `runtime.send` — the file-bus is the single source of truth.
  *
- * Atomic-rename hygiene (Plan 02 stress-test 2nd-pass):
+ * Atomic-rename hygiene (Plan feature-phase-1-deferred-hardening/02 audit
+ * — see `runtime/daemon/state-paths.md` for the per-caller classification):
  *   - `createApprovalRequest`: write to `pending/.<id>.tmp` then
- *     `atomicRename(tmp, pending/<id>.json)` so partial writes are never
- *     observable to listeners.
+ *     `atomicRenameStaleDest(tmp, pending/<id>.json)` so partial writes
+ *     are never observable to listeners. Classification: stale-dest (the
+ *     UUID-v4 path is operationally unique; any pre-existing dst is an
+ *     orphan from a crashed prior process).
  *   - `resolveApproval`: three-phase no-strand sequence (PR45 adversarial
  *     fix for the Codex HIGH "pending unlink before resolved write strands
  *     approvals on crash" finding):
- *       (a) raw fsp.rename pending/<id>.json → inflight/<id>.json (the
- *           claim point — no information loss on crash because the
- *           inflight file preserves the original request envelope).
- *           Raw rename (NOT atomicRename) is required here: atomicRename
- *           recovers from EEXIST by unlinking the destination, which would
- *           destroy a concurrent winner's claim file. EEXIST/ENOENT/EPERM
- *           on this rename all mean "we lost the race".
- *       (b) durably write resolved/<id>.json via tmp + atomicRename.
+ *       (a) strict `atomicRename(pending/<id>.json, inflight/<id>.json)` —
+ *           the claim point. Classification: collision-hazard. The strict
+ *           variant fails-on-EEXIST so a concurrent winner's inflight file
+ *           is never destroyed; EEXIST/ENOENT/EPERM/EBUSY on this rename
+ *           all mean "we lost the race" and the error branch classifies
+ *           the outcome. On POSIX strict `atomicRename` is implemented as
+ *           `link(2) + unlink(2)` — fail-on-EEXIST without a TOCTOU race
+ *           (raw `fsp.rename` on POSIX would silently overwrite).
+ *       (b) durably write resolved/<id>.json via tmp +
+ *           `atomicRenameStaleDest`. Classification: stale-dest (the per-
+ *           approvalId in-process mutex plus the CLAIM serialization gate
+ *           guarantee only the winner reaches this point).
  *       (c) unlink inflight/<id>.json only after the resolved file
  *           commit succeeds. Crash between (b) and (c) leaves a
  *           harmless inflight file recoverable on next boot.
- *   - All renames go through `atomicRename` from `state-paths.ts` to handle
- *     the Windows EEXIST case.
  *
- * Recovery: `listInflightApprovals()` surfaces approvals that crashed
- * between claim and resolved-write commit. The daemon's boot path (Plan 07+)
- * is expected to either (a) re-publish them as pending or (b) classify them
- * as system-timeout and roll forward.
+ * Recovery (two layers, defense-in-depth against the documented
+ * dual-presence window in `state-paths.ts` § `atomicRename` JSDoc):
+ *
+ *   - **Boot recovery** — `recoverStrandedApprovals()` MUST be called at
+ *     daemon startup BEFORE the Telegram bot begins polling. It scans
+ *     `approvals/inflight/` and reconciles every entry:
+ *       (a) resolved exists for the same id → unlink the orphan inflight
+ *           (and any orphan pending hardlink); resolved wins.
+ *       (b) pending also exists (dual-presence — crash inside
+ *           `atomicRename` between `link(2)` and `unlink(2)`) → unlink
+ *           the inflight hardlink; the pending file is preserved so the
+ *           bot can re-broadcast on its next poll tick.
+ *       (c) only inflight exists (crash after CLAIM committed but before
+ *           PUBLISH) → rename inflight back to pending so the bot can
+ *           re-broadcast and a fresh `resolveApproval` call can resume
+ *           normal CLAIM → PUBLISH → CLEANUP flow.
+ *     Without this, post-crash approvals are silently lost — every
+ *     subsequent `resolveApproval` call hits the stranded inflight,
+ *     polls vainly for a resolved file that no live owner will ever
+ *     write, and returns `already-resolved` to the user.
+ *
+ *   - **Runtime recovery in `resolveApproval`** — if a new caller arrives
+ *     before boot recovery ran (or after a runtime exception left state
+ *     stranded), the CLAIM path's race-loser branch detects long-stuck
+ *     inflight (no resolved after the 5s poll budget) and rolls forward
+ *     by taking ownership of the inflight envelope and publishing the
+ *     CURRENT call's decision. The original (crashed) caller's decision
+ *     is unrecoverable; the user supplying the new decision at the bot
+ *     keyboard is the authoritative source.
+ *
+ * `listInflightApprovals()` exposes the inflight set for diagnostics
+ * and for boot recovery's internal scan.
  *
  * SECURITY (PR45 critical fix): every public entry point validates the
  * `approvalId` argument via `assertValidApprovalId`. Telegram users supply
@@ -61,7 +94,13 @@ import * as crypto from "node:crypto";
 import * as fsp from "node:fs/promises";
 import * as path from "node:path";
 
-import { atomicRename, getErrnoCode, pathFor } from "../daemon/state-paths.js";
+import {
+	atomicRename,
+	atomicRenameStaleDest,
+	getErrnoCode,
+	pathFor,
+} from "../daemon/state-paths.js";
+import { emit as emitTelemetry } from "../daemon/telemetry.js";
 
 export interface ApprovalRequest {
 	readonly approvalId: string;
@@ -232,7 +271,7 @@ export async function createApprovalRequest(
 		await handle.close();
 	}
 	try {
-		await atomicRename(tmp, final);
+		await atomicRenameStaleDest(tmp, final);
 	} catch (err) {
 		await fsp.unlink(tmp).catch(() => undefined);
 		throw err;
@@ -246,27 +285,52 @@ export async function createApprovalRequest(
  *
  * Three-phase no-strand sequence (PR45 Codex HIGH finding fix):
  *
- *   1. CLAIM: rename `pending/<id>.json` → `inflight/<id>.json` atomically.
- *      This is the new atomic claim point. The original request envelope
- *      survives even if the daemon crashes immediately after the claim.
- *   2. PUBLISH: write `resolved/<id>.json` via tmp + atomicRename. Crash
- *      between claim and publish leaves the request safely in
- *      `approvals/inflight/` for boot-time recovery.
- *   3. CLEANUP: unlink the inflight file. Crash between publish and
- *      cleanup leaves an orphaned inflight file that boot recovery
- *      can safely reconcile with the resolved file (resolved wins).
+ *   1. CLAIM: rename `pending/<id>.json` → `inflight/<id>.json` via the
+ *      strict `atomicRename` (`link(2)` + `unlink(2)`). The strict variant
+ *      fails-on-EEXIST so a concurrent winner's inflight is never destroyed.
+ *      The original request envelope survives a daemon crash immediately
+ *      after CLAIM (the inflight envelope is the canonical record).
+ *   2. PUBLISH: write `resolved/<id>.json` via tmp + `atomicRenameStaleDest`.
+ *      A crash between CLAIM and PUBLISH leaves the request safely in
+ *      `approvals/inflight/` for boot recovery.
+ *   3. CLEANUP: unlink the inflight file. A crash between PUBLISH and
+ *      CLEANUP leaves an orphaned inflight that boot recovery cleans up
+ *      (resolved wins).
+ *
+ * Stranded-state recovery (PR48 Codex HIGH fix). The `atomicRename`
+ * primitive's `link(2)` → `unlink(2)` sequence has a documented
+ * dual-presence window: a crash between the two syscalls leaves a
+ * hardlink pair (pending + inflight refer to the same inode) with no
+ * resolved file. A fresh `resolveApproval` call arriving in that state
+ * MUST NOT silently absorb the user's new decision as `already-resolved`.
+ * This implementation:
+ *
+ *   - Detects inflight present at entry (after mutex acquisition) and
+ *     rolls forward by taking ownership of the inflight envelope,
+ *     unlinking the orphan pending hardlink, and publishing the CURRENT
+ *     caller's decision. The crashed caller's decision is unrecoverable
+ *     (it was never persisted); the Telegram user supplying the new
+ *     decision at the keyboard is the authoritative source.
+ *   - In the race-loser CLAIM branch, after the 5s slow-disk poll for a
+ *     concurrent winner's resolved file exhausts, treats the persistent
+ *     inflight as stranded and applies the same roll-forward recovery
+ *     instead of returning `already-resolved`.
+ *   - At daemon boot, `recoverStrandedApprovals()` proactively reconciles
+ *     the same states (see the file header docstring) — this in-call
+ *     recovery is the second-line defense if a stranded entry slips past
+ *     boot recovery (or is created at runtime by an exception inside
+ *     `atomicRename`'s rollback path).
  *
  * Concurrent callers observing `ENOENT` on the claim rename classify the
  * outcome via the presence of a resolved file: present → `already-resolved`,
- * absent → `not-found`. The 5x20ms re-poll handles the race window between
- * winner's claim and winner's publish.
+ * absent → `not-found`. The slow-disk poll handles the race window between
+ * a winner's CLAIM and that winner's PUBLISH.
  *
  * Returns `{ ok: false, reason: "not-found" }` when neither a pending,
  * inflight, nor resolved record exists for `approvalId`. Returns
  * `{ ok: false, reason: "already-resolved" }` when a resolved record
- * already exists (either from a prior call or from a concurrent winner).
- * Returns `{ ok: false, reason: "invalid-id" }` when `approvalId` does not
- * match the UUID v4 format.
+ * already exists. Returns `{ ok: false, reason: "invalid-id" }` when
+ * `approvalId` does not match the UUID v4 format.
  *
  * SECURITY: the `approvalId` argument is validated at entry. Telegram users
  * can supply IDs via `/approve` and via callback_data; an unvalidated ID
@@ -328,89 +392,128 @@ async function resolveApprovalLocked(
 
 	await fsp.mkdir(inflightDir(), { recursive: true });
 
-	// Upfront existence probe — if no record exists for this id in any of
-	// pending / inflight / resolved, return not-found immediately without
-	// entering the slow-disk race-loser poll. This keeps the strict
-	// "never-created" semantic fast while preserving the slow-disk poll
-	// for the genuine race-loser case (saw pending pre-rename).
-	const pendingExistedAtStart = await pathExists(pendingPath);
-	if (!pendingExistedAtStart) {
-		if (await pathExists(resolvedPath)) {
-			return { ok: false, reason: "already-resolved" };
-		}
-		if (!(await pathExists(inflightPath))) {
-			return { ok: false, reason: "not-found" };
-		}
-		// inflight present: a prior call crashed mid-resolution; fall
-		// through to the rename attempt so we hit the ENOENT branch
-		// below which polls the inflight→resolved transition.
+	// Short-circuit if the resolved file already exists — a prior caller
+	// (or boot recovery's own resolved-wins cleanup) committed the decision.
+	if (await pathExists(resolvedPath)) {
+		return { ok: false, reason: "already-resolved" };
 	}
 
-	try {
-		// CLAIM phase uses raw fsp.rename — NOT atomicRename — because
-		// atomicRename's EEXIST recovery unlinks the destination and
-		// retries. For the claim, the destination IS another caller's
-		// claim file (the race winner) — we must never destroy it. Any
-		// failure here (ENOENT / EEXIST / EPERM / EBUSY) means we lost
-		// the race; the branch below classifies the outcome.
-		await fsp.rename(pendingPath, inflightPath);
-	} catch (err) {
-		const code = getErrnoCode(err);
-		// ENOENT — pending was already claimed (race winner moved it).
-		// EEXIST — another caller's inflight is already in place.
-		// EPERM/EBUSY — Windows surfaces these when a concurrent rename
-		// of the same path is mid-flight.
-		if (
-			code === "ENOENT" ||
-			code === "EEXIST" ||
-			code === "EPERM" ||
-			code === "EBUSY"
-		) {
-			// Inflight may exist from a crashed prior call — treat as
-			// already-claimed by another caller; poll for the resolved
-			// file under generous bound to absorb slow-disk publishes.
+	// Stranded-state runtime recovery: if inflight is already present at
+	// entry, a prior CLAIM did not commit (the only legitimate path that
+	// leaves inflight in place between mutex acquisitions is a crashed
+	// daemon process or a rare in-process `atomicRename` rollback failure;
+	// the in-process mutex prevents healthy concurrent CLAIMs from
+	// observing inflight here). Take ownership: unlink the orphan pending
+	// hardlink (if dual-presence) and skip straight to PUBLISH. The
+	// stranded caller's decision is unrecoverable — the current caller's
+	// decision authoritatively replaces it. See the Codex HIGH finding on
+	// PR45 + `runtime/daemon/state-paths.md` for the full reasoning.
+	let weOwnInflight = await pathExists(inflightPath);
+	if (weOwnInflight) {
+		await fsp.unlink(pendingPath).catch(() => undefined);
+	} else {
+		const pendingExistedAtStart = await pathExists(pendingPath);
+		if (!pendingExistedAtStart) {
+			return { ok: false, reason: "not-found" };
+		}
+		try {
+			// CLAIM phase uses strict `atomicRename` (NOT the destructive
+			// `atomicRenameStaleDest`) — the destination IS another caller's
+			// claim file when we lose the race, and the strict variant
+			// fails-on-EEXIST instead of unlinking and overwriting. The
+			// strict variant is implemented as `link+unlink` on BOTH POSIX
+			// and Windows (NTFS `CreateHardLinkW` fails atomically with
+			// EEXIST when dst exists, same as POSIX `link(2)`), so the
+			// CLAIM never silently overwrites a concurrent winner's
+			// inflight file on either platform.
+			await atomicRename(pendingPath, inflightPath);
+			weOwnInflight = true;
+		} catch (err) {
+			const code = getErrnoCode(err);
+			if (
+				code !== "ENOENT" &&
+				code !== "EEXIST" &&
+				code !== "EPERM" &&
+				code !== "EBUSY"
+			) {
+				throw err;
+			}
+			// ENOENT — pending was already claimed.
+			// EEXIST — another caller's inflight is already in place.
+			// EPERM/EBUSY — Windows surfaces these for mid-rename races.
+			if (await pathExists(resolvedPath)) {
+				return { ok: false, reason: "already-resolved" };
+			}
 			if (await pathExists(inflightPath)) {
+				// Poll for the resolved file under a generous bound (5s)
+				// to absorb slow-disk publishes from a healthy concurrent
+				// winner. If the poll exhausts without a resolved file
+				// appearing, treat as stranded and take ownership — this
+				// is the Codex HIGH dual-presence-strand fix.
 				for (let i = 0; i < 250; i++) {
 					await sleep(20);
 					if (await pathExists(resolvedPath)) {
 						return { ok: false, reason: "already-resolved" };
 					}
 					if (!(await pathExists(inflightPath))) {
-						// Inflight cleared without resolved? winner crashed
-						// post-publish; resolved should be present.
+						// Inflight cleared mid-poll without a resolved
+						// file — the winner crashed post-CLEANUP-start.
+						// Re-probe resolved to absorb a publish that
+						// landed between our two checks.
 						if (await pathExists(resolvedPath)) {
 							return { ok: false, reason: "already-resolved" };
 						}
 						return { ok: false, reason: "not-found" };
 					}
 				}
-				// Long-stuck inflight: surface to caller — boot recovery
-				// must reconcile.
-				return { ok: false, reason: "already-resolved" };
-			}
-			if (await pathExists(resolvedPath)) {
-				return { ok: false, reason: "already-resolved" };
-			}
-			// If we never observed a pending file at entry AND none of
-			// inflight/resolved exist now, this id was never created.
-			// Skip the slow-disk poll — there is no winner to wait for.
-			if (!pendingExistedAtStart) {
-				return { ok: false, reason: "not-found" };
-			}
-			// Race window: we observed pending at entry but it was gone
-			// by the rename — a concurrent winner has claimed it. Poll
-			// for the resolved file under a generous bound (5s) before
-			// classifying as not-found, since slow disk / antivirus /
-			// NFS can push publish past 100ms.
-			for (let i = 0; i < 250; i++) {
-				await sleep(20);
+				// Long-stuck inflight: assume the prior owner crashed
+				// and take ownership. Unlink the orphan pending
+				// hardlink (dual-presence case) and fall through to
+				// PUBLISH with the current caller's decision.
+				if (!(await pathExists(inflightPath))) {
+					// Lost the race in the last few ms — re-check resolved.
+					if (await pathExists(resolvedPath)) {
+						return { ok: false, reason: "already-resolved" };
+					}
+					return { ok: false, reason: "not-found" };
+				}
+				weOwnInflight = true;
+				await fsp.unlink(pendingPath).catch(() => undefined);
+			} else {
+				// No inflight visible — winner already published + cleaned
+				// up. resolved should be present; if not, it was never created.
 				if (await pathExists(resolvedPath)) {
 					return { ok: false, reason: "already-resolved" };
 				}
+				// I2 (Opus PR #50 dual-review): when `link(2)` returns EPERM
+				// AND no winning state is observable (no resolved, no
+				// inflight), the most likely cause is a Linux
+				// `fs.protected_hardlinks=1` misconfiguration rather than a
+				// lost race. A genuine lost race always leaves an inflight
+				// or resolved file visible to the loser. Emit telemetry so
+				// the misconfiguration surfaces instead of silently
+				// reporting `not-found` for every approval forever. Hash the
+				// approvalId so the telemetry stream does not leak the raw
+				// id (consistent with PR #45 I8 PII-hash pattern).
+				if (code === "EPERM") {
+					void emitTelemetry({
+						kind: "approval-claim-link-eperm",
+						approvalIdHash: crypto
+							.createHash("sha256")
+							.update(approvalId)
+							.digest("hex")
+							.slice(0, 16),
+					});
+				}
+				return { ok: false, reason: "not-found" };
 			}
-			return { ok: false, reason: "not-found" };
 		}
-		throw err;
+	}
+
+	if (!weOwnInflight) {
+		// Defensive — should be unreachable. Keeps the type narrowing
+		// honest if a future edit breaks one of the branches above.
+		return { ok: false, reason: "not-found" };
 	}
 
 	const envelope: ApprovalDecision = {
@@ -430,7 +533,7 @@ async function resolveApprovalLocked(
 		await handle.close();
 	}
 	try {
-		await atomicRename(tmp, resolvedPath);
+		await atomicRenameStaleDest(tmp, resolvedPath);
 	} catch (err) {
 		await fsp.unlink(tmp).catch(() => undefined);
 		// Resolved publish failed AFTER successful claim — leave inflight
@@ -595,6 +698,105 @@ export async function listPendingApprovals(): Promise<ApprovalRequest[]> {
 		);
 	}
 	return out;
+}
+
+export interface RecoverStrandedApprovalsResult {
+	/** approvalIds whose inflight envelope was preserved as pending
+	 * (re-broadcastable). */
+	readonly republished: readonly string[];
+	/** approvalIds whose inflight envelope was an orphan hardlink and
+	 * was cleaned up (pending preserved). */
+	readonly cleaned: readonly string[];
+	/** approvalIds whose resolved file already existed; inflight + any
+	 * orphan pending hardlink were cleaned up. */
+	readonly resolvedSurvived: readonly string[];
+	/** approvalIds that could not be recovered (filesystem error).
+	 * Surfaced to the operator via stderr; daemon continues. */
+	readonly failed: readonly string[];
+}
+
+/**
+ * Boot-time reconciliation for the dual-presence + inflight-only
+ * stranded states documented in `runtime/daemon/state-paths.ts`'s
+ * `atomicRename` JSDoc + the file header above.
+ *
+ * MUST be called once at daemon startup BEFORE the Telegram bot begins
+ * polling — Codex HIGH PR45+: a stranded inflight observed by a fresh
+ * `resolveApproval` call would otherwise cause the user's decision to
+ * be silently rejected as `already-resolved`, the waiting agent to time
+ * out, and the approval to be permanently lost.
+ *
+ * Reconciliation matrix (per inflight entry):
+ *   - resolved exists → unlink inflight + any pending hardlink;
+ *     resolved is the durable winner.
+ *   - pending also exists (dual-presence: crash between `link(2)`
+ *     and `unlink(2)` inside `atomicRename`) → unlink the inflight
+ *     hardlink; pending stays so the bot re-broadcasts.
+ *   - only inflight exists (crash after CLAIM committed, before
+ *     PUBLISH wrote `resolved/<id>.json`) → rename inflight back to
+ *     pending so the bot re-broadcasts and the next `resolveApproval`
+ *     call proceeds through the normal CLAIM → PUBLISH flow.
+ *
+ * Idempotent — safe to call multiple times. Returns a structured
+ * report for telemetry / logging.
+ */
+export async function recoverStrandedApprovals(): Promise<RecoverStrandedApprovalsResult> {
+	const dir = inflightDir();
+	let entries: string[];
+	try {
+		entries = await fsp.readdir(dir);
+	} catch (err) {
+		if (getErrnoCode(err) === "ENOENT") {
+			return { republished: [], cleaned: [], resolvedSurvived: [], failed: [] };
+		}
+		throw err;
+	}
+	const republished: string[] = [];
+	const cleaned: string[] = [];
+	const resolvedSurvived: string[] = [];
+	const failed: string[] = [];
+	for (const entry of entries) {
+		if (entry.startsWith(".")) continue;
+		if (!entry.endsWith(".json")) continue;
+		const id = entry.slice(0, -".json".length);
+		if (!isValidApprovalId(id)) {
+			console.error(
+				`[approval-bus] recoverStrandedApprovals skipping non-UUID inflight file: ${entry}`,
+			);
+			continue;
+		}
+		const pendingP = pendingFinalPath(id);
+		const inflightP = inflightFinalPath(id);
+		const resolvedP = resolvedFinalPath(id);
+		try {
+			if (await pathExists(resolvedP)) {
+				// resolved wins — purge inflight + any orphan pending hardlink.
+				await fsp.unlink(inflightP).catch(() => undefined);
+				await fsp.unlink(pendingP).catch(() => undefined);
+				resolvedSurvived.push(id);
+				continue;
+			}
+			if (await pathExists(pendingP)) {
+				// dual-presence — unlink the inflight hardlink; pending
+				// is the canonical state for re-broadcast.
+				await fsp.unlink(inflightP).catch(() => undefined);
+				cleaned.push(id);
+				continue;
+			}
+			// inflight-only — rename it back to pending so the bot
+			// re-broadcasts and the next resolveApproval call goes
+			// through the normal CLAIM path.
+			await fsp.mkdir(pendingDir(), { recursive: true });
+			await atomicRenameStaleDest(inflightP, pendingP);
+			republished.push(id);
+		} catch (err) {
+			console.error(
+				`[approval-bus] recoverStrandedApprovals failed for ${id}: ${err instanceof Error ? err.message : String(err)}`,
+			);
+			failed.push(id);
+		}
+	}
+	return { republished, cleaned, resolvedSurvived, failed };
 }
 
 /**

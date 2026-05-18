@@ -172,3 +172,25 @@ Next steps:
 - Make `maxLineBytes` a real byte bound independent of newline placement and stream chunking.
 [23:21:47] Codex review complete
 [23:21:47] CODEX FIX — fixing findings before PR
+[23:24:40] Codex fix output (exit 0):
+All 305 runtime tests pass. Both Codex findings are fixed:
+
+**HIGH (Codex H)** — Serialization safety: `JSON.stringify(response)` wrapped in try/catch; failures emit a guaranteed-serializable `{ ok:false, error:"internal: response serialization failed" }` fallback so every request gets exactly one response line (1:1 ordering invariant). `ipc-server.ts:385-395`.
+
+**MEDIUM (Codex M)** — Byte-precise cap: per-line check via `Buffer.byteLength(line, "utf8")` BEFORE dispatch + residual-buffer check after parse loop. Cap can no longer be bypassed by a newline in the same chunk or by multibyte input. `ipc-server.ts:285-317`, new helper `rejectOversizedLine` at `:335-344`.
+
+**Tests** — Updated H3 to assert both responses arrive (first = serialization fallback, second = success) + added two new tests: oversized-with-trailing-newline, multibyte byte-vs-UTF-16 boundary. All 21 IPC tests pass; broader 305-test suite green; `tsc --noEmit` clean.
+SessionEnd hook [node "${CLAUDE_PLUGIN_ROOT}/scripts/session-lifecycle-hook.mjs" SessionEnd] failed: Hook cancelled
+[23:24:40] BUILD GATE (post-codex-fix)
+[23:24:40] Build passed after Codex fix
+warning: in the working copy of '.iago/summaries/_dispatch-b-01.log', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'runtime/daemon/ipc-server.test.ts', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'runtime/daemon/ipc-server.ts', LF will be replaced by CRLF the next time Git touches it
+[23:24:41] CREATE PR — 01-ipc-server-hardening
+[23:26:28] PR creation output:
+PR created: **https://github.com/ilsantino/iago-os/pull/49**
+[23:26:29] TAGGING @claude on PR #49
+https://github.com/ilsantino/iago-os/pull/49#issuecomment-4469462500
+[23:27:48] SUMMARY — 01-ipc-server-hardening
+[23:27:49] Summary written to .iago/summaries/01-ipc-server-hardening.md
+[23:27:49] PIPELINE COMPLETE — 01-ipc-server-hardening
