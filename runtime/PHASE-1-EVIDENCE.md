@@ -111,11 +111,28 @@ Plan 03b lifted `bot.ts` to 98.28% lines / 87.73% branches by exercising
 every Important review item (I1, I3, I4, I5, I7, I8, I9, I10, I11, I12,
 I13) plus the full `/abort`, `/status`, `/approve`, `/inject` command
 matrix and the `sendApprovalRequest` / `safeReply` / `stop()` failure
-paths. `approval-bus.ts` (76.41%) sits below the 80% floor — its uncovered
-range is the dual-presence stranded-recovery code path which is exercised
-end-to-end by the existing `recoverStrandedApprovals` test set and the
-boot-recovery integration test; further line lift requires fault-injection
-into POSIX `link(2)` semantics outside the per-file coverage gate.
+paths. Review-fix round 1 (feat/b-03b-bot-coverage) adds 10 additional
+`approval-bus.test.ts` tests covering previously unreachable paths
+(`waitForApproval` invalid-id early-return, `recoverStrandedApprovals`
+non-UUID inflight skip + filesystem-error failed[] path, `listPendingApprovals`
+schema-invalid envelope + non-UUID + non-.json + read-failure paths,
+`createApprovalRequest` explicit `expiresAt`) — recovering the 0.44 pp
+line-coverage regression noted in the PR review.
+
+**Deferred to Phase 2 (tracked):**
+
+- `approval-bus.ts` branch coverage (63.63%, below 75% floor): the uncovered
+  branches are in `resolveApprovalLocked`'s slow-disk poll exhaustion path
+  (250-iteration loop, 5s budget) — specifically the mid-poll inflight-clears-
+  without-resolved branch and the post-poll stranded-takeover fallback.
+  Reaching these deterministically requires a test harness that can pause
+  execution inside the poll loop or inject fs errors mid-iteration. Deferred
+  to Phase 2 integration harness work.
+
+- `main.ts` function coverage (47.82%): the uncovered functions are auto-start
+  agent loops, signal handler setup, and process lifecycle hooks — all require
+  a real Claude binary or live process signals to exercise. Deferred to Phase 2
+  integration harness (PTY process-level tests).
 
 ### 3. Hello-world integration test (criterion #3) — `[x]` filled
 

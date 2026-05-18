@@ -627,4 +627,227 @@ describe("approval-bus / listPendingApprovals malformed-file handling (PR45)", (
 		const allLogs = errSpy.mock.calls.map((c) => String(c[0])).join("\n");
 		expect(allLogs).toMatch(/skip|malformed|parse|non-UUID/i);
 	});
+
+	it("skips non-.json entries in pending dir", async () => {
+		const { approvalId: good } = await createApprovalRequest({
+			agentId: "agent-ok",
+			handleId: "h-ok",
+			reason: "test",
+		});
+		// Write a non-.json file — must be silently skipped
+		await fsp.writeFile(
+			path.join(pathFor("approvals/pending"), "somefile.txt"),
+			"ignored",
+			"utf8",
+		);
+
+		const pending = await listPendingApprovals();
+		expect(pending).toHaveLength(1);
+		expect(pending[0]?.approvalId).toBe(good);
+	});
+
+	it("skips UUID file with valid JSON but wrong schema (isApprovalRequest returns false)", async () => {
+		const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+		const { approvalId: good } = await createApprovalRequest({
+			agentId: "agent-good",
+			handleId: "h-good",
+			reason: "deploy?",
+		});
+
+		// Valid JSON but missing required ApprovalRequest fields
+		const schemaInvalidId = "11111111-2222-4333-8444-111111111111";
+		await fsp.writeFile(
+			path.join(pathFor("approvals/pending"), `${schemaInvalidId}.json`),
+			JSON.stringify({ foo: "bar" }),
+			"utf8",
+		);
+
+		const pending = await listPendingApprovals();
+		expect(pending).toHaveLength(1);
+		expect(pending[0]?.approvalId).toBe(good);
+		// schema-invalid branch logs to stderr
+		const logs = errSpy.mock.calls.map((c) => String(c[0])).join("\n");
+		expect(logs).toMatch(/schema-invalid|malformed/i);
+
+		errSpy.mockRestore();
+	});
+
+	it("skips UUID file where expiresAt is non-numeric (isApprovalRequest line 213)", async () => {
+		const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+		const { approvalId: good } = await createApprovalRequest({
+			agentId: "agent-good",
+			handleId: "h-good",
+			reason: "deploy?",
+		});
+
+		// Valid outer shape but expiresAt is a string — hits the typeof guard
+		const badId = "22222222-3333-4444-8555-222222222222";
+		await fsp.writeFile(
+			path.join(pathFor("approvals/pending"), `${badId}.json`),
+			JSON.stringify({
+				approvalId: badId,
+				agentId: "agent-x",
+				handleId: "h-x",
+				reason: "r",
+				createdAt: Date.now(),
+				expiresAt: "not-a-number",
+			}),
+			"utf8",
+		);
+
+		const pending = await listPendingApprovals();
+		expect(pending).toHaveLength(1);
+		expect(pending[0]?.approvalId).toBe(good);
+		expect(errSpy).toHaveBeenCalled();
+
+		errSpy.mockRestore();
+	});
+
+	it("logs read failure when UUID file cannot be read (directory at that path)", async () => {
+		const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+		const { approvalId: good } = await createApprovalRequest({
+			agentId: "agent-good",
+			handleId: "h-good",
+			reason: "deploy?",
+		});
+
+		// Create a DIRECTORY where a .json file would live — readFile throws EISDIR
+		const readFailId = "33333333-4444-4555-8666-333333333333";
+		await fsp.mkdir(
+			path.join(pathFor("approvals/pending"), `${readFailId}.json`),
+			{ recursive: true },
+		);
+
+		const pending = await listPendingApprovals();
+		expect(pending).toHaveLength(1);
+		expect(pending[0]?.approvalId).toBe(good);
+		const logs = errSpy.mock.calls.map((c) => String(c[0])).join("\n");
+		expect(logs).toMatch(/read failed|malformed|skipped/i);
+
+		errSpy.mockRestore();
+	});
+});
+
+describe("approval-bus / createApprovalRequest edge cases", () => {
+	it("uses explicit expiresAt over ttlMs when both provided", async () => {
+		const explicitExpiry = Date.now() + 999_999;
+		const { approvalId, pendingPath } = await createApprovalRequest({
+			agentId: "agent-foo",
+			handleId: "h-1",
+			reason: "explicit expiry test",
+			expiresAt: explicitExpiry,
+			ttlMs: 1000, // should be ignored when expiresAt is present
+		});
+
+		const raw = await fsp.readFile(pendingPath, "utf8");
+		const parsed = JSON.parse(raw);
+		expect(parsed.approvalId).toBe(approvalId);
+		expect(parsed.expiresAt).toBe(explicitExpiry);
+	});
+
+	it("omits expiresAt when neither ttlMs nor expiresAt provided", async () => {
+		const { pendingPath } = await createApprovalRequest({
+			agentId: "agent-foo",
+			handleId: "h-1",
+			reason: "no expiry",
+		});
+
+		const raw = await fsp.readFile(pendingPath, "utf8");
+		const parsed = JSON.parse(raw);
+		expect("expiresAt" in parsed).toBe(false);
+	});
+});
+
+describe("approval-bus / waitForApproval invalid id", () => {
+	it("returns { timedOut: true } quickly and logs when id is not UUID v4", async () => {
+		const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+		const start = Date.now();
+		const result = await waitForApproval("not-a-valid-uuid", 5000, 25);
+		const elapsed = Date.now() - start;
+
+		// Returns quickly (≤50ms sleep cap), not after 5000ms timeout
+		expect(elapsed).toBeLessThan(500);
+		expect("timedOut" in result && result.timedOut).toBe(true);
+		const logs = errSpy.mock.calls.map((c) => String(c[0])).join("\n");
+		expect(logs).toMatch(/invalid|rejected/i);
+
+		errSpy.mockRestore();
+	});
+});
+
+describe("approval-bus / recoverStrandedApprovals edge cases", () => {
+	const inflightSubdir = (): string =>
+		path.join(pathFor("approvals/pending"), "..", "inflight");
+
+	it("skips non-UUID .json files in inflight dir and logs to stderr", async () => {
+		const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+		const dir = inflightSubdir();
+		await fsp.mkdir(dir, { recursive: true });
+		await fsp.writeFile(
+			path.join(dir, "not-a-uuid.json"),
+			JSON.stringify({ approvalId: "x" }),
+			"utf8",
+		);
+
+		const report = await recoverStrandedApprovals();
+		expect(report.republished).toEqual([]);
+		expect(report.cleaned).toEqual([]);
+		expect(report.resolvedSurvived).toEqual([]);
+		expect(report.failed).toEqual([]);
+		const logs = errSpy.mock.calls.map((c) => String(c[0])).join("\n");
+		expect(logs).toMatch(/non-UUID inflight/i);
+
+		errSpy.mockRestore();
+	});
+
+	it("skips non-.json entries in inflight dir", async () => {
+		const dir = inflightSubdir();
+		await fsp.mkdir(dir, { recursive: true });
+		await fsp.writeFile(path.join(dir, "README.txt"), "ignored", "utf8");
+
+		const report = await recoverStrandedApprovals();
+		expect(report).toEqual({
+			republished: [],
+			cleaned: [],
+			resolvedSurvived: [],
+			failed: [],
+		});
+	});
+
+	it("records failed[] and logs when a filesystem error occurs per-entry", async () => {
+		const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+		const approvalId = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+		const dir = inflightSubdir();
+		await fsp.mkdir(dir, { recursive: true });
+		await fsp.writeFile(
+			path.join(dir, `${approvalId}.json`),
+			JSON.stringify({
+				approvalId,
+				agentId: "agent-foo",
+				handleId: "h-1",
+				reason: "r",
+				createdAt: Date.now(),
+			}),
+			"utf8",
+		);
+
+		// Replace the resolved DIRECTORY with a FILE so pathExists(resolvedPath)
+		// throws ENOTDIR (not ENOENT), which the per-entry catch captures.
+		const resolvedDirPath = pathFor("approvals/resolved");
+		await fsp.rm(resolvedDirPath, { recursive: true, force: true });
+		await fsp.writeFile(resolvedDirPath, "blocker", "utf8");
+
+		const report = await recoverStrandedApprovals();
+		expect(report.failed).toContain(approvalId);
+		const logs = errSpy.mock.calls.map((c) => String(c[0])).join("\n");
+		expect(logs).toMatch(/recoverStrandedApprovals failed/i);
+
+		errSpy.mockRestore();
+	});
 });
