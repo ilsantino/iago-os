@@ -80,12 +80,16 @@ for (const run of taken) {
       pendingStart.stage === rec.stage
     ) {
       const stage = rec.stage;
+      // Forward-compat per Plan 01: tolerate records with AND without
+      // `sessionId`. Plan 03 owns the full per-session projection.
+      const sessionId = rec.sessionId ?? null;
       if (!perStage.has(stage)) perStage.set(stage, []);
       perStage.get(stage).push({
         duration_ms: Number(rec.duration_ms) || 0,
         timed_out: rec.timed_out === true,
         exit: String(rec.exit),
         skipped: String(rec.exit) === "skipped",
+        sessionId,
       });
       pendingStart = null;
     }

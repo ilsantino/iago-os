@@ -43,3 +43,6 @@ docs/research/_drop-*/
 
 # Agent transient worktrees (created by Agent tool isolation=worktree; auto-cleaned but admin dirs may linger on Windows)
 .claude/worktrees/
+
+# Learnings-writer fallback artifacts (transient — written when patterns.md is unwritable)
+.iago/logs/learnings-fallback-*.md

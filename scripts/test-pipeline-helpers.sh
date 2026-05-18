@@ -171,6 +171,207 @@ STUB
 
 liveness_gate_test
 
+# ─── run_claude session-id integration ──────────────────────────────
+# Verifies the per-call session-id contract in scripts/execute-pipeline.sh
+# `run_claude` propagates to telemetry emissions inside the subshell:
+#   - outer CLAUDE_CODE_SESSION_ID set → preserved as-is
+#   - outer unset → synthesized `claude-{RUN_ID}-{ms}-{RANDOM}` prefix
+# Windows quirk: bash on Git Bash resolves shell scripts on PATH BEFORE
+# .exe with PATH prepend, so a stub named `claude` (no extension) wins.
+# Skip toggle: `SKIP_RUN_CLAUDE_TESTS=1 bash scripts/test-pipeline-helpers.sh`.
+run_claude_session_id_test() {
+  local label="$1"
+  local outer_sid="$2"   # empty string = unset
+  local expect_prefix="$3"  # literal prefix that must appear in env seen by spawned claude
+  local should_match_literal="$4"  # "yes" → expect exact match, "no" → prefix only
+
+  if [[ "${SKIP_RUN_CLAUDE_TESTS:-0}" == "1" ]]; then
+    echo "  SKIP  $label (SKIP_RUN_CLAUDE_TESTS=1)"
+    return 0
+  fi
+
+  local repo_root
+  repo_root="$(cd "$(dirname "$0")/.." && pwd)"
+  local telemetry_helper="$repo_root/scripts/lib/pipeline-telemetry.sh"
+  local pipeline_script="$repo_root/scripts/execute-pipeline.sh"
+
+  if [[ ! -f "$telemetry_helper" || ! -f "$pipeline_script" ]]; then
+    echo "  FAIL  $label (helper/script not found)"
+    FAIL=$((FAIL + 1))
+    return
+  fi
+
+  local stub_dir tmp_dir
+  stub_dir=$(mktemp -d -t iago-run-claude-stub.XXXXXX)
+  tmp_dir=$(mktemp -d -t iago-run-claude-tmp.XXXXXX)
+  # shellcheck disable=SC2064
+  trap "rm -rf '$stub_dir' '$tmp_dir' 2>/dev/null" RETURN
+
+  # Stub `claude`: writes its CLAUDE_CODE_SESSION_ID env to a marker file
+  # then exits 0. The marker proves what env the spawned process actually saw —
+  # which IS the contract (run_claude exports the synthesized/preserved id so
+  # the spawned `claude -p` correlates to ONE id). The wrapping telemetry
+  # record (stage_end) lives in the parent shell and naturally reflects the
+  # outer env (subshell exports don't propagate back) — that is by design.
+  local marker="$tmp_dir/claude-env-seen"
+  cat > "$stub_dir/claude" <<STUB
+#!/usr/bin/env bash
+printf '%s' "\${CLAUDE_CODE_SESSION_ID:-__UNSET__}" > "$marker"
+echo "OK"
+exit 0
+STUB
+  chmod +x "$stub_dir/claude"
+
+  # Extract just the run_claude function body from execute-pipeline.sh so the
+  # test can source it without booting the whole pipeline (lock, self-freeze,
+  # etc.). awk pulls lines between `run_claude() {` and the next closing `}`
+  # at column 0.
+  local fn_file="$tmp_dir/run_claude.sh"
+  awk '/^run_claude\(\) \{/{flag=1} flag{print} /^\}$/ && flag{flag=0}' \
+    "$pipeline_script" > "$fn_file"
+
+  if [[ ! -s "$fn_file" ]]; then
+    echo "  FAIL  $label (could not extract run_claude function body)"
+    FAIL=$((FAIL + 1))
+    return
+  fi
+
+  PATH="$stub_dir:$PATH" \
+  PROJECT_DIR="$tmp_dir" \
+  PIPELINE_TMP="$tmp_dir" \
+  PLAN_NAME="rc-test" \
+  OUTER_SID="$outer_sid" \
+  HELPER="$telemetry_helper" \
+  FN_FILE="$fn_file" \
+  bash -c '
+    set -uo pipefail
+    . "$HELPER"
+    . "$FN_FILE"
+    if [[ -n "$OUTER_SID" ]]; then
+      export CLAUDE_CODE_SESSION_ID="$OUTER_SID"
+    else
+      unset CLAUDE_CODE_SESSION_ID
+    fi
+    pipeline_init
+    stage_start rc_stage
+    output=$(run_claude 30 -p stub) || true
+    stage_end rc_stage 0
+    pipeline_finalize 0
+  ' >/dev/null 2>&1 || true
+
+  if [[ ! -f "$marker" ]]; then
+    echo "  FAIL  $label (stub never invoked — marker missing)"
+    FAIL=$((FAIL + 1))
+    return
+  fi
+
+  local seen
+  seen=$(cat "$marker")
+
+  if [[ "$should_match_literal" == "yes" ]]; then
+    if [[ "$seen" == "$expect_prefix" ]]; then
+      echo "  PASS  $label (env seen by claude == '$expect_prefix')"
+      PASS=$((PASS + 1))
+    else
+      echo "  FAIL  $label (expected literal '$expect_prefix', got '$seen')"
+      FAIL=$((FAIL + 1))
+    fi
+  else
+    if [[ "$seen" == "$expect_prefix"* && "$seen" != "__UNSET__" ]]; then
+      echo "  PASS  $label (env seen by claude starts with '$expect_prefix', got '$seen')"
+      PASS=$((PASS + 1))
+    else
+      echo "  FAIL  $label (expected prefix '$expect_prefix', got '$seen')"
+      FAIL=$((FAIL + 1))
+    fi
+  fi
+}
+
+run_claude_synthesis_fallback_test() {
+  # C2 regression: even if __pipeline_now_ms is not loaded, synthesis still
+  # produces a well-formed id via $EPOCHSECONDS fallback (no double-dash).
+  local label="run_claude synthesizes well-formed id when helper unsourced"
+
+  if [[ "${SKIP_RUN_CLAUDE_TESTS:-0}" == "1" ]]; then
+    echo "  SKIP  $label (SKIP_RUN_CLAUDE_TESTS=1)"
+    return 0
+  fi
+
+  local repo_root
+  repo_root="$(cd "$(dirname "$0")/.." && pwd)"
+  local pipeline_script="$repo_root/scripts/execute-pipeline.sh"
+
+  local stub_dir tmp_dir
+  stub_dir=$(mktemp -d -t iago-rc-fallback-stub.XXXXXX)
+  tmp_dir=$(mktemp -d -t iago-rc-fallback-tmp.XXXXXX)
+  # shellcheck disable=SC2064
+  trap "rm -rf '$stub_dir' '$tmp_dir' 2>/dev/null" RETURN
+
+  local marker="$tmp_dir/claude-env-seen"
+  cat > "$stub_dir/claude" <<STUB
+#!/usr/bin/env bash
+printf '%s' "\${CLAUDE_CODE_SESSION_ID:-__UNSET__}" > "$marker"
+exit 0
+STUB
+  chmod +x "$stub_dir/claude"
+
+  local fn_file="$tmp_dir/run_claude.sh"
+  awk '/^run_claude\(\) \{/{flag=1} flag{print} /^\}$/ && flag{flag=0}' \
+    "$pipeline_script" > "$fn_file"
+
+  # No telemetry helper sourced → __pipeline_now_ms unavailable, EPOCHSECONDS
+  # fallback path must produce a well-formed id (no `claude--` double-dash).
+  PATH="$stub_dir:$PATH" \
+  PIPELINE_TMP="$tmp_dir" \
+  FN_FILE="$fn_file" \
+  bash -c '
+    set -uo pipefail
+    . "$FN_FILE"
+    # Provide a no-op latch since the helper is not sourced.
+    __pipeline_latch_timed_out() { :; }
+    __pipeline_write_timed_out() { :; }
+    log() { :; }
+    unset CLAUDE_CODE_SESSION_ID
+    RUN_ID="norun-test"
+    output=$(run_claude 30 -p stub) || true
+  ' >/dev/null 2>&1 || true
+
+  if [[ ! -f "$marker" ]]; then
+    echo "  FAIL  $label (stub never invoked)"
+    FAIL=$((FAIL + 1))
+    return
+  fi
+
+  local seen
+  seen=$(cat "$marker")
+
+  # Well-formed: claude-{RUN_ID}-{digits}-{digits}. No empty segments → no `--`.
+  if [[ "$seen" == claude-norun-test-* && "$seen" != *--* ]]; then
+    echo "  PASS  $label (id='$seen' well-formed)"
+    PASS=$((PASS + 1))
+  else
+    echo "  FAIL  $label (expected claude-norun-test-{ms}-{rand}, got '$seen')"
+    FAIL=$((FAIL + 1))
+  fi
+}
+
+echo
+echo "run_claude session-id (per-call synthesis + outer preservation):"
+
+run_claude_session_id_test \
+  "run_claude synthesizes sessionId when env unset" \
+  "" \
+  "claude-" \
+  "no"
+
+run_claude_session_id_test \
+  "run_claude preserves outer CLAUDE_CODE_SESSION_ID" \
+  "outer-abc" \
+  "outer-abc" \
+  "yes"
+
+run_claude_synthesis_fallback_test
+
 echo
 echo "Result: $PASS passed, $FAIL failed"
 [[ $FAIL -eq 0 ]] || exit 1

@@ -153,6 +153,21 @@ run_claude() {
   # $(run_claude ...). Redirect to a file, poll, then taskkill //T the tree.
   local timeout_secs="$1"; shift
   __pipeline_latch_timed_out
+  # Session id contract (precedence):
+  #   1. CLAUDE_CODE_SESSION_ID inherited from parent (real Claude Code session)
+  #      → preserve it. Telemetry joins to that session via that key.
+  #   2. Unset → fabricate a stable per-call id `claude-{RUN_ID}-{ms}-{RANDOM}`
+  #      so every stage_*/extras emission inside this run_claude subshell
+  #      sees one consistent value (downstream aggregator treats `claude-*`
+  #      prefix as "synthesized" vs UUID as "real Claude Code").
+  # Uses $EPOCHSECONDS bash builtin (no subshell, no helper dep) with a
+  # defensive `__pipeline_now_ms` upgrade if the helper is loaded.
+  local _call_now="${EPOCHSECONDS:-$(date +%s)}"
+  if command -v __pipeline_now_ms >/dev/null 2>&1; then
+    _call_now=$(__pipeline_now_ms)
+  fi
+  local _call_sid="claude-${RUN_ID:-norun}-${_call_now}-${RANDOM}"
+  export CLAUDE_CODE_SESSION_ID="${CLAUDE_CODE_SESSION_ID:-$_call_sid}"
   local out="$PIPELINE_TMP/claude-$$-$RANDOM.out"
   claude "$@" > "$out" 2>&1 &
   local pid=$!

@@ -2,6 +2,13 @@
 # Pipeline telemetry helper — sourced by execute-pipeline.sh.
 # Emits NDJSON records per pipeline run for offline aggregation.
 # Self-contained: bash, date, mkdir, cat, printf only.
+# Each NDJSON record carries sessionId = CLAUDE_CODE_SESSION_ID at emission time.
+# pipeline_init exports a synthesized `claude-{RUN_ID}-{epoch}-{rand}` id into
+# the PARENT shell environment when CLAUDE_CODE_SESSION_ID is unset/empty —
+# this is what makes per-run join keys survive across $(run_claude ...) subshells.
+# (Synthesis in run_claude alone is invisible to parent stage_end records, since
+# subshell exports do not propagate back. See codex review PR #50.)
+# JSON-escape scope: literal `"` only (UUID-shaped session ids never contain \n or \t).
 
 # Detect millisecond timestamp support once. Git Bash on Windows supports %3N.
 if date -u +%s%3N 2>/dev/null | grep -qE '^[0-9]+$'; then
@@ -64,6 +71,10 @@ pipeline_init() {
   local stamp
   stamp=$(date -u +%Y%m%d-%H%M%S)
   RUN_ID="${stamp}-${plan_name}-${RANDOM}"
+  # Capture session id at init time for diagnostics. Emission sites read the
+  # live env value (not RUN_SESSION_ID) so per-call exports from run_claude
+  # propagate to the records produced inside that subshell.
+  RUN_SESSION_ID="${CLAUDE_CODE_SESSION_ID:-}"
   local runs_dir="${PROJECT_DIR:-.}/.iago/state/pipeline-runs"
   mkdir -p "$runs_dir"
   RUN_FILE="$runs_dir/${RUN_ID}.ndjson"
@@ -84,8 +95,10 @@ stage_start() {
   CURRENT_STAGE="$stage"
   STAGE_START_MS=$(__pipeline_now_ms)
   STAGE_EXTRAS=""
-  printf '{"type":"stage_start","stage":"%s","ts":"%s"}\n' \
-    "$stage" "$(__pipeline_now_iso)" >> "$RUN_FILE"
+  local _sid="${CLAUDE_CODE_SESSION_ID:-}"
+  _sid="${_sid//\"/\\\"}"
+  printf '{"type":"stage_start","stage":"%s","ts":"%s","sessionId":"%s"}\n' \
+    "$stage" "$(__pipeline_now_iso)" "$_sid" >> "$RUN_FILE"
 }
 
 # Attach a numeric extra field to the current stage. Appended to stage_end.
@@ -97,6 +110,12 @@ stage_extra() {
   [[ -z "${RUN_FILE:-}" ]] && return 0
   local key="$1"
   local val="$2"
+  # sessionId is sourced from CLAUDE_CODE_SESSION_ID at emission time —
+  # forbid stage_extra "sessionId" to prevent duplicate keys in stage_end.
+  if [[ "$key" == "sessionId" ]]; then
+    echo "stage_extra: 'sessionId' is reserved — use CLAUDE_CODE_SESSION_ID env" >&2
+    return 1
+  fi
   STAGE_EXTRAS="${STAGE_EXTRAS},\"${key}\":${val}"
 }
 
@@ -111,8 +130,12 @@ stage_end() {
   now=$(__pipeline_now_ms)
   duration=$(( now - ${STAGE_START_MS:-$now} ))
   timed_out=$(__pipeline_read_timed_out)
-  printf '{"type":"stage_end","stage":"%s","exit":"%s","duration_ms":%s,"timed_out":%s%s,"ts":"%s"}\n' \
-    "$stage" "$exit_code" "$duration" "$timed_out" "${STAGE_EXTRAS:-}" "$(__pipeline_now_iso)" >> "$RUN_FILE"
+  local _sid="${CLAUDE_CODE_SESSION_ID:-}"
+  _sid="${_sid//\"/\\\"}"
+  # sessionId inserted BEFORE STAGE_EXTRAS so legacy aggregators that split
+  # on `,"ts"` continue working (extras still flow into the trailing slot).
+  printf '{"type":"stage_end","stage":"%s","exit":"%s","duration_ms":%s,"timed_out":%s,"sessionId":"%s"%s,"ts":"%s"}\n' \
+    "$stage" "$exit_code" "$duration" "$timed_out" "$_sid" "${STAGE_EXTRAS:-}" "$(__pipeline_now_iso)" >> "$RUN_FILE"
   CURRENT_STAGE=""
   STAGE_EXTRAS=""
 }
@@ -128,6 +151,8 @@ pipeline_finalize() {
   local now duration
   now=$(__pipeline_now_ms)
   duration=$(( now - ${RUN_STARTED_AT:-$now} ))
-  printf '{"type":"pipeline_finalize","plan":"%s","pipeline_exit":"%s","duration_ms":%s,"ts":"%s"}\n' \
-    "${PLAN_NAME:-unknown}" "$exit_code" "$duration" "$(__pipeline_now_iso)" >> "$RUN_FILE"
+  local _sid="${CLAUDE_CODE_SESSION_ID:-}"
+  _sid="${_sid//\"/\\\"}"
+  printf '{"type":"pipeline_finalize","plan":"%s","pipeline_exit":"%s","duration_ms":%s,"sessionId":"%s","ts":"%s"}\n' \
+    "${PLAN_NAME:-unknown}" "$exit_code" "$duration" "$_sid" "$(__pipeline_now_iso)" >> "$RUN_FILE"
 }
