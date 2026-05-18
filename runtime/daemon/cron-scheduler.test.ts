@@ -230,6 +230,8 @@ describe("matchesCron — parser", () => {
 		expect(() => matchesCron("0,,5 * * * *", t)).toThrow(/comma-list/);
 		// Value above max for field
 		expect(() => matchesCron("60 * * * *", t)).toThrow(/minute/);
+		// Bare "/N" with no range prefix (e.g. "/5" instead of "*/5")
+		expect(() => matchesCron("/5 * * * *", t)).toThrow(/missing range/);
 	});
 
 	it("(8c) day-only and weekday-only branches", () => {
@@ -486,6 +488,70 @@ describe("CronScheduler — failure modes", () => {
 		const missing = evts.find((e) => e.kind === "cron-fired-prompt-missing");
 		expect(missing).toBeDefined();
 		expect(missing?.errno).toBe("ENOENT");
+		await sch.stop();
+	});
+
+	it("bash found but script absent (exit 127) emits cron-skipped(wake-check-failed, exitCode 127)", async () => {
+		// `bash` is on PATH but the script file does not exist — bash exits 127.
+		// Differs from the ENOENT case: result.error is undefined, result.status is 127.
+		spawnSyncMock.mockReturnValueOnce({
+			status: 127,
+			signal: null,
+			error: undefined,
+			stdout: "",
+			stderr: "bash: /no/such/script.sh: No such file or directory",
+			pid: 1234,
+			output: [],
+		});
+		const sch = new CronScheduler({
+			agentManager: new EventEmitter(),
+			nowFn: () => new Date(Date.UTC(2026, 4, 18, 14, 0, 0)),
+		});
+		const wake = path.join(tempDir, "absent-wake.sh"); // not created on disk
+		sch.registerCron({
+			agentId: "pr-triage",
+			schedule: "0 14 * * *",
+			wakeCheck: wake,
+			promptTemplatePath: writePromptTemplate("p.txt", "x"),
+			outputTaskNamePrefix: "pr-triage",
+		});
+		sch.start();
+		await sch._tickForTests();
+		const evts = await readTelemetry();
+		const skipped = evts.find((e) => e.kind === "cron-skipped");
+		expect(skipped).toBeDefined();
+		expect(skipped?.reason).toBe("wake-check-failed");
+		expect(skipped?.exitCode).toBe(127);
+		const pending = await fsp.readdir(path.join(tempDir, "tasks/pending"));
+		expect(pending).toHaveLength(0);
+		await sch.stop();
+	});
+
+	it("cron-fired-write-failed does NOT increment runningCount", async () => {
+		const sch = new CronScheduler({
+			agentManager: new EventEmitter(),
+			nowFn: () => new Date(Date.UTC(2026, 4, 18, 14, 0, 0)),
+		});
+		sch.registerCron({
+			agentId: "pr-triage",
+			schedule: "0 14 * * *",
+			promptTemplatePath: writePromptTemplate("p.txt", "go"),
+			outputTaskNamePrefix: "pr-triage",
+		});
+		sch.start();
+		// Make `tasks/pending` unwritable so the atomic rename fails.
+		const pendingDir = path.join(tempDir, "tasks", "pending");
+		fs.chmodSync(pendingDir, 0o444);
+		try {
+			await sch._tickForTests();
+		} finally {
+			fs.chmodSync(pendingDir, 0o755);
+		}
+		// The write failed — runningCount must stay at 0.
+		expect(sch._runningCountForTests().get("pr-triage") ?? 0).toBe(0);
+		const evts = await readTelemetry();
+		const writeFailed = evts.find((e) => e.kind === "cron-fired-write-failed");
+		expect(writeFailed).toBeDefined();
 		await sch.stop();
 	});
 

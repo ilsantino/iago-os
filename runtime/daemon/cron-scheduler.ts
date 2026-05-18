@@ -263,9 +263,15 @@ function parsePart(
 
 	let lo: number;
 	let hi: number;
-	if (rangeStr === "*" || rangeStr === "") {
+	if (rangeStr === "*") {
 		lo = min;
 		hi = max;
+	} else if (rangeStr === "") {
+		// A bare "/N" with no range prefix is a malformed expression (e.g.
+		// "/5" instead of "*/5"). Reject rather than silently expand to *.
+		throw new RangeError(
+			`missing range before step in field "${name}": "${part}"`,
+		);
 	} else {
 		const dashIdx = rangeStr.indexOf("-");
 		if (dashIdx === -1) {
@@ -497,9 +503,10 @@ export class CronScheduler {
 			env: process.env,
 			encoding: "utf8",
 			timeout: WAKE_CHECK_TIMEOUT_MS,
+			killSignal: "SIGKILL",
 		});
-		// `signal: "SIGKILL"` indicates timeout (Node's `spawnSync` kills
-		// the child with SIGKILL when `timeout` elapses).
+		// `signal: "SIGKILL"` indicates timeout — set above so the check below
+		// reliably distinguishes timeout from a non-zero exit.
 		if (result.signal === "SIGKILL") {
 			await emit({
 				kind: "cron-skipped",
@@ -606,7 +613,7 @@ export class CronScheduler {
 
 function defaultLogger(): Logger {
 	return {
-		warn: (msg) => console.error(msg),
+		warn: (msg) => console.warn(msg),
 		error: (msg) => console.error(msg),
 	};
 }
