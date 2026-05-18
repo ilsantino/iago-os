@@ -17,7 +17,7 @@ lives in `runtime/agent-runtime/<shape>/`.
 | `markers.ts` | `.daemon-stop` marker write/read/clear/list for graceful-vs-crash detection on next boot. |
 | `heartbeat.ts` | `HeartbeatController` — 60s probe loop, RSS-recycling, stall detection. Owns recycling decisions for ALL shapes. |
 | `agent-manager.ts` | `AgentManager` — registration, status persistence, restart, subagent semantics, cost rollup, boot recovery. |
-| `ipc-server.ts` (Plan 05) | IPC server for in-process tool dispatch + Telegram routing. |
+| `ipc-server.ts` (Plan 05) | IPC server (Unix socket / named pipe) for dashboard + CLI → daemon RPC. Phase 1 stub: `fleet-health` (30s cache), `list-agents`, `get-handle`. |
 | `telemetry.ts` (Plan 05) | NDJSON telemetry events keyed on `CLAUDE_CODE_SESSION_ID`. |
 
 ## `.daemon-stop` semantics
@@ -288,6 +288,11 @@ ledger is canonical.
 | Heartbeat tick faster than sweep | Sample-and-skip — second tick during in-flight sweep is dropped (IMPORTANT #5). |
 | Handle unregistered mid-sweep | Re-check `handles.has(handleId)` after `await probe()` skips spurious restarts (IMPORTANT #6). |
 | Long steady-state operations (e.g., `git clone`) | Adapter registers a liveness probe via `AgentManager.registerLivenessProbe(runtimeId, probe)`. When the probe returns true, the stall trip is suppressed regardless of `lastStatusChangeMs` (IMPORTANT #5 / Q3). |
+| IPC line exceeds buffer cap | `ipc-server` writes `{ ok: false, error: "parse-error: line-too-long" }` and destroys the socket. Default cap: 64 KiB; overridable via `IpcServer` constructor `maxLineBytes` (PR #44 Important #1). The cap is enforced as a UTF-8 byte bound on every extracted line and on the residual buffer — it cannot be bypassed by a newline arriving in the same data event or by multibyte input whose UTF-16 length is under the bound (Codex M). |
+| IPC response fails to serialize | `ipc-server` emits a guaranteed-serializable `{ ok: false, error: "internal: response serialization failed" }` fallback line so the per-connection 1:1 request/response invariant holds (the newline-delimited protocol has no request IDs; dropping a response line would let a pipelined client misalign request N+1's response onto request N — Codex H). |
+| IPC connection idle | `ipc-server` destroys the socket after `idleTimeoutMs` (default 5 min). Phase 6 dashboard long-poll endpoints may raise the bound per-instance via the constructor option (PR #44 Important #3). |
+| IPC fleet-health upstream failure | `ipc-server` arms a 1s rejection cooldown. Calls during the cooldown short-circuit with `fleet-health: temporarily unavailable (retry in <Nms>)` without re-invoking the failing upstream (PR #44 Important #4). Cooldown does not persist across `stop()`/`start()`. |
+| IPC previous-tail write rejection | `ipc-server.processLine` swallows the prior tail's rejection with `.catch` so request N's write error does not bubble as an unhandled rejection on request N+1. The swallow logs to stderr so a real regression remains observable (PR #44 Important #2). |
 
 ## State directory layout
 
