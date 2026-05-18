@@ -109,10 +109,16 @@ pipeline_init() {
   if command -v __pipeline_now_ms >/dev/null 2>&1; then
     _sid_now=$(__pipeline_now_ms)
   fi
+  # Opus PR #52 dual-review I2: capture the REAL outer env BEFORE the
+  # synthesis-export, so the pipeline_init record's `outer_session_id`
+  # field reflects the ACTUAL upstream session (empty when there was
+  # none). The downstream stage_end records still emit the synthesized
+  # `claude-*` fallback via the live env-read sessionId. The Plan 03
+  # projector that joins on outer_session_id then sees an empty string
+  # and knows to treat that pipeline run as orchestrator-less rather
+  # than mis-joining to a synthesized id with no upstream meaning.
+  RUN_SESSION_ID="${CLAUDE_CODE_SESSION_ID:-}"
   export CLAUDE_CODE_SESSION_ID="${CLAUDE_CODE_SESSION_ID:-claude-${RUN_ID}-${_sid_now}-${RANDOM}}"
-  # Capture session id at init time for diagnostics. Emission sites read the
-  # live env value (not RUN_SESSION_ID) for forward compatibility.
-  RUN_SESSION_ID="${CLAUDE_CODE_SESSION_ID}"
   local runs_dir="${PROJECT_DIR:-.}/.iago/state/pipeline-runs"
   mkdir -p "$runs_dir"
   RUN_FILE="$runs_dir/${RUN_ID}.ndjson"

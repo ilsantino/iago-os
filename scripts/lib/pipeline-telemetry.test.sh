@@ -399,6 +399,36 @@ else
 fi
 rm -rf "$TMPC"
 
+# ─── Test 13: outer_session_id is EMPTY when env unset (Opus PR #52 I2) ─
+# Regression test for the misleading-field-name bug: prior code captured
+# RUN_SESSION_ID AFTER the synthesis-export, so when the outer env was
+# unset the pipeline_init record falsely reported the synthesized
+# `claude-*` fallback as the "outer" session id. Plan 03's joiner would
+# then think the run had an upstream session when it didn't. Fix captures
+# the outer env BEFORE the synthesis-export.
+TMPD=$(mktemp -d)
+RUN_FILE_PATH=$(
+  PROJECT_DIR="$TMPD" PIPELINE_TMP="$TMPD" PLAN_NAME="testD" \
+  bash -c "
+    set -uo pipefail
+    unset CLAUDE_CODE_SESSION_ID
+    . '$HELPER'
+    pipeline_init
+    echo \"\$RUN_FILE\"
+  "
+)
+if [[ -n "$RUN_FILE_PATH" && -f "$RUN_FILE_PATH" ]]; then
+  INIT_LINE=$(grep '"type":"pipeline_init"' "$RUN_FILE_PATH")
+  if [[ -n "$INIT_LINE" ]] && echo "$INIT_LINE" | grep -q '"outer_session_id":""'; then
+    ok "pipeline_init: outer_session_id is empty when env unset (I2)"
+  else
+    nope "pipeline_init: outer_session_id leaked synth fallback (I2 regression): $INIT_LINE"
+  fi
+else
+  nope "pipeline_init: run file not created (Test 13)"
+fi
+rm -rf "$TMPD"
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [[ $FAIL -eq 0 ]] || exit 1
