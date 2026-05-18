@@ -56,7 +56,7 @@ export type DaemonEvent =
 			 * (systemd auto-sets `INVOCATION_ID`) → `"systemd"`; else
 			 * `"local"`.
 			 */
-			readonly runUnder?: "systemd" | "local" | "test";
+			readonly runUnder: "systemd" | "local" | "test";
 	  }
 	| {
 			readonly kind: "daemon-stop";

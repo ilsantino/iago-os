@@ -85,9 +85,19 @@ export function loadSystemdCredentials(): void {
 
 	for (const entry of CREDENTIALS) {
 		const credPath = path.join(dir, entry.fileName);
-		if (!fs.existsSync(credPath)) continue;
 
-		const raw = fs.readFileSync(credPath, "utf8");
+		let raw: string;
+		try {
+			raw = fs.readFileSync(credPath, "utf8");
+		} catch (err) {
+			const code = (err as { code?: string }).code;
+			if (code === "ENOENT") continue;
+			// EACCES or unexpected error — emit structured message without value
+			console.error(
+				`[cred-bootstrap] failed to read ${entry.fileName}: ${code ?? String(err)}`,
+			);
+			continue;
+		}
 		const value = raw.trim();
 		if (value.length === 0) continue;
 
@@ -114,27 +124,27 @@ export function __resetCredstoreStateForTests(): void {
 }
 
 /**
- * Test-only helper: snapshot the CREDENTIALS array's file names. Used by
- * `main.ts` to compute the `cred-bootstrap-loaded` telemetry event's
+ * Returns the file names from the CREDENTIALS registry. Used by `main.ts`
+ * to compute the `cred-bootstrap-loaded` telemetry event's
  * `credentialsLoaded` field by diffing env-var keys-of-interest before
- * and after `loadSystemdCredentials()`.
+ * and after `loadSystemdCredentials()`. Also used in tests.
  */
 export function getCredentialFileNames(): readonly string[] {
 	return CREDENTIALS.map((c) => c.fileName);
 }
 
 /**
- * Test-only helper: snapshot the CREDENTIALS array's env-var names.
- * Used by `main.ts` to compute the env-var keys-of-interest snapshot
- * before/after `loadSystemdCredentials()` for telemetry.
+ * Returns the env-var names from the CREDENTIALS registry. Used by
+ * `main.ts` to compute the env-var keys-of-interest snapshot
+ * before/after `loadSystemdCredentials()` for telemetry. Also used in tests.
  */
 export function getCredentialEnvVars(): readonly string[] {
 	return CREDENTIALS.map((c) => c.envVar);
 }
 
 /**
- * Test-only helper: map a credential env-var name back to its file name
- * for telemetry. Returns `null` if the env var is not registered in
+ * Maps a credential env-var name back to its file name for telemetry.
+ * Used by `main.ts`. Returns `null` if the env var is not registered in
  * `CREDENTIALS`.
  */
 export function envVarToFileName(envVar: string): string | null {
