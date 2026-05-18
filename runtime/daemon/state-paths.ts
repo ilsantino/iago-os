@@ -83,6 +83,13 @@ export function ensureStateDirsSync(): void {
 	}
 }
 
+/**
+ * Windows reserved-name check assumes the agentId regex already forbids
+ * "." — if reusing this check for less-restrictive ID surfaces (e.g.,
+ * handle IDs with extensions), expand pattern to
+ * /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\.[^.]+)?$/i to cover "con.txt"
+ * / "con.foo.bar" / etc. which are also NTFS-illegal.
+ */
 const WINDOWS_RESERVED = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i;
 const AGENT_ID_PATTERN = /^[a-z][a-z0-9\-]{0,62}$/;
 

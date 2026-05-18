@@ -221,3 +221,31 @@ and the cortextOS upstream uses it too. The tradeoff is weaker
 TypeScript inference (uses CommonJS `export =` pattern). If
 TypeScript friction surfaces in Phase 6 dashboard wiring, the
 library choice may be reconsidered.
+
+## Dependency audit
+
+`npm audit --omit=dev` (2026-05-17): 7 advisories inherited from the
+`node-telegram-bot-api` v0.65.0 → `@cypress/request-promise` → legacy
+`request` chain (2 critical: `form-data <2.5.4`, 5 moderate: `qs`,
+`tough-cookie`, transitive wrappers). All advisories are gated behind
+the same upstream chain and would clear together when
+`node-telegram-bot-api` drops the legacy `request` dependency. The
+"fix" `npm audit fix --force` proposes downgrading to v0.63.0, which
+loses Phase 1 features (long-polling resilience) and is rejected.
+
+**Risk surface (Phase 1):**
+
+- `form-data` GHSA-fjxv-7rqg-78g4 — unsafe RNG for multipart boundary.
+  Reached only by `node-telegram-bot-api` file-upload paths (we do not
+  use those in Phase 1; commands only emit `sendMessage` text).
+- `qs` GHSA-6rw7-vpxm-498p — array DoS in bracket parsing. The
+  Telegram client builds outgoing query strings; not exposed to
+  untrusted inbound JSON.
+- `tough-cookie` GHSA-72xf-g2v4-qvf3 — prototype pollution via cookie
+  parsing. The bot polls a single Telegram-controlled HTTPS endpoint;
+  no third-party cookies enter the chain.
+
+Tracked for Phase 2+ (revisit when `node-telegram-bot-api` ships a
+release that drops `request`, or migrate to `grammy` if the upstream
+remediation slips past 2026-08-01). The Phase 2 webhook cutover
+removes the polling-client dependency entirely.

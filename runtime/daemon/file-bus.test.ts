@@ -194,7 +194,7 @@ describe("file-bus / writeResolvedOutput", () => {
 		}
 	});
 
-	it("rename-over-existing: second writeResolvedOutput overwrites the published file", async () => {
+	it("rename-over-existing: second write replaces published file content", async () => {
 		await makePendingTask("t-overwrite");
 		await claimTask({
 			taskId: "t-overwrite",
