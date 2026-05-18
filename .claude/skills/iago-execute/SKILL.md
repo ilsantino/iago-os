@@ -77,34 +77,7 @@ PROJECT_DIR="{cwd}"  # the client project directory (where .iago/ lives)
 
 Verify the script exists: `test -f "$SCRIPT"`. If not, STOP with error.
 
-### 3. Pre-flight: clean tree check
-
-Before any branch operation, verify the working tree is clean using the
-explicit guard script. Replaces the implicit `git status` check that
-false-positives on `git worktree` metadata + gitignored artifacts.
-
-```bash
-# Lenient mode (default) ignores .claude/worktrees/ + .iago/state/ artifacts.
-# Strict mode catches ANY untracked file — opt in by exporting IAGO_CLEAN_TREE_STRICT=1.
-if [[ "${IAGO_CLEAN_TREE_STRICT:-0}" == "1" ]]; then
-  extra_args="--strict"
-else
-  extra_args=""
-fi
-bash "$IAGO_ROOT/scripts/check-clean-tree.sh" --project-dir "$PROJECT_DIR" $extra_args
-rc=$?
-case "$rc" in
-  0) ;;  # clean — proceed
-  1) echo "Working tree is dirty (see DIRTY output above). Commit, stash, or use a worktree (see feedback_worktree_per_session memory) before retrying." >&2; exit 1 ;;
-  65) echo "ERROR: PROJECT_DIR is not a git repo: $PROJECT_DIR" >&2; exit 1 ;;
-  *) echo "ERROR: check-clean-tree.sh failed unexpectedly (exit $rc)" >&2; exit 1 ;;
-esac
-```
-
-If exit 1, STOP with the script's DIRTY output. If exit 65, STOP because
-PROJECT_DIR is not a git repo. If exit 0, proceed to the next step.
-
-### 4. Git sync
+### 3. Git sync
 
 Before starting any plan:
 ```bash
@@ -113,7 +86,7 @@ cd "$PROJECT_DIR" && git checkout main && git pull origin main
 
 This ensures we're on the latest main with no conflicts.
 
-### 5. Execute plans sequentially
+### 4. Execute plans sequentially
 
 For each plan in order:
 
@@ -151,7 +124,7 @@ is available to the next.
 **If a plan fails** (non-zero exit): STOP. Report the error. Do not continue
 to the next plan. The user must investigate.
 
-### 6. Report results
+### 5. Report results
 
 After all plans complete (or one fails):
 
@@ -172,7 +145,7 @@ Update STATE.md:
 - If all passed: Status → `executed`
 - If one failed: Status → `executing (plan {XX} failed)`
 
-### 7. n8n dispatch (if --n8n flag)
+### 6. n8n dispatch (if --n8n flag)
 
 If `--n8n` flag is set:
 
@@ -189,4 +162,3 @@ If `--n8n` flag is set:
 - One script run per plan — never batch multiple plans
 - PRs are never auto-merged — user reviews on GitHub
 - If the script fails, STOP and escalate — do not retry without user input
-- Clean-tree check uses lenient mode by default — it ignores `.claude/worktrees/` and `.iago/state/` artifacts. Set `IAGO_CLEAN_TREE_STRICT=1` in the env before invoking the skill to enforce strict mode (catches ANY untracked file via `check-clean-tree.sh --strict`).
