@@ -46,6 +46,8 @@ prepare_sut() {
 		-e "s|^MANIFEST=.*|MANIFEST=\"$ARCHIVE_ROOT/MANIFEST.md\"|" \
 		-e "s|^MANIFEST_LOCK=.*|MANIFEST_LOCK=\"$ARCHIVE_ROOT/MANIFEST.md.lock\"|" \
 		-e "s|^PUBKEY=.*|PUBKEY=\"$FAKE_PUBKEY\"|" \
+		-e "s|^PUBKEY_FINGERPRINT_FILE=.*|PUBKEY_FINGERPRINT_FILE=\"$FAKE_FINGERPRINT\"|" \
+		-e "s|^ARCHIVE_LOCK=.*|ARCHIVE_LOCK=\"$FAKE_ARCHIVE_LOCK\"|" \
 		-e "s|^NDJSON_LOG=.*|NDJSON_LOG=\"$NDJSON_LOG\"|" \
 		-e "s|^PRUNE_SERVICE=.*|PRUNE_SERVICE=\"$ETC_SYSTEMD/iago-archive-prune.service\"|" \
 		-e "s|^PRUNE_TIMER=.*|PRUNE_TIMER=\"$ETC_SYSTEMD/iago-archive-prune.timer\"|" \
@@ -69,6 +71,8 @@ setup() {
 	NDJSON_LOG="$TMPDIR_TEST/var/log/iago-os/cutover.ndjson"
 	ETC_SYSTEMD="$TMPDIR_TEST/etc/systemd/system"
 	FAKE_PUBKEY="$TMPDIR_TEST/etc/iago-os/santiago-age.pub"
+	FAKE_FINGERPRINT="$TMPDIR_TEST/etc/iago-os/santiago-age.pub.sha256"
+	FAKE_ARCHIVE_LOCK="$TMPDIR_TEST/iago-os-archive.lock"
 	SUT_COPY="$TMPDIR_TEST/archive-openclaw.sh"
 
 	mkdir -p "$STUBS_DIR" "$LOG_DIR" "$FAKE_HOME" "$FAKE_OPENCLAW" \
@@ -81,6 +85,11 @@ setup() {
 
 	# Default age pubkey (any non-empty file — pre-flight only checks existence).
 	echo 'age1exampleexampleexampleexampleexampleexampleexampleexample' > "$FAKE_PUBKEY"
+	# Default fingerprint pin matches the default pubkey above. The CRITICAL
+	# fix adds a sha256-fingerprint pre-flight check before plaintext shred;
+	# tests that overwrite $FAKE_PUBKEY must re-compute this file (test 9
+	# does so explicitly after installing a real keypair).
+	sha256sum "$FAKE_PUBKEY" | awk '{print $1}' > "$FAKE_FINGERPRINT"
 
 	# Default stubs — every test gets these; individual tests override as needed.
 	mkstub systemctl 'exit 0'
@@ -248,10 +257,12 @@ teardown() {
 	grep -q "daemon-reload" "$LOG_DIR/systemctl.log"
 	grep -q "enable --now iago-archive-prune.timer" "$LOG_DIR/systemctl.log"
 	# Encrypted file exists, raw .tar.gz (sans .age) does NOT
-	enc=$(find "$ARCHIVE_ROOT" -name "*.age" | head -1)
+	enc=$(find "$ARCHIVE_ROOT" -name "openclaw-pre-cutover-*.age" -not -name "*.complete" -not -name "*.quarantine-*" | head -1)
 	[[ -n "$enc" ]]
 	raw="${enc%.age}"
 	[[ ! -f "$raw" ]]
+	# .complete sidecar MUST exist (written only after step 5 manifest append).
+	[[ -f "${enc}.complete" ]]
 	# Manifest has header + 1 data row (6 pipes per row = 7 columns).
 	# Year-agnostic match: data rows start with "| YYYYMMDD-" (8 digits, dash).
 	[[ -f "$ARCHIVE_ROOT/MANIFEST.md" ]]
@@ -280,8 +291,8 @@ teardown() {
 	sleep 1
 	run bash "$SUT_COPY" --force-new-archive
 	[ "$status" -eq 0 ]
-	# 2 .age files for today
-	count=$(find "$ARCHIVE_ROOT" -name "*.age" | wc -l)
+	# 2 .age files for today (excluding .complete + .quarantine-* sidecars).
+	count=$(find "$ARCHIVE_ROOT" -name "*.age" -not -name "*.complete" -not -name "*.quarantine-*" | wc -l)
 	[ "$count" -eq 2 ]
 	# Manifest has 2 data rows (year-agnostic match).
 	rows=$(grep -cE "^\| [0-9]{8}-" "$ARCHIVE_ROOT/MANIFEST.md" || true)
@@ -298,7 +309,7 @@ teardown() {
 	[ "$status" -eq 0 ]
 	[[ "$output" == *"re-run skipped"* ]]
 	# Still 1 archive, manifest unchanged (year-agnostic row match).
-	count=$(find "$ARCHIVE_ROOT" -name "*.age" | wc -l)
+	count=$(find "$ARCHIVE_ROOT" -name "*.age" -not -name "*.complete" -not -name "*.quarantine-*" | wc -l)
 	[ "$count" -eq 1 ]
 	rows_after=$(grep -cE "^\| [0-9]{8}-" "$ARCHIVE_ROOT/MANIFEST.md" || true)
 	[ "$rows_before" -eq "$rows_after" ]
@@ -329,15 +340,18 @@ teardown() {
 	chmod 0600 "$priv"
 	REAL_PUBKEY=$(grep '# public key:' "$pub" | sed 's/^# public key: //' | tr -d '[:space:]')
 	[[ -n "$REAL_PUBKEY" ]]
-	# Install the real pubkey at the script's expected location.
+	# Install the real pubkey at the script's expected location AND re-pin
+	# the fingerprint so the new pre-flight sha256 check passes against the
+	# new pubkey content (setup() pinned the placeholder pubkey's hash).
 	echo "$REAL_PUBKEY" > "$FAKE_PUBKEY"
+	sha256sum "$FAKE_PUBKEY" | awk '{print $1}' > "$FAKE_FINGERPRINT"
 
 	# Run with the real age binary in the loop (stub tar still produces our
 	# sentinel content, which is fine — age will encrypt whatever the file
 	# contains).
 	run bash "$SUT_COPY"
 	[ "$status" -eq 0 ]
-	enc=$(find "$ARCHIVE_ROOT" -name "*.age" | head -1)
+	enc=$(find "$ARCHIVE_ROOT" -name "openclaw-pre-cutover-*.age" -not -name "*.complete" -not -name "*.quarantine-*" | head -1)
 	[[ -n "$enc" ]]
 	# Real decryption with the matching private key MUST succeed.
 	decrypted="$TMPDIR_TEST/decrypted.bin"
@@ -385,4 +399,104 @@ EOF
 	# When PATH is only stubs, `command -v jq` fails (we don't ship a jq stub).
 	[ "$status" -eq 1 ]
 	[[ "$output" == *"jq required"* ]]
+}
+
+# ───────────────────── Codex fix coverage (CRITICAL + HIGH) ─────────────────────
+
+@test "12: fingerprint pin file missing → exits 1 with install runbook hint" {
+	# Remove the operator-deployed fingerprint pin. The pre-flight (CRITICAL
+	# fix) must abort BEFORE shred touches any plaintext.
+	rm -f "$FAKE_FINGERPRINT"
+	run bash "$SUT_COPY"
+	[ "$status" -eq 1 ]
+	[[ "$output" == *"expected pubkey fingerprint not found"* ]]
+	[[ "$output" == *"santiago-age.pub.sha256"* ]]
+	# No archive should have been produced.
+	enc_count=$(find "$ARCHIVE_ROOT" -name "openclaw-pre-cutover-*.age" 2>/dev/null | wc -l)
+	[ "$enc_count" -eq 0 ]
+	# No plaintext tarball left behind either.
+	raw_count=$(find "$ARCHIVE_ROOT" -name "*.tar.gz" 2>/dev/null | wc -l)
+	[ "$raw_count" -eq 0 ]
+}
+
+@test "13: fingerprint pin mismatch → exits 1 with diverged-fingerprint error" {
+	# Overwrite the fingerprint with a value that does NOT match $FAKE_PUBKEY.
+	# Simulates the wrong-but-valid recipient hazard: a pubkey was swapped in
+	# (or the pin is stale) and the script must refuse to encrypt.
+	echo 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef' > "$FAKE_FINGERPRINT"
+	run bash "$SUT_COPY"
+	[ "$status" -eq 1 ]
+	[[ "$output" == *"pubkey fingerprint mismatch"* ]]
+	[[ "$output" == *"expected:"* ]]
+	[[ "$output" == *"actual"* ]]
+	# Critical: no encrypted archive produced (refused before step 4).
+	enc_count=$(find "$ARCHIVE_ROOT" -name "openclaw-pre-cutover-*.age" 2>/dev/null | wc -l)
+	[ "$enc_count" -eq 0 ]
+	# Critical: no plaintext shredded — but more importantly, none left behind.
+	raw_count=$(find "$ARCHIVE_ROOT" -name "*.tar.gz" 2>/dev/null | wc -l)
+	[ "$raw_count" -eq 0 ]
+}
+
+@test "14: partial archive (.age without .complete sidecar) → next run re-attempts (not skipped)" {
+	# Simulate a previously-failed run by hand-planting an .age file for today
+	# with NO .complete sidecar. The HIGH fix changes the day-sentinel to look
+	# for the sidecar, so this partial state should NOT block a retry.
+	TODAY=$(date -u +%Y%m%d)
+	partial="$ARCHIVE_ROOT/openclaw-pre-cutover-${TODAY}-000000.age"
+	mkdir -p "$ARCHIVE_ROOT"
+	printf 'age-encryption.org/v1\nstale\n' > "$partial"
+	# Run the script — it must re-attempt, NOT skip.
+	run bash "$SUT_COPY"
+	[ "$status" -eq 0 ]
+	[[ "$output" != *"re-run skipped"* ]]
+	# A NEW .age with matching .complete sidecar should now exist.
+	new_complete=$(find "$ARCHIVE_ROOT" -name "openclaw-pre-cutover-${TODAY}-*.age.complete" | head -1)
+	[[ -n "$new_complete" ]]
+	new_archive="${new_complete%.complete}"
+	[[ -f "$new_archive" ]]
+	[[ "$new_archive" != "$partial" ]]
+	# Manifest gained a row from the new run.
+	rows=$(grep -cE "^\| [0-9]{8}-" "$ARCHIVE_ROOT/MANIFEST.md" || true)
+	[ "$rows" -ge 1 ]
+}
+
+@test "15: concurrent run blocks on archive-wide flock then re-evaluates day-sentinel" {
+	# Pre-create a completed archive for today so the day-sentinel will skip
+	# once the lock is released. This proves both: (a) the flock blocks the
+	# concurrent run, and (b) the sentinel is re-evaluated UNDER the lock.
+	TODAY=$(date -u +%Y%m%d)
+	done_archive="$ARCHIVE_ROOT/openclaw-pre-cutover-${TODAY}-000000.age"
+	done_marker="${done_archive}.complete"
+	mkdir -p "$ARCHIVE_ROOT"
+	printf 'age-encryption.org/v1\ndone\n' > "$done_archive"
+	printf 'completed-utc=stub\nenc_sha=stub\nraw_sha=stub\n' > "$done_marker"
+
+	# Spawn a background process that holds the archive-wide flock for ~2s.
+	mkdir -p "$(dirname "$FAKE_ARCHIVE_LOCK")"
+	(
+		flock -x 200
+		sleep 2
+	) 200>"$FAKE_ARCHIVE_LOCK" &
+	bg_pid=$!
+	# Give the bg flock a moment to actually acquire.
+	sleep 0.3
+
+	# Time the SUT — it must wait at least ~1s for the bg to release.
+	t0=$(date +%s)
+	run bash "$SUT_COPY"
+	t1=$(date +%s)
+	elapsed=$((t1 - t0))
+
+	wait "$bg_pid" 2>/dev/null || true
+
+	[ "$status" -eq 0 ]
+	# After waiting on the lock, the script re-evaluates the day-sentinel and
+	# sees the pre-existing .complete sidecar → emits "re-run skipped".
+	[[ "$output" == *"re-run skipped"* ]]
+	# Sanity: the run actually blocked (>=1s of wall time). Allows for some
+	# clock skew but proves the lock was contended.
+	[ "$elapsed" -ge 1 ]
+	# NDJSON proves the lock was acquired before the idempotent-skip decision.
+	grep -q '"step":"preflight","status":"lock-acquired"' "$NDJSON_LOG"
+	grep -q '"step":"preflight","status":"idempotent-skip"' "$NDJSON_LOG"
 }

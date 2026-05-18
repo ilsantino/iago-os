@@ -48,10 +48,38 @@
 #   A pubkey that is syntactically valid age (age1...) but corresponds to a
 #   private key Santiago does NOT possess produces age-encryption.org/v1-
 #   formatted ciphertext that passes the magic-byte header check yet is
-#   permanently unrecoverable. Step 4b runs a bogus-identity probe against
-#   the produced ciphertext, expecting age to fail with "no identity matched".
-#   Any other response (silent success, hang, different error) means the
-#   pubkey isn't behaving like a real age recipient — abort, do not proceed.
+#   permanently unrecoverable. Defence-in-depth in three layers:
+#     (a) Fingerprint pin (pre-encryption): sha256(PUBKEY) is compared
+#         against the expected fingerprint loaded from
+#         /etc/iago-os/santiago-age.pub.sha256 BEFORE step 3 (tar). If the
+#         file is absent OR the fingerprints diverge, the script aborts
+#         immediately — no plaintext is ever shredded under a wrong (yet
+#         syntactically valid) recipient. Operator deploys the .sha256 file
+#         once at install-time alongside santiago-age.pub.
+#     (b) Magic-byte header check (4a): catches silent encryption failures.
+#     (c) Bogus-identity probe (4b): proves the recipient behaves like a
+#         real age recipient (rejects unrelated keys with "no identity
+#         matched"). Defence-in-depth only — does NOT catch encryption to a
+#         different valid recipient (the fingerprint pin is the real guard).
+#
+# Partial-archive recovery:
+#   A `.age` file alone is NOT proof of a successful run — validation
+#   probes (4a/4b) and manifest append run AFTER encryption. The day-sentinel
+#   idempotency check looks for a `.age.complete` sidecar marker written
+#   ONLY after step 5 manifest append succeeds, so a partial-failed run
+#   never blocks a retry. On 4a/4b probe failure the .age is renamed to
+#   .age.quarantine-<UTC> (NOT deleted — operators can inspect) and the
+#   script exits non-zero. Re-runs see no completion marker and re-attempt
+#   the archive from scratch.
+#
+# Concurrency:
+#   An archive-wide advisory flock at /var/lock/iago-os-archive.lock is
+#   acquired at the TOP of the main flow (before the day-sentinel check)
+#   and held through archive creation + validation + manifest append +
+#   .complete write. Concurrent invocations block on the flock and then
+#   re-evaluate the day-sentinel under the lock, so two operators starting
+#   in the same wall-clock second cannot produce colliding TIMESTAMP /
+#   ENCRYPTED_PATH values or interleave their archive sequences.
 #
 # Source of truth: .iago/research/2026-05-16-phase-2-vps-bootstrap-spec.md § 4
 #
@@ -65,11 +93,20 @@ ARCHIVE_ROOT="/var/lib/iago-os/openclaw-archive"
 MANIFEST="${ARCHIVE_ROOT}/MANIFEST.md"
 MANIFEST_LOCK="${MANIFEST}.lock"
 PUBKEY="/etc/iago-os/santiago-age.pub"
+# Operator-deployed fingerprint pin (one-time install): sha256 of the pubkey
+# file contents, written as `sha256sum <pub> | awk '{print $1}' > <this>`.
+# Compared against the live pubkey before encryption to defend against the
+# wrong-but-valid recipient hazard (see header comment).
+PUBKEY_FINGERPRINT_FILE="/etc/iago-os/santiago-age.pub.sha256"
 SERVICE="openclaw-gateway.service"
 NDJSON_LOG="/var/log/iago-os/cutover.ndjson"
 PRUNE_SERVICE="/etc/systemd/system/iago-archive-prune.service"
 PRUNE_TIMER="/etc/systemd/system/iago-archive-prune.timer"
 RETENTION_DAYS=30
+# Archive-wide advisory flock. Held from before the day-sentinel through
+# manifest append + .complete sidecar write so two concurrent operators
+# cannot collide on TIMESTAMP-derived paths.
+ARCHIVE_LOCK="/var/lock/iago-os-archive.lock"
 # age v1 file format magic bytes (literal header at byte 0 of any age ciphertext).
 AGE_HEADER_MAGIC="age-encryption.org/v1"
 AGE_HEADER_LEN=${#AGE_HEADER_MAGIC}
@@ -155,6 +192,36 @@ if [[ ! -f "$PUBKEY" ]]; then
 	exit 1
 fi
 
+# Fingerprint pin: primary defence against the wrong-but-valid recipient
+# hazard. Compute sha256(PUBKEY) and compare against the operator-installed
+# fingerprint at $PUBKEY_FINGERPRINT_FILE. MUST run before step 3 (tar) and
+# step 4 (encrypt + shred) — if it fails, the script aborts before any
+# plaintext is destroyed.
+if [[ ! -f "$PUBKEY_FINGERPRINT_FILE" ]]; then
+	echo "ERROR: expected pubkey fingerprint not found at $PUBKEY_FINGERPRINT_FILE" >&2
+	echo "       Operator one-time install (run on Santiago's box):" >&2
+	echo "         sha256sum ~/.age/santiago.pub | awk '{print \$1}' > santiago-age.pub.sha256" >&2
+	echo "         scp santiago-age.pub.sha256 santiago@srv1456441:/tmp/" >&2
+	echo "         sudo install -m 0644 /tmp/santiago-age.pub.sha256 $PUBKEY_FINGERPRINT_FILE" >&2
+	echo "       See runtime/deploy/archive-openclaw.sh header comment + Phase 2 install runbook." >&2
+	exit 1
+fi
+ACTUAL_PUBKEY_SHA=$(sha256sum "$PUBKEY" | awk '{print $1}')
+EXPECTED_PUBKEY_SHA=$(awk '{print $1}' "$PUBKEY_FINGERPRINT_FILE" | tr -d '[:space:]')
+if [[ -z "$EXPECTED_PUBKEY_SHA" ]]; then
+	echo "ERROR: $PUBKEY_FINGERPRINT_FILE is empty or unreadable" >&2
+	exit 1
+fi
+if [[ "$ACTUAL_PUBKEY_SHA" != "$EXPECTED_PUBKEY_SHA" ]]; then
+	echo "ERROR: pubkey fingerprint mismatch — refusing to encrypt to a recipient that may not be Santiago" >&2
+	echo "       expected: $EXPECTED_PUBKEY_SHA (from $PUBKEY_FINGERPRINT_FILE)" >&2
+	echo "       actual  : $ACTUAL_PUBKEY_SHA (from $PUBKEY)" >&2
+	echo "       Either the pubkey was rotated (re-pin the fingerprint AFTER verifying" >&2
+	echo "       with Santiago) or one of the two files is stale. Do NOT proceed until" >&2
+	echo "       resolved — encrypting under the wrong recipient is unrecoverable." >&2
+	exit 1
+fi
+
 # Ensure the archive root exists with safe perms before we touch it.
 mkdir -p "$ARCHIVE_ROOT"
 chmod 0700 "$ARCHIVE_ROOT"
@@ -182,7 +249,7 @@ Documentation=file://${ARCHIVE_ROOT}/MANIFEST.md
 
 [Service]
 Type=oneshot
-ExecStart=/usr/bin/bash -c 'count=\$(find ${ARCHIVE_ROOT} -name "*.age" -mtime +${RETENTION_DAYS} -print -delete | wc -l); logger -t iago-archive-prune "pruned \$count archives"'
+ExecStart=/usr/bin/bash -c 'count=\$(find ${ARCHIVE_ROOT} \( -name "*.age" -o -name "*.age.complete" -o -name "*.age.quarantine-*" \) -mtime +${RETENTION_DAYS} -print -delete | wc -l); logger -t iago-archive-prune "pruned \$count archive artifacts"'
 EOF
 	cat > "$PRUNE_TIMER" <<'EOF'
 [Unit]
@@ -211,12 +278,35 @@ if [[ ! -d "$OPENCLAW_DIR" ]]; then
 	exit 0
 fi
 
-# Idempotency day-sentinel check (Codex P1-3 fix).
+# Archive-wide advisory flock (HIGH fix — concurrent TIMESTAMP race).
+# Acquired BEFORE the day-sentinel check and held through manifest append +
+# .complete sidecar write. Two operators starting in the same wall-clock
+# second cannot collide on TARBALL_PATH / ENCRYPTED_PATH. /var/lock is the
+# canonical FHS lock location (tmpfs on Debian — evaporates on reboot,
+# which is correct: any in-flight archive is invalidated by a reboot anyway).
+# The lock fd (200) is held for the lifetime of the script process; closing
+# happens automatically on exit, so the flock releases for the next waiter.
+mkdir -p "$(dirname "$ARCHIVE_LOCK")"
+exec 200>"$ARCHIVE_LOCK"
+if ! flock -x -w 30 200; then
+	echo "ERROR: could not acquire $ARCHIVE_LOCK within 30s (another archive run in progress?)" >&2
+	ndjson_event "archive-openclaw" "preflight" "lock-timeout" "{\"lock\":\"$ARCHIVE_LOCK\"}"
+	exit 1
+fi
+ndjson_event "archive-openclaw" "preflight" "lock-acquired" "{\"lock\":\"$ARCHIVE_LOCK\"}"
+
+# Idempotency day-sentinel check (HIGH fix — was: any matching .age file).
+# Looks for the `.age.complete` sidecar marker written ONLY after step 5
+# manifest append succeeds. Partial-failed runs leave a `.age.quarantine-*`
+# (or no marker) so a retry re-attempts the archive instead of silently
+# skipping a broken one. Re-evaluation happens under the archive-wide flock
+# acquired above, so a concurrent run that finishes first will be visible.
 TODAY_UTC=$(date -u +%Y%m%d)
-EXISTING_TODAY=$(find "$ARCHIVE_ROOT" -name "openclaw-pre-cutover-${TODAY_UTC}-*.age" 2>/dev/null | head -1)
-if [[ -n "$EXISTING_TODAY" && "$FORCE" -ne 1 ]]; then
-	echo "archive for today already exists at $EXISTING_TODAY — re-run skipped (use --force-new-archive to override)"
-	ndjson_event "archive-openclaw" "preflight" "idempotent-skip" "{\"existing\":\"$EXISTING_TODAY\"}"
+EXISTING_COMPLETE=$(find "$ARCHIVE_ROOT" -name "openclaw-pre-cutover-${TODAY_UTC}-*.age.complete" 2>/dev/null | head -1)
+if [[ -n "$EXISTING_COMPLETE" && "$FORCE" -ne 1 ]]; then
+	EXISTING_ARCHIVE="${EXISTING_COMPLETE%.complete}"
+	echo "archive for today already complete at $EXISTING_ARCHIVE — re-run skipped (use --force-new-archive to override)"
+	ndjson_event "archive-openclaw" "preflight" "idempotent-skip" "{\"existing\":\"$EXISTING_ARCHIVE\"}"
 	exit 0
 fi
 
@@ -290,6 +380,22 @@ chown root:root "$ENCRYPTED_PATH"
 echo "      encrypted ok; enc size=${ENC_SIZE} bytes; enc sha256=${ENC_SHA}"
 ndjson_event "archive-openclaw" "step4-encrypt" "ok" "{\"enc_size\":$ENC_SIZE,\"enc_sha\":\"$ENC_SHA\"}"
 
+# Quarantine helper (HIGH fix): on validation failure, rename the unverified
+# .age out of the way so the day-sentinel doesn't see it as a candidate and
+# so operators can inspect the broken ciphertext. NOT deleted — we keep it
+# for forensics until the prune timer ages it out.
+quarantine_archive() {
+	local reason="$1"
+	local q_ts
+	q_ts=$(date -u +%Y%m%dT%H%M%SZ)
+	local q_path="${ENCRYPTED_PATH}.quarantine-${q_ts}"
+	if [[ -f "$ENCRYPTED_PATH" ]]; then
+		mv "$ENCRYPTED_PATH" "$q_path"
+		echo "       quarantined unverified .age → $q_path" >&2
+		ndjson_event "archive-openclaw" "quarantine" "ok" "{\"reason\":\"$reason\",\"path\":\"$q_path\"}"
+	fi
+}
+
 # Step 4a: magic-byte header check — catches silent encryption failures where
 # age exits 0 but produces empty/random output. age v1 file format starts with
 # the literal string "age-encryption.org/v1".
@@ -299,6 +405,7 @@ if head -c "$AGE_HEADER_LEN" "$ENCRYPTED_PATH" | grep -qF "$AGE_HEADER_MAGIC"; t
 else
 	echo "ERROR: encrypted file lacks age header — encryption may have silently failed" >&2
 	ndjson_event "archive-openclaw" "step4a-magic" "error"
+	quarantine_archive "magic-byte-failed"
 	exit 1
 fi
 ndjson_event "archive-openclaw" "step4a-magic" "ok"
@@ -338,6 +445,7 @@ else
 	echo "       output: $PROBE_OUT" >&2
 	echo "       pubkey at $PUBKEY may be wrong-but-valid; encrypted archive may be unrecoverable" >&2
 	ndjson_event "archive-openclaw" "step4b-probe" "error" "{\"rc\":$PROBE_RC}"
+	quarantine_archive "bogus-probe-failed"
 	exit 1
 fi
 
@@ -399,6 +507,18 @@ fi
 ) 200>"$MANIFEST_LOCK"
 echo "      manifest row appended"
 ndjson_event "archive-openclaw" "step5-manifest" "ok"
+
+# Completion marker (HIGH fix): written ONLY after step 5 manifest append
+# succeeds. The day-sentinel idempotency check at the top of the script
+# looks for this sidecar (NOT the .age file itself), so a partial-failed
+# run never blocks a retry. Marker content is a one-line breadcrumb for
+# operators; existence is what gates the day-sentinel.
+COMPLETION_MARKER="${ENCRYPTED_PATH}.complete"
+printf 'completed-utc=%s\nenc_sha=%s\nraw_sha=%s\n' \
+	"$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$ENC_SHA" "$RAW_SHA" > "$COMPLETION_MARKER"
+chmod 0600 "$COMPLETION_MARKER"
+chown root:root "$COMPLETION_MARKER"
+ndjson_event "archive-openclaw" "completion-marker" "ok" "{\"path\":\"$COMPLETION_MARKER\"}"
 
 # Step 6 (retention timer install) already ran near top of script — see
 # block above. Located early so that a partial failure between steps 1-5
