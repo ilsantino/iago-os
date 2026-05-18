@@ -9,6 +9,24 @@
 // Filter must come before sort/take so incomplete runs don't push valid ones out.
 // Sort by filename (YYYYMMDD-HHMMSS prefix) to avoid ISO-format divergence between
 // GNU date (+00:00) and BSD date (Z suffix) breaking localeCompare order.
+//
+// NDJSON record types (used by the by_session projection — Plan 03 Task 2):
+//   stage_start, stage_end, pipeline_init, pipeline_finalize,
+//   learnings_written, learnings_write_failed, learnings_written_to_fallback,
+//   clean_tree_check.
+//
+// Per-record JSDoc:
+//
+// @typedef {object} TelemetryRecord
+// @property {string} type — record kind (enumeration above)
+// @property {string} [stage] — stage name (stage_start / stage_end)
+// @property {string|null} [sessionId] — value of CLAUDE_CODE_SESSION_ID read
+//   at emission time; legacy pre-Phase-1b records may omit this field and are
+//   normalized to null by the aggregator (bucketed under `_unsessioned`).
+// @property {number} [duration_ms] — stage duration (stage_end only)
+// @property {boolean} [timed_out] — true if stage timed out (stage_end only)
+// @property {string} [exit] — exit code string or "skipped" (stage_end only)
+// @property {string} [ts] — ISO timestamp
 
 import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
@@ -30,8 +48,15 @@ let files;
 try {
   files = readdirSync(runsDir).filter((f) => f.endsWith(".ndjson"));
 } catch {
-  console.error(`No pipeline runs directory at ${runsDir}`);
-  process.exit(1);
+  // Fresh checkout — runs dir absent. Exit 0 with a soft notice so this
+  // script can be wired into nightly cron / pre-merge checks without
+  // becoming a noise source.
+  console.log("no input files");
+  process.exit(0);
+}
+if (files.length === 0) {
+  console.log("no input files");
+  process.exit(0);
 }
 
 const runs = [];
@@ -157,3 +182,150 @@ console.log(fmt(cols));
 console.log(widths.map((w) => "-".repeat(w)).join("  "));
 for (const r of rows) console.log(fmt(r));
 console.log(`\n(${taken.length} run${taken.length === 1 ? "" : "s"} aggregated)`);
+
+// ── by_session projection (Plan 03 Task 2) ─────────────────────────────────
+// Group every record in `taken` by sessionId. Records lacking the field
+// (legacy pre-Phase-1b NDJSON) bucket under `_unsessioned` — emit, don't
+// crash (CONTEXT.md OQ5 lenient default + Decided Constraint "Backward-compat").
+//
+// I5 note: stage_end records already pass through the stage walker above
+// and have their sessionId normalized to `null` on the parsed record. To
+// avoid re-parsing the NDJSON for the by_session walk, the projection
+// iterates `taken[i].records` directly (same parse output) and reads the
+// `sessionId` field if present.
+
+const NEW_EVENT_KINDS = new Set([
+  "learnings_written",
+  "learnings_write_failed",
+  "learnings_written_to_fallback",
+  "clean_tree_check",
+]);
+
+/** @type {Map<string, {
+ *   stage_start_count: number,
+ *   stage_end_count: number,
+ *   total_duration_ms: number,
+ *   timed_out_count: number,
+ *   pipeline_init_count: number,
+ *   pipeline_finalize_count: number,
+ *   failed_finalize_count: number,
+ *   stages: Set<string>,
+ *   event_counts: Record<string, number>,
+ * }>} */
+const bySession = new Map();
+const sessionKey = (rec) => {
+  // pipeline_init records carry `outer_session_id` (the parent orchestrator
+  // session pinned at init time), not `sessionId`. Fall back to that field
+  // when sessionId is absent so init records don't drop into _unsessioned
+  // while the rest of the run buckets under the real sid.
+  let sid = rec.sessionId;
+  if (sid === undefined || sid === null || sid === "") {
+    sid = rec.outer_session_id;
+  }
+  if (sid === undefined || sid === null || sid === "") return "_unsessioned";
+  return String(sid);
+};
+const ensure = (key) => {
+  if (!bySession.has(key)) {
+    bySession.set(key, {
+      stage_start_count: 0,
+      stage_end_count: 0,
+      total_duration_ms: 0,
+      timed_out_count: 0,
+      pipeline_init_count: 0,
+      pipeline_finalize_count: 0,
+      failed_finalize_count: 0,
+      stages: new Set(),
+      event_counts: Object.fromEntries(
+        Array.from(NEW_EVENT_KINDS).map((k) => [k, 0]),
+      ),
+    });
+  }
+  return bySession.get(key);
+};
+
+for (const run of taken) {
+  for (const rec of run.records) {
+    const t = rec.type;
+    if (t === "stage_start") {
+      const e = ensure(sessionKey(rec));
+      e.stage_start_count += 1;
+      if (rec.stage) e.stages.add(String(rec.stage));
+    } else if (t === "stage_end") {
+      const e = ensure(sessionKey(rec));
+      e.stage_end_count += 1;
+      e.total_duration_ms += Number(rec.duration_ms) || 0;
+      if (rec.timed_out === true) e.timed_out_count += 1;
+      if (rec.stage) e.stages.add(String(rec.stage));
+    } else if (t === "pipeline_init") {
+      // Lifecycle: a run that fails before emitting any stage_start still
+      // gets a row, so by_session never falsely shows an empty operational
+      // view when an init-only or init+finalize-only NDJSON exists.
+      const e = ensure(sessionKey(rec));
+      e.pipeline_init_count += 1;
+    } else if (t === "pipeline_finalize") {
+      // Lifecycle: complete runs that fail before a stage_end (or whose only
+      // useful failure signal is pipeline_exit != "0") must surface here.
+      const e = ensure(sessionKey(rec));
+      e.pipeline_finalize_count += 1;
+      // Treat any non-"0" pipeline_exit as a failed finalize. String compare
+      // matches the telemetry emitter (printf "%s" on $exit_code).
+      if (rec.pipeline_exit !== undefined && String(rec.pipeline_exit) !== "0") {
+        e.failed_finalize_count += 1;
+      }
+    } else if (NEW_EVENT_KINDS.has(t)) {
+      const e = ensure(sessionKey(rec));
+      e.event_counts[t] += 1;
+    }
+  }
+}
+
+console.log("\nby_session");
+if (bySession.size === 0) {
+  console.log("(no sessioned records)");
+} else {
+  // Sort keys for stable output (insertion order is fine for Map in modern
+  // Node, but tests should not rely on it — Stress I2).
+  const keys = Array.from(bySession.keys()).sort();
+  const sessionCols = [
+    "sessionId",
+    "starts",
+    "ends",
+    "inits",
+    "finalizes",
+    "failed_finalizes",
+    "total_ms",
+    "timeouts",
+    "stages",
+    "learnings_written",
+    "learnings_write_failed",
+    "learnings_written_to_fallback",
+    "clean_tree_check",
+  ];
+  const sessionRows = keys.map((k) => {
+    const e = bySession.get(k);
+    const stagesList = Array.from(e.stages).sort().join(",");
+    return [
+      k,
+      String(e.stage_start_count),
+      String(e.stage_end_count),
+      String(e.pipeline_init_count),
+      String(e.pipeline_finalize_count),
+      String(e.failed_finalize_count),
+      String(e.total_duration_ms),
+      String(e.timed_out_count),
+      stagesList || "-",
+      String(e.event_counts.learnings_written || 0),
+      String(e.event_counts.learnings_write_failed || 0),
+      String(e.event_counts.learnings_written_to_fallback || 0),
+      String(e.event_counts.clean_tree_check || 0),
+    ];
+  });
+  const sw = sessionCols.map((c, i) =>
+    Math.max(c.length, ...sessionRows.map((r) => r[i].length), 0),
+  );
+  const sfmt = (vals) => vals.map((v, i) => v.padEnd(sw[i])).join("  ");
+  console.log(sfmt(sessionCols));
+  console.log(sw.map((w) => "-".repeat(w)).join("  "));
+  for (const r of sessionRows) console.log(sfmt(r));
+}

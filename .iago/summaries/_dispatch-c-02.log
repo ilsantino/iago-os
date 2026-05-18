@@ -181,3 +181,14 @@ Confirmed: that's a pre-existing Plan 01 telemetry test failure (unrelated to my
 **Verification:** `bash -n` clean on all 3 files; clean-tree tests 19/19 green; adversarial-verdict parser tests 5/5 green. The single failing telemetry test (`parent stage_end after run_claude … sessionId by design`) pre-dates this fix session.
 [21:31:45] BUILD GATE (post-codex-fix)
 [21:31:45] Build passed after Codex fix
+warning: in the working copy of '.iago/summaries/_dispatch-c-02.log', LF will be replaced by CRLF the next time Git touches it
+[21:31:46] CREATE PR — 02-clean-tree-guard-and-adversarial-fallback-sentinel
+[21:33:27] PR creation output:
+PR created: **https://github.com/ilsantino/iago-os/pull/55**
+
+Branch `feat/c-02-clean-tree-guard-adversarial-sentinel` pushed, 8 files committed (798 insertions). PR body includes full plan in a collapsible `<details>` block and a 7-item test checklist.
+[21:33:28] TAGGING @claude on PR #55
+https://github.com/ilsantino/iago-os/pull/55#issuecomment-4474026665
+[21:34:16] SUMMARY — 02-clean-tree-guard-and-adversarial-fallback-sentinel
+[21:34:16] Summary written to .iago/summaries/02-clean-tree-guard-and-adversarial-fallback-sentinel.md
+[21:34:16] PIPELINE COMPLETE — 02-clean-tree-guard-and-adversarial-fallback-sentinel
