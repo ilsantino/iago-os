@@ -37,6 +37,7 @@ import { ensureStateDirsSync, pathFor } from "./state-paths.js";
 import {
 	SHUTDOWN_STAGE_TIMEOUT_MS,
 	buildFleetHealth,
+	computeRunUnder,
 	findHandleForAgent,
 	getShapeForAgent,
 	injectIntoAgent,
@@ -585,5 +586,87 @@ describe("isDirectlyExecuted", () => {
 		// cwd URL, the comparison still does not match main's URL.)
 		const result = isDirectlyExecuted();
 		expect(result).toBe(false);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// computeRunUnder — Plan 01b Task 4 C1 carry-over.
+// Enforces the contract: NODE_ENV=test is a HARD OVERRIDE that wins over
+// CREDENTIALS_DIRECTORY and INVOCATION_ID. A future refactor of the runUnder
+// branch could silently re-order these checks and the daemon-start event
+// would falsely report "systemd" from a unit-test harness; these tests fail
+// loudly if that happens.
+// ---------------------------------------------------------------------------
+
+describe("computeRunUnder", () => {
+	it('returns "test" when NODE_ENV=test and no systemd env vars are set', () => {
+		expect(computeRunUnder({ NODE_ENV: "test" })).toBe("test");
+	});
+
+	it('returns "test" when NODE_ENV=test EVEN IF CREDENTIALS_DIRECTORY is set (override)', () => {
+		expect(
+			computeRunUnder({
+				NODE_ENV: "test",
+				CREDENTIALS_DIRECTORY: "/run/credentials/iago-os-v2-daemon.service",
+			}),
+		).toBe("test");
+	});
+
+	it('returns "test" when NODE_ENV=test EVEN IF INVOCATION_ID is set (override)', () => {
+		expect(
+			computeRunUnder({
+				NODE_ENV: "test",
+				INVOCATION_ID: "deadbeefcafebabe",
+			}),
+		).toBe("test");
+	});
+
+	it('returns "test" when NODE_ENV=test AND BOTH systemd env vars are set (override)', () => {
+		expect(
+			computeRunUnder({
+				NODE_ENV: "test",
+				CREDENTIALS_DIRECTORY: "/run/credentials/iago-os-v2-daemon.service",
+				INVOCATION_ID: "deadbeefcafebabe",
+			}),
+		).toBe("test");
+	});
+
+	it('returns "systemd" when NODE_ENV is unset and CREDENTIALS_DIRECTORY is non-empty', () => {
+		expect(
+			computeRunUnder({
+				CREDENTIALS_DIRECTORY: "/run/credentials/iago-os-v2-daemon.service",
+			}),
+		).toBe("systemd");
+	});
+
+	it('returns "systemd" when NODE_ENV is unset and INVOCATION_ID is set', () => {
+		expect(
+			computeRunUnder({
+				INVOCATION_ID: "deadbeefcafebabe",
+			}),
+		).toBe("systemd");
+	});
+
+	it('returns "systemd" when NODE_ENV=production and INVOCATION_ID is set', () => {
+		expect(
+			computeRunUnder({
+				NODE_ENV: "production",
+				INVOCATION_ID: "deadbeefcafebabe",
+			}),
+		).toBe("systemd");
+	});
+
+	it('returns "local" when no systemd env vars are set and NODE_ENV is not "test"', () => {
+		expect(computeRunUnder({})).toBe("local");
+		expect(computeRunUnder({ NODE_ENV: "development" })).toBe("local");
+		expect(computeRunUnder({ NODE_ENV: "production" })).toBe("local");
+	});
+
+	it('returns "local" when CREDENTIALS_DIRECTORY is the empty string (matches Phase 2 spec)', () => {
+		expect(computeRunUnder({ CREDENTIALS_DIRECTORY: "" })).toBe("local");
+	});
+
+	it('returns "local" when INVOCATION_ID is the empty string (matches Phase 2 spec)', () => {
+		expect(computeRunUnder({ INVOCATION_ID: "" })).toBe("local");
 	});
 });

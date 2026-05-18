@@ -35,6 +35,27 @@ export interface AgentConfig {
 	readonly cwd: string;
 	readonly env: Record<string, string>;
 	readonly autoStart: boolean;
+	/**
+	 * Phase 2 schema slot; Phase 3 wires this through to the claude-pty
+	 * adapter's per-spawn ANTHROPIC_API_KEY env override. `undefined`
+	 * and `"default"` are semantically equivalent in Phase 3 (both
+	 * resolve to the default profile); document this equivalence to
+	 * prevent a future divergence bug. Allowed values are the three
+	 * profile names provisioned by 01a's
+	 * `provision-credentials.sh` (iago-anthropic-default,
+	 * iago-anthropic-ilsantino, iago-anthropic-iaguito).
+	 */
+	readonly authProfile?: "default" | "ilsantino" | "iaguito";
+}
+
+const ALLOWED_AUTH_PROFILES = ["default", "ilsantino", "iaguito"] as const;
+type AuthProfile = (typeof ALLOWED_AUTH_PROFILES)[number];
+
+function isAuthProfile(value: unknown): value is AuthProfile {
+	return (
+		typeof value === "string" &&
+		(ALLOWED_AUTH_PROFILES as readonly string[]).includes(value)
+	);
 }
 
 export interface DaemonTelegramConfig {
@@ -172,7 +193,25 @@ function parseAgents(value: unknown, sourcePath: string): AgentConfig[] {
 		}
 		const autoStartRaw = entry.autoStart;
 		const autoStart = typeof autoStartRaw === "boolean" ? autoStartRaw : false;
-		out.push({ agentId, runtimeId, org, cwd, env, autoStart });
+		const authProfileRaw = entry.authProfile;
+		let authProfile: AuthProfile | undefined;
+		if (authProfileRaw !== undefined) {
+			if (!isAuthProfile(authProfileRaw)) {
+				throw new RangeError(
+					`${sourcePath}: agents[${i}].authProfile: unknown authProfile: ${String(authProfileRaw)}; expected default|ilsantino|iaguito`,
+				);
+			}
+			authProfile = authProfileRaw;
+		}
+		out.push({
+			agentId,
+			runtimeId,
+			org,
+			cwd,
+			env,
+			autoStart,
+			...(authProfile !== undefined ? { authProfile } : {}),
+		});
 	}
 	return out;
 }

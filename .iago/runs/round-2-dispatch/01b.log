@@ -1,0 +1,206 @@
+[16:11:41] STRESS TEST — skipped (plan already stress-tested)
+[16:11:42] IMPLEMENT — 01b-cred-bootstrap-and-config-schema
+[16:20:37] Implementation complete
+[16:20:38] BUILD GATE — attempt 1 [mode: sequential]
+[16:20:38] Build passed (tsc 0ms / vite 0ms / mode sequential)
+[16:20:39] CONSOLE GATE — skipped (no Vite config)
+[16:20:40] REVIEW — 01b-cred-bootstrap-and-config-schema
+warning: in the working copy of 'runtime/daemon/config.test.ts', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'runtime/daemon/config.ts', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'runtime/daemon/main.ts', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'runtime/daemon/telemetry.ts', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of '.iago/runs/round-2-dispatch/01b.log', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of '.iago/summaries/02a-archive-openclaw.md', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'runtime/daemon/cred-bootstrap.test.ts', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'runtime/daemon/cred-bootstrap.ts', LF will be replaced by CRLF the next time Git touches it
+[16:20:42]   review-checks: all modules loaded (209 lines)
+[16:22:20] Review output:
+## PASS 1 — Plan Compliance
+
+Walking each task against the diff:
+
+**Task 1 (`cred-bootstrap.ts`):** ✓ exports `loadSystemdCredentials()`; `CredMap` interface; two active CREDENTIALS entries (telegram + gh-token); three commented Phase 3 entries; correct CREDENTIALS_DIRECTORY no-op; env-var override path; empty-trim handling; `node:fs` / `node:path` imports (M1 ✓); JSDoc covers C2 + SIGHUP re-entrancy (I2 + M2 ✓). Strict TS, no `any`/bare `as`.
+
+**Task 2 (`cred-bootstrap.test.ts`):** ✓ All 10 specified test cases present + 5 helper tests. Uses `vi.stubEnv` per I3. Sentinel-leak test spies on `telemetry.emit`, `process.stdout.write`, `process.stderr.write`.
+
+**Task 3 (`config.ts` + tests):** ✓ `authProfile?` field with narrow union; JSDoc documents `undefined ≡ "default"` equivalence (I4 ✓); `isAuthProfile` type guard (no bare `as`); RangeError names value + allowed set with sourcePath context; tests 9–13 added.
+
+**Task 4 (`main.ts` + `telemetry.ts`):** ✓ `loadSystemdCredentials()` is first statement of `startDaemon()` body; diff-based `credentialsLoaded` computation emits FILE NAMES only (never values); `cred-bootstrap-loaded` event typed in telemetry.ts; `runUnder` IIFE applies C1 NODE_ENV=test override before CREDENTIALS_DIRECTORY/INVOCATION_ID check.
+
+**Gap:** Plan C1 explicitly requires "Add a test … asserting `NODE_ENV=test` always emits `"test"` regardless of CREDENTIALS_DIRECTORY." No such test exists in the diff (neither `main.test.ts` augmentation nor a case in `cred-bootstrap.test.ts`). The contract is implemented but unverified.
+
+## PASS 2 — Domain Routing
+
+Selected domains based on diff (TypeScript daemon code, no React/Amplify/AppSync/Lambda handler/API client):
+
+- **Baseline checks** (always)
+- **Pattern Consistency** (always)
+- **Backend Checks** — partial fit; this is server-side TS but not a Lambda handler. Applicable subset: thin-handler pattern, input validation at boundaries, error handling, hardcoded identifiers.
+
+Skipped: Amplify (no `amplify/` touched), API (no TanStack/fetch), Auth (no Cognito/JWT/login UI), Data Integrity (no aggregates/money/charts), i18n (no Spanish strings), Infra (no Amplify resources), React (no `.tsx` files).
+
+## PASS 3 — Adversarial (full file reads + cross-cutting)
+
+**Cross-cutting:**
+- Auth bypass: N/A — pure credential bootstrap; the env-override-wins semantics are intentional and documented.
+- Data loss: env-only mutation; idempotent; no disk writes from the helper.
+- Race conditions: invoked synchronously before any async code; safe.
+- Rollback safety: if `fs.readFileSync` throws mid-loop (EACCES on a second cred), earlier creds remain set — but that's acceptable startup behavior; the throw propagates to `startDaemon` and fails boot loud, which is correct for systemd-managed secrets.
+
+**Baseline:**
+- No dead code, no magic numbers (filenames are domain identifiers), no silent failure.
+
+**Pattern Consistency:**
+- `config.ts` `parseAgents` already uses explicit `RangeError` with `${sourcePath}:` prefix and field-path context — the new `authProfile` branch follows that pattern precisely. ✓
+- The spread `...(authProfile !== undefined ? { authProfile } : {})` is consistent with how `shutdownStageTimeoutMs` is conditionally spread later in the file. ✓
+
+**Backend (partial):**
+- No hardcoded identifiers (cred file names are the spec-defined identifiers, not infrastructure).
+- Input validation: file contents trimmed + length-checked; `authProfile` validated against allowed set at boundary. ✓
+- Error handling: `fs.readFileSync` errors propagate (intentional for fail-loud boot); `loadConfig` errors propagate to `main()`'s catch that writes stderr + exitCode=1. Consistent.
+
+**Findings**
+
+- **Important — Missing C1 verification test.** Plan stress-test C1 explicitly requires a test that `NODE_ENV=test` forces `runUnder: "test"` regardless of `CREDENTIALS_DIRECTORY`. The implementation includes the override but no test asserts it; "Phase 1 tests still pass" is a regression check, not a positive assertion of the new contract. A future refactor of the IIFE could silently break the override and current tests would not catch it.
+
+- **Minor — Sentinel-leak test is partially tautological.** `loadSystemdCredentials()` itself never calls `telemetry.emit`, `console.*`, or writes to stdout/stderr in the current implementation, so test 10 is a forward-looking contract guarantee rather than a check against the present code path. The `main.ts` telemetry call site (which DOES emit) is not covered by this test — but that emit only carries fileNames, not values, by construction. Acceptable scope but worth noting.
+
+- **Minor — TOCTOU window in `cred-bootstrap.ts:71-73`.** `fs.existsSync` followed by `fs.readFileSync` — if the file is deleted in between, the read throws and propagates. Acceptable in a single-tenant systemd-controlled credstore at boot, but flagged for completeness.
+
+- **Minor — `await emit(...)` runs before `ensureStateDirsSync()` in `main.ts:249`.** Safe because `emit()` does its own lazy `fsp.mkdir(..., { recursive: true })`, but represents a subtle ordering coupling. No code change needed; consider a one-line comment confirming the emit's mkdir self-sufficiency at this call site.
+
+Verdict: PASS_WITH_CONCERNS
+SessionEnd hook [node "${CLAUDE_PLUGIN_ROOT}/scripts/session-lifecycle-hook.mjs" SessionEnd] failed: Hook cancelled
+[16:22:20] Findings detected — dispatching fix session (round 1)
+[16:33:13] Fix output (exit 0):
+All findings addressed:
+
+**Important — Missing C1 verification test (FIXED):** Extracted the `runUnder` IIFE in `main.ts:548-562` into an exported pure `computeRunUnder(env)` helper. Added 10 test cases in `main.test.ts` directly asserting the override contract — NODE_ENV=test wins over CREDENTIALS_DIRECTORY, INVOCATION_ID, and both combined.
+
+**Minor — `await emit` precedes `ensureStateDirsSync` (FIXED):** Added a comment in `main.ts` confirming emit's lazy `fsp.mkdir(..., { recursive: true })` self-sufficiency (verified at `telemetry.ts:261`).
+
+**Minor — Sentinel-leak partially tautological:** Review flagged as "acceptable scope but worth noting" — no code change required.
+
+**Minor — TOCTOU window in cred-bootstrap.ts:** Review flagged as "acceptable in single-tenant systemd-controlled credstore... flagged for completeness" — no code change required.
+
+Verification: `npx vitest run` → 84/84 tests pass (4 files); `npx tsc --noEmit -p runtime/tsconfig.json` → exit 0.
+SessionEnd hook [node "${CLAUDE_PLUGIN_ROOT}/scripts/session-lifecycle-hook.mjs" SessionEnd] failed: Hook cancelled
+warning: in the working copy of 'runtime/daemon/config.test.ts', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'runtime/daemon/config.ts', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'runtime/daemon/main.test.ts', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'runtime/daemon/main.ts', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'runtime/daemon/telemetry.ts', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of '.iago/runs/round-2-dispatch/01b.log', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of '.iago/summaries/02a-archive-openclaw.md', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'runtime/daemon/cred-bootstrap.test.ts', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'runtime/daemon/cred-bootstrap.ts', LF will be replaced by CRLF the next time Git touches it
+[16:33:15]   review-checks: all modules loaded (209 lines)
+[16:34:48] Re-review output:
+All round-1 findings are addressed in the diff:
+
+- **Important — Missing C1 verification test:** ✓ FIXED. `runUnder` logic extracted into exported `computeRunUnder(env)` in `runtime/daemon/main.ts:226-238`, with 10 dedicated unit tests in `runtime/daemon/main.test.ts:601-672` asserting `NODE_ENV=test` overrides `CREDENTIALS_DIRECTORY` and `INVOCATION_ID`.
+- **Minor — emit-before-ensureStateDirsSync ordering coupling:** ✓ ADDRESSED. Inline comment at `runtime/daemon/main.ts:281-285` documents that `emit()` self-creates its jsonl dir and that the ordering is intentional.
+- **Minor — Sentinel-leak test partial-tautology:** Acknowledged in round 1 as acceptable forward-looking contract guarantee; call site in `main.ts` only emits filenames by construction. No code change needed.
+- **Minor — TOCTOU `existsSync` → `readFileSync` window:** Acknowledged as acceptable for single-tenant systemd-controlled credstore. No code change needed.
+
+Cross-cutting re-check on full file reads (`cred-bootstrap.ts`, `main.ts`, `telemetry.ts`, `config.ts`, both test files):
+- Auth: env-override-wins is intentional and documented; no bypass.
+- Data loss: env-only mutation, idempotent, no disk writes.
+- Race conditions: synchronous before async work; `computeRunUnder` is pure.
+- Rollback safety: `fs.readFileSync` failures propagate to `startDaemon` and fail boot loud — correct for systemd-managed secrets.
+- Pattern consistency: `isAuthProfile` type guard mirrors existing narrowing pattern; `RangeError` shape with `${sourcePath}: agents[${i}].field:` prefix matches sibling validators.
+- Backend (partial): input validated at boundary; no hardcoded ARNs; no top-level heavy imports.
+- Severity floors: none triggered.
+
+No new findings.
+
+Verdict: PASS
+SessionEnd hook [node "${CLAUDE_PLUGIN_ROOT}/scripts/session-lifecycle-hook.mjs" SessionEnd] failed: Hook cancelled
+[16:34:48] Review passed
+[16:34:49] CODEX REVIEW — 01b-cred-bootstrap-and-config-schema
+[16:34:50] Running codex-companion adversarial-review (model from ~/.codex/config.toml)
+[16:36:51] Codex findings:
+(node:20820) [DEP0190] DeprecationWarning: Passing args to a child process with shell option true can lead to security vulnerabilities, as the arguments are not escaped, only concatenated.
+(Use `node --trace-deprecation ...` to show where the warning was created)
+[codex] Starting Codex task thread.
+[codex] Thread ready (019e3d3a-774e-7fc0-90b2-4255fbd232b1).
+[codex] Turn started (019e3d3a-7c75-7150-b6e0-3072d60204fa).
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git diff --stat 20...
+[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git diff --stat 20... (exit 0)
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git status --short...
+[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git status --short... (exit 0)
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git diff --stat 20...
+[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git diff --stat 20... (exit 0)
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git diff --unified...
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git diff --unified...
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git diff --unified...
+[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git diff --unified... (exit 0)
+[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git diff --unified... (exit 0)
+[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git diff --unified... (exit 0)
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command '$i=1; Get-Content ...
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command '$i=1; Get-Content ...
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command "rg -n \"authProfil...
+[codex] Command declined: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command '$i=1; Get-Content ... (exit -1)
+[codex] Command declined: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command '$i=1; Get-Content ... (exit -1)
+[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command "rg -n \"authProfil... (exit 0)
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'rg -n "." runtime/...
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command "rg -n \"loadSystem...
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'rg -n "interface R...
+[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'rg -n "." runtime/... (exit 0)
+[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'rg -n "interface R... (exit 0)
+[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command "rg -n \"loadSystem... (exit 0)
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'rg -n "function pa...
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command "rg -n \"export asy...
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'rg -n "SIGHUP|load...
+[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'rg -n "function pa... (exit 0)
+[codex] Command failed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command "rg -n \"export asy... (exit 1)
+[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'rg -n "SIGHUP|load... (exit 0)
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'Get-Content runtim...
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'Get-Content runtim...
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'Get-Content runtim...
+[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'Get-Content runtim... (exit 0)
+[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'Get-Content runtim... (exit 0)
+[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'Get-Content runtim... (exit 0)
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command "rg -n \"GH_TOKEN|I...
+[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command "rg -n \"GH_TOKEN|I... (exit 0)
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'Get-Content runtim...
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'Get-Content runtim...
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'Get-Content runtim...
+[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'Get-Content runtim... (exit 0)
+[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'Get-Content runtim... (exit 0)
+[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'Get-Content runtim... (exit 0)
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'rg -n "authProfile...
+[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'rg -n "authProfile... (exit 0)
+[codex] Assistant message captured: {"verdict":"needs-attention","summary":"No-ship: the credential bootstrap claims reload safet...
+[codex] Turn completion inferred after the main thread finished and subagent work drained.
+# Codex Adversarial Review
+
+Target: branch diff against 20c834874581230eaa8e17ea0ea1d5dc525c85e4
+Verdict: needs-attention
+
+No-ship: the credential bootstrap claims reload safety but will keep stale secrets after the first load.
+
+Findings:
+- [high] Credential reloads cannot replace a previously bootstrapped secret (runtime/daemon/cred-bootstrap.ts:77-80)
+  `loadSystemdCredentials()` is documented as safe for SIGHUP credential rotation, but after the first successful load it writes the secret into `process.env`; on the next call, `existing` is non-empty and the new credstore file is skipped. Inferred impact: a rotated or revoked Telegram/GitHub token will not take effect until a full process restart, which defeats the intended reload path and can leave the daemon using dead credentials during incident recovery.
+  Recommendation: Track whether each env var came from an explicit process environment override versus a prior credstore load, and allow credstore-sourced values to be replaced on reload. Add a test that loads a value, rewrites the credential file, calls `loadSystemdCredentials()` again, and asserts the env var updates.
+
+Next steps:
+- Fix reload semantics before adding or relying on the SIGHUP credential-reload path.
+[16:36:52] Codex review complete
+[16:36:52] CODEX FIX — fixing findings before PR
+[16:40:28] Codex fix output (exit 0):
+All 274 tests pass (2 unrelated skips). The high-severity Codex finding is fixed:
+
+- `cred-bootstrap.ts:65-95` now tracks credstore-sourced env vars in `lastWrittenByCredstore`. On reload, an env var whose current value matches what the helper last wrote is replaced with the new file content; external overrides (env values that don't match) are preserved.
+- Added 3 reload-semantics tests (cases 11-13): rotation replaces the value, external override survives reload, and post-load mutations are treated as overrides.
+- Wired `__resetCredstoreStateForTests()` into `beforeEach` to prevent module-level state leaking across cases.
+- Updated JSDoc to spell out the new reload contract.
+
+Verification: 18/18 cred-bootstrap tests pass, full 274-test daemon + integration suite green, `tsc --noEmit` clean.
+[16:40:28] BUILD GATE (post-codex-fix)
+[16:40:29] Build passed after Codex fix
+warning: in the working copy of '.iago/runs/round-2-dispatch/01b.log', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'runtime/daemon/cred-bootstrap.test.ts', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'runtime/daemon/cred-bootstrap.ts', LF will be replaced by CRLF the next time Git touches it
+[16:40:29] CREATE PR — 01b-cred-bootstrap-and-config-schema
