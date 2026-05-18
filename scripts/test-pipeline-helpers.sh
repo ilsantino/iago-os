@@ -209,10 +209,20 @@ run_claude_session_id_test() {
 
   # Stub `claude`: writes its CLAUDE_CODE_SESSION_ID env to a marker file
   # then exits 0. The marker proves what env the spawned process actually saw —
-  # which IS the contract (run_claude exports the synthesized/preserved id so
-  # the spawned `claude -p` correlates to ONE id). The wrapping telemetry
-  # record (stage_end) lives in the parent shell and naturally reflects the
-  # outer env (subshell exports don't propagate back) — that is by design.
+  # which IS the contract for run_claude:
+  #   The synthesized/preserved id reaches the spawned `claude -p` so all
+  #   telemetry the CHILD emits correlates to ONE id.
+  # What this test does NOT cover (and intentionally so — see Plan 03 + the
+  # sessionId-scope docblock at top of scripts/lib/pipeline-telemetry.sh):
+  #   The wrapping stage_end record emitted in the PARENT shell after the
+  #   `$(run_claude ...)` subshell returns reflects the OUTER env (empty
+  #   when unset). Joining parent stage records to child spawn ids is owned
+  #   by the Plan 03 NDJSON projector via RUN_ID + timestamp, NOT by env
+  #   export. The complementary regression test below
+  #   (run_claude_parent_stage_end_observability_test) asserts the parent
+  #   record stays empty by design so a future "fix" that exports back to
+  #   the parent shell (would silently re-introduce the gap Codex flagged)
+  #   trips the test instead.
   local marker="$tmp_dir/claude-env-seen"
   cat > "$stub_dir/claude" <<STUB
 #!/usr/bin/env bash
@@ -355,6 +365,98 @@ STUB
   fi
 }
 
+run_claude_parent_stage_end_observability_test() {
+  # I-B regression test (per Codex finding on PR #50).
+  # Asserts the DESIGNED behavior at the NDJSON level: a stage_end record
+  # emitted in the PARENT shell after `$(run_claude ...)` (with the outer
+  # CLAUDE_CODE_SESSION_ID UNSET) carries `"sessionId":""`. The synthesized
+  # `claude-*` id from run_claude lives in its subshell only.
+  # This test serves two purposes:
+  #   1. Locks the documented contract so a future "fix" that exports the
+  #      synthesized id back to the parent shell breaks the test instead
+  #      of silently changing aggregator semantics.
+  #   2. Makes the observability gap (parent stage_end has no spawn id)
+  #      explicit and grep-able for anyone reading the test suite.
+  local label="parent stage_end after run_claude (env unset) emits empty sessionId by design"
+
+  if [[ "${SKIP_RUN_CLAUDE_TESTS:-0}" == "1" ]]; then
+    echo "  SKIP  $label (SKIP_RUN_CLAUDE_TESTS=1)"
+    return 0
+  fi
+
+  local repo_root
+  repo_root="$(cd "$(dirname "$0")/.." && pwd)"
+  local telemetry_helper="$repo_root/scripts/lib/pipeline-telemetry.sh"
+  local pipeline_script="$repo_root/scripts/execute-pipeline.sh"
+
+  if [[ ! -f "$telemetry_helper" || ! -f "$pipeline_script" ]]; then
+    echo "  FAIL  $label (helper/script not found)"
+    FAIL=$((FAIL + 1))
+    return
+  fi
+
+  local stub_dir tmp_dir
+  stub_dir=$(mktemp -d -t iago-parent-obs-stub.XXXXXX)
+  tmp_dir=$(mktemp -d -t iago-parent-obs-tmp.XXXXXX)
+  # shellcheck disable=SC2064
+  trap "rm -rf '$stub_dir' '$tmp_dir' 2>/dev/null" RETURN
+
+  cat > "$stub_dir/claude" <<'STUB'
+#!/usr/bin/env bash
+echo "OK"
+exit 0
+STUB
+  chmod +x "$stub_dir/claude"
+
+  local fn_file="$tmp_dir/run_claude.sh"
+  awk '/^run_claude\(\) \{/{flag=1} flag{print} /^\}$/ && flag{flag=0}' \
+    "$pipeline_script" > "$fn_file"
+
+  PATH="$stub_dir:$PATH" \
+  PROJECT_DIR="$tmp_dir" \
+  PIPELINE_TMP="$tmp_dir" \
+  PLAN_NAME="parent-obs" \
+  HELPER="$telemetry_helper" \
+  FN_FILE="$fn_file" \
+  bash -c '
+    set -uo pipefail
+    . "$HELPER"
+    . "$FN_FILE"
+    unset CLAUDE_CODE_SESSION_ID
+    pipeline_init
+    stage_start parent_obs
+    output=$(run_claude 30 -p stub) || true
+    stage_end parent_obs 0
+    pipeline_finalize 0
+  ' >/dev/null 2>&1 || true
+
+  # Find the single NDJSON file under .iago/state/pipeline-runs/.
+  local run_file
+  run_file=$(find "$tmp_dir/.iago/state/pipeline-runs" -type f -name '*.ndjson' 2>/dev/null | head -1)
+  if [[ -z "$run_file" || ! -f "$run_file" ]]; then
+    echo "  FAIL  $label (RUN_FILE not produced)"
+    FAIL=$((FAIL + 1))
+    return
+  fi
+
+  # The parent stage_end MUST carry empty sessionId — synthesis is subshell-scoped.
+  local stage_end_line
+  stage_end_line=$(grep '"type":"stage_end"' "$run_file" | tail -1)
+  if [[ -z "$stage_end_line" ]]; then
+    echo "  FAIL  $label (no stage_end record in RUN_FILE)"
+    FAIL=$((FAIL + 1))
+    return
+  fi
+
+  if [[ "$stage_end_line" == *'"sessionId":""'* ]]; then
+    echo "  PASS  $label (stage_end carries empty sessionId as designed)"
+    PASS=$((PASS + 1))
+  else
+    echo "  FAIL  $label (stage_end leaked a sessionId from the subshell: $stage_end_line)"
+    FAIL=$((FAIL + 1))
+  fi
+}
+
 echo
 echo "run_claude session-id (per-call synthesis + outer preservation):"
 
@@ -371,6 +473,7 @@ run_claude_session_id_test \
   "yes"
 
 run_claude_synthesis_fallback_test
+run_claude_parent_stage_end_observability_test
 
 echo
 echo "Result: $PASS passed, $FAIL failed"

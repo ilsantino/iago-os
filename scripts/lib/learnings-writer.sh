@@ -27,6 +27,36 @@
 #   - {"type":"learnings_written_to_fallback", ...}
 # Each event carries sessionId = ${CLAUDE_CODE_SESSION_ID:-} at emission time.
 
+# File-scope helper so it isn't redefined on every learnings_write call.
+# Reads $key, $mode, $sid, $ts from the caller's local scope.
+__learnings_emit_event() {
+  local ev_type="$1"
+  local ev_path="$2"
+  local ev_err="${3:-}"
+  [[ -z "${RUN_FILE:-}" ]] && return 0
+  [[ ! -w "${RUN_FILE:-/nonexistent}" ]] && return 0
+  local ev_ts
+  if command -v __pipeline_now_iso >/dev/null 2>&1; then
+    ev_ts=$(__pipeline_now_iso)
+  else
+    ev_ts="${ts:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
+  fi
+  # Escape literal `"`, newline, and tab so multi-line stderr (rare but
+  # possible on some shells/printf failures) cannot break NDJSON
+  # one-record-per-line invariant.
+  local p="${ev_path//\"/\\\"}"
+  p="${p//$'\n'/\\n}"
+  p="${p//$'\t'/\\t}"
+  local e="${ev_err//\"/\\\"}"
+  e="${e//$'\n'/\\n}"
+  e="${e//$'\t'/\\t}"
+  local k="${key//\"/\\\"}"
+  k="${k//$'\n'/\\n}"
+  k="${k//$'\t'/\\t}"
+  printf '{"type":"%s","key":"%s","path":"%s","mode":"%s","err":"%s","ts":"%s","sessionId":"%s"}\n' \
+    "$ev_type" "$k" "$p" "$mode" "$e" "$ev_ts" "$sid" >> "$RUN_FILE"
+}
+
 learnings_write() {
   if [[ $# -lt 2 ]]; then
     echo "learnings_write: usage: learnings_write <key> <body>" >&2
@@ -46,25 +76,6 @@ learnings_write() {
 
   local sid="${CLAUDE_CODE_SESSION_ID:-}"
   sid="${sid//\"/\\\"}"
-
-  __learnings_emit_event() {
-    local ev_type="$1"
-    local ev_path="$2"
-    local ev_err="${3:-}"
-    [[ -z "${RUN_FILE:-}" ]] && return 0
-    [[ ! -w "${RUN_FILE:-/nonexistent}" ]] && return 0
-    local ev_ts
-    if command -v __pipeline_now_iso >/dev/null 2>&1; then
-      ev_ts=$(__pipeline_now_iso)
-    else
-      ev_ts="$ts"
-    fi
-    # Escape path + err.
-    local p="${ev_path//\"/\\\"}"
-    local e="${ev_err//\"/\\\"}"
-    printf '{"type":"%s","key":"%s","path":"%s","mode":"%s","err":"%s","ts":"%s","sessionId":"%s"}\n' \
-      "$ev_type" "${key//\"/\\\"}" "$p" "$mode" "$e" "$ev_ts" "$sid" >> "$RUN_FILE"
-  }
 
   # Best-effort mkdir — failure is not fatal here, the write will surface it.
   mkdir -p "$learnings_dir" 2>/dev/null || true

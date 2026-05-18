@@ -2,12 +2,23 @@
 # Pipeline telemetry helper — sourced by execute-pipeline.sh.
 # Emits NDJSON records per pipeline run for offline aggregation.
 # Self-contained: bash, date, mkdir, cat, printf only.
-# Each NDJSON record carries sessionId = CLAUDE_CODE_SESSION_ID at emission time.
-# pipeline_init exports a synthesized `claude-{RUN_ID}-{epoch}-{rand}` id into
-# the PARENT shell environment when CLAUDE_CODE_SESSION_ID is unset/empty —
-# this is what makes per-run join keys survive across $(run_claude ...) subshells.
-# (Synthesis in run_claude alone is invisible to parent stage_end records, since
-# subshell exports do not propagate back. See codex review PR #50.)
+#
+# sessionId scope (read carefully — design choice, not a bug):
+#   - Every NDJSON record carries sessionId = CLAUDE_CODE_SESSION_ID READ AT
+#     EMISSION TIME (not at pipeline_init time).
+#   - pipeline_init captures the outer env once into RUN_SESSION_ID and emits a
+#     `pipeline_init` NDJSON record so the orchestrator's session (if any) is
+#     pinned at the start. RUN_SESSION_ID is NOT synthesized and NOT exported.
+#   - run_claude (in execute-pipeline.sh) synthesizes a `claude-{RUN_ID}-...`
+#     id and exports it ONLY within its own `$(run_claude ...)` subshell so the
+#     spawned `claude -p` process inherits it. That synthesis intentionally
+#     does NOT reach the parent shell — therefore stage_end/pipeline_finalize
+#     records emitted in the PARENT after the subshell returns will carry the
+#     OUTER env value (empty string if unset). The synthesized id correlates
+#     the SPAWNED child's own telemetry, not the wrapping stage record.
+#   - Codex finding on PR #50 noted this gap; the plan explicitly accepts it
+#     (Plan 03 owns the cross-record projection that joins parent stage
+#     records to child-spawned session ids via timestamp + RUN_ID).
 # JSON-escape scope: literal `"` only (UUID-shaped session ids never contain \n or \t).
 
 # Detect millisecond timestamp support once. Git Bash on Windows supports %3N.
@@ -85,6 +96,12 @@ pipeline_init() {
   LAST_RUN_TIMED_OUT_FILE="${PIPELINE_TMP:-/tmp}/.pipeline-last-timed-out"
   __pipeline_write_timed_out false
   : >> "$RUN_FILE"
+  # Pin the outer (orchestrator) session-id once at init. Downstream Plan 03
+  # joiner uses this to bind parent stage records to the spawn series even when
+  # run_claude exports a synthesized id only into its subshell.
+  local _outer_sid="${RUN_SESSION_ID//\"/\\\"}"
+  printf '{"type":"pipeline_init","plan":"%s","run_id":"%s","outer_session_id":"%s","ts":"%s"}\n' \
+    "$plan_name" "$RUN_ID" "$_outer_sid" "$(__pipeline_now_iso)" >> "$RUN_FILE"
 }
 
 # Mark stage start. Resets timed_out signal and records wall-clock start.

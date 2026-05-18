@@ -35,11 +35,17 @@ RUN_FILE_PATH=$(
 )
 if [[ -n "$RUN_FILE_PATH" && -f "$RUN_FILE_PATH" ]]; then
   COUNT=$(grep -c '"type":' "$RUN_FILE_PATH" 2>/dev/null || echo 0)
-  if [[ "$COUNT" == "3" ]]; then
-    ok "happy path: 3 NDJSON records"
+  # 4 records: pipeline_init + stage_start + stage_end + pipeline_finalize.
+  if [[ "$COUNT" == "4" ]]; then
+    ok "happy path: 4 NDJSON records"
   else
-    nope "happy path: expected 3 records, got $COUNT"
+    nope "happy path: expected 4 records, got $COUNT"
     cat "$RUN_FILE_PATH" >&2
+  fi
+  if grep -q '"type":"pipeline_init"' "$RUN_FILE_PATH"; then
+    ok "happy path: pipeline_init record present"
+  else
+    nope "happy path: missing pipeline_init record"
   fi
   if grep -q '"type":"stage_start"' "$RUN_FILE_PATH"; then
     ok "happy path: stage_start record present"
@@ -353,6 +359,30 @@ else
   nope "session_id guard: guard did not fire (line='$GUARD_LINE')"
 fi
 rm -rf "$TMPB"
+
+# ─── Test 12: pipeline_init emits outer_session_id (RUN_SESSION_ID consumer) ─
+TMPC=$(mktemp -d)
+RUN_FILE_PATH=$(
+  PROJECT_DIR="$TMPC" PIPELINE_TMP="$TMPC" PLAN_NAME="testC" \
+  CLAUDE_CODE_SESSION_ID="outer-init-sess" \
+  bash -c "
+    set -uo pipefail
+    . '$HELPER'
+    pipeline_init
+    echo \"\$RUN_FILE\"
+  "
+)
+if [[ -n "$RUN_FILE_PATH" && -f "$RUN_FILE_PATH" ]]; then
+  INIT_LINE=$(grep '"type":"pipeline_init"' "$RUN_FILE_PATH")
+  if [[ -n "$INIT_LINE" ]] && echo "$INIT_LINE" | grep -q '"outer_session_id":"outer-init-sess"'; then
+    ok "pipeline_init: outer_session_id captured from CLAUDE_CODE_SESSION_ID at init"
+  else
+    nope "pipeline_init: outer_session_id missing or wrong (line='$INIT_LINE')"
+  fi
+else
+  nope "pipeline_init: run file not created"
+fi
+rm -rf "$TMPC"
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
