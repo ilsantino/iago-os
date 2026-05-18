@@ -1746,6 +1746,64 @@ describe("AgentManager / polling-loop (Plan 07b)", () => {
 		});
 	});
 
+	it("(PL-7) cron fires → task poisoned → CronScheduler slot decrements back to 0", async () => {
+		const ctrl = makeMockRuntime("mock-pty-pl7");
+		registerRuntime(ctrl.runtime);
+		const mgr = new AgentManager();
+		await mgr.registerAgent({
+			agentId: "pr-triage",
+			runtimeId: "mock-pty-pl7",
+			cwd: "/tmp/w",
+			env: {},
+			sessionId: "sess-pl7",
+		});
+
+		const promptPath = path.join(tempDir, "pr-triage-prompt-pl7.md");
+		// eslint-disable-next-line @typescript-eslint/no-require-imports
+		require("node:fs").writeFileSync(promptPath, "do the daily pr-triage", "utf8");
+
+		const fixedNow = new Date(Date.UTC(2026, 4, 18, 15, 0, 0));
+		const scheduler = new CronScheduler({
+			agentManager: mgr,
+			nowFn: () => fixedNow,
+		});
+		scheduler.registerCron({
+			agentId: "pr-triage",
+			schedule: "0 15 * * *",
+			promptTemplatePath: promptPath,
+			outputTaskNamePrefix: "pr-triage",
+			maxConcurrent: 1,
+		});
+
+		// Fire 1: writes task file, runningCount → 1.
+		await scheduler._tickForTests();
+		expect(scheduler._runningCountForTests().get("pr-triage")).toBe(1);
+
+		// Corrupt the cron-fired task file so the polling tick poisons it.
+		const pendingDir = pathFor("tasks/pending");
+		const [taskFile] = (await fsp.readdir(pendingDir)).filter((f) =>
+			f.endsWith(".json"),
+		);
+		expect(taskFile).toBeDefined();
+		await fsp.writeFile(
+			path.join(pendingDir, taskFile),
+			"{ corrupted json",
+			"utf8",
+		);
+
+		// Polling tick: malformed JSON → poisonTask → emits task-poisoned with
+		// derived agentId "pr-triage" → CronScheduler decrements runningCount.
+		await mgr._pollingTickForTests();
+		expect(scheduler._runningCountForTests().get("pr-triage") ?? 0).toBe(0);
+
+		// Confirm the task landed in poisoned/.
+		await expect(
+			fsp.access(path.join(pathFor("tasks/poisoned"), taskFile)),
+		).resolves.toBeUndefined();
+
+		await scheduler.stop();
+	});
+
 	it("(PL-6) unrouted files beyond cap → overflow event emitted exactly once", async () => {
 		// Shrink the unroutedSet cap via the test-only setter so we can
 		// exercise the overflow branch without writing 1001 task files

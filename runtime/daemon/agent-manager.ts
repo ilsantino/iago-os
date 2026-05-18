@@ -1645,8 +1645,13 @@ export class AgentManager extends EventEmitter {
 			errno,
 		});
 		// EventEmitter emit so cron-scheduler can release the slot if this
-		// poisoned file was cron-fired.
-		this.emit("task-poisoned", { agentId: "(unknown)", filename });
+		// poisoned file was cron-fired. Extract agentId from the cron filename
+		// convention (<agentId>__<unix>.json); fall back to "(unknown)" for
+		// files that don't follow the convention (no cron slot to release).
+		const separatorIdx = filename.indexOf("__");
+		const derivedAgentId =
+			separatorIdx > 0 ? filename.slice(0, separatorIdx) : "(unknown)";
+		this.emit("task-poisoned", { agentId: derivedAgentId, filename });
 	}
 
 	private async emitUnrouted(filename: string, agentId: string): Promise<void> {
