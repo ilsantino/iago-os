@@ -5,10 +5,10 @@ import * as path from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-// Mock the telemetry module BEFORE state-paths.ts imports it so the
-// destructured `emit` binding inside state-paths.ts resolves to our
-// vi.fn(). This lets us assert the fire-and-forget telemetry call shape
-// without racing the filesystem appendFile.
+// Mock the telemetry module so that when state-paths.ts dynamically
+// imports "./telemetry.js" (via `void import(...).then(...)`) Vitest's
+// module mock registry resolves our vi.fn(). This lets us assert the
+// fire-and-forget telemetry call shape without racing the filesystem appendFile.
 vi.mock("./telemetry.js", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("./telemetry.js")>();
 	return {
@@ -377,6 +377,10 @@ describe("state-paths", () => {
 
 			vi.mocked(mockedEmit).mockClear();
 			await atomicRenameStaleDest(src, dst);
+			// The emit call lives inside a `void import().then()` chain — flush
+			// the microtask queue so the dynamic-import callback has settled
+			// before asserting call count.
+			await new Promise<void>((resolve) => setImmediate(resolve));
 			expect(await fsp.readFile(dst, "utf8")).toBe("new");
 
 			expect(vi.mocked(mockedEmit)).toHaveBeenCalledTimes(1);

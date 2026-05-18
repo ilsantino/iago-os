@@ -35,8 +35,6 @@ import * as fsp from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 
-import { emit } from "./telemetry.js";
-
 export type StateKind =
 	| "tasks/pending"
 	| "tasks/claimed"
@@ -268,16 +266,21 @@ export async function atomicRenameStaleDest(
 		await fsp.unlink(dst);
 		await fsp.rename(src, dst);
 		const windowMs = Date.now() - windowStart;
-		// Fire-and-forget telemetry: only the basename of dst leaks to the
-		// event so the state-root layout is not exposed. emit() swallows
-		// its own errors so a telemetry write failure cannot block the
-		// rename completion. No recursion: telemetry uses fsp.appendFile,
-		// not rename.
-		void emit({
-			kind: "atomic-rename-stale-dest-window",
-			dst: path.basename(dst),
-			windowMs,
-			platform: "win32",
-		});
+		// Fire-and-forget telemetry via dynamic import — breaks the static
+		// module cycle between state-paths.ts (which needs path helpers) and
+		// telemetry.ts (which needs pathFor). Dynamic import resolves after
+		// both modules have finished loading so live-binding is safe.
+		// emit() swallows its own write errors; the outer .catch() covers
+		// any dynamic-import failure (e.g., module not found in tests).
+		void import("./telemetry.js")
+			.then(({ emit }) =>
+				emit({
+					kind: "atomic-rename-stale-dest-window",
+					dst: path.basename(dst),
+					windowMs,
+					platform: "win32",
+				}),
+			)
+			.catch(() => undefined);
 	}
 }
