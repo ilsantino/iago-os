@@ -1,10 +1,11 @@
 ---
 phase: feature-phase-2-vps-bootstrap
 plan: 06
-wave: 2
-depends_on: [01]
+wave: 3
+depends_on: [01b, 03b]
 context: .iago/plans/feature-phase-2-vps-bootstrap/CONTEXT.md
 created: 2026-05-17
+updated: 2026-05-18
 source: feature
 ---
 
