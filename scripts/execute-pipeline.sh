@@ -20,6 +20,8 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 . "$SCRIPT_DIR/lib/pipeline-telemetry.sh"
 . "$SCRIPT_DIR/lib/build-gate.sh"
+# Plan 02 Task 6 — sentinel verdict parser for the Claude adversarial fallback.
+. "$SCRIPT_DIR/lib/adversarial-verdict.sh"
 PIPELINE_STARTED=false
 
 # Snapshot args before the while loop consumes them via shift, so the
@@ -508,7 +510,7 @@ stage_start review
 log "REVIEW — $PLAN_NAME"
 
 # Stage all new/modified files so they appear in the diff
-(cd "$PROJECT_DIR" && git add -A -- ':!**/.env' ':!**/.env.*' ':!**/*.pem' ':!**/*.key' ':!**/*.p12' ':!**/*.pfx')
+(cd "$PROJECT_DIR" && git add -A -- ':!**/.env' ':!**/.env.*' ':!**/*.pem' ':!**/*.key' ':!**/*.p12' ':!**/*.pfx' ':!.iago/state/**' ':!**/.iago/state/**')
 
 # Diff: committed changes since pre-impl + staged working tree changes
 DIFF=$(cd "$PROJECT_DIR" && git diff "$PRE_IMPL_SHA"..HEAD 2>/dev/null || echo "")
@@ -628,7 +630,7 @@ Read the build errors at: $BUILD_ERRORS_FILE" \
   fi
 
   # Re-review — re-stage and capture full diff
-  (cd "$PROJECT_DIR" && git add -A -- ':!**/.env' ':!**/.env.*' ':!**/*.pem' ':!**/*.key' ':!**/*.p12' ':!**/*.pfx')
+  (cd "$PROJECT_DIR" && git add -A -- ':!**/.env' ':!**/.env.*' ':!**/*.pem' ':!**/*.key' ':!**/*.p12' ':!**/*.pfx' ':!.iago/state/**' ':!**/.iago/state/**')
   DIFF=$(cd "$PROJECT_DIR" && git diff "$PRE_IMPL_SHA"..HEAD 2>/dev/null || echo "")
   STAGED_DIFF=$(cd "$PROJECT_DIR" && git diff --cached 2>/dev/null || echo "")
   DIFF="${DIFF}${STAGED_DIFF}"
@@ -674,12 +676,21 @@ log "CODEX REVIEW — $PLAN_NAME"
 DIFF=$(cd "$PROJECT_DIR" && { git diff "$PRE_IMPL_SHA"..HEAD 2>/dev/null || echo ""; } && { git diff --cached 2>/dev/null || echo ""; })
 echo "$DIFF" > "$DIFF_FILE"
 
-# Claude adversarial fallback — shared by all non-Codex paths
+# Claude adversarial fallback — shared by all non-Codex paths.
+#
+# Plan 02 Task 6 (Region A) — the prompt now mandates a structured
+# `===VERDICT: CLEAN===` / `===VERDICT: ISSUES===` sentinel on its own
+# line at the end of the response. The parser block downstream calls
+# `parse_adversarial_verdict` against the captured output to decide
+# whether to run the fix loop. Absence of EITHER sentinel triggers a
+# manual-review escalation, NOT a default-clean.
 run_claude_adversarial() {
+  local _suffix
+  _suffix=$(format_adversarial_prompt_suffix)
   run_claude 600 -p "Adversarial review: check this diff for auth bypass, data loss, race conditions, rollback safety, business logic errors.
 
 Read the plan for context: $PLAN_FILE
-Read the diff: $DIFF_FILE" \
+Read the diff: $DIFF_FILE${_suffix}" \
     --model opus \
     --max-turns 20 \
     --allowedTools "Read Glob Grep" \
@@ -791,13 +802,38 @@ stage_end codex_review "$CODEX_EXIT"
 echo "$CODEX_OUTPUT" > "$CODEX_FILE"
 
 # Check if Codex found actionable findings.
-# When Claude fallback ran, skip \bCritical\b|\bImportant\b — prose like "No Critical issues found"
-# would spuriously trigger a fix session reading clean output (false positive, ~40 wasted turns).
-_codex_word_patterns='\bCritical\b|\bImportant\b|\[high\]|\[medium\]'
+# Claude fallback path: parse the structured ===VERDICT: CLEAN/ISSUES=== sentinel
+# emitted at the end of the response (see scripts/lib/adversarial-verdict.sh).
+# UNKNOWN (missing sentinel) is fail-safe: escalate to manual review rather than
+# default-clean — `.claude/rules/systematic-debugging.md` "no assumption when
+# evidence absent".
+# Real-codex path: keep the [P0]/[P1]/[P2] tag heuristic — codex emits these
+# tags directly and the prose-collision problem only applies to the fallback.
+_codex_word_patterns='\[high\]|\[medium\]'
 _has_findings=false
-if echo "$CODEX_OUTPUT" | grep -qiE '\[P[012]\]|- \[P[012]\]|severity.*P[012]|^Verdict: needs-attention'; then
+if [[ "$USED_CLAUDE_FALLBACK" == "true" ]]; then
+  _verdict=$(parse_adversarial_verdict "$CODEX_FILE")
+  case "$_verdict" in
+    CLEAN)
+      _has_findings=false
+      ;;
+    ISSUES)
+      _has_findings=true
+      ;;
+    UNKNOWN)
+      # Codex P0 fix: UNKNOWN is a hard stop, NOT a fix-loop trigger.
+      # Without a structured findings block, the fix session has nothing
+      # concrete to act on and would hallucinate edits or silently pass
+      # after build. Block the pipeline; require human re-run.
+      log "ERROR: Claude adversarial fallback emitted no verdict sentinel (===VERDICT: CLEAN=== or ===VERDICT: ISSUES===)."
+      log "       This indicates either a malformed model response or a failed adversarial review."
+      log "       Refusing to run fixer on missing-sentinel output. Inspect $CODEX_FILE and re-run /iago-execute."
+      exit 1
+      ;;
+  esac
+elif echo "$CODEX_OUTPUT" | grep -qiE '\[P[012]\]|- \[P[012]\]|severity.*P[012]|^Verdict: needs-attention'; then
   _has_findings=true
-elif [[ "$USED_CLAUDE_FALLBACK" != "true" ]] && echo "$CODEX_OUTPUT" | grep -qiE "$_codex_word_patterns"; then
+elif echo "$CODEX_OUTPUT" | grep -qiE "$_codex_word_patterns"; then
   _has_findings=true
 fi
 stage_start codex_fix
@@ -853,7 +889,7 @@ Read the build errors at: $BUILD_ERRORS_FILE" \
   fi
 
   # Re-stage changes from Codex fix
-  (cd "$PROJECT_DIR" && git add -A -- ':!**/.env' ':!**/.env.*' ':!**/*.pem' ':!**/*.key' ':!**/*.p12' ':!**/*.pfx')
+  (cd "$PROJECT_DIR" && git add -A -- ':!**/.env' ':!**/.env.*' ':!**/*.pem' ':!**/*.key' ':!**/*.p12' ':!**/*.pfx' ':!.iago/state/**' ':!**/.iago/state/**')
   stage_end codex_fix "$CODEX_FIX_EXIT"
 else
   log "No actionable Codex findings — proceeding to PR"
@@ -866,7 +902,7 @@ if [[ "$NO_PR" == "true" ]]; then
   log "STACKED COMMIT — $PLAN_NAME (no PR, staying on current branch)"
   # Stage, commit locally, do NOT push, do NOT create PR. Commits accumulate on the
   # current branch for a later plan in the stack to push as a combined PR.
-  (cd "$PROJECT_DIR" && git add -A -- ':!**/.env' ':!**/.env.*' ':!**/*.pem' ':!**/*.key' ':!**/*.p12' ':!**/*.pfx')
+  (cd "$PROJECT_DIR" && git add -A -- ':!**/.env' ':!**/.env.*' ':!**/*.pem' ':!**/*.key' ':!**/*.p12' ':!**/*.pfx' ':!.iago/state/**' ':!**/.iago/state/**')
   # Only commit if there are staged changes
   if ! (cd "$PROJECT_DIR" && git diff --cached --quiet); then
     STACK_COMMIT_MSG="feat($PLAN_NAME): implement $PLAN_NAME

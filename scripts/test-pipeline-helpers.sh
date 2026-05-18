@@ -483,6 +483,69 @@ run_claude_session_id_test \
 run_claude_synthesis_fallback_test
 run_claude_parent_stage_end_observability_test
 
+# ─── Adversarial-verdict parser (Plan 02 Task 5) ───────────────────────
+# Sources scripts/lib/adversarial-verdict.sh and exercises parse_adversarial_verdict
+# against four inputs that mirror the real Claude fallback output shapes plus
+# the "chats below sentinel" case from Plan 02 Stress C1.
+_VERDICT_HELPER="$(cd "$(dirname "$0")" && pwd)/lib/adversarial-verdict.sh"
+if [[ -f "$_VERDICT_HELPER" ]]; then
+  # shellcheck source=lib/adversarial-verdict.sh
+  . "$_VERDICT_HELPER"
+fi
+
+assert_verdict() {
+  local label="$1"
+  local body="$2"
+  local expected="$3"
+  if ! command -v parse_adversarial_verdict >/dev/null 2>&1; then
+    echo "  FAIL  $label (parse_adversarial_verdict not available — helper not sourced)"
+    FAIL=$((FAIL + 1))
+    return
+  fi
+  local tmp
+  tmp=$(mktemp -t iago-verdict-test.XXXXXX)
+  printf '%s' "$body" > "$tmp"
+  local actual
+  actual=$(parse_adversarial_verdict "$tmp")
+  rm -f "$tmp"
+  if [[ "$actual" == "$expected" ]]; then
+    echo "  PASS  $label (verdict=$actual)"
+    PASS=$((PASS + 1))
+  else
+    echo "  FAIL  $label (expected $expected, got $actual)"
+    FAIL=$((FAIL + 1))
+  fi
+}
+
+echo
+echo "Adversarial-verdict parser (Plan 02 Task 5):"
+
+assert_verdict "CLEAN sentinel at end" \
+  $'I reviewed the diff. No actionable issues.\n===VERDICT: CLEAN===' \
+  "CLEAN"
+
+assert_verdict "ISSUES sentinel at end" \
+  $'I found one auth-bypass risk.\n===VERDICT: ISSUES===' \
+  "ISSUES"
+
+# Original bug: prose like "no issues found" used to false-trigger CLEAN
+# via the old `\bCritical\b|\bImportant\b` heuristic. With sentinel parsing
+# the same prose yields UNKNOWN, which the pipeline escalates to manual review.
+assert_verdict "prose-only no-sentinel returns UNKNOWN" \
+  $'I checked X but no issues found there, however Y is broken.\nNothing else to flag.' \
+  "UNKNOWN"
+
+# Collision: both sentinels in tail -10 window → prefer ISSUES (fail-safe).
+assert_verdict "collision prefers ISSUES" \
+  $'body\n===VERDICT: CLEAN===\n===VERDICT: ISSUES===' \
+  "ISSUES"
+
+# Plan 02 Stress C1: model emits sentinel then chats below it.
+# tail -10 window must still catch the sentinel even with 4+ trailing lines.
+assert_verdict "model chats below sentinel (tail -10 catches)" \
+  $'body\n===VERDICT: ISSUES===\nbecause X\nbecause Y\nbecause Z\nbecause W' \
+  "ISSUES"
+
 echo
 echo "Result: $PASS passed, $FAIL failed"
 [[ $FAIL -eq 0 ]] || exit 1

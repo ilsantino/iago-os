@@ -1,0 +1,183 @@
+[21:10:39] STRESS TEST — skipped (plan already stress-tested)
+[21:10:39] IMPLEMENT — 02-clean-tree-guard-and-adversarial-fallback-sentinel
+[21:17:35] Implementation complete
+[21:17:35] BUILD GATE — attempt 1 [mode: sequential]
+[21:17:35] Build passed (tsc 0ms / vite 0ms / mode sequential)
+[21:17:36] CONSOLE GATE — skipped (no Vite config)
+[21:17:36] REVIEW — 02-clean-tree-guard-and-adversarial-fallback-sentinel
+warning: in the working copy of '.claude/skills/iago-execute/SKILL.md', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of '.iago/summaries/_dispatch-c-01-retry.log', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of '.iago/summaries/_dispatch-c-02.log', LF will be replaced by CRLF the next time Git touches it
+[21:17:38]   review-checks: all modules loaded (209 lines)
+[21:21:02] Review output:
+Plan review complete. Findings below.
+
+## PASS 1 — Plan Compliance
+
+All 6 tasks implemented correctly:
+
+- **Task 1** (`scripts/check-clean-tree.sh`): Created with header, exit codes (0/1/64/65), lenient/strict filtering, dual-mode telemetry guard. I3 gitignore warning added (lines 65-69). I5 dual-mode comment in header (lines 25-33). Note: implementation chose to NOT source pipeline-telemetry.sh and instead emits inline via printf when caller has RUN_FILE exported — safer than spec, documented in header.
+- **Task 2** (`scripts/check-clean-tree.test.sh`): 7 tests present; **all 14 assertions pass** (14/14).
+- **Task 3** (`SKILL.md`): § 3 "Pre-flight: clean tree check" inserted, §§ 4-7 renumbered. I4 env→arg translation present (lines 89-93). Boundaries note added. Verified no external doc references SKILL.md sections (the one hit in `docs/archive/research/BUILD-ORDER.md` references `DECISION-workflow.md §1, §5`, not iago-execute sections).
+- **Task 4** (`scripts/lib/adversarial-verdict.sh`): Both functions present; M2 source-guard at lines 23-27; C1 widened to `tail -n 10`; I1 uses `printf` not heredoc; I2 empty-file behavior documented (lines 18-21).
+- **Task 5** (`scripts/test-pipeline-helpers.sh`): 5 verdict-parser tests added (plan called for 4; the 5th covers C1 "chats below sentinel"). All 5 pass.
+- **Task 6** (`scripts/execute-pipeline.sh`): Source line at 23; `run_claude_adversarial` concatenates suffix at 685-690; parser block at 811-829 uses sentinel for USED_CLAUDE_FALLBACK path; UNKNOWN escalates fail-safe; Plan 02 attribution comments present.
+
+`bash -n` clean on all three shell scripts. The pre-existing failing test `run_claude_parent_stage_end_observability_test` belongs to Plan 01, not Plan 02 — out of scope.
+
+## PASS 2 — Domain Routing
+
+Selected: **Baseline** + **Pattern Consistency** (always-included). Skipped: Amplify, API, Auth, Backend, Data Integrity, i18n, Infra, React — no application code touched. Diff is bash scripts, shell test harnesses, a skill markdown file, and a pipeline log artifact.
+
+## PASS 3 — Adversarial
+
+**Cross-cutting:**
+- Auth bypass: N/A (pipeline tooling).
+- Data loss: Clean-tree guard refuses to proceed on dirty tree (exit 1 in skill) — safer than the prior implicit check it replaces. No write paths.
+- Race conditions: TOCTOU between check and `git checkout main` exists but is acceptable in single-orchestrator serial flow.
+- Rollback safety: No state mutations.
+
+**Findings:**
+
+### Minor
+
+- **M1 — Doc/code mismatch in `adversarial-verdict.sh`**: The comment at line 42 advertises "line-level exact match `^===VERDICT: (CLEAN|ISSUES)===\s*$`", but the implementation at lines 60-67 uses bash string comparison after trailing-whitespace strip (no leading-whitespace strip). Functionally correct for the design intent (suppress in-code-block matches), but the docstring promises regex anchoring that isn't actually used. Update the comment to describe the actual algorithm.
+- **M2 — `format_adversarial_prompt_suffix` spacing inconsistency**: The printf format string in `adversarial-verdict.sh:88` uses `%s    if you found...` (4 spaces) and `%s   if you listed...` (3 spaces). Purely cosmetic — doesn't affect parsing — but inconsistent spacing in the prompt instructions sent to the model.
+- **M3 — `mempalace`-style WARNING noise**: `check-clean-tree.sh` emits the I3 gitignore warning on every run if `.iago/state/` is missing from `.gitignore`. In a typical repo this fires once per `/iago-execute` invocation. Not a defect, but consider gating behind a `--quiet` flag or env var if it becomes log noise.
+
+### Pattern Consistency
+
+- New code follows existing pipeline-helper conventions (function naming, comment style, `set -e` posture, mktemp-test harness pattern from `pipeline-telemetry.test.sh`). No deviations to flag.
+
+Verdict: PASS_WITH_CONCERNS
+[21:21:02] Findings detected — dispatching fix session (round 1)
+[21:23:20] Fix output (exit 0):
+All 3 minor findings addressed:
+
+- **M1** — Rewrote the "Anchor" comment in `adversarial-verdict.sh` to describe the actual algorithm (line-by-line read + trailing-ws strip + bash string equality), removed the misleading regex.
+- **M2** — Standardized to 2 spaces between sentinel and description in `format_adversarial_prompt_suffix` (was 4 vs 3).
+- **M3** — Added `IAGO_CLEAN_TREE_QUIET=1` env-var gate around the gitignore WARNING in `check-clean-tree.sh`; documented in Usage header.
+
+Verification: `bash -n` clean on all 4 modified files; 14/14 clean-tree tests pass; 30/31 pipeline-helper tests pass (the 1 failure is the pre-existing Plan 01 test the review flagged as out of scope).
+warning: in the working copy of '.iago/summaries/_dispatch-c-02.log', LF will be replaced by CRLF the next time Git touches it
+[21:23:23]   review-checks: all modules loaded (209 lines)
+[21:25:40] Re-review output:
+All three Minor findings from round 1 are resolved:
+
+**M1 — Doc/code mismatch in `adversarial-verdict.sh`**: FIXED. Docstring at lines 42-48 now accurately describes the bash string-equality with trailing-ws strip ("NOT a regex"), matching the implementation at lines 62-69.
+
+**M2 — `format_adversarial_prompt_suffix` spacing inconsistency**: FIXED. Line 90 now uses consistent 2-space gap after both `%s` substitutions (`%s  if you found NO...` / `%s  if you listed any...`).
+
+**M3 — WARNING noise from `check-clean-tree.sh`**: FIXED. New `IAGO_CLEAN_TREE_QUIET=1` env var documented in header (lines 12-14) and gated at lines 71-77; mitigation called out in code comment referencing M3.
+
+**Verification:**
+- `bash -n` clean on all three shell scripts.
+- `scripts/check-clean-tree.test.sh`: 14/14 passed.
+- `scripts/test-pipeline-helpers.sh`: 30 passed / 1 failed — the failure is the pre-existing `run_claude_parent_stage_end_observability_test` from Plan 01, explicitly out-of-scope for Plan 02 (and already called out in round 1 review).
+- All 5 Plan 02 Task 5 verdict-parser tests pass.
+
+**Cross-cutting (Baseline + Pattern Consistency only — diff is bash/markdown, no app code):**
+- Auth bypass / data loss / races / rollback: pipeline tooling only; clean-tree guard tightens, not loosens, safety. No state mutations.
+- Dead code / silent failure / unreachable branches: none introduced.
+- Pattern consistency: test harness mirrors `pipeline-telemetry.test.sh`; source-guard, naming, comment posture consistent.
+
+No new findings.
+
+Verdict: PASS
+[21:25:41] Review passed
+[21:25:41] CODEX REVIEW — 02-clean-tree-guard-and-adversarial-fallback-sentinel
+[21:25:41] Running codex-companion adversarial-review (model from ~/.codex/config.toml)
+[21:28:12] Codex findings:
+(node:19356) [DEP0190] DeprecationWarning: Passing args to a child process with shell option true can lead to security vulnerabilities, as the arguments are not escaped, only concatenated.
+(Use `node --trace-deprecation ...` to show where the warning was created)
+[codex] Starting Codex task thread.
+[codex] Thread ready (019e391e-4d0a-7271-bcdb-e045749463cc).
+[codex] Turn started (019e391e-50b0-7401-9e5f-5780729f00f9).
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git diff --stat e0...
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git status --short...
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git diff --name-st...
+[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git diff --stat e0... (exit 0)
+[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git status --short... (exit 0)
+[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git diff --name-st... (exit 0)
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git diff --unified...
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git diff --unified...
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git diff --unified...
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git diff --unified...
+[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git diff --unified... (exit 0)
+[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git diff --unified... (exit 0)
+[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git diff --unified... (exit 0)
+[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git diff --unified... (exit 0)
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git diff --unified...
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git diff --unified...
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'rg -n "check-clean...
+[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git diff --unified... (exit 0)
+[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git diff --unified... (exit 0)
+[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'rg -n "check-clean... (exit 0)
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command '$i=1; Get-Content ...
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command '$i=1; Get-Content ...
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command '$i=1; Get-Content ...
+[codex] Command declined: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command '$i=1; Get-Content ... (exit -1)
+[codex] Command declined: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command '$i=1; Get-Content ... (exit -1)
+[codex] Command declined: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command '$i=1; Get-Content ... (exit -1)
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command '$i=1; Get-Content ...
+[codex] Command declined: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command '$i=1; Get-Content ... (exit -1)
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'rg -n "STATUS=|FIL...
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command "bash -lc \"nl -ba ...
+[codex] Command declined: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command "bash -lc \"nl -ba ... (exit -1)
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command "bash -lc \"nl -ba ...
+[codex] Command declined: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command "bash -lc \"nl -ba ... (exit -1)
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command "bash -lc \"nl -ba ...
+[codex] Command declined: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command "bash -lc \"nl -ba ... (exit -1)
+[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'rg -n "STATUS=|FIL... (exit 0)
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command "findstr /n \".*\" ...
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command "findstr /n \".*\" ...
+[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command "findstr /n \".*\" ... (exit 0)
+[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command "findstr /n \".*\" ... (exit 0)
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command "findstr /n \".*\" ...
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'rg -n "adversarial...
+[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command "findstr /n \".*\" ... (exit 0)
+[codex] Command failed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'rg -n "adversarial... (exit 1)
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'bash scripts/test-...
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git diff --check e...
+[codex] Command declined: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'bash scripts/test-... (exit -1)
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'bash scripts/check...
+[codex] Command declined: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'bash scripts/check... (exit -1)
+[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git diff --check e... (exit 0)
+[codex] Assistant message captured: {"verdict":"needs-attention","summary":"No-ship: the change can either commit pipeline state ...
+[codex] Turn completion inferred after the main thread finished and subagent work drained.
+# Codex Adversarial Review
+
+Target: branch diff against e0617347786e9ece74a09d5a6459a3dbaea94dd1
+Verdict: needs-attention
+
+No-ship: the change can either commit pipeline state or run an autonomous fixer without a valid adversarial-review finding set.
+
+Findings:
+- [high] Missing fallback sentinel triggers automated edits instead of a hard stop (scripts/execute-pipeline.sh:820-843)
+  The UNKNOWN branch says it is escalating to manual review, but it actually sets `_has_findings=true`, which immediately enters the Codex fix loop and grants Edit/Write/Bash against whatever is in `CODEX_FILE`. If Claude omits the sentinel, or if the adversarial review failed and the output was replaced with an unavailable/no-findings message, the fixer has no concrete findings to resolve and the pipeline can still proceed after build passes. That is not a manual-review escalation; it risks hallucinated changes or shipping without a successful adversarial review.
+  Recommendation: Treat UNKNOWN and adversarial-review failure as blocking: end the stage and exit non-zero, or require a structured findings block before invoking the fixer. Do not run the fix session on missing-sentinel output.
+- [medium] Lenient clean-tree check can allow pipeline state into commits (scripts/check-clean-tree.sh:71-91)
+  The default clean-tree check only warns when `.iago/state/` is not ignored, then filters all untracked `.iago/state/` entries and returns CLEAN. Inference from the pipeline code: later staging excludes secrets only, not `.iago/state/**`, so a repo without the intended ignore rule can pass pre-flight and then have lock/run NDJSON artifacts staged by `git add -A` or the PR session.
+  Recommendation: If `.iago/state/` is not covered by ignore rules, fail the clean-tree check instead of warning, or add `.iago/state/**` to every staging exclusion path. Add a test with no `.gitignore` coverage and an untracked `.iago/state` file.
+
+Next steps:
+- Block the PR until UNKNOWN adversarial verdicts stop the pipeline or require human review.
+- Tighten `.iago/state` handling so generated pipeline state cannot be committed accidentally.
+[21:28:12] Codex review complete
+[21:28:13] CODEX FIX — fixing findings before PR
+[21:31:45] Codex fix output (exit 0):
+Confirmed: that's a pre-existing Plan 01 telemetry test failure (unrelated to my Codex fix scope).
+
+## Summary
+
+**P0 (high) — UNKNOWN sentinel = hard stop:**
+`scripts/execute-pipeline.sh:820-829` — UNKNOWN case now logs an ERROR and `exit 1` (was: set `_has_findings=true` to enter fix loop with no concrete findings).
+
+**P1 (medium) — clean-tree state-dir leak:**
+1. `scripts/check-clean-tree.sh:66-93` — lenient mode now hard-fails (exit 1, "DIRTY") when `.iago/state/` is not in `.gitignore` instead of warning then masking it; strict mode skips this gate (it would catch the file anyway).
+2. `scripts/execute-pipeline.sh` lines 510/630/889/902 — all four `git add -A` calls now exclude `:!.iago/state/**` and `:!**/.iago/state/**` as defense in depth.
+3. `scripts/check-clean-tree.test.sh` — added Test 8 (no-gitignore-coverage fails) and Test 9 (strict mode bypasses coverage gate). 19/19 passing.
+
+**Verification:** `bash -n` clean on all 3 files; clean-tree tests 19/19 green; adversarial-verdict parser tests 5/5 green. The single failing telemetry test (`parent stage_end after run_claude … sessionId by design`) pre-dates this fix session.
+[21:31:45] BUILD GATE (post-codex-fix)
+[21:31:45] Build passed after Codex fix
