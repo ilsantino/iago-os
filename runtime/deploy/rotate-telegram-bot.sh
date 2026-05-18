@@ -84,9 +84,22 @@ emit_ndjson() {
   fi
 }
 
+# ---------- Token-safe curl helper ----------
+# The bot token is sensitive. Putting it in the curl argv would expose
+# it to anyone with `ps` access while the request is in flight, plus
+# any audit logger that records process args. `curl --config -` reads
+# URL (and any headers) from stdin, so argv stays free of secrets.
+curl_telegram() {
+  local token="$1"
+  local method="$2"  # e.g. "getMe"
+  curl --silent --show-error --config - <<EOF
+url = "${TELEGRAM_BASE}/bot${token}/${method}"
+EOF
+}
+
 # ---------- Step 1/6: record old bot metadata BEFORE rotation ----------
 echo "[1/6] Recording old bot metadata via getMe (pre-rotation snapshot)..."
-pre_response=$(curl -sS "${TELEGRAM_BASE}/bot${OLD_TOKEN}/getMe")
+pre_response=$(curl_telegram "$OLD_TOKEN" getMe)
 pre_ok=$(echo "$pre_response" | jq -r '.ok')
 if [[ "$pre_ok" != "true" ]]; then
   echo "ERROR: old token already dead — was rotation done previously?" >&2
@@ -170,7 +183,7 @@ emit_ndjson "4/6" "ok" "provision-credentials.sh telegram-token"
 echo "[5/6] Verifying OLD token is dead (max 5 × 30s = 2.5 min)..."
 old_dead="no"
 for i in $(seq 1 5); do
-  response=$(curl -sS "${TELEGRAM_BASE}/bot${OLD_TOKEN}/getMe")
+  response=$(curl_telegram "$OLD_TOKEN" getMe)
   ok_field=$(echo "$response" | jq -r '.ok')
   if [[ "$ok_field" == "false" ]]; then
     echo "  OK OLD token revoked (attempt $i)"
@@ -192,7 +205,7 @@ done
 
 # ---------- Step 6/6: verify NEW token works AND identifies the same bot ----------
 echo "[6/6] Verifying NEW token resolves to the same bot (@${pre_username})..."
-new_response=$(curl -sS "${TELEGRAM_BASE}/bot${new_token_from_op}/getMe")
+new_response=$(curl_telegram "$new_token_from_op" getMe)
 new_ok=$(echo "$new_response" | jq -r '.ok')
 if [[ "$new_ok" != "true" ]]; then
   echo "ERROR: NEW token getMe returned ok=false. Response:" >&2

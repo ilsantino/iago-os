@@ -38,29 +38,47 @@ script. Total wall clock: ~3 minutes.
 
 ---
 
-## Procedure (atomic — T-0:00 → T+3:00)
+## Procedure (atomic — T-0:30 → T+3:00)
+
+The script is interactive: it snapshots the OLD token via `getMe` BEFORE
+the operator touches BotFather, then prompts the operator to perform the
+revoke + 1Password update, then provisions and verifies after the
+operator presses Enter. Starting the script first is mandatory — if
+BotFather `/revoke` runs first, the OLD token is already dead and the
+script's step [1/6] snapshot aborts before any rotation work happens,
+stranding the cutover.
 
 ```
-T-0:00  Open Telegram, message @BotFather
-T+0:30  Send: /mybots
-T+0:40  Tap the bot's @handle (the one OpenClaw uses today)
-T+0:50  Tap: API Token
-T+1:00  Tap: Revoke current token
-T+1:10  BotFather confirms; new token appears in chat
-T+1:20  Copy new token to clipboard
-T+1:30  In 1Password app: edit item v2-daemon-telegram-bot, paste new token
-          into `token` field, save
-T+2:00  In Git Bash on Windows:
+T-0:30  In Git Bash on Windows, start the script (records pre-rotation
+          snapshot, then blocks at the manual-step prompt):
           OLD_TOKEN="<old token>" bash runtime/deploy/rotate-telegram-bot.sh
-T+2:30  Script verifies credential round-trip succeeds, then verifies OLD
-          token returns getMe ok=false (5 × 30s retry buffer for BotFather
-          propagation), then verifies NEW token points at same bot
+T-0:20  Script step [1/6] prints "Bot: @<handle> (id=<id>)" then displays
+          the BotFather instructions and "Press Enter to continue once
+          1Password has the new token..."
+T+0:00  On phone: open Telegram, message @BotFather
+T+0:10  Send: /mybots
+T+0:15  Tap the bot's @handle (the one OpenClaw uses today)
+T+0:20  Tap: API Token
+T+0:25  Tap: Revoke current token
+T+0:30  BotFather confirms; new token appears in chat. Copy to clipboard.
+T+0:40  In 1Password app: edit item v2-daemon-telegram-bot, paste new
+          token into `token` field, save.
+T+0:50  Return to Git Bash on Windows. Press Enter at the script prompt.
+T+1:00  Script step [3/6] reads 1Password, [4/6] provisions via
+          systemd-creds, [5/6] verifies OLD token returns getMe ok=false
+          (5 × 30s retry buffer for BotFather propagation), [6/6] verifies
+          NEW token points at same bot id as step [1/6] snapshot.
 T+3:00  ← bot token rotation complete; OpenClaw bot polling (if it were
-          still running) would now fail with 401
+          still running) would now fail with 401.
 ```
 
 The 401-on-OpenClaw signal is intentional — it's the test that the new token
 is genuinely a new token and not BotFather displaying the cached old one.
+
+**Do NOT** issue BotFather `/revoke` before starting the script. The first
+thing the script does is call `getMe` with `OLD_TOKEN` to snapshot the bot's
+username + id. If `/revoke` has already fired, that call returns `ok:false`
+and the script exits at step [1/6] before provisioning anything.
 
 ---
 

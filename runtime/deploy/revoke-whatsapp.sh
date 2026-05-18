@@ -91,6 +91,31 @@ emit_ndjson() {
   fi
 }
 
+# ---------- Token-safe curl helper ----------
+# The system-user token and APP_SECRET are sensitive. Putting them in
+# the curl argv would expose them to anyone with `ps` access while the
+# request is in flight, plus any audit logger that records process
+# args. `curl --config -` reads URL (and any headers) from stdin, so
+# argv stays free of secrets. Pass empty string for the token arg to
+# skip the Authorization header (debug_token carries creds in the
+# query string instead).
+curl_graph() {
+  local method="$1"
+  local url="$2"
+  local token="$3"
+  shift 3
+  if [[ -n "$token" ]]; then
+    curl --silent --show-error -X "$method" "$@" --config - <<EOF
+url = "$url"
+header = "Authorization: Bearer $token"
+EOF
+  else
+    curl --silent --show-error -X "$method" "$@" --config - <<EOF
+url = "$url"
+EOF
+  fi
+}
+
 # ---------- Step 1/6: confirm OpenClaw stopped ----------
 echo "[1/6] Confirming OpenClaw is stopped (archive-openclaw.sh dependency)..."
 if id "$OPENCLAW_USER" > /dev/null 2>&1; then
@@ -109,9 +134,7 @@ fi
 
 # ---------- Step 2/6: DELETE webhook subscription ----------
 echo "[2/6] DELETE /${WABA_ID}/subscribed_apps (removes Meta webhook binding)..."
-response=$(curl -sS -X DELETE \
-  "${GRAPH_BASE}/${WABA_ID}/subscribed_apps" \
-  -H "Authorization: Bearer ${SYSTEM_USER_TOKEN}")
+response=$(curl_graph DELETE "$GRAPH_BASE/$WABA_ID/subscribed_apps" "$SYSTEM_USER_TOKEN")
 success=$(echo "$response" | jq -r '.success // false')
 if [[ "$success" != "true" ]]; then
   echo "ERROR: subscribed_apps DELETE did not return success:true. Response:" >&2
@@ -124,18 +147,14 @@ emit_ndjson "2/6" "ok" "$response"
 
 # ---------- Step 3/6: VERIFY subscription removed ----------
 echo "[3/6] GET /${WABA_ID}/subscribed_apps (verify deletion)..."
-response=$(curl -sS -X GET \
-  "${GRAPH_BASE}/${WABA_ID}/subscribed_apps" \
-  -H "Authorization: Bearer ${SYSTEM_USER_TOKEN}")
+response=$(curl_graph GET "$GRAPH_BASE/$WABA_ID/subscribed_apps" "$SYSTEM_USER_TOKEN")
 echo "  Subscribed apps after DELETE:"
 echo "$response" | jq .
 emit_ndjson "3/6" "ok" "$response"
 
 # ---------- Step 4/6: REVOKE access token (app-side) ----------
 echo "[4/6] DELETE /me/permissions (revokes this access token)..."
-response=$(curl -sS -X DELETE \
-  "${GRAPH_BASE}/me/permissions" \
-  -H "Authorization: Bearer ${SYSTEM_USER_TOKEN}")
+response=$(curl_graph DELETE "$GRAPH_BASE/me/permissions" "$SYSTEM_USER_TOKEN")
 success=$(echo "$response" | jq -r '.success // false')
 if [[ "$success" != "true" ]]; then
   echo "ERROR: /me/permissions DELETE did not return success:true. Response:" >&2
@@ -148,8 +167,11 @@ emit_ndjson "4/6" "ok" "$response"
 
 # ---------- Step 5/6: debug_token must report is_valid:false ----------
 echo "[5/6] GET /debug_token (verify token is_valid=false)..."
-response=$(curl -sS \
-  "${GRAPH_BASE}/debug_token?input_token=${SYSTEM_USER_TOKEN}&access_token=${APP_ID}|${APP_SECRET}")
+# debug_token authenticates via query params (input_token + app-access
+# token), not the Authorization header. URL still goes through stdin so
+# neither the token under test nor the APP_SECRET land in argv.
+debug_url="$GRAPH_BASE/debug_token?input_token=$SYSTEM_USER_TOKEN&access_token=$APP_ID|$APP_SECRET"
+response=$(curl_graph GET "$debug_url" "")
 is_valid=$(echo "$response" | jq -r '.data.is_valid')
 if [[ "$is_valid" != "false" ]]; then
   echo "ERROR: debug_token reports is_valid=${is_valid} (expected false). Response:" >&2
@@ -162,9 +184,7 @@ emit_ndjson "5/6" "ok" "$response"
 
 # ---------- Step 6/6: direct /me probe must return 400 or 401 ----------
 echo "[6/6] GET /me with revoked token (expect HTTP 400 or 401)..."
-http_code=$(curl -sS -o /dev/null -w "%{http_code}" \
-  "${GRAPH_BASE}/me" \
-  -H "Authorization: Bearer ${SYSTEM_USER_TOKEN}")
+http_code=$(curl_graph GET "$GRAPH_BASE/me" "$SYSTEM_USER_TOKEN" -o /dev/null -w "%{http_code}")
 if [[ "$http_code" != "400" && "$http_code" != "401" ]]; then
   echo "ERROR: /me returned HTTP ${http_code} (expected 400 or 401 — token should be dead)" >&2
   emit_ndjson "6/6" "fail" "http_code=$http_code"

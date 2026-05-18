@@ -75,34 +75,55 @@ unset WABA_ID APP_ID APP_SECRET SYSTEM_USER_TOKEN PHONE_NUMBER_ID
 
 ### Option B — run the four curls manually
 
-Verbatim from spec § 7. Use only if the script fails AND you have a specific
-reason to walk through the calls one at a time.
+Verbatim from spec § 7 BUT with the token and APP_SECRET routed through
+`curl --config -` instead of argv. Putting `Authorization: Bearer <token>`
+or `input_token=<token>&access_token=<APP_ID>|<APP_SECRET>` on the
+command line exposes those secrets to any `ps` consumer on the host while
+the request is in flight (and to anything that logs process args). The
+stdin-config form moves the URL and headers off argv; `ps` only sees
+`curl --silent --show-error -X DELETE --config -`.
+
+Use this option only if the script fails AND you have a specific reason
+to walk through the calls one at a time.
 
 ```bash
 # Step 3 — DELETE webhook subscription for the WABA
 # Removes the subscribed_apps binding so Meta stops POSTing to OpenClaw.
-curl -X DELETE \
-  "https://graph.facebook.com/v21.0/${WABA_ID}/subscribed_apps" \
-  -H "Authorization: Bearer ${SYSTEM_USER_TOKEN}"
+curl --silent --show-error -X DELETE --config - <<EOF
+url = "https://graph.facebook.com/v21.0/$WABA_ID/subscribed_apps"
+header = "Authorization: Bearer $SYSTEM_USER_TOKEN"
+EOF
 # expected: {"success": true}
 
 # Step 4 — VERIFY subscription deletion (expect empty or other apps only)
-curl -X GET \
-  "https://graph.facebook.com/v21.0/${WABA_ID}/subscribed_apps" \
-  -H "Authorization: Bearer ${SYSTEM_USER_TOKEN}"
+curl --silent --show-error -X GET --config - <<EOF
+url = "https://graph.facebook.com/v21.0/$WABA_ID/subscribed_apps"
+header = "Authorization: Bearer $SYSTEM_USER_TOKEN"
+EOF
 
 # Step 5a — REVOKE the system-user access token (app-side)
-curl -X DELETE \
-  "https://graph.facebook.com/v21.0/me/permissions" \
-  -H "Authorization: Bearer ${SYSTEM_USER_TOKEN}"
+curl --silent --show-error -X DELETE --config - <<EOF
+url = "https://graph.facebook.com/v21.0/me/permissions"
+header = "Authorization: Bearer $SYSTEM_USER_TOKEN"
+EOF
 # expected: {"success": true}
 
-# Step 6 — VERIFY token is dead
-curl "https://graph.facebook.com/v21.0/debug_token?input_token=${SYSTEM_USER_TOKEN}&access_token=${APP_ID}|${APP_SECRET}"
+# Step 6 — VERIFY token is dead (debug_token authenticates via query
+# string; URL therefore goes on stdin so APP_SECRET stays out of argv).
+curl --silent --show-error -X GET --config - <<EOF
+url = "https://graph.facebook.com/v21.0/debug_token?input_token=$SYSTEM_USER_TOKEN&access_token=$APP_ID|$APP_SECRET"
+EOF
 # expected: data.is_valid == false
 # OR direct probe (expect HTTP 400 or 401):
-curl "https://graph.facebook.com/v21.0/me" -H "Authorization: Bearer ${SYSTEM_USER_TOKEN}"
+curl --silent --show-error -X GET --config - <<EOF
+url = "https://graph.facebook.com/v21.0/me"
+header = "Authorization: Bearer $SYSTEM_USER_TOKEN"
+EOF
 ```
+
+Why `<<EOF` (variables expand) and not `<<'EOF'`: the heredoc has to
+substitute the env vars holding the secret values. Bash never echoes the
+expanded heredoc; only `curl` sees it, via stdin.
 
 Why Graph API and not the Meta UI for webhook deletion: the App Dashboard
 webhook UI requires re-running the `hub.challenge` URL-verification handshake
