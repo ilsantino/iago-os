@@ -165,6 +165,13 @@ RestrictRealtime=true
 # Cannot create setuid files (defense alongside NoNewPrivileges).
 # Cannot acquire SCHED_RR/FIFO priority.
 
+# Restrict syscall socket address families.
+# AF_UNIX = IPC socket (Phase 1 ipc-server). AF_INET + AF_INET6 = outbound
+# HTTPS (Anthropic, Telegram, GitHub) + Tailscale ingress. Everything else
+# (AF_NETLINK, AF_PACKET, AF_VSOCK, AF_BLUETOOTH, ...) is blocked — cuts
+# raw-socket attack surface and netlink-based privilege escalation paths.
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
 MemoryDenyWriteExecute=true
 # W^X enforced — pages cannot be both writable and executable. JIT
 # code (V8 uses W^X by default since Node 18+) still works because
