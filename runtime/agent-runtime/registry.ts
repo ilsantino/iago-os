@@ -130,9 +130,14 @@ export function registerRuntime(rt: AgentRuntime): void {
 				proto = Object.getPrototypeOf(proto);
 			}
 		}
-		if (desc === undefined || typeof desc.value !== "function") {
+		if (desc === undefined) {
 			throw new Error(
 				`AgentRuntime registration failed: missing required method "${method}" on id "${rt.id}"`,
+			);
+		}
+		if (typeof desc.value !== "function") {
+			throw new Error(
+				`AgentRuntime registration failed: required method "${method}" on id "${rt.id}" must be a plain function — accessor descriptors (getters/setters) are rejected`,
 			);
 		}
 	}

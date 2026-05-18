@@ -88,6 +88,12 @@ async function readTelemetry(): Promise<
 }
 
 describe("adapter fail-isolation (Plan 04 / PR #46 C2)", () => {
+	// ESM cache note: fixture modules run their top-level `registerRuntime` exactly
+	// once per vitest process — Node caches the module after the first `import()`.
+	// `_resetRegistryForTests()` clears the registry Map but NOT the ESM cache.
+	// Consequence: adding a second `it()` that expects re-registration after a
+	// registry reset will silently fail — the second `import()` returns the cached
+	// module without re-running top-level code. Keep one test per fixture specifier.
 	it("adapter module that throws at top-level registerRuntime is fail-isolated — daemon continues with remaining runtimes", async () => {
 		// Suppress the expected stderr noise for the broken-adapter import so
 		// the test output stays clean. The stderr-log behavior is asserted on

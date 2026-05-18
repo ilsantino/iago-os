@@ -232,7 +232,7 @@ describe("agent-runtime registry", () => {
 		// and either throw the getter's error OR flip `getterInvoked` to true.
 		// The hardened implementation MUST read the property descriptor
 		// without invoking the accessor, so we expect a structural-probe
-		// "missing required method" error AND `getterInvoked` stays false.
+		// accessor-rejection error AND `getterInvoked` stays false.
 		Object.defineProperty(base, "spawn", {
 			get() {
 				getterInvoked = true;
@@ -243,7 +243,40 @@ describe("agent-runtime registry", () => {
 		});
 		const adapter = base as unknown as AgentRuntime;
 		expect(() => registerRuntime(adapter)).toThrowError(
-			/missing required method "spawn"/,
+			/accessor descriptors \(getters\/setters\) are rejected/,
+		);
+		expect(getterInvoked).toBe(false);
+	});
+
+	it("registerRuntime rejects a getter defined on the class prototype — not only own-property getters", () => {
+		// Covers the prototype-chain walk in registry.ts. A class-based adapter
+		// with `get spawn()` places the accessor on the prototype, not the instance.
+		// The structural probe must walk up and detect it without invoking the getter.
+		let getterInvoked = false;
+		class HostileClassAdapter {
+			readonly id = "hostile-class-adapter";
+			readonly shape: "pty" = "pty";
+			readonly version = "0.0.1";
+			readonly interfaceVersion = INTERFACE_VERSION;
+			get spawn() {
+				getterInvoked = true;
+				throw new Error("getter side effect — must NOT run");
+			}
+			async send(_h: AgentHandle, _m: AgentMessage) {}
+			onStatusChanged(_h: AgentHandle, _cb: StatusCallback) {
+				return () => {};
+			}
+			async isAlive() {
+				return true;
+			}
+			async shutdown() {}
+			async restoreFromMarker() {
+				return null;
+			}
+		}
+		const adapter = new HostileClassAdapter() as unknown as AgentRuntime;
+		expect(() => registerRuntime(adapter)).toThrowError(
+			/accessor descriptors \(getters\/setters\) are rejected/,
 		);
 		expect(getterInvoked).toBe(false);
 	});
