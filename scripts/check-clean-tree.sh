@@ -77,7 +77,7 @@ fi
 if [[ "$STRICT" != "true" ]]; then
   _iago_state_ignored=true
   if [[ -f .gitignore ]]; then
-    grep -q '\.iago/state/' .gitignore 2>/dev/null || _iago_state_ignored=false
+    grep -v '^\s*#' .gitignore | grep -q '\.iago/state/' 2>/dev/null || _iago_state_ignored=false
   else
     _iago_state_ignored=false
   fi

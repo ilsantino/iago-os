@@ -821,13 +821,20 @@ if [[ "$USED_CLAUDE_FALLBACK" == "true" ]]; then
       _has_findings=true
       ;;
     UNKNOWN)
-      # Codex P0 fix: UNKNOWN is a hard stop, NOT a fix-loop trigger.
-      # Without a structured findings block, the fix session has nothing
-      # concrete to act on and would hallucinate edits or silently pass
-      # after build. Block the pipeline; require human re-run.
+      # Design deviation from original trigger-comment spec: the spec stated
+      # UNKNOWN should set _has_findings=true (run the fixer as a fail-safe).
+      # This implementation intentionally uses exit 1 (hard stop) instead.
+      # Rationale: without a structured findings block the fix session has
+      # nothing concrete to act on — it would hallucinate edits or silently
+      # pass after build. A hard stop forces the operator to inspect the
+      # malformed output, fix the root cause (context window exceeded, model
+      # error, non-conforming response), and re-run with a clean signal.
+      # Operator action: inspect $CODEX_FILE for the raw response, check
+      # if the adversarial prompt was truncated or returned an error, then
+      # re-run /iago-execute once the underlying issue is resolved.
       log "ERROR: Claude adversarial fallback emitted no verdict sentinel (===VERDICT: CLEAN=== or ===VERDICT: ISSUES===)."
       log "       This indicates either a malformed model response or a failed adversarial review."
-      log "       Refusing to run fixer on missing-sentinel output. Inspect $CODEX_FILE and re-run /iago-execute."
+      log "       Inspect $CODEX_FILE for the raw response, resolve the root cause, then re-run /iago-execute."
       exit 1
       ;;
   esac

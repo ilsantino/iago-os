@@ -81,7 +81,7 @@ learnings_write() {
   mkdir -p "$learnings_dir" 2>/dev/null || true
 
   local err
-  err=$(printf '\n## %s — %s\n\n%s\n' "$ts" "$key" "$body" 2>&1 >> "$target")
+  err=$(printf '\n## %s — %s\n\n%s\n' "$ts" "$key" "$body" >> "$target" 2>&1)
   local write_rc=$?
 
   if (( write_rc == 0 )); then

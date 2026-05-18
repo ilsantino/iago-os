@@ -546,6 +546,21 @@ assert_verdict "model chats below sentinel (tail -10 catches)" \
   $'body\n===VERDICT: ISSUES===\nbecause X\nbecause Y\nbecause Z\nbecause W' \
   "ISSUES"
 
+# Missing-file path: parse_adversarial_verdict on a non-existent file returns UNKNOWN.
+# This exercises adversarial-verdict.sh line: `tail -n 10 "$file" 2>/dev/null || echo ""`
+if ! command -v parse_adversarial_verdict >/dev/null 2>&1; then
+  echo "  SKIP  missing-file returns UNKNOWN (helper not sourced)"
+else
+  _missing_actual=$(parse_adversarial_verdict "/tmp/__iago_nonexistent_$$")
+  if [[ "$_missing_actual" == "UNKNOWN" ]]; then
+    echo "  PASS  missing file returns UNKNOWN (verdict=$_missing_actual)"
+    PASS=$((PASS + 1))
+  else
+    echo "  FAIL  missing file returns UNKNOWN (expected UNKNOWN, got $_missing_actual)"
+    FAIL=$((FAIL + 1))
+  fi
+fi
+
 echo
 echo "Result: $PASS passed, $FAIL failed"
 [[ $FAIL -eq 0 ]] || exit 1

@@ -197,6 +197,34 @@ test_iago_state_no_gitignore_fails() {
   assert_contains "iago-state no-gitignore — stderr explains" ".iago/state/" "$err"
 }
 
+# ─── Test 10: .gitignore with commented-out entry is NOT treated as covered ──
+# Regression test for the comment-line false positive: a grep that matches any
+# line containing ".iago/state/" would treat "# .iago/state/" as covered.
+# The fix pipes through `grep -v '^\s*#'` first so only active rules count.
+test_iago_state_comment_only_gitignore_fails() {
+  local d
+  d=$(mktemp -d -t iago-comment-ignore.XXXXXX)
+  TMPS+=("$d")
+  (
+    cd "$d"
+    git init -q -b main 2>/dev/null || git init -q
+    git config user.email test@example.com
+    git config user.name test
+    # .gitignore has a COMMENT mentioning .iago/state/ — this must NOT be
+    # treated as coverage. Only an uncommented active rule counts.
+    printf '# .iago/state/\nnode_modules/\n' > .gitignore
+    echo 'seed' > seed.txt
+    git add seed.txt .gitignore
+    git commit -q -m "init"
+    mkdir -p .iago/state/pipeline-runs
+    echo '{"type":"test"}' > .iago/state/pipeline-runs/test.ndjson
+  )
+  local out exit_code=0
+  out=$(bash "$SUT" --project-dir "$d" 2>/dev/null) || exit_code=$?
+  assert_eq "iago-state comment-only .gitignore — exit code" "1" "$exit_code"
+  assert_contains "iago-state comment-only .gitignore — stdout DIRTY" "DIRTY" "$out"
+}
+
 # ─── Test 9: --strict mode skips .gitignore-coverage gate ─────────────
 # Strict mode does not filter .iago/state/ entries; it would catch the
 # untracked file on its own. The gitignore-coverage check should not
@@ -233,6 +261,7 @@ test_iago_state_dir_filtered_lenient
 test_non_git_repo_returns_65
 test_iago_state_no_gitignore_fails
 test_iago_state_no_gitignore_strict_passes_gate
+test_iago_state_comment_only_gitignore_fails
 
 echo
 TOTAL=$((PASS + FAIL))
