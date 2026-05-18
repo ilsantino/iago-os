@@ -125,6 +125,7 @@ interface FilePayload {
 		readonly socketPath?: unknown;
 		readonly cacheTtlMs?: unknown;
 	};
+	readonly shutdownStageTimeoutMs?: unknown;
 }
 
 function ensureRecord(value: unknown, label: string): Record<string, unknown> {
@@ -374,11 +375,30 @@ export async function loadConfig(): Promise<DaemonConfig> {
 		),
 	};
 
+	// Opus PR #51 dual-review I1: round-trip shutdownStageTimeoutMs from
+	// the JSON file. The prior version declared the field on DaemonConfig
+	// but stripped it at parse time, so writing
+	// `"shutdownStageTimeoutMs": 5000` in `runtime/daemon-config.json` was
+	// a silent no-op. main.ts validates the value (rejects 0/NaN/negative/
+	// non-integer/non-finite) and falls back to SHUTDOWN_STAGE_TIMEOUT_MS
+	// with a stderr warning, so unsafe operator input is bounded.
+	let shutdownStageTimeoutMs: number | undefined;
+	if (file !== null && file.payload.shutdownStageTimeoutMs !== undefined) {
+		const raw = file.payload.shutdownStageTimeoutMs;
+		if (typeof raw !== "number") {
+			throw new RangeError(
+				`${sourcePath}: shutdownStageTimeoutMs must be a number`,
+			);
+		}
+		shutdownStageTimeoutMs = raw;
+	}
+
 	return {
 		telegram,
 		agents: fileAgents,
 		heartbeat,
 		ipc,
+		...(shutdownStageTimeoutMs !== undefined ? { shutdownStageTimeoutMs } : {}),
 	};
 }
 
