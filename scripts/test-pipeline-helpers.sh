@@ -439,7 +439,12 @@ STUB
     return
   fi
 
-  # The parent stage_end MUST carry empty sessionId — synthesis is subshell-scoped.
+  # Codex C-01 fix (PR #52 dual-review): pipeline_init now synthesizes the
+  # fallback sessionId in PARENT scope (was subshell-only via run_claude),
+  # so the parent stage_end MUST carry a non-empty `claude-*` id when the
+  # outer env is unset. The synthesized id format is
+  # `claude-{RUN_ID}-{ms}-{RANDOM}` where {RUN_ID} starts with a UTC
+  # timestamp like `20260517-123456`.
   local stage_end_line
   stage_end_line=$(grep '"type":"stage_end"' "$run_file" | tail -1)
   if [[ -z "$stage_end_line" ]]; then
@@ -449,10 +454,13 @@ STUB
   fi
 
   if [[ "$stage_end_line" == *'"sessionId":""'* ]]; then
-    echo "  PASS  $label (stage_end carries empty sessionId as designed)"
+    echo "  FAIL  $label (stage_end leaked empty sessionId — parent-scope synthesis regression: $stage_end_line)"
+    FAIL=$((FAIL + 1))
+  elif [[ "$stage_end_line" == *'"sessionId":"claude-'* ]]; then
+    echo "  PASS  $label (stage_end carries parent-synth claude-* fallback)"
     PASS=$((PASS + 1))
   else
-    echo "  FAIL  $label (stage_end leaked a sessionId from the subshell: $stage_end_line)"
+    echo "  FAIL  $label (stage_end sessionId is neither empty nor a claude-* fallback: $stage_end_line)"
     FAIL=$((FAIL + 1))
   fi
 }

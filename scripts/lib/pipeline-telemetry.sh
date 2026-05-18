@@ -3,22 +3,36 @@
 # Emits NDJSON records per pipeline run for offline aggregation.
 # Self-contained: bash, date, mkdir, cat, printf only.
 #
-# sessionId scope (read carefully — design choice, not a bug):
+# sessionId scope (current behavior — Codex C-01 PR #52 fix):
 #   - Every NDJSON record carries sessionId = CLAUDE_CODE_SESSION_ID READ AT
-#     EMISSION TIME (not at pipeline_init time).
-#   - pipeline_init captures the outer env once into RUN_SESSION_ID and emits a
-#     `pipeline_init` NDJSON record so the orchestrator's session (if any) is
-#     pinned at the start. RUN_SESSION_ID is NOT synthesized and NOT exported.
-#   - run_claude (in execute-pipeline.sh) synthesizes a `claude-{RUN_ID}-...`
-#     id and exports it ONLY within its own `$(run_claude ...)` subshell so the
-#     spawned `claude -p` process inherits it. That synthesis intentionally
-#     does NOT reach the parent shell — therefore stage_end/pipeline_finalize
-#     records emitted in the PARENT after the subshell returns will carry the
-#     OUTER env value (empty string if unset). The synthesized id correlates
-#     the SPAWNED child's own telemetry, not the wrapping stage record.
-#   - Codex finding on PR #50 noted this gap; the plan explicitly accepts it
-#     (Plan 03 owns the cross-record projection that joins parent stage
-#     records to child-spawned session ids via timestamp + RUN_ID).
+#     EMISSION TIME.
+#   - pipeline_init does TWO things, in this order:
+#       1. If CLAUDE_CODE_SESSION_ID is unset or empty, SYNTHESIZE a
+#          `claude-{RUN_ID}-{ms}-{RANDOM}` fallback and EXPORT it in PARENT
+#          shell scope so every downstream stage_end / pipeline_finalize
+#          (which runs in the parent after each `$(run_claude ...)`
+#          subshell returns) emits the same non-empty id.
+#       2. Capture the resulting env value into RUN_SESSION_ID and emit a
+#          `pipeline_init` NDJSON record.
+#     If the orchestrator already supplied a real CLAUDE_CODE_SESSION_ID
+#     (e.g., when run as a child of a Claude Code session), step 1 is a
+#     no-op and the inherited id is preserved.
+#   - run_claude (in execute-pipeline.sh) re-runs the same default-or-
+#     synthesize pattern inside its `$(...)` subshell as defense-in-depth
+#     — but with pipeline_init's parent-scope export already in place, the
+#     `${CLAUDE_CODE_SESSION_ID:-...}` default never fires there. Treat
+#     the run_claude synthesis as redundant-but-safe; pipeline_init is
+#     the authoritative writer.
+#   - Why this matters: the PRIOR design exported the fallback only
+#     inside run_claude's subshell, so the parent shell that emitted
+#     stage_end / pipeline_finalize saw an empty sessionId. Codex flagged
+#     this on the original C-01 PR; the parent-scope synthesis is the
+#     manual fix landed in commit e061734 on `feat/c-01-telemetry-session-id`.
+#     Test 6 in `pipeline-telemetry.test.sh` and the
+#     `run_claude_parent_stage_end_observability_test` in
+#     `scripts/test-pipeline-helpers.sh` lock the new contract: when the
+#     outer env is unset, every NDJSON record's sessionId starts with
+#     `claude-` (not empty).
 # JSON-escape scope: literal `"` only (UUID-shaped session ids never contain \n or \t).
 
 # Detect millisecond timestamp support once. Git Bash on Windows supports %3N.
