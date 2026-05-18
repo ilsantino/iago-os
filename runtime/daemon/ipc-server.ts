@@ -398,8 +398,19 @@ export class IpcServer {
 			try {
 				response = await dispatched;
 			} catch (err) {
+				// adv-pr44 M5 (Opus PR #56 dual-review I2): redact raw
+				// error text before it leaves the daemon. Today the 0o600
+				// socket perimeter limits exposure, but Phase 6 dashboard
+				// + Phase 7 multi-tenancy will widen the trust boundary
+				// and any tenant code must not probe handler internals
+				// via crafted inputs. Log the full message to stderr for
+				// ops; return generic "internal-error" to clients.
 				const message = err instanceof Error ? err.message : String(err);
-				response = { ok: false, error: `internal: ${message}` };
+				console.error(
+					"[ipc-server] handler error (redacted from client):",
+					message,
+				);
+				response = { ok: false, error: "internal-error" };
 			}
 			let serialized: string;
 			try {
@@ -479,8 +490,26 @@ export class IpcServer {
 			}
 			return { ok: false, error: `unknown-method: ${method}` };
 		} catch (err) {
+			// adv-pr44 M5 (Opus PR #56 dual-review I2): redact raw handler
+			// message before it leaves the daemon UNLESS it starts with a
+			// known-public protocol prefix. The cooldown path explicitly
+			// throws "fleet-health: temporarily unavailable (retry in Nms)"
+			// as a dashboard-actionable signal — that message is safe by
+			// design. Everything else (e.g., raw downstream exception text)
+			// gets redacted to "handler-error"; the full message stays in
+			// stderr for ops.
 			const message = err instanceof Error ? err.message : String(err);
-			return { ok: false, error: `handler-error: ${message}` };
+			const isSafeProtocolError =
+				message.startsWith("fleet-health:") ||
+				message.startsWith("parse-error:");
+			if (isSafeProtocolError) {
+				return { ok: false, error: `handler-error: ${message}` };
+			}
+			console.error(
+				"[ipc-server] handler-error (redacted from client):",
+				message,
+			);
+			return { ok: false, error: "handler-error" };
 		}
 	}
 

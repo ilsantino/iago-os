@@ -1230,7 +1230,9 @@ describe("TelegramBot / /approve text form", () => {
 		const reply = fake.sendMessageCalls.map((c) => c.text).join("\n");
 		expect(reply).toContain(`Approval ${approvalId}`);
 		expect(reply).toContain("allow");
-		const kinds = emitSpy.mock.calls.map((c) => (c[0] as { kind: string }).kind);
+		const kinds = emitSpy.mock.calls.map(
+			(c) => (c[0] as { kind: string }).kind,
+		);
 		expect(kinds).toContain("approval-resolved");
 		await bot.stop();
 	});
@@ -1293,7 +1295,10 @@ describe("TelegramBot / /abort branches", () => {
 			handles: [],
 		});
 		await bot.start();
-		fake.emit("message", fakeMessage({ userId: 42, text: "/abort agent-ghost" }));
+		fake.emit(
+			"message",
+			fakeMessage({ userId: 42, text: "/abort agent-ghost" }),
+		);
 		await waitForSendMessage(fake);
 		expect(fake.sendMessageCalls[0]?.text).toContain("No handle found");
 		await bot.stop();
@@ -1331,7 +1336,10 @@ describe("TelegramBot / /status branches", () => {
 	it("/status with invalid agentId is rejected before lookup", async () => {
 		const { bot, fake } = buildBot({ allowed: [42], shape: "pty" });
 		await bot.start();
-		fake.emit("message", fakeMessage({ userId: 42, text: "/status AGENT_BAD" }));
+		fake.emit(
+			"message",
+			fakeMessage({ userId: 42, text: "/status AGENT_BAD" }),
+		);
 		await waitForSendMessage(fake);
 		expect(fake.sendMessageCalls[0]?.text).toContain("Invalid agent id");
 		await bot.stop();
@@ -1364,7 +1372,10 @@ describe("TelegramBot / /status branches", () => {
 			reason: "ship?",
 		});
 		await bot.start();
-		fake.emit("message", fakeMessage({ userId: 42, text: "/status agent-foo" }));
+		fake.emit(
+			"message",
+			fakeMessage({ userId: 42, text: "/status agent-foo" }),
+		);
 		await waitForSendMessage(fake);
 		const reply = fake.sendMessageCalls[0]?.text ?? "";
 		expect(reply).toContain("Agent agent-foo");
@@ -1554,14 +1565,25 @@ describe("TelegramBot / agent-name reply truncation (PR45 M5)", () => {
 	});
 
 	it("/abort with an invalid 200-char agentId truncates the echoed name", async () => {
+		// Opus PR #56 dual-review I3: the prior version used `Z.repeat(200)`
+		// + `handles: [makeHandle("agent-real")]`. The shape gate rejected
+		// the unregistered longAgent BEFORE dispatchAbort fired, so the
+		// reply was the unquoted "Rejected: agent not registered" path
+		// and `reply.match(/"([^"]+)"/)` returned null → the assertion
+		// `(null?.[1] ?? "").length <= 64` was trivially true regardless
+		// of M5 truncation. Fix: register a handle matching the longAgent
+		// so the shape gate passes; then validateAgentId fires inside
+		// dispatchAbort (length > 63 → "too-long"); the reply quotes the
+		// truncated slice. `expect(quoted).not.toBeNull()` is the fail-loud
+		// assertion that catches any future regression to the prior path.
 		const shutdown = vi.fn(async () => undefined);
+		const longAgent = "a".repeat(200);
 		const { bot, fake } = buildBot({
 			allowed: [42],
-			handles: [makeHandle("agent-real")],
+			handles: [makeHandle(longAgent)],
 			shutdown,
 		});
 		await bot.start();
-		const longAgent = "Z".repeat(200);
 		fake.emit(
 			"message",
 			fakeMessage({ userId: 42, text: `/abort ${longAgent}` }),
@@ -1571,17 +1593,19 @@ describe("TelegramBot / agent-name reply truncation (PR45 M5)", () => {
 		const reply = fake.sendMessageCalls[0]?.text ?? "";
 		expect(reply).not.toContain(longAgent);
 		const quoted = reply.match(/"([^"]+)"/);
+		expect(quoted).not.toBeNull();
 		expect((quoted?.[1] ?? "").length).toBeLessThanOrEqual(64);
 		await bot.stop();
 	});
 
 	it("/status with an invalid 200-char agentId truncates the echoed name", async () => {
+		// Opus PR #56 dual-review I3 — same fix as the /abort test above.
+		const longAgent = "a".repeat(200);
 		const { bot, fake } = buildBot({
 			allowed: [42],
-			handles: [makeHandle("agent-real")],
+			handles: [makeHandle(longAgent)],
 		});
 		await bot.start();
-		const longAgent = "Q".repeat(200);
 		fake.emit(
 			"message",
 			fakeMessage({ userId: 42, text: `/status ${longAgent}` }),
@@ -1590,6 +1614,7 @@ describe("TelegramBot / agent-name reply truncation (PR45 M5)", () => {
 		const reply = fake.sendMessageCalls[0]?.text ?? "";
 		expect(reply).not.toContain(longAgent);
 		const quoted = reply.match(/"([^"]+)"/);
+		expect(quoted).not.toBeNull();
 		expect((quoted?.[1] ?? "").length).toBeLessThanOrEqual(64);
 		await bot.stop();
 	});
@@ -1639,7 +1664,10 @@ describe("TelegramBot / dispatch validates agent id (PR45 M8)", () => {
 			botFactory: () => fake as unknown as never,
 		});
 		await bot.start();
-		fake.emit("message", fakeMessage({ userId: 42, text: "/status AGENT_BAD" }));
+		fake.emit(
+			"message",
+			fakeMessage({ userId: 42, text: "/status AGENT_BAD" }),
+		);
 		await waitForSendMessage(fake, 1);
 		expect(fake.sendMessageCalls[0]?.text).toContain("Invalid agent id");
 		await bot.stop();
@@ -1667,7 +1695,10 @@ describe("TelegramBot / /status surfaces runtime status (PR45 M6)", () => {
 			botFactory: () => fake as unknown as never,
 		});
 		await bot.start();
-		fake.emit("message", fakeMessage({ userId: 42, text: "/status agent-foo" }));
+		fake.emit(
+			"message",
+			fakeMessage({ userId: 42, text: "/status agent-foo" }),
+		);
 		await waitForSendMessage(fake, 1);
 		const reply = fake.sendMessageCalls[0]?.text ?? "";
 		expect(reply).toContain("Last status: running");
@@ -1694,7 +1725,10 @@ describe("TelegramBot / /status surfaces runtime status (PR45 M6)", () => {
 			botFactory: () => fake as unknown as never,
 		});
 		await bot.start();
-		fake.emit("message", fakeMessage({ userId: 42, text: "/status agent-foo" }));
+		fake.emit(
+			"message",
+			fakeMessage({ userId: 42, text: "/status agent-foo" }),
+		);
 		await waitForSendMessage(fake, 1);
 		const reply = fake.sendMessageCalls[0]?.text ?? "";
 		expect(reply).not.toContain("Last status:");
@@ -1721,7 +1755,10 @@ describe("TelegramBot / /status surfaces runtime status (PR45 M6)", () => {
 			botFactory: () => fake as unknown as never,
 		});
 		await bot.start();
-		fake.emit("message", fakeMessage({ userId: 42, text: "/status agent-foo" }));
+		fake.emit(
+			"message",
+			fakeMessage({ userId: 42, text: "/status agent-foo" }),
+		);
 		await waitForSendMessage(fake, 1);
 		const reply = fake.sendMessageCalls[0]?.text ?? "";
 		expect(reply).not.toContain("Last status:");

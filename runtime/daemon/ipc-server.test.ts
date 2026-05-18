@@ -133,7 +133,9 @@ describe("IpcServer", () => {
 			getHandle: () => null,
 		});
 		expect(def.socketPath).toBe(
-			isWindows ? "\\\\.\\pipe\\iago-os-v2-daemon" : "/tmp/iago-os-v2-daemon.sock",
+			isWindows
+				? "\\\\.\\pipe\\iago-os-v2-daemon"
+				: "/tmp/iago-os-v2-daemon.sock",
 		);
 	});
 
@@ -187,6 +189,10 @@ describe("IpcServer", () => {
 			{ method: "fleet-health" },
 		]);
 		expect(errOf(handlerErr.responses[0])).toMatch(/handler-error/);
+		// adv-pr44 M5 (Opus PR #56 dual-review I2): redaction contract —
+		// raw thrown message "downstream-failure" must NOT leak to the
+		// client response. Stays in stderr for ops; wire payload generic.
+		expect(errOf(handlerErr.responses[0])).not.toContain("downstream-failure");
 		const parseErr = await readOneRaw(socketPath, "{ not json }\n");
 		expect(errOf(parseErr)).toMatch(/parse-error/);
 	});
@@ -659,7 +665,9 @@ describe("IpcServer", () => {
 		expect(probe).toHaveBeenCalledTimes(1);
 		for (const r of burst) {
 			expect(r.responses[0]).toMatchObject({ ok: false });
-			expect((r.responses[0] as { error: string }).error).toMatch(/handler-error/);
+			expect((r.responses[0] as { error: string }).error).toMatch(
+				/handler-error/,
+			);
 		}
 
 		// 6th request within the 1s cooldown window: cooldown fires →
