@@ -315,11 +315,12 @@ teardown() {
 }
 
 @test "9: ephemeral keypair real-age round-trip (recipient correctness)" {
+	# Remove stubs FIRST so command -v resolves to the real binary (or nothing).
+	rm -f "$STUBS_DIR/age" "$STUBS_DIR/age-keygen"
 	if ! command -v age > /dev/null || ! command -v age-keygen > /dev/null; then
 		skip "real age/age-keygen not available on PATH"
 	fi
-	# Use the REAL age binaries by removing our stubs and rebuilding PATH.
-	rm -f "$STUBS_DIR/age" "$STUBS_DIR/age-keygen"
+	# Use the REAL age binaries (stubs already removed above).
 
 	# Generate a real keypair.
 	priv="$TMPDIR_TEST/test-priv.key"
@@ -346,6 +347,32 @@ teardown() {
 	grep -q "fake-tarball-content" "$decrypted"
 	# Cleanup
 	shred -u "$priv" "$pub" "$decrypted" 2>/dev/null || rm -f "$priv" "$pub" "$decrypted"
+}
+
+@test "11: age encrypt fails → script exits non-zero and plaintext tarball not left on disk" {
+	# Override the age stub to exit 1 on the encrypt path (no -d flag).
+	# This exercises the EXIT trap added for I1: the plaintext tarball must be
+	# shredded even when age itself fails before the shred -u line is reached.
+	cat > "$STUBS_DIR/age" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$TMPDIR_TEST/logs/age.log"
+for a in "$@"; do
+	if [[ "$a" == "-d" ]]; then
+		echo "age: error decrypting: no identity matched any of the recipients" >&2
+		exit 1
+	fi
+done
+# Encrypt path: simulate failure (e.g., pubkey parse error).
+echo "age: error encrypting: recipient error" >&2
+exit 1
+EOF
+	chmod +x "$STUBS_DIR/age"
+	run bash "$SUT_COPY"
+	# Script must exit non-zero.
+	[ "$status" -ne 0 ]
+	# No plaintext .tar.gz should remain in ARCHIVE_ROOT (EXIT trap shredded it).
+	raw_count=$(find "$ARCHIVE_ROOT" -name "*.tar.gz" | wc -l)
+	[ "$raw_count" -eq 0 ]
 }
 
 @test "10: jq missing → exits 1 with apt install hint" {

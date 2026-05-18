@@ -255,6 +255,9 @@ ndjson_event "archive-openclaw" "step3-tar" "begin"
 TIMESTAMP=$(date -u +%Y%m%d-%H%M%S)
 TARBALL_NAME="openclaw-pre-cutover-${TIMESTAMP}.tar.gz"
 TARBALL_PATH="${ARCHIVE_ROOT}/${TARBALL_NAME}"
+# Ensure plaintext tarball is shredded even if age, stat, or sha256sum fails.
+# The script's own comment says "Raw tarball MUST NOT persist on disk".
+trap 'shred -u "$TARBALL_PATH" 2>/dev/null || rm -f "$TARBALL_PATH"' EXIT
 # tar exit 1 = warnings only (e.g., file changed during read — expected briefly
 # after the systemd stop); 2+ = hard errors. We tolerate 1, fail on >=2.
 set +e
@@ -281,6 +284,7 @@ ENC_SIZE=$(stat -c %s "$ENCRYPTED_PATH")
 ENC_SHA=$(sha256sum "$ENCRYPTED_PATH" | awk '{print $1}')
 # Raw tarball MUST NOT persist on disk — contains plaintext credentials.
 shred -u "$TARBALL_PATH"
+trap - EXIT  # tarball gone; EXIT trap no longer needed
 chmod 0600 "$ENCRYPTED_PATH"
 chown root:root "$ENCRYPTED_PATH"
 echo "      encrypted ok; enc size=${ENC_SIZE} bytes; enc sha256=${ENC_SHA}"
@@ -312,13 +316,19 @@ BOGUS_KEY="/tmp/iago-bogus-age.key.$$"
 # as a real identity, yet (by construction) different from the pubkey on the
 # archive — guaranteeing the "no identity matched" branch is the correct
 # expected response.
+# If /tmp is tmpfs, shred below is a no-op (data is in RAM); the key evaporates
+# on unlink anyway, so the security consequence is negligible.
 age-keygen -o "$BOGUS_KEY" 2>/dev/null
 chmod 0600 "$BOGUS_KEY"
 set +e
+# 2>&1 1>/dev/null: redirect stdout to /dev/null first, then stderr to the $()
+# pipe — captures stderr (age error msg) while discarding stdout (decrypted data).
 PROBE_OUT=$(age -d -i "$BOGUS_KEY" "$ENCRYPTED_PATH" 2>&1 1>/dev/null)
 PROBE_RC=$?
 set -e
 shred -u "$BOGUS_KEY"
+# "no identity matched" substring covers age 1.0+ wording (confirmed on Debian 13
+# age package). Conservative failure mode if age changes this string entirely.
 if [[ $PROBE_RC -ne 0 ]] && echo "$PROBE_OUT" | grep -q "no identity matched"; then
 	echo "      ✓ encrypted with correct pubkey (bogus identity correctly rejected: 'no identity matched')"
 	ndjson_event "archive-openclaw" "step4b-probe" "ok"
@@ -353,6 +363,14 @@ at `/etc/systemd/system/iago-archive-prune.timer` on the VPS).
 scp santiago@srv1456441:/var/lib/iago-os/openclaw-archive/<file>.age .
 age -d -i ~/.age/santiago.key <file>.age > <file>.tar.gz
 tar -xzf <file>.tar.gz
+```
+
+## Audit
+
+```bash
+# Check prune timer status on the VPS:
+journalctl -t iago-archive-prune
+systemctl status iago-archive-prune.timer
 ```
 
 ## Archives
