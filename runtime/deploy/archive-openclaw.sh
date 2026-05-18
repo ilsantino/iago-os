@@ -321,8 +321,9 @@ BOGUS_KEY="/tmp/iago-bogus-age.key.$$"
 age-keygen -o "$BOGUS_KEY" 2>/dev/null
 chmod 0600 "$BOGUS_KEY"
 set +e
-# 2>&1 1>/dev/null: redirect stdout to /dev/null first, then stderr to the $()
-# pipe — captures stderr (age error msg) while discarding stdout (decrypted data).
+# 2>&1 1>/dev/null: bash processes left-to-right — stderr redirected to the $()
+# pipe first (2>&1), then stdout redirected to /dev/null (1>/dev/null).
+# Net effect: stderr captured, stdout discarded (age error msg kept, decrypted data dropped).
 PROBE_OUT=$(age -d -i "$BOGUS_KEY" "$ENCRYPTED_PATH" 2>&1 1>/dev/null)
 PROBE_RC=$?
 set -e
@@ -368,9 +369,14 @@ tar -xzf <file>.tar.gz
 ## Audit
 
 ```bash
-# Check prune timer status on the VPS:
+# Check prune events:
 journalctl -t iago-archive-prune
+```
+
+```bash
+# Check timer state:
 systemctl status iago-archive-prune.timer
+journalctl -u iago-archive-prune.timer
 ```
 
 ## Archives
