@@ -10,6 +10,8 @@
  *   6. env already set non-empty → file NOT loaded (override path wins)
  *   7. env set to empty string → file IS loaded (empty ≡ not-set per spec)
  *   8. credential file missing → no-op for that entry, no throw
+ *   8b. credential file unreadable (EACCES) → structured error logged (file
+ *       name + code only, never the value), no throw, env NOT set
  *   9. iago-gh-token file present → GH_TOKEN env loaded
  *  10. MANDATORY sentinel-leak negative test (C2 carry-over):
  *      value bytes never appear in telemetry, stdout, or stderr
@@ -146,6 +148,37 @@ describe("loadSystemdCredentials", () => {
 		expect(() => loadSystemdCredentials()).not.toThrow();
 		expect(process.env.IAGO_TELEGRAM_BOT_TOKEN).toBeUndefined();
 		expect(process.env.GH_TOKEN).toBeUndefined();
+	});
+
+	// 8b. credential file unreadable (EACCES) → structured error logged with
+	//     file name and error code (NOT the credential value), no throw, env NOT set.
+	//     Uses chmod 000 to trigger a real EACCES (ESM prevents spying on fs exports).
+	it("logs structured error (file name + code, not value) and continues when credential file is unreadable", () => {
+		// chmod 000 has no effect when running as root; skip there to avoid false positive.
+		if (process.getuid?.() === 0) return;
+
+		const credPath = path.join(tempDir, "iago-telegram-token");
+		fs.writeFileSync(credPath, "super-secret-value");
+		fs.chmodSync(credPath, 0o000);
+		vi.stubEnv("CREDENTIALS_DIRECTORY", tempDir);
+
+		const errorSpy = vi
+			.spyOn(console, "error")
+			.mockImplementation(() => undefined);
+
+		expect(() => loadSystemdCredentials()).not.toThrow();
+		expect(process.env.IAGO_TELEGRAM_BOT_TOKEN).toBeUndefined();
+
+		// Must log at least once for the unreadable credential entry.
+		expect(errorSpy).toHaveBeenCalled();
+		const allMessages = errorSpy.mock.calls.map((args) => args.join(" ")).join("\n");
+		expect(allMessages).toContain("iago-telegram-token");
+		expect(allMessages).toContain("EACCES");
+		// The credential value must not appear in the error message.
+		expect(allMessages).not.toContain("super-secret-value");
+
+		errorSpy.mockRestore();
+		// afterEach's fsp.rm(..., { force: true }) handles the 000-mode file.
 	});
 
 	// 9. iago-gh-token file present → GH_TOKEN env loaded
