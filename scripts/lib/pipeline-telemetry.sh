@@ -82,10 +82,23 @@ pipeline_init() {
   local stamp
   stamp=$(date -u +%Y%m%d-%H%M%S)
   RUN_ID="${stamp}-${plan_name}-${RANDOM}"
+  # Session-id contract (parent-scope synthesis — see Codex PR review of C-01):
+  #   1. CLAUDE_CODE_SESSION_ID inherited from parent (real Claude Code session)
+  #      → preserve it as-is.
+  #   2. Unset/empty → synthesize ONE per-pipeline fallback id in PARENT scope.
+  # Synthesizing here (not inside run_claude) is load-bearing: run_claude is
+  # called as `$(cd ... && run_claude ...)`, which spawns a subshell. An export
+  # inside that subshell never reaches the parent shell that later emits
+  # stage_end / pipeline_finalize, so a fallback exported only there silently
+  # writes `sessionId:""` into NDJSON records.
+  local _sid_now="${EPOCHSECONDS:-$(date +%s)}"
+  if command -v __pipeline_now_ms >/dev/null 2>&1; then
+    _sid_now=$(__pipeline_now_ms)
+  fi
+  export CLAUDE_CODE_SESSION_ID="${CLAUDE_CODE_SESSION_ID:-claude-${RUN_ID}-${_sid_now}-${RANDOM}}"
   # Capture session id at init time for diagnostics. Emission sites read the
-  # live env value (not RUN_SESSION_ID) so per-call exports from run_claude
-  # propagate to the records produced inside that subshell.
-  RUN_SESSION_ID="${CLAUDE_CODE_SESSION_ID:-}"
+  # live env value (not RUN_SESSION_ID) for forward compatibility.
+  RUN_SESSION_ID="${CLAUDE_CODE_SESSION_ID}"
   local runs_dir="${PROJECT_DIR:-.}/.iago/state/pipeline-runs"
   mkdir -p "$runs_dir"
   RUN_FILE="$runs_dir/${RUN_ID}.ndjson"

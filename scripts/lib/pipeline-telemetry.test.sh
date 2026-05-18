@@ -186,7 +186,13 @@ else
 fi
 rm -rf "$TMP5"
 
-# ─── Test 6: sessionId empty when env unset ────────────────────────────
+# ─── Test 6: parent synthesizes claude-* sessionId when env unset ──────
+# Regression test for Codex C-01 PR review finding: `run_claude` exported
+# CLAUDE_CODE_SESSION_ID inside a $(…) subshell, so the parent shell that
+# later emits stage_end / pipeline_finalize saw empty sessionId. pipeline_init
+# now synthesizes a per-run fallback in PARENT scope so every NDJSON record
+# carries a non-empty id even when the orchestrator was launched without a
+# real Claude session.
 TMP6=$(mktemp -d)
 RUN_FILE_PATH=$(
   PROJECT_DIR="$TMP6" PIPELINE_TMP="$TMP6" PLAN_NAME="test6" \
@@ -203,13 +209,22 @@ RUN_FILE_PATH=$(
 )
 if [[ -n "$RUN_FILE_PATH" && -f "$RUN_FILE_PATH" ]]; then
   if grep -q '"sessionId":""' "$RUN_FILE_PATH"; then
-    ok "session_id empty-string: sessionId:\"\" present when env unset"
+    nope "session_id parent-synthesis: empty sessionId leaked into NDJSON (Codex C-01 regression)"
+    cat "$RUN_FILE_PATH" >&2
+  elif grep -qE '"sessionId":"claude-[0-9]{8}-[0-9]{6}-[^"]+"' "$RUN_FILE_PATH"; then
+    SYNTH_HITS=$(grep -cE '"sessionId":"claude-' "$RUN_FILE_PATH")
+    if (( SYNTH_HITS >= 3 )); then
+      ok "session_id parent-synthesis: claude-* fallback present on all 3 record types when env unset"
+    else
+      nope "session_id parent-synthesis: only $SYNTH_HITS records carry claude-* fallback (need >=3: stage_start + stage_end + pipeline_finalize)"
+      cat "$RUN_FILE_PATH" >&2
+    fi
   else
-    nope "session_id empty-string: missing sessionId:\"\" pattern"
+    nope "session_id parent-synthesis: no claude-* fallback pattern found"
     cat "$RUN_FILE_PATH" >&2
   fi
 else
-  nope "session_id empty-string: run file not created"
+  nope "session_id parent-synthesis: run file not created"
 fi
 rm -rf "$TMP6"
 
