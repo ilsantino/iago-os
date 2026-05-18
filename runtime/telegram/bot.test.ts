@@ -166,9 +166,21 @@ function fakeCallback(opts: {
 	};
 }
 
-async function flushTicks(times = 5): Promise<void> {
+/**
+ * Drain the microtask + macrotask queues for the given number of
+ * iterations. M4 of adv-pr45 advocates condition-polling helpers
+ * (`waitForFile`, `waitForSendMessage`, `vi.waitFor`) at the call site
+ * rather than a fixed tick count. This helper is the fallback for sites
+ * asserting **absence** of effect (e.g.
+ * `expect(sendMessageCalls).toHaveLength(0)`) where there is no
+ * positive condition to poll on. Bumped from 5 → 10 iterations + a
+ * `Promise.resolve()` interleave so dispatcher Promise chains that
+ * spawn additional microtasks per await still settle on slow CI.
+ */
+async function flushTicks(times = 10): Promise<void> {
 	for (let i = 0; i < times; i++) {
 		await new Promise((r) => setImmediate(r));
+		await Promise.resolve();
 	}
 }
 
@@ -1218,7 +1230,9 @@ describe("TelegramBot / /approve text form", () => {
 		const reply = fake.sendMessageCalls.map((c) => c.text).join("\n");
 		expect(reply).toContain(`Approval ${approvalId}`);
 		expect(reply).toContain("allow");
-		const kinds = emitSpy.mock.calls.map((c) => (c[0] as { kind: string }).kind);
+		const kinds = emitSpy.mock.calls.map(
+			(c) => (c[0] as { kind: string }).kind,
+		);
 		expect(kinds).toContain("approval-resolved");
 		await bot.stop();
 	});
@@ -1281,7 +1295,10 @@ describe("TelegramBot / /abort branches", () => {
 			handles: [],
 		});
 		await bot.start();
-		fake.emit("message", fakeMessage({ userId: 42, text: "/abort agent-ghost" }));
+		fake.emit(
+			"message",
+			fakeMessage({ userId: 42, text: "/abort agent-ghost" }),
+		);
 		await waitForSendMessage(fake);
 		expect(fake.sendMessageCalls[0]?.text).toContain("No handle found");
 		await bot.stop();
@@ -1319,7 +1336,10 @@ describe("TelegramBot / /status branches", () => {
 	it("/status with invalid agentId is rejected before lookup", async () => {
 		const { bot, fake } = buildBot({ allowed: [42], shape: "pty" });
 		await bot.start();
-		fake.emit("message", fakeMessage({ userId: 42, text: "/status AGENT_BAD" }));
+		fake.emit(
+			"message",
+			fakeMessage({ userId: 42, text: "/status AGENT_BAD" }),
+		);
 		await waitForSendMessage(fake);
 		expect(fake.sendMessageCalls[0]?.text).toContain("Invalid agent id");
 		await bot.stop();
@@ -1352,7 +1372,10 @@ describe("TelegramBot / /status branches", () => {
 			reason: "ship?",
 		});
 		await bot.start();
-		fake.emit("message", fakeMessage({ userId: 42, text: "/status agent-foo" }));
+		fake.emit(
+			"message",
+			fakeMessage({ userId: 42, text: "/status agent-foo" }),
+		);
 		await waitForSendMessage(fake);
 		const reply = fake.sendMessageCalls[0]?.text ?? "";
 		expect(reply).toContain("Agent agent-foo");
@@ -1511,6 +1534,236 @@ describe("TelegramBot / getChatId", () => {
 			botFactory: () => fake as unknown as never,
 		});
 		expect(bot.getChatId()).toBe(42);
+	});
+});
+
+// PR45 M5 — truncate user-supplied agent name in error replies
+describe("TelegramBot / agent-name reply truncation (PR45 M5)", () => {
+	it("/inject with a 200-char agentId puts at most 64 agent-chars in the reply", async () => {
+		const inject = vi.fn(async () => undefined);
+		const { bot, fake } = buildBot({
+			allowed: [42],
+			shape: "pty",
+			inject,
+		});
+		await bot.start();
+		const longAgent = "a".repeat(200);
+		fake.emit(
+			"message",
+			fakeMessage({ userId: 42, text: `/inject ${longAgent} hi` }),
+		);
+		await waitForSendMessage(fake, 1);
+		expect(inject).not.toHaveBeenCalled();
+		const reply = fake.sendMessageCalls[0]?.text ?? "";
+		// The reply quotes the agent — verify the embedded id is bounded.
+		const quoted = reply.match(/"([^"]+)"/);
+		expect(quoted).not.toBeNull();
+		expect((quoted?.[1] ?? "").length).toBeLessThanOrEqual(64);
+		// And the reply must not contain the full 200-char string.
+		expect(reply).not.toContain(longAgent);
+		await bot.stop();
+	});
+
+	it("/abort with an invalid 200-char agentId truncates the echoed name", async () => {
+		// Opus PR #56 dual-review I3: the prior version used `Z.repeat(200)`
+		// + `handles: [makeHandle("agent-real")]`. The shape gate rejected
+		// the unregistered longAgent BEFORE dispatchAbort fired, so the
+		// reply was the unquoted "Rejected: agent not registered" path
+		// and `reply.match(/"([^"]+)"/)` returned null → the assertion
+		// `(null?.[1] ?? "").length <= 64` was trivially true regardless
+		// of M5 truncation. Fix: register a handle matching the longAgent
+		// so the shape gate passes; then validateAgentId fires inside
+		// dispatchAbort (length > 63 → "too-long"); the reply quotes the
+		// truncated slice. `expect(quoted).not.toBeNull()` is the fail-loud
+		// assertion that catches any future regression to the prior path.
+		const shutdown = vi.fn(async () => undefined);
+		const longAgent = "a".repeat(200);
+		const { bot, fake } = buildBot({
+			allowed: [42],
+			handles: [makeHandle(longAgent)],
+			shutdown,
+		});
+		await bot.start();
+		fake.emit(
+			"message",
+			fakeMessage({ userId: 42, text: `/abort ${longAgent}` }),
+		);
+		await waitForSendMessage(fake, 1);
+		expect(shutdown).not.toHaveBeenCalled();
+		const reply = fake.sendMessageCalls[0]?.text ?? "";
+		expect(reply).not.toContain(longAgent);
+		const quoted = reply.match(/"([^"]+)"/);
+		expect(quoted).not.toBeNull();
+		expect((quoted?.[1] ?? "").length).toBeLessThanOrEqual(64);
+		await bot.stop();
+	});
+
+	it("/status with an invalid 200-char agentId truncates the echoed name", async () => {
+		// Opus PR #56 dual-review I3 — same fix as the /abort test above.
+		const longAgent = "a".repeat(200);
+		const { bot, fake } = buildBot({
+			allowed: [42],
+			handles: [makeHandle(longAgent)],
+		});
+		await bot.start();
+		fake.emit(
+			"message",
+			fakeMessage({ userId: 42, text: `/status ${longAgent}` }),
+		);
+		await waitForSendMessage(fake, 1);
+		const reply = fake.sendMessageCalls[0]?.text ?? "";
+		expect(reply).not.toContain(longAgent);
+		const quoted = reply.match(/"([^"]+)"/);
+		expect(quoted).not.toBeNull();
+		expect((quoted?.[1] ?? "").length).toBeLessThanOrEqual(64);
+		await bot.stop();
+	});
+});
+
+// PR45 M8 — validateAgentId in dispatchAbort + dispatchStatus parity
+describe("TelegramBot / dispatch validates agent id (PR45 M8)", () => {
+	it("/abort with an invalid agentId is rejected before manager lookup", async () => {
+		const listSpy = vi.fn(() => [makeHandle("agent-foo")]);
+		const shutdown = vi.fn(async () => undefined);
+		const fake = new FakeTelegramBot();
+		const manager: AgentManagerInterface = {
+			getHandle: () => undefined,
+			listHandles: listSpy,
+			shutdownAgent: shutdown,
+			getShape: async () => "pty",
+		};
+		const bot = new TelegramBot({
+			token: "fake-token",
+			allowedUserIds: [42],
+			agentManager: manager,
+			injectIntoAgent: async () => undefined,
+			botFactory: () => fake as unknown as never,
+		});
+		await bot.start();
+		fake.emit("message", fakeMessage({ userId: 42, text: "/abort AGENT_BAD" }));
+		await waitForSendMessage(fake, 1);
+		expect(shutdown).not.toHaveBeenCalled();
+		expect(fake.sendMessageCalls[0]?.text).toContain("Invalid agent id");
+		await bot.stop();
+	});
+
+	it("/status with an invalid agentId is rejected before manager lookup", async () => {
+		const listSpy = vi.fn(() => [makeHandle("agent-foo")]);
+		const fake = new FakeTelegramBot();
+		const manager: AgentManagerInterface = {
+			getHandle: () => undefined,
+			listHandles: listSpy,
+			shutdownAgent: async () => undefined,
+			getShape: async () => "pty",
+		};
+		const bot = new TelegramBot({
+			token: "fake-token",
+			allowedUserIds: [42],
+			agentManager: manager,
+			injectIntoAgent: async () => undefined,
+			botFactory: () => fake as unknown as never,
+		});
+		await bot.start();
+		fake.emit(
+			"message",
+			fakeMessage({ userId: 42, text: "/status AGENT_BAD" }),
+		);
+		await waitForSendMessage(fake, 1);
+		expect(fake.sendMessageCalls[0]?.text).toContain("Invalid agent id");
+		await bot.stop();
+	});
+});
+
+// PR45 M6 — /status surfaces optional lastStatus + isAlive
+describe("TelegramBot / /status surfaces runtime status (PR45 M6)", () => {
+	it("includes lastStatus when manager exposes getLastStatus", async () => {
+		const handle = makeHandle("agent-foo");
+		const fake = new FakeTelegramBot();
+		const manager: AgentManagerInterface = {
+			getHandle: (id) => (id === handle.id ? handle : undefined),
+			listHandles: () => [handle],
+			shutdownAgent: async () => undefined,
+			getShape: async () => "pty",
+			getLastStatus: () => "running",
+			isAlive: () => true,
+		};
+		const bot = new TelegramBot({
+			token: "fake-token",
+			allowedUserIds: [42],
+			agentManager: manager,
+			injectIntoAgent: async () => undefined,
+			botFactory: () => fake as unknown as never,
+		});
+		await bot.start();
+		fake.emit(
+			"message",
+			fakeMessage({ userId: 42, text: "/status agent-foo" }),
+		);
+		await waitForSendMessage(fake, 1);
+		const reply = fake.sendMessageCalls[0]?.text ?? "";
+		expect(reply).toContain("Last status: running");
+		expect(reply).toContain("Alive: true");
+		await bot.stop();
+	});
+
+	it("omits lastStatus + isAlive lines when manager does not expose them", async () => {
+		const handle = makeHandle("agent-foo");
+		const fake = new FakeTelegramBot();
+		const manager: AgentManagerInterface = {
+			getHandle: (id) => (id === handle.id ? handle : undefined),
+			listHandles: () => [handle],
+			shutdownAgent: async () => undefined,
+			getShape: async () => "pty",
+			// getLastStatus + isAlive intentionally absent (Phase 3+ adapter
+			// stand-in that has not implemented the optional probe yet).
+		};
+		const bot = new TelegramBot({
+			token: "fake-token",
+			allowedUserIds: [42],
+			agentManager: manager,
+			injectIntoAgent: async () => undefined,
+			botFactory: () => fake as unknown as never,
+		});
+		await bot.start();
+		fake.emit(
+			"message",
+			fakeMessage({ userId: 42, text: "/status agent-foo" }),
+		);
+		await waitForSendMessage(fake, 1);
+		const reply = fake.sendMessageCalls[0]?.text ?? "";
+		expect(reply).not.toContain("Last status:");
+		expect(reply).not.toContain("Alive:");
+		await bot.stop();
+	});
+
+	it("omits lines when methods return undefined (e.g. unknown status)", async () => {
+		const handle = makeHandle("agent-foo");
+		const fake = new FakeTelegramBot();
+		const manager: AgentManagerInterface = {
+			getHandle: (id) => (id === handle.id ? handle : undefined),
+			listHandles: () => [handle],
+			shutdownAgent: async () => undefined,
+			getShape: async () => "pty",
+			getLastStatus: () => undefined,
+			isAlive: () => undefined,
+		};
+		const bot = new TelegramBot({
+			token: "fake-token",
+			allowedUserIds: [42],
+			agentManager: manager,
+			injectIntoAgent: async () => undefined,
+			botFactory: () => fake as unknown as never,
+		});
+		await bot.start();
+		fake.emit(
+			"message",
+			fakeMessage({ userId: 42, text: "/status agent-foo" }),
+		);
+		await waitForSendMessage(fake, 1);
+		const reply = fake.sendMessageCalls[0]?.text ?? "";
+		expect(reply).not.toContain("Last status:");
+		expect(reply).not.toContain("Alive:");
+		await bot.stop();
 	});
 });
 

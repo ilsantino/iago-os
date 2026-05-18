@@ -61,8 +61,16 @@
  * - **Module state is per-process.** `pauseStates`, `sequenceCache`,
  *   `fileLocks` are module-scope Maps. Multi-process callers MUST
  *   coordinate externally (file-bus locks or a higher-level
- *   coordinator) — Plan 07 IPC server must own a single session-log
- *   writer per handle.
+ *   coordinator). Plan 07 IPC is single-process; future Phase 6+
+ *   multi-process work must rework this. Plan 07 IPC server must own a
+ *   single session-log writer per handle.
+ * - **DEFERRED 2026-05-17: No log-rotation policy.**
+ *   `readEventsUpToHWM` re-reads the whole file each call. Rotation
+ *   policy (rotate at 100MB; archive to
+ *   `session-logs/archive/<handleId>-<rotateTimestamp>.jsonl`) is
+ *   tracked for a Phase 6+ follow-up. Plan 03 boot recovery emits a
+ *   telemetry warning when session.jsonl exceeds 50MB so the trigger is
+ *   observable (see `runtime/daemon/README.md` § Failure modes).
  * - **Shutdown.** Call `cancelPendingAppends(handleId, reason)` during
  *   graceful shutdown to reject any queued `appendEvent` promises.
  *   Without this, callers hang forever waiting on a drain that will

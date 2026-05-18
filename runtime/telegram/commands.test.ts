@@ -146,6 +146,31 @@ describe("commands / parseCommand", () => {
 		}
 	});
 
+	// PR45 M2 — whitespace preservation. tokens.slice(2).join(" ")
+	// collapsed every run of whitespace to a single space, which silently
+	// rewrote multi-line payloads before they reached the PTY. The
+	// slice-from-prefix implementation preserves newlines + tabs +
+	// repeated spaces verbatim.
+	it("parses /inject and preserves newlines + repeated whitespace in payload", () => {
+		const r = parseCommand("/inject claude-main hello\n  world");
+		expect(r.ok).toBe(true);
+		if (r.ok) {
+			expect(r.command).toEqual({
+				name: "inject",
+				agent: "claude-main",
+				text: "hello\n  world",
+			});
+		}
+	});
+
+	it("parses /inject and preserves tabs in payload", () => {
+		const r = parseCommand("/inject claude-main col1\tcol2\tcol3");
+		expect(r.ok).toBe(true);
+		if (r.ok && r.command.name === "inject") {
+			expect(r.command.text).toBe("col1\tcol2\tcol3");
+		}
+	});
+
 	it("parses /status agent-foo", () => {
 		const r = parseCommand("/status agent-foo");
 		expect(r.ok).toBe(true);

@@ -67,6 +67,10 @@ export function parseCommand(text: string): ParseResult {
 
 	// Inline-keyboard callback form for approvals: leading slash optional
 	// because Telegram callback_data does not require it. Accept both.
+	// Telegram callback_data has no leading slash by convention (bot.ts
+	// sendApprovalRequest emits `approve_allow_<id>` form); commands.ts
+	// prepends one for symmetry with text /commands so the same prefix
+	// match handles both surfaces.
 	const callbackBody = trimmed.startsWith("/") ? trimmed : `/${trimmed}`;
 	if (callbackBody.startsWith(APPROVE_CALLBACK_PREFIX_ALLOW)) {
 		const id = callbackBody.slice(APPROVE_CALLBACK_PREFIX_ALLOW.length);
@@ -153,15 +157,29 @@ export function parseCommand(text: string): ParseResult {
 			return { ok: true, command: { name: "abort", agent } };
 		}
 		case "inject": {
-			const agent = tokens[1];
-			if (agent === undefined) {
+			// Preserve whitespace (newlines, repeated spaces, tabs) in the
+			// inject payload by slicing the ORIGINAL input rather than
+			// re-joining tokens — `tokens.join(" ")` collapses every run of
+			// whitespace to a single space, which silently rewrites the
+			// user's multi-line payload before it reaches the PTY adapter.
+			const INJECT_PREFIX = "/inject";
+			const afterCmd = trimmed.slice(INJECT_PREFIX.length).trimStart();
+			if (afterCmd.length === 0) {
 				return { ok: false, error: "missing argument: agent" };
 			}
-			if (tokens.length < 3) {
+			const firstSpace = afterCmd.indexOf(" ");
+			if (firstSpace === -1) {
 				return { ok: false, error: "missing argument: text" };
 			}
-			const text = tokens.slice(2).join(" ");
-			return { ok: true, command: { name: "inject", agent, text } };
+			const injectAgent = afterCmd.slice(0, firstSpace);
+			const injectText = afterCmd.slice(firstSpace + 1);
+			if (injectText.length === 0) {
+				return { ok: false, error: "missing argument: text" };
+			}
+			return {
+				ok: true,
+				command: { name: "inject", agent: injectAgent, text: injectText },
+			};
 		}
 		case "status": {
 			const agent = tokens[1];
@@ -201,9 +219,13 @@ export async function isCommandAvailableForShape(
 		case "status": {
 			const shape = await getShape(command.agent);
 			if (shape === null) {
+				// PR45 M5: truncate user-supplied agent name to 64 chars in
+				// the reason text — the bot embeds this in a Telegram reply
+				// and unbounded user input lets an allowlisted attacker
+				// stuff arbitrary text into the chat history.
 				return {
 					available: false,
-					reason: `agent not registered: ${command.agent}`,
+					reason: `agent not registered: ${command.agent.slice(0, 64)}`,
 				};
 			}
 			return { available: true };
@@ -213,13 +235,13 @@ export async function isCommandAvailableForShape(
 			if (shape === null) {
 				return {
 					available: false,
-					reason: `agent not registered: ${command.agent}`,
+					reason: `agent not registered: ${command.agent.slice(0, 64)}`,
 				};
 			}
 			if (shape !== "pty") {
 				return {
 					available: false,
-					reason: `/inject is only available for shape "pty" (agent ${command.agent} is shape "${shape}")`,
+					reason: `/inject is only available for shape "pty" (agent ${command.agent.slice(0, 64)} is shape "${shape}")`,
 				};
 			}
 			return { available: true };
