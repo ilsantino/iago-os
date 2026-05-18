@@ -100,6 +100,13 @@ section_1() {
     echo "$RUN_FILE"
   ) > "$tmp/.run2" 2>/dev/null
   local run2; run2=$(tail -n 1 "$tmp/.run2")
+  # Opus PR #57 dual-review I2: Plan 03 §Section 1 was written against
+  # the prior contract that asserted `sessionId:""` when env unset. The
+  # shipped behavior was changed in PR #52 (commit e061734) —
+  # pipeline_init now synthesizes a `claude-*` fallback in PARENT scope
+  # so every NDJSON record carries a non-empty id. This assertion locks
+  # the new contract. See `scripts/lib/pipeline-telemetry.sh` docblock
+  # for the full rationale.
   if [[ -f "$run2" ]] && grep -q '"sessionId":"claude-' "$run2"; then
     echo "  PASS  1b: unset → synthesized fallback sessionId emitted"
   else
