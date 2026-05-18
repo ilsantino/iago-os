@@ -58,6 +58,14 @@ export interface DaemonConfig {
 	readonly agents: AgentConfig[];
 	readonly heartbeat: DaemonHeartbeatConfig;
 	readonly ipc: DaemonIpcConfig;
+	/**
+	 * Per-stage shutdown timeout (ms). Stress note I1 (plan
+	 * feature-phase-1-deferred-hardening/03): exposed as a test-affordance
+	 * so the shutdown-hang integration test can pass 50ms instead of
+	 * blocking on the 10s production default. Optional; omit to inherit
+	 * `SHUTDOWN_STAGE_TIMEOUT_MS` in `daemon/main.ts`.
+	 */
+	readonly shutdownStageTimeoutMs?: number;
 }
 
 const DEFAULT_HEARTBEAT: DaemonHeartbeatConfig = {
@@ -162,8 +170,7 @@ function parseAgents(value: unknown, sourcePath: string): AgentConfig[] {
 			}
 		}
 		const autoStartRaw = entry.autoStart;
-		const autoStart =
-			typeof autoStartRaw === "boolean" ? autoStartRaw : false;
+		const autoStart = typeof autoStartRaw === "boolean" ? autoStartRaw : false;
 		out.push({ agentId, runtimeId, org, cwd, env, autoStart });
 	}
 	return out;
@@ -178,7 +185,10 @@ function parseHeartbeat(
 	const intervalMs =
 		rec.intervalMs === undefined
 			? DEFAULT_HEARTBEAT.intervalMs
-			: requireFiniteNumber(rec.intervalMs, `${sourcePath}: heartbeat.intervalMs`);
+			: requireFiniteNumber(
+					rec.intervalMs,
+					`${sourcePath}: heartbeat.intervalMs`,
+				);
 	const rssLimitBytes =
 		rec.rssLimitBytes === undefined
 			? DEFAULT_HEARTBEAT.rssLimitBytes
@@ -302,9 +312,7 @@ export async function loadConfig(): Promise<DaemonConfig> {
 
 	const sourcePath = file === null ? "<defaults>" : file.sourcePath;
 	const fileTelegram =
-		file === null
-			? null
-			: parseTelegramFile(file.payload.telegram, sourcePath);
+		file === null ? null : parseTelegramFile(file.payload.telegram, sourcePath);
 	const fileAgents =
 		file === null ? [] : parseAgents(file.payload.agents, sourcePath);
 	const fileHeartbeat =
