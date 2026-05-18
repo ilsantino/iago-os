@@ -153,6 +153,24 @@ run_claude() {
   # $(run_claude ...). Redirect to a file, poll, then taskkill //T the tree.
   local timeout_secs="$1"; shift
   __pipeline_latch_timed_out
+  # Session id contract (secondary defensive layer — Opus PR #52 I4):
+  #   Normal flow: pipeline_init has ALREADY exported a synthesized
+  #   `claude-{RUN_ID}-...` id in parent scope, so the
+  #   `${CLAUDE_CODE_SESSION_ID:-$_call_sid}` default below is a no-op.
+  #   The synthesis here is kept as a defense-in-depth for the rare path
+  #   where run_claude is invoked WITHOUT pipeline_init having fired (e.g.,
+  #   the `run_claude_synthesis_fallback_test` unit test in
+  #   `scripts/test-pipeline-helpers.sh`). That test deliberately skips
+  #   sourcing the telemetry helper to verify run_claude still hands the
+  #   spawned `claude -p` process a stable id when used standalone.
+  #   Removing this block would re-introduce empty-sessionId emission for
+  #   that standalone case.
+  local _call_now="${EPOCHSECONDS:-$(date +%s)}"
+  if command -v __pipeline_now_ms >/dev/null 2>&1; then
+    _call_now=$(__pipeline_now_ms)
+  fi
+  local _call_sid="claude-${RUN_ID:-norun}-${_call_now}-${RANDOM}"
+  export CLAUDE_CODE_SESSION_ID="${CLAUDE_CODE_SESSION_ID:-$_call_sid}"
   local out="$PIPELINE_TMP/claude-$$-$RANDOM.out"
   claude "$@" > "$out" 2>&1 &
   local pid=$!

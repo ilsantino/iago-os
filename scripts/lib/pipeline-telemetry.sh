@@ -2,6 +2,38 @@
 # Pipeline telemetry helper — sourced by execute-pipeline.sh.
 # Emits NDJSON records per pipeline run for offline aggregation.
 # Self-contained: bash, date, mkdir, cat, printf only.
+#
+# sessionId scope (current behavior — Codex C-01 PR #52 fix):
+#   - Every NDJSON record carries sessionId = CLAUDE_CODE_SESSION_ID READ AT
+#     EMISSION TIME.
+#   - pipeline_init does TWO things, in this order:
+#       1. If CLAUDE_CODE_SESSION_ID is unset or empty, SYNTHESIZE a
+#          `claude-{RUN_ID}-{ms}-{RANDOM}` fallback and EXPORT it in PARENT
+#          shell scope so every downstream stage_end / pipeline_finalize
+#          (which runs in the parent after each `$(run_claude ...)`
+#          subshell returns) emits the same non-empty id.
+#       2. Capture the resulting env value into RUN_SESSION_ID and emit a
+#          `pipeline_init` NDJSON record.
+#     If the orchestrator already supplied a real CLAUDE_CODE_SESSION_ID
+#     (e.g., when run as a child of a Claude Code session), step 1 is a
+#     no-op and the inherited id is preserved.
+#   - run_claude (in execute-pipeline.sh) re-runs the same default-or-
+#     synthesize pattern inside its `$(...)` subshell as defense-in-depth
+#     — but with pipeline_init's parent-scope export already in place, the
+#     `${CLAUDE_CODE_SESSION_ID:-...}` default never fires there. Treat
+#     the run_claude synthesis as redundant-but-safe; pipeline_init is
+#     the authoritative writer.
+#   - Why this matters: the PRIOR design exported the fallback only
+#     inside run_claude's subshell, so the parent shell that emitted
+#     stage_end / pipeline_finalize saw an empty sessionId. Codex flagged
+#     this on the original C-01 PR; the parent-scope synthesis is the
+#     manual fix landed in commit e061734 on `feat/c-01-telemetry-session-id`.
+#     Test 6 in `pipeline-telemetry.test.sh` and the
+#     `run_claude_parent_stage_end_observability_test` in
+#     `scripts/test-pipeline-helpers.sh` lock the new contract: when the
+#     outer env is unset, every NDJSON record's sessionId starts with
+#     `claude-` (not empty).
+# JSON-escape scope: literal `"` only (UUID-shaped session ids never contain \n or \t).
 
 # Detect millisecond timestamp support once. Git Bash on Windows supports %3N.
 if date -u +%s%3N 2>/dev/null | grep -qE '^[0-9]+$'; then
@@ -64,6 +96,29 @@ pipeline_init() {
   local stamp
   stamp=$(date -u +%Y%m%d-%H%M%S)
   RUN_ID="${stamp}-${plan_name}-${RANDOM}"
+  # Session-id contract (parent-scope synthesis — see Codex PR review of C-01):
+  #   1. CLAUDE_CODE_SESSION_ID inherited from parent (real Claude Code session)
+  #      → preserve it as-is.
+  #   2. Unset/empty → synthesize ONE per-pipeline fallback id in PARENT scope.
+  # Synthesizing here (not inside run_claude) is load-bearing: run_claude is
+  # called as `$(cd ... && run_claude ...)`, which spawns a subshell. An export
+  # inside that subshell never reaches the parent shell that later emits
+  # stage_end / pipeline_finalize, so a fallback exported only there silently
+  # writes `sessionId:""` into NDJSON records.
+  local _sid_now="${EPOCHSECONDS:-$(date +%s)}"
+  if command -v __pipeline_now_ms >/dev/null 2>&1; then
+    _sid_now=$(__pipeline_now_ms)
+  fi
+  # Opus PR #52 dual-review I2: capture the REAL outer env BEFORE the
+  # synthesis-export, so the pipeline_init record's `outer_session_id`
+  # field reflects the ACTUAL upstream session (empty when there was
+  # none). The downstream stage_end records still emit the synthesized
+  # `claude-*` fallback via the live env-read sessionId. The Plan 03
+  # projector that joins on outer_session_id then sees an empty string
+  # and knows to treat that pipeline run as orchestrator-less rather
+  # than mis-joining to a synthesized id with no upstream meaning.
+  RUN_SESSION_ID="${CLAUDE_CODE_SESSION_ID:-}"
+  export CLAUDE_CODE_SESSION_ID="${CLAUDE_CODE_SESSION_ID:-claude-${RUN_ID}-${_sid_now}-${RANDOM}}"
   local runs_dir="${PROJECT_DIR:-.}/.iago/state/pipeline-runs"
   mkdir -p "$runs_dir"
   RUN_FILE="$runs_dir/${RUN_ID}.ndjson"
@@ -74,6 +129,12 @@ pipeline_init() {
   LAST_RUN_TIMED_OUT_FILE="${PIPELINE_TMP:-/tmp}/.pipeline-last-timed-out"
   __pipeline_write_timed_out false
   : >> "$RUN_FILE"
+  # Pin the outer (orchestrator) session-id once at init. Downstream Plan 03
+  # joiner uses this to bind parent stage records to the spawn series even when
+  # run_claude exports a synthesized id only into its subshell.
+  local _outer_sid="${RUN_SESSION_ID//\"/\\\"}"
+  printf '{"type":"pipeline_init","plan":"%s","run_id":"%s","outer_session_id":"%s","ts":"%s"}\n' \
+    "$plan_name" "$RUN_ID" "$_outer_sid" "$(__pipeline_now_iso)" >> "$RUN_FILE"
 }
 
 # Mark stage start. Resets timed_out signal and records wall-clock start.
@@ -84,8 +145,10 @@ stage_start() {
   CURRENT_STAGE="$stage"
   STAGE_START_MS=$(__pipeline_now_ms)
   STAGE_EXTRAS=""
-  printf '{"type":"stage_start","stage":"%s","ts":"%s"}\n' \
-    "$stage" "$(__pipeline_now_iso)" >> "$RUN_FILE"
+  local _sid="${CLAUDE_CODE_SESSION_ID:-}"
+  _sid="${_sid//\"/\\\"}"
+  printf '{"type":"stage_start","stage":"%s","ts":"%s","sessionId":"%s"}\n' \
+    "$stage" "$(__pipeline_now_iso)" "$_sid" >> "$RUN_FILE"
 }
 
 # Attach a numeric extra field to the current stage. Appended to stage_end.
@@ -97,6 +160,12 @@ stage_extra() {
   [[ -z "${RUN_FILE:-}" ]] && return 0
   local key="$1"
   local val="$2"
+  # sessionId is sourced from CLAUDE_CODE_SESSION_ID at emission time —
+  # forbid stage_extra "sessionId" to prevent duplicate keys in stage_end.
+  if [[ "$key" == "sessionId" ]]; then
+    echo "stage_extra: 'sessionId' is reserved — use CLAUDE_CODE_SESSION_ID env" >&2
+    return 1
+  fi
   STAGE_EXTRAS="${STAGE_EXTRAS},\"${key}\":${val}"
 }
 
@@ -111,8 +180,12 @@ stage_end() {
   now=$(__pipeline_now_ms)
   duration=$(( now - ${STAGE_START_MS:-$now} ))
   timed_out=$(__pipeline_read_timed_out)
-  printf '{"type":"stage_end","stage":"%s","exit":"%s","duration_ms":%s,"timed_out":%s%s,"ts":"%s"}\n' \
-    "$stage" "$exit_code" "$duration" "$timed_out" "${STAGE_EXTRAS:-}" "$(__pipeline_now_iso)" >> "$RUN_FILE"
+  local _sid="${CLAUDE_CODE_SESSION_ID:-}"
+  _sid="${_sid//\"/\\\"}"
+  # sessionId inserted BEFORE STAGE_EXTRAS so legacy aggregators that split
+  # on `,"ts"` continue working (extras still flow into the trailing slot).
+  printf '{"type":"stage_end","stage":"%s","exit":"%s","duration_ms":%s,"timed_out":%s,"sessionId":"%s"%s,"ts":"%s"}\n' \
+    "$stage" "$exit_code" "$duration" "$timed_out" "$_sid" "${STAGE_EXTRAS:-}" "$(__pipeline_now_iso)" >> "$RUN_FILE"
   CURRENT_STAGE=""
   STAGE_EXTRAS=""
 }
@@ -128,6 +201,8 @@ pipeline_finalize() {
   local now duration
   now=$(__pipeline_now_ms)
   duration=$(( now - ${RUN_STARTED_AT:-$now} ))
-  printf '{"type":"pipeline_finalize","plan":"%s","pipeline_exit":"%s","duration_ms":%s,"ts":"%s"}\n' \
-    "${PLAN_NAME:-unknown}" "$exit_code" "$duration" "$(__pipeline_now_iso)" >> "$RUN_FILE"
+  local _sid="${CLAUDE_CODE_SESSION_ID:-}"
+  _sid="${_sid//\"/\\\"}"
+  printf '{"type":"pipeline_finalize","plan":"%s","pipeline_exit":"%s","duration_ms":%s,"sessionId":"%s","ts":"%s"}\n' \
+    "${PLAN_NAME:-unknown}" "$exit_code" "$duration" "$_sid" "$(__pipeline_now_iso)" >> "$RUN_FILE"
 }
