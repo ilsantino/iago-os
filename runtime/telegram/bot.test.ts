@@ -27,6 +27,11 @@ type SendMessageCall = {
 class FakeTelegramBot extends EventEmitter {
 	public sendMessageCalls: SendMessageCall[] = [];
 	public answerCalls: string[] = [];
+	public answerOptions: Array<unknown> = [];
+	// Per-id options bucket — preserves every call for an id so tests that
+	// emit the same callback id twice don't silently assert against the
+	// first match (review minor: index-based lookup was a footgun).
+	public answerOptionsById: Map<string, unknown[]> = new Map();
 	public polling = true;
 	public stopCalled = 0;
 	async sendMessage(
@@ -44,9 +49,20 @@ class FakeTelegramBot extends EventEmitter {
 	isPolling(): boolean {
 		return this.polling;
 	}
-	async answerCallbackQuery(id: string): Promise<boolean> {
+	async answerCallbackQuery(id: string, options?: unknown): Promise<boolean> {
 		this.answerCalls.push(id);
+		this.answerOptions.push(options);
+		const bucket = this.answerOptionsById.get(id) ?? [];
+		bucket.push(options);
+		this.answerOptionsById.set(id, bucket);
 		return true;
+	}
+	answerOptionsFor(id: string): unknown[] {
+		return this.answerOptionsById.get(id) ?? [];
+	}
+	lastAnswerOptionsFor(id: string): unknown {
+		const bucket = this.answerOptionsById.get(id);
+		return bucket && bucket.length > 0 ? bucket[bucket.length - 1] : undefined;
 	}
 }
 
@@ -168,6 +184,21 @@ async function waitForFile(filePath: string, timeoutMs = 2000): Promise<void> {
 	}
 	throw new Error(
 		`waitForFile: ${filePath} did not appear within ${timeoutMs}ms`,
+	);
+}
+
+async function waitForSendMessage(
+	fake: FakeTelegramBot,
+	minCalls = 1,
+	timeoutMs = 2000,
+): Promise<void> {
+	const start = Date.now();
+	while (Date.now() - start < timeoutMs) {
+		if (fake.sendMessageCalls.length >= minCalls) return;
+		await new Promise((r) => setTimeout(r, 10));
+	}
+	throw new Error(
+		`waitForSendMessage: expected ≥${minCalls} call(s) within ${timeoutMs}ms (got ${fake.sendMessageCalls.length})`,
 	);
 }
 
@@ -834,5 +865,685 @@ describe("TelegramBot / from undefined silently dropped (PR45)", () => {
 		await flushTicks();
 		expect(fake.sendMessageCalls).toHaveLength(0);
 		await bot.stop();
+	});
+});
+
+// PR45 IMPORTANT — non-allowed-user log redacts PII (no raw id / username)
+describe("TelegramBot / non-allowed log redaction (PR45 I8)", () => {
+	it("rejection log does NOT contain raw Telegram user id or username", async () => {
+		const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+		const { bot, fake } = buildBot({ allowed: [42] });
+		await bot.start();
+		const intruderId = 1234567890;
+		const intruderName = "intruder-handle";
+		fake.emit(
+			"message",
+			fakeMessage({
+				userId: intruderId,
+				text: "/agents",
+				username: intruderName,
+			}),
+		);
+		await flushTicks();
+		const logs = errSpy.mock.calls.map((c) => String(c[0])).join("\n");
+		expect(logs).not.toContain(String(intruderId));
+		expect(logs).not.toContain(intruderName);
+		expect(logs).toContain("non-allowed");
+		await bot.stop();
+	});
+});
+
+// PR45 IMPORTANT — polling_error handler surfaces 409 multi-bot hazard
+describe("TelegramBot / polling_error handler (PR45 I13)", () => {
+	it("polling_error event is logged to stderr (multi-bot 409 surface)", async () => {
+		const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+		const { bot, fake } = buildBot({ allowed: [42] });
+		await bot.start();
+		fake.emit("polling_error", new Error("ETELEGRAM 409 Conflict"));
+		await flushTicks();
+		const logs = errSpy.mock.calls.map((c) => String(c[0])).join("\n");
+		expect(logs).toContain("polling_error");
+		expect(logs).toContain("409");
+		await bot.stop();
+	});
+
+	it("polling_error with non-Error payload still logs without crash", async () => {
+		const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+		const { bot, fake } = buildBot({ allowed: [42] });
+		await bot.start();
+		// Library sometimes emits raw objects, not Error instances.
+		fake.emit("polling_error", {
+			message: "no Error wrapper",
+		} as unknown as Error);
+		await flushTicks();
+		const logs = errSpy.mock.calls.map((c) => String(c[0])).join("\n");
+		expect(logs).toContain("polling_error");
+		await bot.stop();
+	});
+});
+
+// PR45 — handleMessage / handleCallbackQuery unhandled-rejection capture
+// Note: the original PR45 review item I4 ("handleMessage parse exception
+// surfaces stderr + telegram-handler-error telemetry") landed in source
+// as a stderr log only — bot.ts handleMessage catch block does
+// `console.error(...)` without an `emit()` call. Assertions below match
+// the shipped source behavior; telemetry emission was intentionally
+// dropped during the PR45 audit (logged failure path already surfaces via
+// stderr capture in production).
+describe("TelegramBot / handler wrapper catch (PR45 I4)", () => {
+	it("handleMessage unhandled exception is caught + logged to stderr", async () => {
+		const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+		// listHandles throws → findHandleByAgentId throws → dispatchAbort
+		// propagates up through dispatch → handleMessage → wrapper catch.
+		const manager: AgentManagerInterface = {
+			getHandle: () => undefined,
+			listHandles: () => {
+				throw new Error("boom-listHandles");
+			},
+			shutdownAgent: async () => undefined,
+			getShape: async () => "pty",
+		};
+		const fake = new FakeTelegramBot();
+		const bot = new TelegramBot({
+			token: "fake-token",
+			allowedUserIds: [42],
+			agentManager: manager,
+			injectIntoAgent: async () => undefined,
+			botFactory: () => fake as unknown as never,
+		});
+		await bot.start();
+		fake.emit("message", fakeMessage({ userId: 42, text: "/abort agent-x" }));
+		await flushTicks();
+		const logs = errSpy.mock.calls.map((c) => String(c[0])).join("\n");
+		expect(logs).toContain("handleMessage unhandled error");
+		expect(logs).toContain("boom-listHandles");
+		await bot.stop();
+	});
+
+	it("handleCallbackQuery unhandled exception is caught + logged to stderr", async () => {
+		const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+		// Patch sendMessage to throw synchronously — safeReply catches the
+		// reject but the early answerCallbackQuery in the parse-error path
+		// uses `await`; the cleanest fault we can inject is `listHandles`
+		// throwing inside dispatchStatus reached via a callback. Build a
+		// callback whose data is a parseable /status command, then have the
+		// manager throw on listHandles.
+		const manager: AgentManagerInterface = {
+			getHandle: () => undefined,
+			listHandles: () => {
+				throw new Error("boom-cb-listHandles");
+			},
+			shutdownAgent: async () => undefined,
+			getShape: async () => "pty",
+		};
+		const fake = new FakeTelegramBot();
+		const bot = new TelegramBot({
+			token: "fake-token",
+			allowedUserIds: [42],
+			agentManager: manager,
+			injectIntoAgent: async () => undefined,
+			botFactory: () => fake as unknown as never,
+		});
+		await bot.start();
+		fake.emit(
+			"callback_query",
+			fakeCallback({ userId: 42, data: "/status agent-x" }),
+		);
+		await flushTicks();
+		const logs = errSpy.mock.calls.map((c) => String(c[0])).join("\n");
+		expect(logs).toContain("handleCallbackQuery unhandled error");
+		expect(logs).toContain("boom-cb-listHandles");
+		await bot.stop();
+	});
+});
+
+// PR45 — callback parse-failure + empty-data answerCallbackQuery branches
+describe("TelegramBot / callback parse + empty data (PR45 I5)", () => {
+	it("callback parse failure calls answerCallbackQuery with Invalid callback", async () => {
+		const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+		const { bot, fake } = buildBot({ allowed: [42] });
+		await bot.start();
+		fake.emit(
+			"callback_query",
+			fakeCallback({
+				userId: 42,
+				data: "garbage-not-a-command",
+				id: "cb-parse",
+			}),
+		);
+		await flushTicks();
+		expect(fake.answerCalls).toContain("cb-parse");
+		const opts = fake.lastAnswerOptionsFor("cb-parse") as
+			| { text?: string }
+			| undefined;
+		expect(opts?.text).toContain("Invalid callback");
+		// A user-visible reply explaining the parse error is also sent.
+		const sentTexts = fake.sendMessageCalls.map((c) => c.text).join("\n");
+		expect(sentTexts).toContain("Callback error");
+		// Reference errSpy to prevent unused warning
+		expect(errSpy).toBeDefined();
+		await bot.stop();
+	});
+
+	it("callback with empty data calls answerCallbackQuery with Empty callback", async () => {
+		const { bot, fake } = buildBot({ allowed: [42] });
+		await bot.start();
+		fake.emit(
+			"callback_query",
+			fakeCallback({ userId: 42, data: "", id: "cb-empty" }),
+		);
+		await flushTicks();
+		expect(fake.answerCalls).toContain("cb-empty");
+		const opts = fake.lastAnswerOptionsFor("cb-empty") as
+			| { text?: string }
+			| undefined;
+		expect(opts?.text).toContain("Empty callback");
+		expect(fake.sendMessageCalls).toHaveLength(0);
+		await bot.stop();
+	});
+
+	it("non-allowed callback answers spinner with Not authorized text", async () => {
+		vi.spyOn(console, "error").mockImplementation(() => {});
+		const { bot, fake } = buildBot({ allowed: [42] });
+		await bot.start();
+		fake.emit(
+			"callback_query",
+			fakeCallback({
+				userId: 99,
+				data: "approve_allow_11111111-2222-4333-8444-555555555555",
+				id: "cb-not-auth",
+			}),
+		);
+		await flushTicks();
+		const opts = fake.lastAnswerOptionsFor("cb-not-auth") as
+			| { text?: string }
+			| undefined;
+		expect(opts?.text).toContain("Not authorized");
+		await bot.stop();
+	});
+
+	it("callback dispatching answerCallbackQuery throws — stderr logs but flow continues", async () => {
+		const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+		const fake = new FakeTelegramBot();
+		fake.answerCallbackQuery = async () => {
+			throw new Error("answer-boom");
+		};
+		const handles = [makeHandle("agent-foo")];
+		const manager: AgentManagerInterface = {
+			getHandle: (id) => handles.find((h) => h.id === id),
+			listHandles: () => handles,
+			shutdownAgent: async () => undefined,
+			getShape: async () => "pty",
+		};
+		const bot = new TelegramBot({
+			token: "fake-token",
+			allowedUserIds: [42],
+			agentManager: manager,
+			injectIntoAgent: async () => undefined,
+			botFactory: () => fake as unknown as never,
+		});
+		await bot.start();
+		fake.emit(
+			"callback_query",
+			fakeCallback({ userId: 42, data: "/agents", id: "cb-throw" }),
+		);
+		await flushTicks();
+		const logs = errSpy.mock.calls.map((c) => String(c[0])).join("\n");
+		expect(logs).toContain("answerCallbackQuery failed");
+		expect(logs).toContain("answer-boom");
+		// Dispatch still ran — /agents reply sent.
+		expect(fake.sendMessageCalls.length).toBeGreaterThanOrEqual(1);
+		await bot.stop();
+	});
+});
+
+// PR45 — dispatch shape-gating exception path
+describe("TelegramBot / dispatch gate exception (PR45 I4)", () => {
+	it("getShape throwing inside isCommandAvailableForShape replies with internal-error message", async () => {
+		const manager: AgentManagerInterface = {
+			getHandle: () => undefined,
+			listHandles: () => [],
+			shutdownAgent: async () => undefined,
+			getShape: async () => {
+				throw new Error("shape-boom");
+			},
+		};
+		const fake = new FakeTelegramBot();
+		const bot = new TelegramBot({
+			token: "fake-token",
+			allowedUserIds: [42],
+			agentManager: manager,
+			injectIntoAgent: async () => undefined,
+			botFactory: () => fake as unknown as never,
+		});
+		await bot.start();
+		fake.emit("message", fakeMessage({ userId: 42, text: "/status agent-x" }));
+		await flushTicks();
+		expect(fake.sendMessageCalls).toHaveLength(1);
+		expect(fake.sendMessageCalls[0]?.text).toContain("Internal error");
+		expect(fake.sendMessageCalls[0]?.text).toContain("shape-boom");
+		await bot.stop();
+	});
+});
+
+// PR45 — /start placeholder reply (Phase 1 pre-registered note)
+describe("TelegramBot / /start (Phase 1 placeholder)", () => {
+	it("/start replies with the pre-registered Phase 1 placeholder text", async () => {
+		const handles = [makeHandle("agent-foo")];
+		const { bot, fake } = buildBot({ allowed: [42], handles });
+		await bot.start();
+		fake.emit("message", fakeMessage({ userId: 42, text: "/start agent-foo" }));
+		await flushTicks();
+		expect(fake.sendMessageCalls).toHaveLength(1);
+		expect(fake.sendMessageCalls[0]?.text).toContain("Phase 1");
+		expect(fake.sendMessageCalls[0]?.text).toContain("agent-foo");
+		await bot.stop();
+	});
+});
+
+// PR45 — /agents empty + listHandles failure
+describe("TelegramBot / /agents edge cases", () => {
+	it("/agents with no registered handles replies with 'No agents registered.'", async () => {
+		const { bot, fake } = buildBot({ allowed: [42] });
+		await bot.start();
+		fake.emit("message", fakeMessage({ userId: 42, text: "/agents" }));
+		await flushTicks();
+		expect(fake.sendMessageCalls).toHaveLength(1);
+		expect(fake.sendMessageCalls[0]?.text).toContain("No agents registered");
+		await bot.stop();
+	});
+
+	it("/agents reply path tolerates a listHandles failure", async () => {
+		// First call (gate path through getShape) succeeds — /agents shape gate
+		// returns { available: true } unconditionally per commands.ts. The
+		// failure surfaces from dispatchAgents' internal listHandles().
+		let calls = 0;
+		const manager: AgentManagerInterface = {
+			getHandle: () => undefined,
+			listHandles: () => {
+				calls++;
+				throw new Error("listHandles-boom");
+			},
+			shutdownAgent: async () => undefined,
+			getShape: async () => "pty",
+		};
+		const fake = new FakeTelegramBot();
+		const bot = new TelegramBot({
+			token: "fake-token",
+			allowedUserIds: [42],
+			agentManager: manager,
+			injectIntoAgent: async () => undefined,
+			botFactory: () => fake as unknown as never,
+		});
+		vi.spyOn(console, "error").mockImplementation(() => {});
+		await bot.start();
+		fake.emit("message", fakeMessage({ userId: 42, text: "/agents" }));
+		await flushTicks();
+		// dispatchAgents wraps listHandles in try/catch → user-visible reply
+		expect(fake.sendMessageCalls).toHaveLength(1);
+		expect(fake.sendMessageCalls[0]?.text).toContain("Failed to list agents");
+		expect(fake.sendMessageCalls[0]?.text).toContain("listHandles-boom");
+		expect(calls).toBeGreaterThanOrEqual(1);
+		await bot.stop();
+	});
+});
+
+// PR45 — /approve text command happy + sad paths
+describe("TelegramBot / /approve text form", () => {
+	it("/approve <id> allow resolves the pending approval and replies", async () => {
+		const emitSpy = vi.spyOn(telemetry, "emit");
+		const { bot, fake } = buildBot({ allowed: [42] });
+		const { approvalId } = await createApprovalRequest({
+			agentId: "agent-foo",
+			handleId: "h-1",
+			reason: "deploy?",
+		});
+		await bot.start();
+		fake.emit(
+			"message",
+			fakeMessage({
+				userId: 42,
+				text: `/approve ${approvalId} allow`,
+				username: "santi",
+			}),
+		);
+		const resolvedPath = path.join(
+			tempDir,
+			"approvals",
+			"resolved",
+			`${approvalId}.json`,
+		);
+		await waitForFile(resolvedPath);
+		await flushTicks();
+		const reply = fake.sendMessageCalls.map((c) => c.text).join("\n");
+		expect(reply).toContain(`Approval ${approvalId}`);
+		expect(reply).toContain("allow");
+		const kinds = emitSpy.mock.calls.map(
+			(c) => (c[0] as { kind: string }).kind,
+		);
+		expect(kinds).toContain("approval-resolved");
+		await bot.stop();
+	});
+
+	it("/approve on an unknown id replies with the not-found reason", async () => {
+		const { bot, fake } = buildBot({ allowed: [42] });
+		await bot.start();
+		const unknownId = "11111111-2222-4333-8444-555555555555";
+		fake.emit(
+			"message",
+			fakeMessage({ userId: 42, text: `/approve ${unknownId} deny` }),
+		);
+		await waitForSendMessage(fake);
+		const reply = fake.sendMessageCalls[0]?.text ?? "";
+		expect(reply).toContain(`Approval ${unknownId}`);
+		expect(reply).toContain("not-found");
+		await bot.stop();
+	});
+
+	it("/approve text form rejects path-traversal approvalId at parse stage", async () => {
+		const { bot, fake } = buildBot({ allowed: [42] });
+		await bot.start();
+		fake.emit(
+			"message",
+			fakeMessage({ userId: 42, text: "/approve ../../etc/passwd allow" }),
+		);
+		await flushTicks();
+		expect(fake.sendMessageCalls).toHaveLength(1);
+		expect(fake.sendMessageCalls[0]?.text).toContain("invalid approval ID");
+		await bot.stop();
+	});
+});
+
+// PR45 — /abort full branch matrix
+describe("TelegramBot / /abort branches", () => {
+	it("/abort with invalid agentId is rejected before lookup", async () => {
+		const handles = [makeHandle("agent-foo")];
+		const shutdown = vi.fn(async () => undefined);
+		// shape: "pty" so the shape gate returns "pty" for AGENT_BAD and
+		// dispatch reaches dispatchAbort, which then rejects on the agent-id
+		// regex.
+		const { bot, fake } = buildBot({
+			allowed: [42],
+			shape: "pty",
+			handles,
+			shutdown,
+		});
+		await bot.start();
+		fake.emit("message", fakeMessage({ userId: 42, text: "/abort AGENT_BAD" }));
+		await waitForSendMessage(fake);
+		expect(shutdown).not.toHaveBeenCalled();
+		expect(fake.sendMessageCalls[0]?.text).toContain("Invalid agent id");
+		await bot.stop();
+	});
+
+	it("/abort with no matching handle replies with 'No handle found'", async () => {
+		const { bot, fake } = buildBot({
+			allowed: [42],
+			shape: "pty",
+			handles: [],
+		});
+		await bot.start();
+		fake.emit(
+			"message",
+			fakeMessage({ userId: 42, text: "/abort agent-ghost" }),
+		);
+		await waitForSendMessage(fake);
+		expect(fake.sendMessageCalls[0]?.text).toContain("No handle found");
+		await bot.stop();
+	});
+
+	it("/abort happy path calls shutdownAgent(handleId, SIGTERM) + replies", async () => {
+		const handles = [makeHandle("agent-foo")];
+		const shutdown = vi.fn(async () => undefined);
+		const { bot, fake } = buildBot({ allowed: [42], handles, shutdown });
+		await bot.start();
+		fake.emit("message", fakeMessage({ userId: 42, text: "/abort agent-foo" }));
+		await waitForSendMessage(fake);
+		expect(shutdown).toHaveBeenCalledWith("handle-agent-foo", "SIGTERM");
+		expect(fake.sendMessageCalls[0]?.text).toContain("Aborted agent agent-foo");
+		await bot.stop();
+	});
+
+	it("/abort surfaces a shutdownAgent failure as 'shutdownAgent failed' reply", async () => {
+		const handles = [makeHandle("agent-foo")];
+		const shutdown = vi.fn(async () => {
+			throw new Error("shutdown-boom");
+		});
+		const { bot, fake } = buildBot({ allowed: [42], handles, shutdown });
+		await bot.start();
+		fake.emit("message", fakeMessage({ userId: 42, text: "/abort agent-foo" }));
+		await waitForSendMessage(fake);
+		expect(fake.sendMessageCalls[0]?.text).toContain("shutdownAgent failed");
+		expect(fake.sendMessageCalls[0]?.text).toContain("shutdown-boom");
+		await bot.stop();
+	});
+});
+
+// PR45 — /status branch matrix
+describe("TelegramBot / /status branches", () => {
+	it("/status with invalid agentId is rejected before lookup", async () => {
+		const { bot, fake } = buildBot({ allowed: [42], shape: "pty" });
+		await bot.start();
+		fake.emit(
+			"message",
+			fakeMessage({ userId: 42, text: "/status AGENT_BAD" }),
+		);
+		await waitForSendMessage(fake);
+		expect(fake.sendMessageCalls[0]?.text).toContain("Invalid agent id");
+		await bot.stop();
+	});
+
+	it("/status without a registered handle still replies with the no-handle line", async () => {
+		const { bot, fake } = buildBot({
+			allowed: [42],
+			shape: "pty",
+			handles: [],
+		});
+		await bot.start();
+		fake.emit(
+			"message",
+			fakeMessage({ userId: 42, text: "/status agent-ghost" }),
+		);
+		await waitForSendMessage(fake);
+		const reply = fake.sendMessageCalls[0]?.text ?? "";
+		expect(reply).toContain("No handle for agent agent-ghost");
+		expect(reply).toContain("No pending approvals");
+		await bot.stop();
+	});
+
+	it("/status enumerates pending approvals for the named agent", async () => {
+		const handles = [makeHandle("agent-foo")];
+		const { bot, fake } = buildBot({ allowed: [42], handles });
+		const { approvalId } = await createApprovalRequest({
+			agentId: "agent-foo",
+			handleId: "handle-agent-foo",
+			reason: "ship?",
+		});
+		await bot.start();
+		fake.emit(
+			"message",
+			fakeMessage({ userId: 42, text: "/status agent-foo" }),
+		);
+		await waitForSendMessage(fake);
+		const reply = fake.sendMessageCalls[0]?.text ?? "";
+		expect(reply).toContain("Agent agent-foo");
+		expect(reply).toContain("Pending approvals");
+		expect(reply).toContain(approvalId);
+		expect(reply).toContain("ship?");
+		await bot.stop();
+	});
+});
+
+// PR45 — sendApprovalRequest sendMessage failure surfaces on stderr
+describe("TelegramBot / sendApprovalRequest failure (PR45)", () => {
+	it("sendMessage rejection in sendApprovalRequest is logged to stderr", async () => {
+		const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+		const fake = new FakeTelegramBot();
+		fake.sendMessage = async () => {
+			throw new Error("send-boom");
+		};
+		const bot = new TelegramBot({
+			token: "fake-token",
+			allowedUserIds: [42],
+			agentManager: {
+				getHandle: () => undefined,
+				listHandles: () => [],
+				shutdownAgent: async () => undefined,
+				getShape: async () => null,
+			},
+			injectIntoAgent: async () => undefined,
+			botFactory: () => fake as unknown as never,
+		});
+		await bot.start();
+		await bot.sendApprovalRequest(42, {
+			approvalId: "11111111-2222-4333-8444-555555555555",
+			agentId: "agent-foo",
+			handleId: "h-1",
+			reason: "deploy?",
+			createdAt: Date.now(),
+		});
+		const logs = errSpy.mock.calls.map((c) => String(c[0])).join("\n");
+		expect(logs).toContain("sendApprovalRequest failed");
+		expect(logs).toContain("send-boom");
+		await bot.stop();
+	});
+
+	it("sendApprovalRequest is a no-op when bot is not started (bot === null)", async () => {
+		const { bot, fake } = buildBot({ allowed: [42] });
+		// Note: not starting the bot — internal bot reference is null
+		await bot.sendApprovalRequest(42, {
+			approvalId: "11111111-2222-4333-8444-555555555555",
+			agentId: "agent-foo",
+			handleId: "h-1",
+			reason: "deploy?",
+			createdAt: Date.now(),
+		});
+		expect(fake.sendMessageCalls).toHaveLength(0);
+	});
+});
+
+// PR45 — safeReply chunked sendMessage failure mid-chunk
+describe("TelegramBot / safeReply sendMessage failure (PR45)", () => {
+	it("sendMessage failure inside safeReply is logged + aborts further chunks", async () => {
+		const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+		const fake = new FakeTelegramBot();
+		let calls = 0;
+		fake.sendMessage = async (chatId, text, options) => {
+			calls++;
+			fake.sendMessageCalls.push({ chatId, text, options });
+			throw new Error("send-mid-fail");
+		};
+		const handles = [makeHandle("agent-foo")];
+		const bot = new TelegramBot({
+			token: "fake-token",
+			allowedUserIds: [42],
+			agentManager: {
+				getHandle: (id) => handles.find((h) => h.id === id),
+				listHandles: () => handles,
+				shutdownAgent: async () => undefined,
+				getShape: async () => "pty",
+			},
+			injectIntoAgent: async () => undefined,
+			botFactory: () => fake as unknown as never,
+		});
+		await bot.start();
+		fake.emit("message", fakeMessage({ userId: 42, text: "/agents" }));
+		await flushTicks();
+		expect(calls).toBe(1);
+		const logs = errSpy.mock.calls.map((c) => String(c[0])).join("\n");
+		expect(logs).toContain("sendMessage failed");
+		expect(logs).toContain("send-mid-fail");
+		await bot.stop();
+	});
+});
+
+// PR45 — stop() removeAllListeners catch branch
+describe("TelegramBot / stop() removeAllListeners failure (PR45 I3)", () => {
+	it("removeAllListeners throwing is logged to stderr and bot reference still cleared", async () => {
+		const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+		const fake = new FakeTelegramBot();
+		fake.removeAllListeners = (() => {
+			throw new Error("rm-boom");
+		}) as never;
+		const bot = new TelegramBot({
+			token: "fake-token",
+			allowedUserIds: [42],
+			agentManager: {
+				getHandle: () => undefined,
+				listHandles: () => [],
+				shutdownAgent: async () => undefined,
+				getShape: async () => null,
+			},
+			injectIntoAgent: async () => undefined,
+			botFactory: () => fake as unknown as never,
+		});
+		await bot.start();
+		await bot.stop();
+		const logs = errSpy.mock.calls.map((c) => String(c[0])).join("\n");
+		expect(logs).toContain("removeAllListeners threw");
+		expect(logs).toContain("rm-boom");
+		// Subsequent stop() is a no-op (bot reference was nulled)
+		await bot.stop();
+	});
+});
+
+// PR45 — getChatId returns configured fallback chat
+describe("TelegramBot / getChatId", () => {
+	it("getChatId returns the explicit chatId option when supplied", () => {
+		const fake = new FakeTelegramBot();
+		const bot = new TelegramBot({
+			token: "fake-token",
+			allowedUserIds: [42, 99],
+			chatId: 12345,
+			agentManager: {
+				getHandle: () => undefined,
+				listHandles: () => [],
+				shutdownAgent: async () => undefined,
+				getShape: async () => null,
+			},
+			injectIntoAgent: async () => undefined,
+			botFactory: () => fake as unknown as never,
+		});
+		expect(bot.getChatId()).toBe(12345);
+	});
+
+	it("getChatId defaults to the first allowedUserIds entry when chatId omitted", () => {
+		const fake = new FakeTelegramBot();
+		const bot = new TelegramBot({
+			token: "fake-token",
+			allowedUserIds: [42, 99],
+			agentManager: {
+				getHandle: () => undefined,
+				listHandles: () => [],
+				shutdownAgent: async () => undefined,
+				getShape: async () => null,
+			},
+			injectIntoAgent: async () => undefined,
+			botFactory: () => fake as unknown as never,
+		});
+		expect(bot.getChatId()).toBe(42);
+	});
+});
+
+// PR45 — toJSON delegates to inspect.custom redactor
+describe("TelegramBot / toJSON (PR45 I7)", () => {
+	it("JSON.stringify(bot) does not leak the bot token", () => {
+		const TOKEN = "JSON-leak-vector-12345-secret-token";
+		const fake = new FakeTelegramBot();
+		const bot = new TelegramBot({
+			token: TOKEN,
+			allowedUserIds: [42],
+			agentManager: {
+				getHandle: () => undefined,
+				listHandles: () => [],
+				shutdownAgent: async () => undefined,
+				getShape: async () => null,
+			},
+			injectIntoAgent: async () => undefined,
+			botFactory: () => fake as unknown as never,
+		});
+		const json = JSON.stringify(bot);
+		expect(json).not.toContain(TOKEN);
+		expect(json).toContain("REDACTED");
 	});
 });
