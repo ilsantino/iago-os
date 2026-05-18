@@ -54,6 +54,35 @@ vi.mock("./telemetry.js", async () => {
 	};
 });
 
+// PL-8: ESM namespace imports cannot be redefined with `vi.spyOn`, so the
+// only way to make `agent-manager.ts`'s `import * as fsp from
+// "node:fs/promises"` resolve to a mockable rename is via a module-level
+// `vi.mock` with a passthrough wrapper. The hoisted `renameMock` is
+// reset to pass-through in beforeEach so once-rejections do not leak
+// across tests. PL-8 queues a one-shot failure via
+// `renameMock.mockRejectedValueOnce(...)` to exercise the
+// `claim-task-failed` telemetry branch in `claimTask`; every other test
+// and every other fs method calls the real implementation.
+type RenameFn = (
+	source: import("node:fs").PathLike,
+	dest: import("node:fs").PathLike,
+) => Promise<void>;
+const { renameMock, renameState } = vi.hoisted(() => ({
+	renameMock: vi.fn(),
+	renameState: { real: null as RenameFn | null },
+}));
+vi.mock("node:fs/promises", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("node:fs/promises")>();
+	renameState.real = actual.rename as RenameFn;
+	return {
+		...actual,
+		rename: (
+			source: import("node:fs").PathLike,
+			dest: import("node:fs").PathLike,
+		) => renameMock(source, dest),
+	};
+});
+
 let tempDir: string;
 
 beforeEach(async () => {
@@ -66,6 +95,13 @@ beforeEach(async () => {
 	emitMock.mockImplementation((e: DaemonEvent) => {
 		if (emitState.real === null) return Promise.resolve();
 		return emitState.real(e);
+	});
+	renameMock.mockReset();
+	renameMock.mockImplementation((source, dest) => {
+		if (renameState.real === null) {
+			throw new Error("renameState.real not initialized by vi.mock factory");
+		}
+		return renameState.real(source, dest);
 	});
 	vi.spyOn(console, "error").mockImplementation(() => {});
 });
@@ -1838,5 +1874,71 @@ describe("AgentManager / polling-loop (Plan 07b)", () => {
 		// suppression-set add, the 6th via the overflow branch).
 		const unrouted = emittedEventsOfKind("task-unrouted");
 		expect(unrouted).toHaveLength(6);
+	});
+
+	it("(PL-8) claimTask: fs.rename failure emits claim-task-failed telemetry, no task-resolved event, file stays in pending", async () => {
+		const ctrl = makeMockRuntime("mock-pty-pl8");
+		registerRuntime(ctrl.runtime);
+		const mgr = new AgentManager();
+		await mgr.registerAgent({
+			agentId: "pr-triage",
+			runtimeId: "mock-pty-pl8",
+			cwd: "/tmp/w",
+			env: {},
+			sessionId: "sess-pl8",
+		});
+
+		const filename = "pr-triage__1700000000.json";
+		writePendingTask(filename, {
+			prompt: "do the triage",
+			agentId: "pr-triage",
+			needsApproval: false,
+		});
+
+		// Force the next fsp.rename to throw EACCES. The polling tick for a
+		// valid+routed task hits exactly one rename (claimTask), so the
+		// once-rejection fires precisely at the claim attempt; subsequent
+		// renames (and the afterEach cleanup) fall back to the pass-through
+		// implementation installed in beforeEach.
+		const renameErr = Object.assign(
+			new Error("EACCES: permission denied, rename"),
+			{ code: "EACCES" },
+		);
+		renameMock.mockRejectedValueOnce(renameErr);
+
+		const resolvedEvents: Array<{ agentId: string; filename: string }> = [];
+		mgr.on("task-resolved", (e: { agentId: string; filename: string }) => {
+			resolvedEvents.push(e);
+		});
+
+		await mgr._pollingTickForTests();
+
+		// claimTask attempted exactly one rename.
+		expect(renameMock).toHaveBeenCalledTimes(1);
+
+		// claim-task-failed telemetry emitted ONCE with filename + agentId
+		// and the underlying rename error surfaced via `message` + `errno`
+		// so operators can trace back to the fs failure.
+		const failures = emittedEventsOfKind("claim-task-failed");
+		expect(failures).toHaveLength(1);
+		expect(failures[0]).toMatchObject({
+			kind: "claim-task-failed",
+			agentId: "pr-triage",
+			filename,
+			errno: "EACCES",
+		});
+		expect((failures[0] as { message: string }).message).toContain("EACCES");
+
+		// task-resolved EventEmitter event NEVER fires when rename fails —
+		// CronScheduler's slot stays held until a retry succeeds.
+		expect(resolvedEvents).toHaveLength(0);
+		// And no task-resolved telemetry mirror either.
+		expect(emittedEventsOfKind("task-resolved")).toHaveLength(0);
+
+		// File still exists in tasks/pending/ (not moved to resolved).
+		await fsp.access(path.join(pathFor("tasks/pending"), filename));
+		await expect(
+			fsp.access(path.join(pathFor("tasks/resolved"), filename)),
+		).rejects.toThrow();
 	});
 });

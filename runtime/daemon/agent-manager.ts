@@ -1419,6 +1419,16 @@ export class AgentManager extends EventEmitter {
 	 * filesystem faults eventually surface as `cron-overlap-prevented` —
 	 * the operator should investigate the upstream `claim-task-failed`
 	 * events first.
+	 *
+	 * **Scope note (Plan 07b):** claimTask is decrement-only — it moves
+	 * pending→resolved + emits task-resolved so CronScheduler can release
+	 * its slot. It does NOT dispatch the task content to a registered agent
+	 * runtime; that dispatch logic is deferred to Plan 04b Task 3
+	 * (`wireAgentManagerIntoStartDaemon`) which will subscribe a real
+	 * dispatch handler to the agent registry's runtime channel. A Codex
+	 * adversarial pass on PR #64 correctly flagged the absence of dispatch
+	 * as a design gap; this is documented intentional scope, not an
+	 * implementation bug.
 	 */
 	async claimTask(filename: string, agentId: string): Promise<void> {
 		assertSafeIdentifier(filename, "filename");
