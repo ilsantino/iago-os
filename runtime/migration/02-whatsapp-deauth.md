@@ -167,8 +167,9 @@ post-rollback follow-up plan — not an inline cutover step.
 | `[1/6]` reports `openclaw still active` | Plan 02a archive-openclaw.sh did not run, or unit re-started | Stop OpenClaw first: `tailscale ssh root@srv1456441 -- su - ilsantino -c "systemctl --user stop openclaw-gateway.service"` then re-run |
 | `[2/6]` returns `success:false` | WABA already unsubscribed, OR token lacks `whatsapp_business_management` scope | Check Meta App Dashboard → WhatsApp → Configuration; if already unsubscribed, skip step 2 and continue from step 3 manually |
 | `[4/6]` returns `success:false` | Token already revoked, OR token is App-level and lacks `/me/permissions` access | If previously revoked, step 5/6 will still confirm dead — continue. If wrong type, regenerate as System User token |
-| `[5/6]` reports `is_valid:missing` | `APP_ID` or `APP_SECRET` mismatched against the token's app | Verify all three come from the SAME Meta App |
+| `[5/6]` reports `is_valid:null` | `APP_ID` or `APP_SECRET` mismatched against the token's app (debug_token returns an error with no `data.is_valid` field) | Verify all three come from the SAME Meta App |
 | `[6/6]` returns HTTP 200 | Token did not actually revoke (Meta caching) | Wait 60s, re-run step 6 manually; if still 200, the `/me/permissions` DELETE silently failed — investigate Meta App Dashboard audit log |
+| Script failed between `[2/6]` and `[4/6]` (e.g. network drop) | Partial deauth: webhook subscription deleted, system-user token still live | Webhook cleanup is done. Manually revoke the system-user token: Meta Business Suite → Business Settings → Users → System Users → click the OpenClaw system user → Revoke token. Do NOT re-run the script — step 2 (`DELETE /subscribed_apps`) is non-idempotent and will error if re-run after a clean deletion. |
 
 ---
 

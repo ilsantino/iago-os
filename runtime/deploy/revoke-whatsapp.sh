@@ -150,7 +150,7 @@ emit_ndjson "4/6" "ok" "$response"
 echo "[5/6] GET /debug_token (verify token is_valid=false)..."
 response=$(curl -sS \
   "${GRAPH_BASE}/debug_token?input_token=${SYSTEM_USER_TOKEN}&access_token=${APP_ID}|${APP_SECRET}")
-is_valid=$(echo "$response" | jq -r '.data.is_valid // "missing"')
+is_valid=$(echo "$response" | jq -r '.data.is_valid')
 if [[ "$is_valid" != "false" ]]; then
   echo "ERROR: debug_token reports is_valid=${is_valid} (expected false). Response:" >&2
   echo "$response" >&2

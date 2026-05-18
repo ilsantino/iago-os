@@ -25,9 +25,11 @@
 #
 # WARNING: this script is INTERACTIVE; do not invoke from pipeline/CI.
 # Operator runs it at cutover-time per runtime/migration/02-telegram-bot-rotation.md.
-# Set IAGO_ROTATE_NONINTERACTIVE=1 to skip the `read -r` prompt — that
-# path is used ONLY by the Plan 03a dry-run harness (script verifies
-# pre-rotation state then exits before the prompt; no rotation runs).
+# Set IAGO_ROTATE_NONINTERACTIVE=1 to exit after step 1 (pre-rotation snapshot).
+# This flag skips BOTH the `read -r` UI prompt AND the 1Password consistency
+# check (step 3) — both belong to the rotation flow, which does not run in
+# this mode. NOT an "auto-rotate" flag. Use only for the Plan 03a dry-run
+# pre-flight that confirms the old token is still live; no rotation runs.
 #
 # Required env var (never echoed):
 #   OLD_TOKEN  the Telegram bot token IN USE before rotation
@@ -35,7 +37,7 @@
 # Optional env var:
 #   PROVISION_SCRIPT  path to provision-credentials.sh (defaults to
 #                     the sibling script shipped by Plan 01a)
-#   IAGO_ROTATE_NONINTERACTIVE=1  skip the BotFather UI prompt
+#   IAGO_ROTATE_NONINTERACTIVE=1  exit after step 1 (skips read -r AND 1Password check — dry-run only)
 #
 # Telemetry: writes one NDJSON line per step (and per retry attempt
 # at step 5) to /var/log/iago-os/cutover.ndjson if writable.
