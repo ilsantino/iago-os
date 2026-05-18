@@ -100,6 +100,7 @@ import {
 	getErrnoCode,
 	pathFor,
 } from "../daemon/state-paths.js";
+import { emit as emitTelemetry } from "../daemon/telemetry.js";
 
 export interface ApprovalRequest {
 	readonly approvalId: string;
@@ -483,6 +484,26 @@ async function resolveApprovalLocked(
 				// up. resolved should be present; if not, it was never created.
 				if (await pathExists(resolvedPath)) {
 					return { ok: false, reason: "already-resolved" };
+				}
+				// I2 (Opus PR #50 dual-review): when `link(2)` returns EPERM
+				// AND no winning state is observable (no resolved, no
+				// inflight), the most likely cause is a Linux
+				// `fs.protected_hardlinks=1` misconfiguration rather than a
+				// lost race. A genuine lost race always leaves an inflight
+				// or resolved file visible to the loser. Emit telemetry so
+				// the misconfiguration surfaces instead of silently
+				// reporting `not-found` for every approval forever. Hash the
+				// approvalId so the telemetry stream does not leak the raw
+				// id (consistent with PR #45 I8 PII-hash pattern).
+				if (code === "EPERM") {
+					void emitTelemetry({
+						kind: "approval-claim-link-eperm",
+						approvalIdHash: crypto
+							.createHash("sha256")
+							.update(approvalId)
+							.digest("hex")
+							.slice(0, 16),
+					});
 				}
 				return { ok: false, reason: "not-found" };
 			}

@@ -232,13 +232,18 @@ export async function atomicRename(src: string, dst: string): Promise<void> {
  * Platform implementations:
  *   - POSIX: `rename(2)` overwrites the destination atomically (single
  *     syscall, no observable intermediate state).
- *   - Windows: Node's `fs.promises.rename` does NOT pass
- *     `MOVEFILE_REPLACE_EXISTING`, so it returns `EEXIST`/`EPERM` when
- *     the target exists; we unlink then rename. This opens a small race
+ *   - Windows: Node's `fs.promises.rename` (libuv `uv_fs_rename`) DOES
+ *     pass `MOVEFILE_REPLACE_EXISTING | MOVEFILE_COPY_ALLOWED` on Node
+ *     ≥ 14, so an ordinary overwrite is atomic. The recovery branch fires
+ *     only when the destination handle is held by another process
+ *     (sharing-violation surfacing as EEXIST/EPERM); the unlink-then-
+ *     rename retry races the holder's release. This opens a small race
  *     window (acceptable for Phase 1; revisit in Phase 7 if strict
- *     atomicity becomes a requirement). The window size is recorded via
- *     a `atomic-rename-stale-dest-window` telemetry event so Phase 7 has
- *     real data to decide on.
+ *     atomicity under contention becomes a requirement). The window size
+ *     is recorded via the `atomic-rename-stale-dest-window` telemetry
+ *     event — read the counter as a **handle-contention signal** (not as
+ *     a "Node bug" indicator), so a high count means "another process is
+ *     fighting for this path" not "Windows rename is broken."
  *
  * Callers needing fail-on-EEXIST semantics MUST use `atomicRename`
  * (strict) instead — see `runtime/daemon/state-paths.md` for the

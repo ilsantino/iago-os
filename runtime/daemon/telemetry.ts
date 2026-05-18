@@ -107,6 +107,22 @@ export type DaemonEvent =
 			readonly dst: string;
 			readonly windowMs: number;
 			readonly platform: "win32";
+	  }
+	| {
+			/**
+			 * Emitted when CLAIM's `link(2)` returns EPERM AND no winning
+			 * resolver state exists on disk. On Linux with
+			 * `fs.protected_hardlinks=1` (kernel default on modern distros),
+			 * `link(2)` returns EPERM when the caller cannot hard-link the
+			 * source — a permission/configuration problem, not a lost race.
+			 * Surfacing this as telemetry distinguishes the two: a healthy
+			 * loss-of-race resolves elsewhere within milliseconds; a true
+			 * EPERM-no-winner means every approval for this approvalId will
+			 * silently report `not-found` until the misconfig is fixed.
+			 * Opus dual-review I2 of PR #50.
+			 */
+			readonly kind: "approval-claim-link-eperm";
+			readonly approvalIdHash: string;
 	  };
 
 let missingSessionIdWarned = false;
