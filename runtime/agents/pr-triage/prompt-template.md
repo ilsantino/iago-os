@@ -81,6 +81,7 @@ Read these two environment variables from the spawned shell (both are inherited 
 Concrete invocation pattern (run from inside the agent's PTY shell):
 
 ```
+: > /tmp/tg-resp.json   # ensure file exists before either branch writes/reads it
 FIRST_ID=$(echo "$IAGO_TELEGRAM_ALLOWED_USER_IDS" | cut -d, -f1)
 if [ -z "$FIRST_ID" ]; then
   # IAGO_TELEGRAM_ALLOWED_USER_IDS unset or empty — skip the POST and
