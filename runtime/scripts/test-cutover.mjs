@@ -617,6 +617,180 @@ test("15. cutover.sh release_remote_lock leaves a hijacked marker intact (Codex 
 	}
 });
 
+test("17. cutover.sh T+05 systemd-creds round-trip fails closed on empty/failed decrypt (I-1 regression)", () => {
+	const env = newTestEnv();
+	try {
+		// Inject a failure that ONLY matches cutover.sh's verification call
+		// (no single quotes around the path). provision-credentials.sh uses
+		// `decrypt '/etc/credstore.encrypted/...'` with literal single
+		// quotes, so this pattern misses provision-credentials and only
+		// breaks the verification line. Pre-fix the `if vssh ...` ignored
+		// the failure because `wc -c` on empty stdin prints "0" exit 0.
+		// Post-fix: length-capture pattern sees len=0 → trigger_rollback.
+		const r = runCutover(env, {
+			env: {
+				IAGO_CUTOVER_DRY_RUN: "1",
+				IAGO_TELEGRAM_USER_ID: "12345",
+				STUB_FAIL_TAILSCALE_PATTERN:
+					"systemd-creds decrypt /etc/credstore.encrypted/iago-telegram-token.cred - | wc -c",
+			},
+			timeout: 60_000,
+		});
+		assert.strictEqual(
+			r.status,
+			2,
+			`expected exit 2 (rollback triggered), got ${r.status}; tail: ${`${r.stdout}\n${r.stderr}`.slice(-800)}`,
+		);
+		const text = `${r.stdout}\n${r.stderr}`;
+		assert.match(text, /ROLLBACK TRIGGERED/);
+		assert.match(
+			text,
+			/systemd-creds decrypt round-trip empty\/failed for iago-telegram-token \(len=0\)/,
+		);
+	} finally {
+		destroyTestEnv(env);
+	}
+});
+
+test("18. rollback.sh PATCH_EOF heredoc emits chmod 0600 after chown (I-2 regression — static check)", () => {
+	// Static check: the patch script body is shipped to the VPS via scp and
+	// invoked under bash. The harness's tailscale stub intercepts the
+	// `bash /tmp/iago-rollback-patch-*.sh` call and exits 0 without
+	// executing the body, so a dynamic assertion on chmod invocation is not
+	// possible. This static check verifies production code SHIPS the chmod
+	// to the VPS — the actual mode change happens server-side.
+	const body = readFileSync(rollbackScript, "utf8");
+	const patchStart = body.indexOf("PATCH_EOF");
+	assert.ok(patchStart > 0, "PATCH_EOF heredoc marker should be present");
+	// Find the heredoc body — between `<<'PATCH_EOF'` and the closing line
+	// `PATCH_EOF`. The closing marker must be at column 0.
+	const openMarker = body.indexOf("<<'PATCH_EOF'");
+	assert.ok(openMarker > 0, "PATCH_EOF heredoc opener should be present");
+	const closeMarker = body.indexOf("\nPATCH_EOF\n", openMarker);
+	assert.ok(closeMarker > openMarker, "PATCH_EOF closing marker should be present");
+	const patchBody = body.slice(openMarker, closeMarker);
+	// Both files must be chmod 0600'd — the patched openclaw.json AND its
+	// backup pre-rollback copy (same token, same risk).
+	assert.match(
+		patchBody,
+		/chmod 0600 ~ilsantino\/\.openclaw\/openclaw\.json ~ilsantino\/\.openclaw\/openclaw\.json\.pre-rollback/,
+		"PATCH_EOF heredoc must chmod 0600 both openclaw.json and openclaw.json.pre-rollback after chown",
+	);
+	// And the chmod MUST come AFTER the chown (otherwise mv->chown reset mode).
+	const chownIdx = patchBody.indexOf("chown ilsantino:ilsantino");
+	const chmodIdx = patchBody.indexOf("chmod 0600 ~ilsantino");
+	assert.ok(
+		chmodIdx > chownIdx,
+		"chmod 0600 must come after chown to ensure mode survives ownership change",
+	);
+});
+
+test("19. rollback.sh aborts FATAL when v2 daemon stays active after stop+disable (split-brain risk regression)", () => {
+	const env = newTestEnv();
+	try {
+		// Simulate `systemctl stop` failing while `disable` still succeeds —
+		// the prior code only WARN'd at the final is-active check and
+		// proceeded to OpenClaw start, creating a split-brain (both
+		// daemons polling Telegram). Post-fix: the final is-active check
+		// is FATAL on non-inactive state, script exits 2 before
+		// OpenClaw start.
+		const r = runRollback(env, {
+			env: {
+				IAGO_ROLLBACK_DRY_RUN: "1",
+				IAGO_ROLLBACK_SKIP_TOKEN: "1",
+				STUB_FAIL_STOP_V2: "1",
+			},
+			timeout: 60_000,
+		});
+		assert.strictEqual(
+			r.status,
+			2,
+			`expected exit 2 (FATAL split-brain abort), got ${r.status}; tail: ${`${r.stdout}\n${r.stderr}`.slice(-800)}`,
+		);
+		const text = `${r.stdout}\n${r.stderr}`;
+		assert.match(text, /FATAL: v2 daemon still '[^']+' after stop\+disable/);
+		assert.match(text, /split-brain/);
+		const log = readLog(env);
+		// OpenClaw must NOT have started — abort happens earlier.
+		assert.doesNotMatch(
+			log,
+			/su - ilsantino.*systemctl --user enable --now openclaw-gateway/,
+			"OpenClaw start must not run when v2 is still active after stop+disable",
+		);
+		assert.doesNotMatch(text, /ROLLBACK COMPLETE/);
+	} finally {
+		destroyTestEnv(env);
+	}
+});
+
+test("20. cutover.sh T+08 triggers rollback on failure/stack-trace pattern in journal (manual Codex HIGH regression)", () => {
+	const env = newTestEnv();
+	try {
+		// Pre-fix: T+08 only checked that "daemon-start" was present; logs
+		// containing daemon-start AND a panic still passed. Post-fix: a
+		// second journal scan looks for panic/Error/Traceback/FATAL/
+		// terminated patterns and triggers rollback on match.
+		const r = runCutover(env, {
+			env: {
+				IAGO_CUTOVER_DRY_RUN: "1",
+				IAGO_TELEGRAM_USER_ID: "12345",
+				STUB_INJECT_DAEMON_FAILURE: "1",
+			},
+			timeout: 60_000,
+		});
+		assert.strictEqual(
+			r.status,
+			2,
+			`expected exit 2 (rollback triggered), got ${r.status}; tail: ${`${r.stdout}\n${r.stderr}`.slice(-800)}`,
+		);
+		const text = `${r.stdout}\n${r.stderr}`;
+		assert.match(text, /ROLLBACK TRIGGERED/);
+		assert.match(
+			text,
+			/T\+08: failure\/stack-trace pattern observed in daemon journal/,
+		);
+	} finally {
+		destroyTestEnv(env);
+	}
+});
+
+test("21. cutover.sh T+50 triggers rollback on non-zero error count (manual Codex HIGH regression)", () => {
+	const env = newTestEnv();
+	try {
+		// Pre-fix: `err_count=$(... || echo 0)` masked failures and only
+		// WARN'd on errors > 0 — the cutover proceeded through T+55/T+60
+		// with broken daemon logs. Post-fix: query failures and
+		// error-count > 0 both trigger rollback (unless
+		// IAGO_CUTOVER_T50_TOLERATE_ERRORS=1 explicitly opts out).
+		// RESUME_FROM=T+45 skips T-15..T+30 to keep the test fast — every
+		// dry-run prompt costs 1s sleep + ~30 vssh spawns at ~500ms on
+		// Windows. The trigger fires at T+50, then rollback.sh runs to
+		// completion before the harness times out.
+		const r = runCutover(env, {
+			env: {
+				IAGO_CUTOVER_DRY_RUN: "1",
+				IAGO_TELEGRAM_USER_ID: "12345",
+				IAGO_CUTOVER_RESUME_FROM: "T+45",
+				STUB_INJECT_T50_ERRORS: "5",
+			},
+			timeout: 120_000,
+		});
+		assert.strictEqual(
+			r.status,
+			2,
+			`expected exit 2 (rollback triggered), got ${r.status}; tail: ${`${r.stdout}\n${r.stderr}`.slice(-800)}`,
+		);
+		const text = `${r.stdout}\n${r.stderr}`;
+		assert.match(text, /ROLLBACK TRIGGERED/);
+		assert.match(
+			text,
+			/T\+50: 5 error-level log lines in last hour/,
+		);
+	} finally {
+		destroyTestEnv(env);
+	}
+});
+
 test("16. jq patch expression unit test — shell jq command produces expected JSON byte-for-byte", () => {
 	// This test exercises the actual shell jq invocation from rollback.sh's
 	// patch script — the expression `.channels.telegram.botToken = $t` — using

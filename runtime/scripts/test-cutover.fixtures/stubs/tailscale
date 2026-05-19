@@ -13,6 +13,12 @@
 #     marker with a foreign value right after acquire — used to verify
 #     the owner-checked release does NOT delete a marker it doesn't own
 #     (Codex P1 finding 3 regression)
+#   * honoring STUB_FAIL_STOP_V2 to fail the v2 stop without flipping
+#     V2_STATE_FILE (used by split-brain rollback regression test)
+#   * honoring STUB_INJECT_DAEMON_FAILURE to make the T+08 failure-pattern
+#     grep "find" a stack trace (regression test for journal trigger gap)
+#   * honoring STUB_INJECT_T50_ERRORS=N to make the T+50 journalctl wc -l
+#     report N error lines (regression test for journal trigger gap)
 
 set +e
 
@@ -133,6 +139,13 @@ case "$ARGS" in
     fi
     ;;
   *"systemctl stop iago-os-v2-daemon"*)
+    if [[ "${STUB_FAIL_STOP_V2:-0}" == "1" ]]; then
+      # Simulate `systemctl stop` timing out / failing without taking the
+      # daemon down. V2_STATE_FILE stays "active" so the subsequent
+      # is-active check reads "active" → fatal split-brain abort.
+      echo "Job for iago-os-v2-daemon.service canceled (stub-injected fail)" >&2
+      exit 1
+    fi
     echo "inactive" > "$V2_STATE_FILE"
     echo "Stopped iago-os-v2-daemon.service"
     exit 0
@@ -159,8 +172,25 @@ case "$ARGS" in
     echo "daemon-start observed"
     exit 0
     ;;
+  *"journalctl"*"panic"*)
+    # T+08 failure-pattern grep: production code is
+    #   journalctl ... | grep -qE 'panic|Error: |Traceback|FATAL|terminated abnormally'
+    # Default behavior: pretend grep found nothing (exit 1 = no match).
+    # When STUB_INJECT_DAEMON_FAILURE=1, pretend grep matched (exit 0)
+    # so trigger_rollback fires — regression test for journal trigger gap.
+    if [[ "${STUB_INJECT_DAEMON_FAILURE:-0}" == "1" ]]; then
+      exit 0
+    fi
+    exit 1
+    ;;
   *"journalctl"*"wc -l"*)
-    echo "0"
+    if [[ -n "${STUB_INJECT_T50_ERRORS:-}" ]]; then
+      # Report N error lines for T+50; production code now triggers
+      # rollback when N > 0 (no `|| echo 0` masking).
+      echo "${STUB_INJECT_T50_ERRORS}"
+    else
+      echo "0"
+    fi
     exit 0
     ;;
   *"sha256sum"*)

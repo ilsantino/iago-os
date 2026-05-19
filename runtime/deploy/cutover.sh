@@ -169,7 +169,13 @@ ndjson_write() {
   ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
   line=$(printf '{"ts":"%s","kind":"%s","stage":"%s","result":"%s"}' \
     "$ts" "$kind" "$stage" "$result")
-  vssh "echo '${line}' >> /var/log/iago-os/cutover.ndjson" \
+  # M-1 fix: stdin-pipe pattern instead of `echo '${line}'`. Reason: when
+  # ${line}'s result field is a rollback reason containing single quotes
+  # (e.g., state='inactive'), the remote shell mis-parses the embedded
+  # quoting, silently fails, `|| true` swallows the error → telemetry line
+  # is lost exactly when it matters most. Passing the line via stdin avoids
+  # the quote-escape gauntlet entirely.
+  vssh "cat >> /var/log/iago-os/cutover.ndjson" <<< "$line" \
     > /dev/null 2>&1 || true
 }
 
@@ -453,10 +459,20 @@ main() {
     echo "[T+05] Provision credentials — invoking provision-credentials.sh telegram-token gh-token"
     verify_lock_still_ours
     bash "$DEPLOY_DIR/provision-credentials.sh" telegram-token gh-token
-    if vssh "systemd-creds decrypt /etc/credstore.encrypted/iago-telegram-token.cred - | wc -c" > /dev/null 2>&1; then
-      echo "  OK systemd-creds round-trip verified"
+    # I-1 fix: capture the length explicitly, not just the pipeline exit code.
+    # Reason: `systemd-creds decrypt | wc -c` runs under ssh's sh -c (no
+    # pipefail). If decrypt fails (corrupt ciphertext, missing key, wrong
+    # owner), wc reads empty stdin, prints "0", exits 0 — the `if vssh ...`
+    # would see success and silently neuter the check. Compare against the
+    # length to fail closed on empty/missing decryption output.
+    local len
+    len=$(vssh "systemd-creds decrypt /etc/credstore.encrypted/iago-telegram-token.cred - | wc -c" 2>/dev/null || echo 0)
+    len="${len//[[:space:]]/}"
+    len="${len:-0}"
+    if (( len > 1 )); then
+      echo "  OK systemd-creds round-trip verified (${len} bytes)"
     else
-      trigger_rollback "systemd-creds decrypt round-trip failed for iago-telegram-token"
+      trigger_rollback "systemd-creds decrypt round-trip empty/failed for iago-telegram-token (len=${len})"
     fi
     ndjson_write cutover-step T+05 ok
   fi
@@ -530,6 +546,15 @@ main() {
     fi
     echo "  OK daemon-start telemetry present"
 
+    # Codex HIGH fix: presence of "daemon-start" alone is not sufficient — a
+    # log containing daemon-start PLUS a panic/stack-trace still passes the
+    # prior check. Scan recent logs for failure patterns and rollback on
+    # match.
+    if vssh "journalctl -u iago-os-v2-daemon.service --since '5 minutes ago' --no-pager | grep -qE 'panic|Error: |Traceback|FATAL|terminated abnormally'"; then
+      trigger_rollback "T+08: failure/stack-trace pattern observed in daemon journal"
+    fi
+    echo "  OK no failure/stack-trace pattern in daemon journal"
+
     if ! vssh "test -S /var/lib/iago-os/daemon-state/ipc.sock"; then
       trigger_rollback "IPC socket /var/lib/iago-os/daemon-state/ipc.sock missing"
     fi
@@ -594,10 +619,28 @@ TEST_BLOCK
     echo ""
     echo "[T+50] Sanity checkpoint #2 — journalctl free of errors"
     verify_lock_still_ours
+    # Codex HIGH fix: prior code masked query failures with `|| echo 0` and
+    # only warned on errors > 0. Now: fail closed on query error; fail closed
+    # on errors > 0 unless IAGO_CUTOVER_T50_TOLERATE_ERRORS=1 explicitly
+    # opts out (rare — only set if cutover is intentionally running through
+    # a known-noisy log window and Santiago has eyeballed the noise).
     local err_count
-    err_count=$(vssh "journalctl -u iago-os-v2-daemon.service --since '1 hour ago' -p err -o cat | wc -l" || echo 0)
+    if ! err_count=$(vssh "journalctl -u iago-os-v2-daemon.service --since '1 hour ago' -p err -o cat | wc -l"); then
+      if [[ "${IAGO_CUTOVER_T50_TOLERATE_ERRORS:-0}" == "1" ]]; then
+        echo "WARN: T+50 journalctl error-count query failed (TOLERATE override engaged)"
+        err_count=0
+      else
+        trigger_rollback "T+50: journalctl error-count query failed"
+      fi
+    fi
+    err_count="${err_count//[[:space:]]/}"
+    err_count="${err_count:-0}"
     if (( err_count > 0 )); then
-      echo "WARN: ${err_count} error-level log lines in last hour"
+      if [[ "${IAGO_CUTOVER_T50_TOLERATE_ERRORS:-0}" == "1" ]]; then
+        echo "WARN: ${err_count} error-level log lines in last hour (TOLERATE override engaged)"
+      else
+        trigger_rollback "T+50: ${err_count} error-level log lines in last hour"
+      fi
     fi
     ndjson_write cutover-step T+50 ok
   fi

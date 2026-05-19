@@ -115,7 +115,12 @@ ndjson_write() {
   ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
   line=$(printf '{"ts":"%s","kind":"rollback-step","stage":"%s","action":"%s","result":"%s"}' \
     "$ts" "$stage" "$action" "$result")
-  vssh "echo '${line}' >> /var/log/iago-os/cutover.ndjson" \
+  # M-1 fix: stdin-pipe pattern instead of `echo '${line}'`. Reason: rollback
+  # records reason strings that include single quotes (state='inactive',
+  # marker='HIJACKER:...'). Echoing with single-quote wrappers breaks the
+  # remote shell parsing and `|| true` silently swallows the loss. stdin
+  # pipe sidesteps the quote-escape gauntlet entirely.
+  vssh "cat >> /var/log/iago-os/cutover.ndjson" <<< "$line" \
     > /dev/null 2>&1 || true
 }
 
@@ -253,7 +258,11 @@ main() {
       ;;
   esac
 
-  # Final is-active check — informational. Disable already gates correctness.
+  # Codex HIGH fix: final is-active check is now FATAL when the v2 daemon is
+  # still active. Pre-fix this was informational — if `systemctl stop` timed
+  # out but `disable` succeeded, the script continued to token rotation +
+  # openclaw start → split-brain (both daemons running, both pulling Telegram
+  # updates, both trying to write the same state). Fail closed.
   local v2_state v2_rc
   if v2_state=$(vssh "systemctl is-active iago-os-v2-daemon.service" 2>&1); then
     v2_rc=0
@@ -261,13 +270,19 @@ main() {
     v2_rc=$?
   fi
   v2_state="${v2_state//[[:space:]]/}"
-  if [[ "$v2_state" == "inactive" || "$v2_state" == "failed" ]]; then
-    echo "  OK iago-os-v2-daemon.service is-active='${v2_state}'"
-    ndjson_write +0:30 stop-v2 ok
-  else
-    echo "WARN: v2 daemon is-active='${v2_state}' after stop+disable (stop_rc=${stop_rc}, v2_rc=${v2_rc}) — continuing rollback (disable already verified)"
-    ndjson_write +0:30 stop-v2 warn-state-${v2_state}
-  fi
+  case "$v2_state" in
+    inactive|failed|""|not-found|unknown)
+      echo "  OK iago-os-v2-daemon.service is-active='${v2_state:-not-found}' (rc=${v2_rc})"
+      ndjson_write +0:30 stop-v2 ok
+      ;;
+    *)
+      echo "FATAL: v2 daemon still '${v2_state}' after stop+disable (stop_rc=${stop_rc}, v2_rc=${v2_rc})." >&2
+      echo "       Cannot proceed to OpenClaw restart — that would create a split-brain (two daemons polling Telegram simultaneously)." >&2
+      echo "       Manual recovery: tailscale ssh ${VPS_USER}@${VPS_HOST} -- 'systemctl kill iago-os-v2-daemon.service'" >&2
+      ndjson_write +0:30 stop-v2 fail-still-active-${v2_state}
+      exit 2
+      ;;
+  esac
 
   # --- T+R+1:30 — BotFather token re-rotation (skipped if SKIP_TOKEN) ---
   # T+R+1:30 token re-rotation
@@ -311,6 +326,10 @@ jq --arg t "$FRESH_TOKEN" '.channels.telegram.botToken = $t' \
   ~ilsantino/.openclaw/openclaw.json > ~ilsantino/.openclaw/openclaw.json.tmp
 mv ~ilsantino/.openclaw/openclaw.json.tmp ~ilsantino/.openclaw/openclaw.json
 chown ilsantino:ilsantino ~ilsantino/.openclaw/openclaw.json ~ilsantino/.openclaw/openclaw.json.pre-rollback
+# I-2 fix: `jq > .tmp` creates the new file with default umask (0022 → 0644).
+# mv preserves mode. Without explicit chmod, the freshly-tokened
+# openclaw.json ends up 0644 — world-readable, holding the live bot token.
+chmod 0600 ~ilsantino/.openclaw/openclaw.json ~ilsantino/.openclaw/openclaw.json.pre-rollback
 PATCH_EOF
     # Copy patch script to the VPS via tailscale scp (mirror of tailscale ssh)
     # The patch script holds no secret material (FRESH_TOKEN flows via SendEnv,
