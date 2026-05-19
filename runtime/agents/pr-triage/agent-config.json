@@ -1,7 +1,7 @@
 {
 	"agentId": "pr-triage",
 	"runtimeId": "claude-pty",
-	"_comment_fields": "authProfile, cwd, org, and env below are NOT consumed by plan 04a. loadAgentCronEntries reads only agentId from this file. These fields are hard dependencies for plan 04b (wireAgentManagerIntoStartDaemon), which must explicitly forward them to the PTY spawn opts during cron dispatch. If 04b reads from a different source, these values will silently rot.",
+	"_comment_fields": "Plan 04a ships configuration files only — it does NOT wire the daemon to discover or consume this file. Plan 04b is responsible for daemon-side discovery of agent-config.json and crons.json, cron registration, agent spawn via PTY, prompt dispatch, and the ndjsonAlert envelope contract used by the fallback path in prompt-template.md step (d). The authProfile, cwd, org, and env fields below are inputs 04b must forward to the PTY spawn opts. If 04b reads from a different source, these values will silently rot.",
 	"org": "internal",
 	"cwd": "/opt/iago-os",
 	"env": {

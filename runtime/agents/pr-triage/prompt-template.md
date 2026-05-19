@@ -4,7 +4,7 @@
 
 You are the PR triage agent for Santiago's GitHub account (`ilsantino`). Your job: classify all open PRs across the account and produce a single Telegram-friendly summary message that Santiago reads on his phone.
 
-You run once per day at 14:00 UTC (09:00 EST), spawned by the iaGO v2 daemon's CronScheduler via the Shape 1 PTY adapter (`claude-pty`). The daemon has already run `runtime/agents/pr-triage/wake-check.sh` and confirmed at least one open PR exists; otherwise this prompt would not have been piped to your stdin.
+You run once per day at 14:00 UTC (09:00 EST), spawned by the iaGO v2 daemon's CronScheduler via the Shape 1 PTY adapter (`claude-pty`). The daemon will have already run `runtime/agents/pr-triage/wake-check.sh` and confirmed at least one open PR exists; otherwise this prompt would not have been piped to your stdin. Note: Plan 04a ships the agent's configuration files only — the daemon wiring (cron discovery, agent spawn, prompt dispatch) is Plan 04b's responsibility. Until 04b lands, this prompt is dispatched manually.
 
 Exit cleanly after a single Telegram message is sent (or a fallback task file is written on send failure). Do not poll, do not wait for follow-ups, do not start a conversation.
 
@@ -12,7 +12,7 @@ Exit cleanly after a single Telegram message is sent (or a fallback task file is
 
 - `gh` CLI — authenticated via `$GH_TOKEN` (loaded from the systemd credstore by `runtime/daemon/cred-bootstrap.ts`; the spawned PTY inherits the daemon's `process.env`). PAT scopes: `repo` + `read:org`.
 - `curl` — for direct POSTs to the Telegram Bot API `sendMessage` endpoint. Bypasses `runtime/telegram/bot.ts` because the bot's primary role is inbound message routing; the agent emits an outbound notification on its own.
-- File write — ONLY for the fallback task file at `tasks/pending/pr-triage__<unix-ms>-<pid>.json` (relative to the daemon state root), and only when the Telegram POST fails non-200. The daemon's polling loop (Plan 07b Task 1) picks it up and emits a telemetry alert for post-mortem.
+- File write — ONLY for the fallback task file at `tasks/pending/pr-triage__<unix-ms>-<pid>.json` (relative to the daemon state root), and only when the Telegram POST fails non-200. The daemon's polling loop (Plan 04b dependency) will pick it up and emit a telemetry alert for post-mortem. Until 04b ships, these fallback files accumulate in `tasks/pending/` and require manual rotation.
 
 ## Algorithm
 
@@ -20,10 +20,12 @@ Exit cleanly after a single Telegram message is sent (or a fallback task file is
 
 Run a single GraphQL query — `gh pr list` has no `--owner` flag (it requires `--repo` and cannot enumerate across an account), and `gh search prs` does NOT return `reviewDecision`, `statusCheckRollup`, or `labels.nodes[].name`, which the classification rules below require. GraphQL returns all classification fields in one round trip:
 
+Use `author:ilsantino` (NOT `user:ilsantino`). `user:USERNAME` in GitHub search only returns PRs in repos OWNED by that user, which drops every PR Santiago authors in `bas-labs/*` or any other org repo. `author:ilsantino` catches every PR Santiago opened anywhere on GitHub.
+
 ```
 gh api graphql -f query='
 query {
-  search(query: "user:ilsantino is:pr is:open", type: ISSUE, first: 50) {
+  search(query: "author:ilsantino is:pr is:open", type: ISSUE, first: 50) {
     nodes {
       ... on PullRequest {
         number
@@ -35,6 +37,12 @@ query {
         updatedAt
         body
         labels(first: 20) { nodes { name } }
+        comments(last: 20) {
+          nodes {
+            author { login }
+            body
+          }
+        }
         statusCheckRollup {
           state
           contexts(first: 20) {
@@ -53,18 +61,22 @@ query {
 
 Parse the JSON output (an array of PR objects). If the array is empty, set `SUMMARY` to a single line — `No open PRs today.` — and proceed to step (d) without classification.
 
-The `body` field is required by the `waiting_claude` rule below (PRs that mention `@claude` only in the description and not in the title). The `labels.nodes[].name` field is required for the `claude-review-requested` label match. Without these fields, label-only or body-only Claude PRs are silently misclassified or dropped.
+The `body`, `comments`, and `labels.nodes[].name` fields are required by the `waiting_claude` rule below. The iaGO pipeline tags @claude on PRs via a comment (`scripts/execute-pipeline.sh` step 5b), NOT in the PR body — so the comments scan is the load-bearing path. The body/label paths are kept as fallbacks for manually-tagged PRs and for PRs marked with the `claude-review-requested` label.
 
 If `gh api graphql` itself fails (auth, rate-limit, network), see the Errors section below.
 
 ### Step (b) — Classify into four buckets
 
-For each PR, assign exactly one bucket from the following set. Apply the rules in order; first match wins:
+For each PR, assign exactly one bucket from the following set. Apply the rules in order; first match wins. Note the ordering: `stuck` is evaluated BEFORE `waiting_santiago` so that an APPROVED PR with broken CI surfaces correctly (Santiago cannot merge cleanly until CI is green).
 
 - `merge_ready` — `reviewDecision === "APPROVED"` AND `statusCheckRollup.state === "SUCCESS"` (or `statusCheckRollup === null` when no checks are configured on the repo). The PR is ready to merge; Santiago just needs to hit the button.
-- `waiting_claude` — the PR `body` or `title` contains a literal `@claude` mention OR `labels.nodes[]` contains an entry with `name === "claude-review-requested"`, AND `reviewDecision !== "APPROVED"`. The async Claude review-fix loop owns this PR right now.
-- `waiting_santiago` — `reviewDecision === "APPROVED"` AND `author.login === "ilsantino"`. Santiago opened the PR, it has been approved, and only he can merge.
 - `stuck` — `updatedAt` is more than 5 days before now (i.e., `now - updatedAt > 5 * 86400 * 1000` ms) OR `statusCheckRollup.state === "FAILURE"` OR any entry in `statusCheckRollup.contexts.nodes[]` has `conclusion === "TIMED_OUT"`.
+- `waiting_claude` — ANY of the following is true, AND `reviewDecision !== "APPROVED"`:
+  (a) ANY entry in `comments.nodes[]` has a `body` containing a literal `@claude` mention (case-insensitive substring match), OR
+  (b) the PR `body` contains a literal `@claude` mention (case-insensitive), OR
+  (c) `labels.nodes[]` contains an entry with `name === "claude-review-requested"`.
+  The iaGO pipeline tags @claude via a PR comment, so the comments scan in (a) is the canonical signal; (b) and (c) are fallbacks for manually-tagged PRs. Walk every entry in `comments.nodes[]` AND the PR body when classifying.
+- `waiting_santiago` — `reviewDecision === "APPROVED"` AND `author.login === "ilsantino"` AND `statusCheckRollup.state !== "FAILURE"` AND `statusCheckRollup.state !== "ERROR"` AND no entry in `statusCheckRollup.contexts.nodes[]` has `conclusion === "TIMED_OUT"`. Santiago opened the PR, it has been approved, CI is green (or pending), and only he can merge.
 
 If a PR matches none of the four rules, drop it from the summary entirely — it is healthy and in motion, neither Claude nor Santiago needs to act today.
 
@@ -140,7 +152,7 @@ The `STATE_ROOT` fallback to `/var/lib/iago-os/daemon-state` mirrors the `Enviro
 
 The `sed` redaction is mechanical: it replaces every literal occurrence of the bot token (which Telegram sometimes echoes back in error description fields) with `[REDACTED]` before the string enters any file or log.
 
-The `agentId` field is mandatory — `runtime/daemon/agent-manager.ts` `processPendingTask` requires it on every envelope (including alert envelopes) and poisons files that omit it as `missing-agent-id`. The daemon's polling loop consumes this file via the `ndjsonAlert` branch (07b Task 1 + plan 04a Codex fix): it emits a `kind: "agent-alert"` telemetry event carrying `alertKind: "pr-triage-telegram-send-failed"` and the `details` payload verbatim, then moves the file to `tasks/resolved/`.
+The `agentId` field is mandatory — Plan 04b's polling-loop wiring will require it on every envelope (including alert envelopes) and is expected to poison files that omit it as `missing-agent-id`. The `ndjsonAlert` consumption contract is a Plan 04b dependency: when 04b's polling loop ships, the daemon will branch on `ndjsonAlert` BEFORE the registration check, emit a telemetry event carrying the alert kind + `details` payload, and move the file to `tasks/resolved/`. Until 04b lands, this fallback file accumulates in `tasks/pending/` and a human must rotate them manually — write the file anyway so the envelope contract is in place for 04b to pick up.
 
 ## Constraints
 

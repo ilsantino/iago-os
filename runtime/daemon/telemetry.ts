@@ -292,35 +292,6 @@ export type DaemonEvent =
 			readonly filename: string;
 			readonly errno?: string;
 			readonly message: string;
-	  }
-	| {
-			/**
-			 * Plan 04a (PR-triage carry-over). Emitted by the polling loop
-			 * when a pending task file is shaped as an out-of-band alert
-			 * envelope rather than dispatchable work:
-			 *
-			 *   {
-			 *     "agentId": "pr-triage",
-			 *     "ndjsonAlert": "pr-triage-telegram-send-failed",
-			 *     "details": "..."
-			 *   }
-			 *
-			 * The polling loop branches on the presence of `ndjsonAlert`
-			 * BEFORE the registration check (without this branch the file
-			 * would route to `task-unrouted` because `pr-triage` is a
-			 * cron-spawned agent with `autoStart:false` and is therefore
-			 * never tracked as a long-running handle). `alertKind` carries
-			 * the raw `ndjsonAlert` field verbatim so downstream consumers
-			 * (dashboards, alert rules) can filter on the specific alert
-			 * name without depending on a per-agent enum here — adding a
-			 * new alert name in an agent prompt-template requires no
-			 * DaemonEvent change.
-			 */
-			readonly kind: "agent-alert";
-			readonly agentId: string;
-			readonly alertKind: string;
-			readonly filename: string;
-			readonly details?: string;
 	  };
 
 let missingSessionIdWarned = false;

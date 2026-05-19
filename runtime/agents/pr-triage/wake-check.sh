@@ -28,7 +28,7 @@ command -v jq > /dev/null 2>&1 || { echo "ERROR: jq not found in PATH; wake-chec
 # `|| true` is load-bearing: `gh api` exits non-zero on 401/403/429/5xx,
 # and `set -e` would otherwise abort the script before the rate-limit
 # branch below could distinguish 429 from generic auth failure.
-RESPONSE=$(gh api -i '/search/issues?q=user:ilsantino+is:pr+is:open&per_page=1' 2>&1) || true
+RESPONSE=$(gh api -i '/search/issues?q=author:ilsantino+is:pr+is:open&per_page=1' 2>&1) || true
 STATUS=$(echo "$RESPONSE" | head -1)
 
 if echo "$STATUS" | grep -qE 'HTTP/[12](\.[0-9])? 200'; then
