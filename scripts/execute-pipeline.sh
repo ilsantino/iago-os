@@ -509,8 +509,12 @@ fi
 stage_start review
 log "REVIEW — $PLAN_NAME"
 
-# Stage all new/modified files so they appear in the diff
-(cd "$PROJECT_DIR" && git add -A -- ':!**/.env' ':!**/.env.*' ':!**/*.pem' ':!**/*.key' ':!**/*.p12' ':!**/*.pfx' ':!.iago/state/**' ':!**/.iago/state/**')
+# Stage all new/modified files so they appear in the diff.
+# `|| true` tolerates exit 1 from gitignored paths (e.g., .iago/ in client repos):
+# git emits a benign warning + exits 1 when untracked files in ignored dirs are
+# walked. Real failures (permission, disk full, exit >1) still surface via the
+# empty-diff check immediately below.
+(cd "$PROJECT_DIR" && git add -A -- ':!**/.env' ':!**/.env.*' ':!**/*.pem' ':!**/*.key' ':!**/*.p12' ':!**/*.pfx' ':!.iago/state/**' ':!**/.iago/state/**') || true
 
 # Diff: committed changes since pre-impl + staged working tree changes
 DIFF=$(cd "$PROJECT_DIR" && git diff "$PRE_IMPL_SHA"..HEAD 2>/dev/null || echo "")
@@ -629,8 +633,9 @@ Read the build errors at: $BUILD_ERRORS_FILE" \
     echo "$FIX_OUTPUT"
   fi
 
-  # Re-review — re-stage and capture full diff
-  (cd "$PROJECT_DIR" && git add -A -- ':!**/.env' ':!**/.env.*' ':!**/*.pem' ':!**/*.key' ':!**/*.p12' ':!**/*.pfx' ':!.iago/state/**' ':!**/.iago/state/**')
+  # Re-review — re-stage and capture full diff.
+  # `|| true` per line 517 rationale: gitignored-path warnings produce exit 1.
+  (cd "$PROJECT_DIR" && git add -A -- ':!**/.env' ':!**/.env.*' ':!**/*.pem' ':!**/*.key' ':!**/*.p12' ':!**/*.pfx' ':!.iago/state/**' ':!**/.iago/state/**') || true
   DIFF=$(cd "$PROJECT_DIR" && git diff "$PRE_IMPL_SHA"..HEAD 2>/dev/null || echo "")
   STAGED_DIFF=$(cd "$PROJECT_DIR" && git diff --cached 2>/dev/null || echo "")
   DIFF="${DIFF}${STAGED_DIFF}"
@@ -895,8 +900,9 @@ Read the build errors at: $BUILD_ERRORS_FILE" \
     log "Build passed after Codex fix"
   fi
 
-  # Re-stage changes from Codex fix
-  (cd "$PROJECT_DIR" && git add -A -- ':!**/.env' ':!**/.env.*' ':!**/*.pem' ':!**/*.key' ':!**/*.p12' ':!**/*.pfx' ':!.iago/state/**' ':!**/.iago/state/**')
+  # Re-stage changes from Codex fix.
+  # `|| true` per line 517 rationale: gitignored-path warnings produce exit 1.
+  (cd "$PROJECT_DIR" && git add -A -- ':!**/.env' ':!**/.env.*' ':!**/*.pem' ':!**/*.key' ':!**/*.p12' ':!**/*.pfx' ':!.iago/state/**' ':!**/.iago/state/**') || true
   stage_end codex_fix "$CODEX_FIX_EXIT"
 else
   log "No actionable Codex findings — proceeding to PR"
@@ -909,7 +915,8 @@ if [[ "$NO_PR" == "true" ]]; then
   log "STACKED COMMIT — $PLAN_NAME (no PR, staying on current branch)"
   # Stage, commit locally, do NOT push, do NOT create PR. Commits accumulate on the
   # current branch for a later plan in the stack to push as a combined PR.
-  (cd "$PROJECT_DIR" && git add -A -- ':!**/.env' ':!**/.env.*' ':!**/*.pem' ':!**/*.key' ':!**/*.p12' ':!**/*.pfx' ':!.iago/state/**' ':!**/.iago/state/**')
+  # `|| true` per line 517 rationale: gitignored-path warnings produce exit 1.
+  (cd "$PROJECT_DIR" && git add -A -- ':!**/.env' ':!**/.env.*' ':!**/*.pem' ':!**/*.key' ':!**/*.p12' ':!**/*.pfx' ':!.iago/state/**' ':!**/.iago/state/**') || true
   # Only commit if there are staged changes
   if ! (cd "$PROJECT_DIR" && git diff --cached --quiet); then
     STACK_COMMIT_MSG="feat($PLAN_NAME): implement $PLAN_NAME
