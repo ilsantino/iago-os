@@ -104,14 +104,12 @@ On any non-`200` status (including the synthetic `000` from the empty-recipient 
 ```bash
 STATE_ROOT="${IAGO_DAEMON_STATE_ROOT:-/var/lib/iago-os/daemon-state}"
 TASK_FILE="$STATE_ROOT/tasks/pending/pr-triage__$(date +%s%3N)-$$.json"
-DETAILS=$(head -c 256 /tmp/tg-resp.json | sed "s/${IAGO_TELEGRAM_BOT_TOKEN}/[REDACTED]/g")
-cat > "$TASK_FILE" <<EOF
-{
-  "agentId": "pr-triage",
-  "ndjsonAlert": "pr-triage-telegram-send-failed",
-  "details": "${HTTP_STATUS} ${DETAILS}"
-}
-EOF
+DETAILS=$(head -c 256 /tmp/tg-resp.json | sed "s|${IAGO_TELEGRAM_BOT_TOKEN}|[REDACTED]|g")
+mkdir -p "$STATE_ROOT/tasks/pending"
+jq -n \
+  --arg details "${HTTP_STATUS} ${DETAILS}" \
+  '{"agentId":"pr-triage","ndjsonAlert":"pr-triage-telegram-send-failed","details":$details}' \
+  > "$TASK_FILE"
 ```
 
 The `STATE_ROOT` fallback to `/var/lib/iago-os/daemon-state` mirrors the `Environment=` line in `runtime/deploy/iago-os-v2-daemon.service`; the PTY inherits the daemon's env so `IAGO_DAEMON_STATE_ROOT` will normally be set, but the fallback prevents ENOENT on a silent empty path if the var is somehow absent.
