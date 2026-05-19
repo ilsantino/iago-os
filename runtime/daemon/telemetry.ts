@@ -46,6 +46,17 @@ export type DaemonEvent =
 			readonly kind: "daemon-start";
 			readonly pid: number;
 			readonly nodeVersion: string;
+			/**
+			 * Plan 01b Task 4 (C1 carry-over): identifies the runtime
+			 * context the daemon booted under so Phase 2 telemetry
+			 * consumers can filter systemd-on-VPS vs local-dev vs unit-test
+			 * runs cleanly. Detection order: `NODE_ENV=test` → `"test"`
+			 * (preserves Phase 1 test semantics); else
+			 * `CREDENTIALS_DIRECTORY` non-empty OR `INVOCATION_ID` set
+			 * (systemd auto-sets `INVOCATION_ID`) → `"systemd"`; else
+			 * `"local"`.
+			 */
+			readonly runUnder: "systemd" | "local" | "test";
 	  }
 	| {
 			readonly kind: "daemon-stop";
@@ -123,6 +134,20 @@ export type DaemonEvent =
 			 */
 			readonly kind: "approval-claim-link-eperm";
 			readonly approvalIdHash: string;
+	  }
+	| {
+			/**
+			 * Plan 01b Task 4 (spec § 10 criterion #5): emitted by
+			 * `startDaemon()` immediately after `loadSystemdCredentials()`
+			 * returns. `credentialsLoaded` carries the credstore FILE NAMES
+			 * (e.g., `["iago-telegram-token"]`) that wrote to env on this
+			 * call — NEVER the values. Computed by diffing env-var
+			 * keys-of-interest before vs after the call so the rule
+			 * "credstore wins only when env is unset" stays
+			 * locally testable.
+			 */
+			readonly kind: "cred-bootstrap-loaded";
+			readonly credentialsLoaded: string[];
 	  }
 	| {
 			/**

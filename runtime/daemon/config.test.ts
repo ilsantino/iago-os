@@ -71,7 +71,7 @@ describe("daemon/config loadConfig", () => {
 		expect(cfg.telegram?.allowedUserIds).toEqual([]);
 	});
 
-	it("IAGO_TELEGRAM_ALLOWED_USER_IDS=\"111,222\" parses to [111, 222]", async () => {
+	it('IAGO_TELEGRAM_ALLOWED_USER_IDS="111,222" parses to [111, 222]', async () => {
 		process.env.IAGO_TELEGRAM_BOT_TOKEN = "fake-token";
 		process.env.IAGO_TELEGRAM_ALLOWED_USER_IDS = "111,222";
 		const cfg = await loadConfig();
@@ -180,11 +180,7 @@ describe("daemon/config loadConfig", () => {
 		);
 		tempDirs.push(tempDir);
 		const cfgPath = path.join(tempDir, "daemon-config.json");
-		await fsp.writeFile(
-			cfgPath,
-			JSON.stringify({ agents: [] }),
-			"utf8",
-		);
+		await fsp.writeFile(cfgPath, JSON.stringify({ agents: [] }), "utf8");
 		process.env.IAGO_DAEMON_CONFIG_PATH = cfgPath;
 
 		const cfg = await loadConfig();
@@ -199,5 +195,102 @@ describe("daemon/config loadConfig", () => {
 		expect(cfg.heartbeat.intervalMs).toBe(111);
 		expect(cfg.heartbeat.rssLimitBytes).toBe(2048);
 		expect(cfg.heartbeat.stallThresholdMs).toBe(3333);
+	});
+
+	// --------------------------------------------------------------------
+	// Plan 01b Task 3 — AgentConfig.authProfile schema slot tests.
+	// Phase 2 PROVISIONS the credentials and adds the schema field;
+	// Phase 3 wires it through to the claude-pty adapter. Phase 2 tests
+	// only assert round-trip through the config loader.
+	// --------------------------------------------------------------------
+
+	async function writeAgentsConfig(agents: unknown[]): Promise<string> {
+		const tempDir = await fsp.mkdtemp(
+			path.join(os.tmpdir(), "iago-config-auth-"),
+		);
+		tempDirs.push(tempDir);
+		const cfgPath = path.join(tempDir, "daemon-config.json");
+		await fsp.writeFile(cfgPath, JSON.stringify({ agents }), "utf8");
+		return cfgPath;
+	}
+
+	it("(authProfile) AgentConfig without authProfile parses and field is undefined", async () => {
+		const cfgPath = await writeAgentsConfig([
+			{
+				agentId: "agent-a",
+				runtimeId: "claude-pty",
+				cwd: "/tmp/a",
+				env: {},
+				autoStart: false,
+			},
+		]);
+		process.env.IAGO_DAEMON_CONFIG_PATH = cfgPath;
+		const cfg = await loadConfig();
+		expect(cfg.agents).toHaveLength(1);
+		expect(cfg.agents[0]?.authProfile).toBeUndefined();
+	});
+
+	it('(authProfile) accepts "default"', async () => {
+		const cfgPath = await writeAgentsConfig([
+			{
+				agentId: "agent-a",
+				runtimeId: "claude-pty",
+				cwd: "/tmp/a",
+				env: {},
+				autoStart: false,
+				authProfile: "default",
+			},
+		]);
+		process.env.IAGO_DAEMON_CONFIG_PATH = cfgPath;
+		const cfg = await loadConfig();
+		expect(cfg.agents[0]?.authProfile).toBe("default");
+	});
+
+	it('(authProfile) accepts "ilsantino"', async () => {
+		const cfgPath = await writeAgentsConfig([
+			{
+				agentId: "agent-a",
+				runtimeId: "claude-pty",
+				cwd: "/tmp/a",
+				env: {},
+				autoStart: false,
+				authProfile: "ilsantino",
+			},
+		]);
+		process.env.IAGO_DAEMON_CONFIG_PATH = cfgPath;
+		const cfg = await loadConfig();
+		expect(cfg.agents[0]?.authProfile).toBe("ilsantino");
+	});
+
+	it('(authProfile) accepts "iaguito"', async () => {
+		const cfgPath = await writeAgentsConfig([
+			{
+				agentId: "agent-a",
+				runtimeId: "claude-pty",
+				cwd: "/tmp/a",
+				env: {},
+				autoStart: false,
+				authProfile: "iaguito",
+			},
+		]);
+		process.env.IAGO_DAEMON_CONFIG_PATH = cfgPath;
+		const cfg = await loadConfig();
+		expect(cfg.agents[0]?.authProfile).toBe("iaguito");
+	});
+
+	it("(authProfile) rejects unknown value with RangeError naming value + allowed set", async () => {
+		const cfgPath = await writeAgentsConfig([
+			{
+				agentId: "agent-a",
+				runtimeId: "claude-pty",
+				cwd: "/tmp/a",
+				env: {},
+				autoStart: false,
+				authProfile: "unknown",
+			},
+		]);
+		process.env.IAGO_DAEMON_CONFIG_PATH = cfgPath;
+		await expect(loadConfig()).rejects.toThrow(/unknown/);
+		await expect(loadConfig()).rejects.toThrow(/default\|ilsantino\|iaguito/);
 	});
 });

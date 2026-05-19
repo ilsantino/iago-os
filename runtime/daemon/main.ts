@@ -1,7 +1,13 @@
 /**
  * Daemon entry point — wires Plans 01–06 into a single runnable process.
  *
- * Startup sequence (Plan 07 stress-test EC2 binding):
+ * Startup sequence (Plan 07 stress-test EC2 binding + Plan 01b cred bootstrap):
+ *   0. `loadSystemdCredentials()` — read systemd `LoadCredentialEncrypted=`
+ *      files from `$CREDENTIALS_DIRECTORY` into `process.env` BEFORE
+ *      anything else. Local-dev no-op when `CREDENTIALS_DIRECTORY` is
+ *      unset. Emits `cred-bootstrap-loaded` telemetry with the credstore
+ *      FILE NAMES (never the values) of every credential that actually
+ *      wrote to env on this boot.
  *   1. `ensureStateDirsSync()` — create state-root subtrees.
  *   2. `loadConfig()` if no `config` was injected.
  *   3. Side-effect import of `claude-pty` so the adapter registers itself.
@@ -74,6 +80,11 @@ import { TelegramBot } from "../telegram/bot.js";
 
 import { AgentManager, type RegisterAgentConfig } from "./agent-manager.js";
 import { type AgentConfig, type DaemonConfig, loadConfig } from "./config.js";
+import {
+	envVarToFileName,
+	getCredentialEnvVars,
+	loadSystemdCredentials,
+} from "./cred-bootstrap.js";
 import { HeartbeatController } from "./heartbeat.js";
 import { IpcServer } from "./ipc-server.js";
 import { ensureStateDirsSync, pathFor } from "./state-paths.js";
@@ -194,6 +205,38 @@ export async function loadPersistedConfigs(): Promise<
 	return out;
 }
 
+/**
+ * Plan 01b Task 4 (C1 carry-over): compute the `runUnder` field for the
+ * `daemon-start` telemetry event.
+ *
+ * `NODE_ENV=test` is a HARD OVERRIDE that always returns `"test"`,
+ * regardless of `CREDENTIALS_DIRECTORY` or `INVOCATION_ID`. This prevents
+ * unit tests that legitimately set `CREDENTIALS_DIRECTORY` to a tmp dir
+ * (e.g., `cred-bootstrap.test.ts`) from falsely tripping the systemd
+ * detector and emitting `runUnder: "systemd"` from a non-systemd
+ * harness.
+ *
+ * Outside test mode, presence of either `CREDENTIALS_DIRECTORY` (set by
+ * `LoadCredentialEncrypted=` directives) or `INVOCATION_ID` (set by
+ * systemd for every unit invocation) indicates a systemd unit run.
+ *
+ * Exported so main.test.ts can directly assert the override contract;
+ * inlining inside `startDaemon`'s IIFE made the rule un-unit-testable.
+ */
+export type RunUnder = "systemd" | "local" | "test";
+
+export function computeRunUnder(
+	env: NodeJS.ProcessEnv = process.env,
+): RunUnder {
+	if (env.NODE_ENV === "test") return "test";
+	const credDir = env.CREDENTIALS_DIRECTORY;
+	const invocationId = env.INVOCATION_ID;
+	const isSystemd =
+		(credDir !== undefined && credDir.length > 0) ||
+		(invocationId !== undefined && invocationId.length > 0);
+	return isSystemd ? "systemd" : "local";
+}
+
 export interface DaemonHandle {
 	readonly shutdown: () => Promise<void>;
 	/** Resolves when shutdown() completes. Await this to block until teardown is done. */
@@ -208,6 +251,40 @@ export interface DaemonHandle {
 export async function startDaemon(
 	overrideConfig?: DaemonConfig,
 ): Promise<DaemonHandle> {
+	// Plan 01b Task 4: bridge systemd `LoadCredentialEncrypted=` files into
+	// `process.env` BEFORE any config load or state-dir setup. This MUST be
+	// the first statement so `loadConfig()` reads
+	// `IAGO_TELEGRAM_BOT_TOKEN` populated by the credstore on systemd-on-VPS
+	// runs. Local-dev path is a no-op (no `CREDENTIALS_DIRECTORY`).
+	//
+	// Telemetry contract (spec § 10 criterion #5, C2 carry-over): the
+	// emitted event carries the credstore FILE NAMES that wrote to env on
+	// this call — NEVER the values. Detection works by snapshotting
+	// keys-of-interest before and after the call and diffing.
+	const targetEnvVars = getCredentialEnvVars();
+	const envBefore = new Map<string, string | undefined>();
+	for (const k of targetEnvVars) envBefore.set(k, process.env[k]);
+
+	loadSystemdCredentials();
+
+	const credentialsLoaded: string[] = [];
+	for (const envVar of targetEnvVars) {
+		const before = envBefore.get(envVar);
+		const after = process.env[envVar];
+		const beforeUnset = before === undefined || before.length === 0;
+		const afterSet = after !== undefined && after.length > 0;
+		if (beforeUnset && afterSet) {
+			const fileName = envVarToFileName(envVar);
+			if (fileName !== null) credentialsLoaded.push(fileName);
+		}
+	}
+	// Note: this `emit` precedes `ensureStateDirsSync()`. Safe because
+	// `emit()` lazily `fsp.mkdir(..., { recursive: true })`'s its own
+	// jsonl directory — it does not depend on the state-dir setup that
+	// follows. Order is intentional so the cred-bootstrap-loaded event
+	// appears as the first telemetry record of every boot.
+	await emit({ kind: "cred-bootstrap-loaded", credentialsLoaded });
+
 	ensureStateDirsSync();
 
 	const config = overrideConfig ?? (await loadConfig());
@@ -505,10 +582,17 @@ export async function startDaemon(
 
 	heartbeat.start();
 
+	// Plan 01b Task 4 (C1 carry-over): determine `runUnder` for the
+	// `daemon-start` event via the exported `computeRunUnder` helper so
+	// the override semantics (NODE_ENV=test wins over CREDENTIALS_DIRECTORY)
+	// are directly unit-testable from main.test.ts.
+	const runUnder = computeRunUnder();
+
 	await emit({
 		kind: "daemon-start",
 		pid: process.pid,
 		nodeVersion: process.versions.node,
+		runUnder,
 	});
 
 	return {
