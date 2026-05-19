@@ -1,0 +1,30 @@
+Apply 2 focused fixes from Opus dual-review on PR #64 (Plan 07b — AgentManager polling loop). Files in C:/Users/sanal/dev/iago-os-c worktree (currently at HEAD 0582a22 — the GH Action loop already fixed Opus I1 + I3).
+
+Fix 1 — Opus I2 (Missing test for claim-task-failed telemetry)
+- File: runtime/daemon/agent-manager.test.ts
+- Add PL-8 test (the GH Action loop already used PL-7 for the poisoned-cron test in 0582a22):
+  - Setup: AgentManager with stateRoot pointing to a tempdir; register a fake agent; place a valid task file pr-triage__1700000000.json in tasks/pending/ with valid JSON
+  - Mock or spy fs.rename to throw EXDEV or EACCES on next call
+  - Spy on the EventEmitter emit for 'task-resolved' AND telemetry 'claim-task-failed'
+  - Start polling loop, advance timers by 5000ms
+  - Assertions:
+    - claim-task-failed telemetry emitted ONCE with payload including filename + agentId 'pr-triage' + error containing the rename failure
+    - 'task-resolved' EventEmitter event NEVER emitted
+    - File still exists in tasks/pending/ (not moved to tasks/resolved/)
+  - Stop polling loop
+- Follow the existing PL-1..PL-7 testing pattern (use vi.useFakeTimers + vi.advanceTimersByTimeAsync)
+
+Fix 2 — Codex CRITICAL #1 architectural-decision JSDoc (Codex flagged it, Opus didn't — it's plan-design scope, not a bug; just document)
+- File: runtime/daemon/agent-manager.ts
+- On the claimTask method's JSDoc, add a paragraph:
+  Scope note (Plan 07b): claimTask is decrement-only — it moves pending to resolved and emits task-resolved so CronScheduler can release its slot. It does NOT dispatch the task content to a registered agent runtime; that dispatch logic is deferred to Plan 04b Task 3 (wireAgentManagerIntoStartDaemon) which will subscribe a real dispatch handler to the agent registry's runtime channel. A Codex adversarial pass on PR #64 correctly flagged the absence of dispatch as a design gap; this is documented intentional scope, not an implementation bug.
+
+Verify:
+1. npx tsc --noEmit from runtime/ — exit 0
+2. npx vitest run daemon/agent-manager.test.ts --reporter=basic — count tests, should be 39+ (previous 38 + new PL-8) all passing
+3. grep -E "Scope note .Plan 07b." runtime/daemon/agent-manager.ts — should match exactly one line
+
+Commit subject under 72 chars: fix(07b): PL-8 claim-task-failed test + scope-note JSDoc
+Push: git push origin feat/07b-agent-manager-polling
+
+Plan: .iago/plans/feature-phase-2-vps-bootstrap/07b-agent-manager-polling.md

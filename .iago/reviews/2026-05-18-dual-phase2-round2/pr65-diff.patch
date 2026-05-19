@@ -1,0 +1,1188 @@
+diff --git a/.iago/runs/round-2-dispatch/01b.log b/.iago/runs/round-2-dispatch/01b.log
+new file mode 100644
+index 0000000..38e578f
+--- /dev/null
++++ b/.iago/runs/round-2-dispatch/01b.log
+@@ -0,0 +1,206 @@
++[16:11:41] STRESS TEST — skipped (plan already stress-tested)
++[16:11:42] IMPLEMENT — 01b-cred-bootstrap-and-config-schema
++[16:20:37] Implementation complete
++[16:20:38] BUILD GATE — attempt 1 [mode: sequential]
++[16:20:38] Build passed (tsc 0ms / vite 0ms / mode sequential)
++[16:20:39] CONSOLE GATE — skipped (no Vite config)
++[16:20:40] REVIEW — 01b-cred-bootstrap-and-config-schema
++warning: in the working copy of 'runtime/daemon/config.test.ts', LF will be replaced by CRLF the next time Git touches it
++warning: in the working copy of 'runtime/daemon/config.ts', LF will be replaced by CRLF the next time Git touches it
++warning: in the working copy of 'runtime/daemon/main.ts', LF will be replaced by CRLF the next time Git touches it
++warning: in the working copy of 'runtime/daemon/telemetry.ts', LF will be replaced by CRLF the next time Git touches it
++warning: in the working copy of '.iago/runs/round-2-dispatch/01b.log', LF will be replaced by CRLF the next time Git touches it
++warning: in the working copy of '.iago/summaries/02a-archive-openclaw.md', LF will be replaced by CRLF the next time Git touches it
++warning: in the working copy of 'runtime/daemon/cred-bootstrap.test.ts', LF will be replaced by CRLF the next time Git touches it
++warning: in the working copy of 'runtime/daemon/cred-bootstrap.ts', LF will be replaced by CRLF the next time Git touches it
++[16:20:42]   review-checks: all modules loaded (209 lines)
++[16:22:20] Review output:
++## PASS 1 — Plan Compliance
++
++Walking each task against the diff:
++
++**Task 1 (`cred-bootstrap.ts`):** ✓ exports `loadSystemdCredentials()`; `CredMap` interface; two active CREDENTIALS entries (telegram + gh-token); three commented Phase 3 entries; correct CREDENTIALS_DIRECTORY no-op; env-var override path; empty-trim handling; `node:fs` / `node:path` imports (M1 ✓); JSDoc covers C2 + SIGHUP re-entrancy (I2 + M2 ✓). Strict TS, no `any`/bare `as`.
++
++**Task 2 (`cred-bootstrap.test.ts`):** ✓ All 10 specified test cases present + 5 helper tests. Uses `vi.stubEnv` per I3. Sentinel-leak test spies on `telemetry.emit`, `process.stdout.write`, `process.stderr.write`.
++
++**Task 3 (`config.ts` + tests):** ✓ `authProfile?` field with narrow union; JSDoc documents `undefined ≡ "default"` equivalence (I4 ✓); `isAuthProfile` type guard (no bare `as`); RangeError names value + allowed set with sourcePath context; tests 9–13 added.
++
++**Task 4 (`main.ts` + `telemetry.ts`):** ✓ `loadSystemdCredentials()` is first statement of `startDaemon()` body; diff-based `credentialsLoaded` computation emits FILE NAMES only (never values); `cred-bootstrap-loaded` event typed in telemetry.ts; `runUnder` IIFE applies C1 NODE_ENV=test override before CREDENTIALS_DIRECTORY/INVOCATION_ID check.
++
++**Gap:** Plan C1 explicitly requires "Add a test … asserting `NODE_ENV=test` always emits `"test"` regardless of CREDENTIALS_DIRECTORY." No such test exists in the diff (neither `main.test.ts` augmentation nor a case in `cred-bootstrap.test.ts`). The contract is implemented but unverified.
++
++## PASS 2 — Domain Routing
++
++Selected domains based on diff (TypeScript daemon code, no React/Amplify/AppSync/Lambda handler/API client):
++
++- **Baseline checks** (always)
++- **Pattern Consistency** (always)
++- **Backend Checks** — partial fit; this is server-side TS but not a Lambda handler. Applicable subset: thin-handler pattern, input validation at boundaries, error handling, hardcoded identifiers.
++
++Skipped: Amplify (no `amplify/` touched), API (no TanStack/fetch), Auth (no Cognito/JWT/login UI), Data Integrity (no aggregates/money/charts), i18n (no Spanish strings), Infra (no Amplify resources), React (no `.tsx` files).
++
++## PASS 3 — Adversarial (full file reads + cross-cutting)
++
++**Cross-cutting:**
++- Auth bypass: N/A — pure credential bootstrap; the env-override-wins semantics are intentional and documented.
++- Data loss: env-only mutation; idempotent; no disk writes from the helper.
++- Race conditions: invoked synchronously before any async code; safe.
++- Rollback safety: if `fs.readFileSync` throws mid-loop (EACCES on a second cred), earlier creds remain set — but that's acceptable startup behavior; the throw propagates to `startDaemon` and fails boot loud, which is correct for systemd-managed secrets.
++
++**Baseline:**
++- No dead code, no magic numbers (filenames are domain identifiers), no silent failure.
++
++**Pattern Consistency:**
++- `config.ts` `parseAgents` already uses explicit `RangeError` with `${sourcePath}:` prefix and field-path context — the new `authProfile` branch follows that pattern precisely. ✓
++- The spread `...(authProfile !== undefined ? { authProfile } : {})` is consistent with how `shutdownStageTimeoutMs` is conditionally spread later in the file. ✓
++
++**Backend (partial):**
++- No hardcoded identifiers (cred file names are the spec-defined identifiers, not infrastructure).
++- Input validation: file contents trimmed + length-checked; `authProfile` validated against allowed set at boundary. ✓
++- Error handling: `fs.readFileSync` errors propagate (intentional for fail-loud boot); `loadConfig` errors propagate to `main()`'s catch that writes stderr + exitCode=1. Consistent.
++
++**Findings**
++
++- **Important — Missing C1 verification test.** Plan stress-test C1 explicitly requires a test that `NODE_ENV=test` forces `runUnder: "test"` regardless of `CREDENTIALS_DIRECTORY`. The implementation includes the override but no test asserts it; "Phase 1 tests still pass" is a regression check, not a positive assertion of the new contract. A future refactor of the IIFE could silently break the override and current tests would not catch it.
++
++- **Minor — Sentinel-leak test is partially tautological.** `loadSystemdCredentials()` itself never calls `telemetry.emit`, `console.*`, or writes to stdout/stderr in the current implementation, so test 10 is a forward-looking contract guarantee rather than a check against the present code path. The `main.ts` telemetry call site (which DOES emit) is not covered by this test — but that emit only carries fileNames, not values, by construction. Acceptable scope but worth noting.
++
++- **Minor — TOCTOU window in `cred-bootstrap.ts:71-73`.** `fs.existsSync` followed by `fs.readFileSync` — if the file is deleted in between, the read throws and propagates. Acceptable in a single-tenant systemd-controlled credstore at boot, but flagged for completeness.
++
++- **Minor — `await emit(...)` runs before `ensureStateDirsSync()` in `main.ts:249`.** Safe because `emit()` does its own lazy `fsp.mkdir(..., { recursive: true })`, but represents a subtle ordering coupling. No code change needed; consider a one-line comment confirming the emit's mkdir self-sufficiency at this call site.
++
++Verdict: PASS_WITH_CONCERNS
++SessionEnd hook [node "${CLAUDE_PLUGIN_ROOT}/scripts/session-lifecycle-hook.mjs" SessionEnd] failed: Hook cancelled
++[16:22:20] Findings detected — dispatching fix session (round 1)
++[16:33:13] Fix output (exit 0):
++All findings addressed:
++
++**Important — Missing C1 verification test (FIXED):** Extracted the `runUnder` IIFE in `main.ts:548-562` into an exported pure `computeRunUnder(env)` helper. Added 10 test cases in `main.test.ts` directly asserting the override contract — NODE_ENV=test wins over CREDENTIALS_DIRECTORY, INVOCATION_ID, and both combined.
++
++**Minor — `await emit` precedes `ensureStateDirsSync` (FIXED):** Added a comment in `main.ts` confirming emit's lazy `fsp.mkdir(..., { recursive: true })` self-sufficiency (verified at `telemetry.ts:261`).
++
++**Minor — Sentinel-leak partially tautological:** Review flagged as "acceptable scope but worth noting" — no code change required.
++
++**Minor — TOCTOU window in cred-bootstrap.ts:** Review flagged as "acceptable in single-tenant systemd-controlled credstore... flagged for completeness" — no code change required.
++
++Verification: `npx vitest run` → 84/84 tests pass (4 files); `npx tsc --noEmit -p runtime/tsconfig.json` → exit 0.
++SessionEnd hook [node "${CLAUDE_PLUGIN_ROOT}/scripts/session-lifecycle-hook.mjs" SessionEnd] failed: Hook cancelled
++warning: in the working copy of 'runtime/daemon/config.test.ts', LF will be replaced by CRLF the next time Git touches it
++warning: in the working copy of 'runtime/daemon/config.ts', LF will be replaced by CRLF the next time Git touches it
++warning: in the working copy of 'runtime/daemon/main.test.ts', LF will be replaced by CRLF the next time Git touches it
++warning: in the working copy of 'runtime/daemon/main.ts', LF will be replaced by CRLF the next time Git touches it
++warning: in the working copy of 'runtime/daemon/telemetry.ts', LF will be replaced by CRLF the next time Git touches it
++warning: in the working copy of '.iago/runs/round-2-dispatch/01b.log', LF will be replaced by CRLF the next time Git touches it
++warning: in the working copy of '.iago/summaries/02a-archive-openclaw.md', LF will be replaced by CRLF the next time Git touches it
++warning: in the working copy of 'runtime/daemon/cred-bootstrap.test.ts', LF will be replaced by CRLF the next time Git touches it
++warning: in the working copy of 'runtime/daemon/cred-bootstrap.ts', LF will be replaced by CRLF the next time Git touches it
++[16:33:15]   review-checks: all modules loaded (209 lines)
++[16:34:48] Re-review output:
++All round-1 findings are addressed in the diff:
++
++- **Important — Missing C1 verification test:** ✓ FIXED. `runUnder` logic extracted into exported `computeRunUnder(env)` in `runtime/daemon/main.ts:226-238`, with 10 dedicated unit tests in `runtime/daemon/main.test.ts:601-672` asserting `NODE_ENV=test` overrides `CREDENTIALS_DIRECTORY` and `INVOCATION_ID`.
++- **Minor — emit-before-ensureStateDirsSync ordering coupling:** ✓ ADDRESSED. Inline comment at `runtime/daemon/main.ts:281-285` documents that `emit()` self-creates its jsonl dir and that the ordering is intentional.
++- **Minor — Sentinel-leak test partial-tautology:** Acknowledged in round 1 as acceptable forward-looking contract guarantee; call site in `main.ts` only emits filenames by construction. No code change needed.
++- **Minor — TOCTOU `existsSync` → `readFileSync` window:** Acknowledged as acceptable for single-tenant systemd-controlled credstore. No code change needed.
++
++Cross-cutting re-check on full file reads (`cred-bootstrap.ts`, `main.ts`, `telemetry.ts`, `config.ts`, both test files):
++- Auth: env-override-wins is intentional and documented; no bypass.
++- Data loss: env-only mutation, idempotent, no disk writes.
++- Race conditions: synchronous before async work; `computeRunUnder` is pure.
++- Rollback safety: `fs.readFileSync` failures propagate to `startDaemon` and fail boot loud — correct for systemd-managed secrets.
++- Pattern consistency: `isAuthProfile` type guard mirrors existing narrowing pattern; `RangeError` shape with `${sourcePath}: agents[${i}].field:` prefix matches sibling validators.
++- Backend (partial): input validated at boundary; no hardcoded ARNs; no top-level heavy imports.
++- Severity floors: none triggered.
++
++No new findings.
++
++Verdict: PASS
++SessionEnd hook [node "${CLAUDE_PLUGIN_ROOT}/scripts/session-lifecycle-hook.mjs" SessionEnd] failed: Hook cancelled
++[16:34:48] Review passed
++[16:34:49] CODEX REVIEW — 01b-cred-bootstrap-and-config-schema
++[16:34:50] Running codex-companion adversarial-review (model from ~/.codex/config.toml)
++[16:36:51] Codex findings:
++(node:20820) [DEP0190] DeprecationWarning: Passing args to a child process with shell option true can lead to security vulnerabilities, as the arguments are not escaped, only concatenated.
++(Use `node --trace-deprecation ...` to show where the warning was created)
++[codex] Starting Codex task thread.
++[codex] Thread ready (019e3d3a-774e-7fc0-90b2-4255fbd232b1).
++[codex] Turn started (019e3d3a-7c75-7150-b6e0-3072d60204fa).
++[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git diff --stat 20...
++[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git diff --stat 20... (exit 0)
++[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git status --short...
++[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git status --short... (exit 0)
++[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git diff --stat 20...
++[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git diff --stat 20... (exit 0)
++[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git diff --unified...
++[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git diff --unified...
++[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git diff --unified...
++[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git diff --unified... (exit 0)
++[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git diff --unified... (exit 0)
++[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git diff --unified... (exit 0)
++[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command '$i=1; Get-Content ...
++[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command '$i=1; Get-Content ...
++[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command "rg -n \"authProfil...
++[codex] Command declined: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command '$i=1; Get-Content ... (exit -1)
++[codex] Command declined: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command '$i=1; Get-Content ... (exit -1)
++[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command "rg -n \"authProfil... (exit 0)
++[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'rg -n "." runtime/...
++[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command "rg -n \"loadSystem...
++[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'rg -n "interface R...
++[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'rg -n "." runtime/... (exit 0)
++[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'rg -n "interface R... (exit 0)
++[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command "rg -n \"loadSystem... (exit 0)
++[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'rg -n "function pa...
++[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command "rg -n \"export asy...
++[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'rg -n "SIGHUP|load...
++[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'rg -n "function pa... (exit 0)
++[codex] Command failed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command "rg -n \"export asy... (exit 1)
++[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'rg -n "SIGHUP|load... (exit 0)
++[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'Get-Content runtim...
++[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'Get-Content runtim...
++[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'Get-Content runtim...
++[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'Get-Content runtim... (exit 0)
++[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'Get-Content runtim... (exit 0)
++[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'Get-Content runtim... (exit 0)
++[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command "rg -n \"GH_TOKEN|I...
++[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command "rg -n \"GH_TOKEN|I... (exit 0)
++[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'Get-Content runtim...
++[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'Get-Content runtim...
++[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'Get-Content runtim...
++[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'Get-Content runtim... (exit 0)
++[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'Get-Content runtim... (exit 0)
++[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'Get-Content runtim... (exit 0)
++[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'rg -n "authProfile...
++[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'rg -n "authProfile... (exit 0)
++[codex] Assistant message captured: {"verdict":"needs-attention","summary":"No-ship: the credential bootstrap claims reload safet...
++[codex] Turn completion inferred after the main thread finished and subagent work drained.
++# Codex Adversarial Review
++
++Target: branch diff against 20c834874581230eaa8e17ea0ea1d5dc525c85e4
++Verdict: needs-attention
++
++No-ship: the credential bootstrap claims reload safety but will keep stale secrets after the first load.
++
++Findings:
++- [high] Credential reloads cannot replace a previously bootstrapped secret (runtime/daemon/cred-bootstrap.ts:77-80)
++  `loadSystemdCredentials()` is documented as safe for SIGHUP credential rotation, but after the first successful load it writes the secret into `process.env`; on the next call, `existing` is non-empty and the new credstore file is skipped. Inferred impact: a rotated or revoked Telegram/GitHub token will not take effect until a full process restart, which defeats the intended reload path and can leave the daemon using dead credentials during incident recovery.
++  Recommendation: Track whether each env var came from an explicit process environment override versus a prior credstore load, and allow credstore-sourced values to be replaced on reload. Add a test that loads a value, rewrites the credential file, calls `loadSystemdCredentials()` again, and asserts the env var updates.
++
++Next steps:
++- Fix reload semantics before adding or relying on the SIGHUP credential-reload path.
++[16:36:52] Codex review complete
++[16:36:52] CODEX FIX — fixing findings before PR
++[16:40:28] Codex fix output (exit 0):
++All 274 tests pass (2 unrelated skips). The high-severity Codex finding is fixed:
++
++- `cred-bootstrap.ts:65-95` now tracks credstore-sourced env vars in `lastWrittenByCredstore`. On reload, an env var whose current value matches what the helper last wrote is replaced with the new file content; external overrides (env values that don't match) are preserved.
++- Added 3 reload-semantics tests (cases 11-13): rotation replaces the value, external override survives reload, and post-load mutations are treated as overrides.
++- Wired `__resetCredstoreStateForTests()` into `beforeEach` to prevent module-level state leaking across cases.
++- Updated JSDoc to spell out the new reload contract.
++
++Verification: 18/18 cred-bootstrap tests pass, full 274-test daemon + integration suite green, `tsc --noEmit` clean.
++[16:40:28] BUILD GATE (post-codex-fix)
++[16:40:29] Build passed after Codex fix
++warning: in the working copy of '.iago/runs/round-2-dispatch/01b.log', LF will be replaced by CRLF the next time Git touches it
++warning: in the working copy of 'runtime/daemon/cred-bootstrap.test.ts', LF will be replaced by CRLF the next time Git touches it
++warning: in the working copy of 'runtime/daemon/cred-bootstrap.ts', LF will be replaced by CRLF the next time Git touches it
++[16:40:29] CREATE PR — 01b-cred-bootstrap-and-config-schema
+diff --git a/.iago/summaries/02a-archive-openclaw.md b/.iago/summaries/02a-archive-openclaw.md
+new file mode 100644
+index 0000000..1264d90
+--- /dev/null
++++ b/.iago/summaries/02a-archive-openclaw.md
+@@ -0,0 +1,26 @@
++---
++plan: 02a-archive-openclaw
++status: done
++verified: 2026-05-18
++pr: https://github.com/ilsantino/iago-os/pull/60
++---
++
++# Summary: 02a-archive-openclaw
++
++## Pipeline Result
++
++- **Implement:** exit 0
++- **Build gate:** passed
++- **Review:** PASS
++- **Codex:** exit 0
++- **PR:** https://github.com/ilsantino/iago-os/pull/60
++
++## Diff Stats
++
++```
++ .iago/runs/round-1-dispatch/02a.log     |  88 +++++++
++ runtime/deploy/MANIFEST.template.md     |  45 ++++
++ runtime/deploy/archive-openclaw.sh      | 397 ++++++++++++++++++++++++++++++++
++ runtime/deploy/archive-openclaw.test.sh | 361 +++++++++++++++++++++++++++++
++ 4 files changed, 891 insertions(+)
++```
+diff --git a/.iago/summaries/07a-cron-scheduler.md b/.iago/summaries/07a-cron-scheduler.md
+new file mode 100644
+index 0000000..b4012de
+--- /dev/null
++++ b/.iago/summaries/07a-cron-scheduler.md
+@@ -0,0 +1,27 @@
++---
++plan: 07a-cron-scheduler
++status: done
++verified: 2026-05-18
++pr: https://github.com/ilsantino/iago-os/pull/61
++---
++
++# Summary: 07a-cron-scheduler
++
++## Pipeline Result
++
++- **Implement:** exit 0
++- **Build gate:** passed
++- **Review:** PASS
++- **Codex:** exit 0
++- **PR:** https://github.com/ilsantino/iago-os/pull/61
++
++## Diff Stats
++
++```
++ .iago/runs/round-1-dispatch/07a.log     |  86 ++++
++ runtime/daemon/cron-scheduler.README.md | 120 ++++++
++ runtime/daemon/cron-scheduler.test.ts   | 701 ++++++++++++++++++++++++++++++++
++ runtime/daemon/cron-scheduler.ts        | 612 ++++++++++++++++++++++++++++
++ runtime/daemon/telemetry.ts             |  65 +++
++ 5 files changed, 1584 insertions(+)
++```
+diff --git a/runtime/daemon/config.test.ts b/runtime/daemon/config.test.ts
+index 99df44e..90efa1b 100644
+--- a/runtime/daemon/config.test.ts
++++ b/runtime/daemon/config.test.ts
+@@ -71,7 +71,7 @@ describe("daemon/config loadConfig", () => {
+ 		expect(cfg.telegram?.allowedUserIds).toEqual([]);
+ 	});
+ 
+-	it("IAGO_TELEGRAM_ALLOWED_USER_IDS=\"111,222\" parses to [111, 222]", async () => {
++	it('IAGO_TELEGRAM_ALLOWED_USER_IDS="111,222" parses to [111, 222]', async () => {
+ 		process.env.IAGO_TELEGRAM_BOT_TOKEN = "fake-token";
+ 		process.env.IAGO_TELEGRAM_ALLOWED_USER_IDS = "111,222";
+ 		const cfg = await loadConfig();
+@@ -180,11 +180,7 @@ describe("daemon/config loadConfig", () => {
+ 		);
+ 		tempDirs.push(tempDir);
+ 		const cfgPath = path.join(tempDir, "daemon-config.json");
+-		await fsp.writeFile(
+-			cfgPath,
+-			JSON.stringify({ agents: [] }),
+-			"utf8",
+-		);
++		await fsp.writeFile(cfgPath, JSON.stringify({ agents: [] }), "utf8");
+ 		process.env.IAGO_DAEMON_CONFIG_PATH = cfgPath;
+ 
+ 		const cfg = await loadConfig();
+@@ -200,4 +196,101 @@ describe("daemon/config loadConfig", () => {
+ 		expect(cfg.heartbeat.rssLimitBytes).toBe(2048);
+ 		expect(cfg.heartbeat.stallThresholdMs).toBe(3333);
+ 	});
++
++	// --------------------------------------------------------------------
++	// Plan 01b Task 3 — AgentConfig.authProfile schema slot tests.
++	// Phase 2 PROVISIONS the credentials and adds the schema field;
++	// Phase 3 wires it through to the claude-pty adapter. Phase 2 tests
++	// only assert round-trip through the config loader.
++	// --------------------------------------------------------------------
++
++	async function writeAgentsConfig(agents: unknown[]): Promise<string> {
++		const tempDir = await fsp.mkdtemp(
++			path.join(os.tmpdir(), "iago-config-auth-"),
++		);
++		tempDirs.push(tempDir);
++		const cfgPath = path.join(tempDir, "daemon-config.json");
++		await fsp.writeFile(cfgPath, JSON.stringify({ agents }), "utf8");
++		return cfgPath;
++	}
++
++	it("(authProfile) AgentConfig without authProfile parses and field is undefined", async () => {
++		const cfgPath = await writeAgentsConfig([
++			{
++				agentId: "agent-a",
++				runtimeId: "claude-pty",
++				cwd: "/tmp/a",
++				env: {},
++				autoStart: false,
++			},
++		]);
++		process.env.IAGO_DAEMON_CONFIG_PATH = cfgPath;
++		const cfg = await loadConfig();
++		expect(cfg.agents).toHaveLength(1);
++		expect(cfg.agents[0]?.authProfile).toBeUndefined();
++	});
++
++	it('(authProfile) accepts "default"', async () => {
++		const cfgPath = await writeAgentsConfig([
++			{
++				agentId: "agent-a",
++				runtimeId: "claude-pty",
++				cwd: "/tmp/a",
++				env: {},
++				autoStart: false,
++				authProfile: "default",
++			},
++		]);
++		process.env.IAGO_DAEMON_CONFIG_PATH = cfgPath;
++		const cfg = await loadConfig();
++		expect(cfg.agents[0]?.authProfile).toBe("default");
++	});
++
++	it('(authProfile) accepts "ilsantino"', async () => {
++		const cfgPath = await writeAgentsConfig([
++			{
++				agentId: "agent-a",
++				runtimeId: "claude-pty",
++				cwd: "/tmp/a",
++				env: {},
++				autoStart: false,
++				authProfile: "ilsantino",
++			},
++		]);
++		process.env.IAGO_DAEMON_CONFIG_PATH = cfgPath;
++		const cfg = await loadConfig();
++		expect(cfg.agents[0]?.authProfile).toBe("ilsantino");
++	});
++
++	it('(authProfile) accepts "iaguito"', async () => {
++		const cfgPath = await writeAgentsConfig([
++			{
++				agentId: "agent-a",
++				runtimeId: "claude-pty",
++				cwd: "/tmp/a",
++				env: {},
++				autoStart: false,
++				authProfile: "iaguito",
++			},
++		]);
++		process.env.IAGO_DAEMON_CONFIG_PATH = cfgPath;
++		const cfg = await loadConfig();
++		expect(cfg.agents[0]?.authProfile).toBe("iaguito");
++	});
++
++	it("(authProfile) rejects unknown value with RangeError naming value + allowed set", async () => {
++		const cfgPath = await writeAgentsConfig([
++			{
++				agentId: "agent-a",
++				runtimeId: "claude-pty",
++				cwd: "/tmp/a",
++				env: {},
++				autoStart: false,
++				authProfile: "unknown",
++			},
++		]);
++		process.env.IAGO_DAEMON_CONFIG_PATH = cfgPath;
++		await expect(loadConfig()).rejects.toThrow(/unknown/);
++		await expect(loadConfig()).rejects.toThrow(/default\|ilsantino\|iaguito/);
++	});
+ });
+diff --git a/runtime/daemon/config.ts b/runtime/daemon/config.ts
+index 0f2107e..bb1c787 100644
+--- a/runtime/daemon/config.ts
++++ b/runtime/daemon/config.ts
+@@ -35,6 +35,27 @@ export interface AgentConfig {
+ 	readonly cwd: string;
+ 	readonly env: Record<string, string>;
+ 	readonly autoStart: boolean;
++	/**
++	 * Phase 2 schema slot; Phase 3 wires this through to the claude-pty
++	 * adapter's per-spawn ANTHROPIC_API_KEY env override. `undefined`
++	 * and `"default"` are semantically equivalent in Phase 3 (both
++	 * resolve to the default profile); document this equivalence to
++	 * prevent a future divergence bug. Allowed values are the three
++	 * profile names provisioned by 01a's
++	 * `provision-credentials.sh` (iago-anthropic-default,
++	 * iago-anthropic-ilsantino, iago-anthropic-iaguito).
++	 */
++	readonly authProfile?: "default" | "ilsantino" | "iaguito";
++}
++
++const ALLOWED_AUTH_PROFILES = ["default", "ilsantino", "iaguito"] as const;
++type AuthProfile = (typeof ALLOWED_AUTH_PROFILES)[number];
++
++function isAuthProfile(value: unknown): value is AuthProfile {
++	return (
++		typeof value === "string" &&
++		(ALLOWED_AUTH_PROFILES as readonly string[]).includes(value)
++	);
+ }
+ 
+ export interface DaemonTelegramConfig {
+@@ -172,7 +193,25 @@ function parseAgents(value: unknown, sourcePath: string): AgentConfig[] {
+ 		}
+ 		const autoStartRaw = entry.autoStart;
+ 		const autoStart = typeof autoStartRaw === "boolean" ? autoStartRaw : false;
+-		out.push({ agentId, runtimeId, org, cwd, env, autoStart });
++		const authProfileRaw = entry.authProfile;
++		let authProfile: AuthProfile | undefined;
++		if (authProfileRaw !== undefined) {
++			if (!isAuthProfile(authProfileRaw)) {
++				throw new RangeError(
++					`${sourcePath}: agents[${i}].authProfile: unknown authProfile: ${String(authProfileRaw)}; expected default|ilsantino|iaguito`,
++				);
++			}
++			authProfile = authProfileRaw;
++		}
++		out.push({
++			agentId,
++			runtimeId,
++			org,
++			cwd,
++			env,
++			autoStart,
++			...(authProfile !== undefined ? { authProfile } : {}),
++		});
+ 	}
+ 	return out;
+ }
+diff --git a/runtime/daemon/cred-bootstrap.test.ts b/runtime/daemon/cred-bootstrap.test.ts
+new file mode 100644
+index 0000000..686e1ec
+--- /dev/null
++++ b/runtime/daemon/cred-bootstrap.test.ts
+@@ -0,0 +1,297 @@
++/**
++ * Plan 01b Task 2: Unit tests for `loadSystemdCredentials()`.
++ *
++ * Covers all branches:
++ *   1. CREDENTIALS_DIRECTORY undefined → no-op
++ *   2. CREDENTIALS_DIRECTORY empty string → no-op
++ *   3. file present + env unset → env loaded
++ *   4. file with trailing newline → trimmed
++ *   5. file empty (zero bytes) → env NOT set
++ *   6. env already set non-empty → file NOT loaded (override path wins)
++ *   7. env set to empty string → file IS loaded (empty ≡ not-set per spec)
++ *   8. credential file missing → no-op for that entry, no throw
++ *   9. iago-gh-token file present → GH_TOKEN env loaded
++ *  10. MANDATORY sentinel-leak negative test (C2 carry-over):
++ *      value bytes never appear in telemetry, stdout, or stderr
++ */
++
++import * as fs from "node:fs";
++import * as fsp from "node:fs/promises";
++import * as os from "node:os";
++import * as path from "node:path";
++
++import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
++
++import {
++	__resetCredstoreStateForTests,
++	envVarToFileName,
++	getCredentialEnvVars,
++	getCredentialFileNames,
++	loadSystemdCredentials,
++} from "./cred-bootstrap.js";
++import * as telemetry from "./telemetry.js";
++
++const TARGET_ENV_VARS = ["IAGO_TELEGRAM_BOT_TOKEN", "GH_TOKEN"] as const;
++
++describe("loadSystemdCredentials", () => {
++	let tempDir: string;
++	const tempDirs: string[] = [];
++
++	beforeEach(async () => {
++		tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), "iago-cred-bootstrap-"));
++		tempDirs.push(tempDir);
++		// Use vi.stubEnv so each test's env mutations auto-restore between
++		// tests (I3 stress-test fix — avoids leaking values across cases).
++		vi.stubEnv("CREDENTIALS_DIRECTORY", "");
++		vi.stubEnv("IAGO_TELEGRAM_BOT_TOKEN", "");
++		vi.stubEnv("GH_TOKEN", "");
++		// Drop the empty stubs so `process.env.X` reads as undefined unless
++		// a test explicitly stubs a non-empty value.
++		delete process.env.CREDENTIALS_DIRECTORY;
++		delete process.env.IAGO_TELEGRAM_BOT_TOKEN;
++		delete process.env.GH_TOKEN;
++		// Reset module-level credstore tracking so reload-semantics state
++		// from a prior test does not leak into the next.
++		__resetCredstoreStateForTests();
++	});
++
++	afterEach(async () => {
++		vi.unstubAllEnvs();
++		vi.restoreAllMocks();
++		while (tempDirs.length > 0) {
++			const dir = tempDirs.pop()!;
++			await fsp.rm(dir, { recursive: true, force: true });
++		}
++	});
++
++	function snapshotEnv(): Record<string, string | undefined> {
++		const snap: Record<string, string | undefined> = {};
++		for (const k of TARGET_ENV_VARS) snap[k] = process.env[k];
++		return snap;
++	}
++
++	// 1. CREDENTIALS_DIRECTORY undefined → no-op
++	it("returns no-op when CREDENTIALS_DIRECTORY is undefined", () => {
++		const before = snapshotEnv();
++		loadSystemdCredentials();
++		expect(snapshotEnv()).toEqual(before);
++	});
++
++	// 2. CREDENTIALS_DIRECTORY empty string → no-op
++	it("returns no-op when CREDENTIALS_DIRECTORY is the empty string", () => {
++		vi.stubEnv("CREDENTIALS_DIRECTORY", "");
++		const before = snapshotEnv();
++		loadSystemdCredentials();
++		expect(snapshotEnv()).toEqual(before);
++	});
++
++	// 3. file present + env unset → env loaded
++	it("loads iago-telegram-token file value into IAGO_TELEGRAM_BOT_TOKEN", () => {
++		fs.writeFileSync(
++			path.join(tempDir, "iago-telegram-token"),
++			"1234567890:ABCDEFG",
++		);
++		vi.stubEnv("CREDENTIALS_DIRECTORY", tempDir);
++		loadSystemdCredentials();
++		expect(process.env.IAGO_TELEGRAM_BOT_TOKEN).toBe("1234567890:ABCDEFG");
++	});
++
++	// 4. file with trailing newline → trimmed
++	it("trims trailing whitespace and newlines from credential file", () => {
++		fs.writeFileSync(
++			path.join(tempDir, "iago-telegram-token"),
++			"1234567890:ABCDEFG\n",
++		);
++		vi.stubEnv("CREDENTIALS_DIRECTORY", tempDir);
++		loadSystemdCredentials();
++		expect(process.env.IAGO_TELEGRAM_BOT_TOKEN).toBe("1234567890:ABCDEFG");
++	});
++
++	// 5. file empty (zero bytes) → env NOT set
++	it("does NOT set env when credential file is zero bytes", () => {
++		fs.writeFileSync(path.join(tempDir, "iago-telegram-token"), "");
++		vi.stubEnv("CREDENTIALS_DIRECTORY", tempDir);
++		loadSystemdCredentials();
++		expect(process.env.IAGO_TELEGRAM_BOT_TOKEN).toBeUndefined();
++	});
++
++	// 6. env already set non-empty → file NOT loaded (override path wins)
++	it("respects existing env-var override (non-empty env wins over file)", () => {
++		fs.writeFileSync(
++			path.join(tempDir, "iago-telegram-token"),
++			"file-value-should-be-ignored",
++		);
++		vi.stubEnv("CREDENTIALS_DIRECTORY", tempDir);
++		vi.stubEnv("IAGO_TELEGRAM_BOT_TOKEN", "override");
++		loadSystemdCredentials();
++		expect(process.env.IAGO_TELEGRAM_BOT_TOKEN).toBe("override");
++	});
++
++	// 7. env set to empty string → file IS loaded (empty ≡ not-set per spec)
++	it("treats empty-string env-var as not-set and loads the file value", () => {
++		fs.writeFileSync(
++			path.join(tempDir, "iago-telegram-token"),
++			"file-value-wins",
++		);
++		vi.stubEnv("CREDENTIALS_DIRECTORY", tempDir);
++		vi.stubEnv("IAGO_TELEGRAM_BOT_TOKEN", "");
++		loadSystemdCredentials();
++		expect(process.env.IAGO_TELEGRAM_BOT_TOKEN).toBe("file-value-wins");
++	});
++
++	// 8. credential file missing → no-op for that entry, no throw
++	it("no-ops (no throw) when credential file is missing", () => {
++		// tempDir contains no files at all
++		vi.stubEnv("CREDENTIALS_DIRECTORY", tempDir);
++		expect(() => loadSystemdCredentials()).not.toThrow();
++		expect(process.env.IAGO_TELEGRAM_BOT_TOKEN).toBeUndefined();
++		expect(process.env.GH_TOKEN).toBeUndefined();
++	});
++
++	// 9. iago-gh-token file present → GH_TOKEN env loaded
++	it("loads iago-gh-token file value into GH_TOKEN", () => {
++		fs.writeFileSync(path.join(tempDir, "iago-gh-token"), "ghp_AAAtestBBB");
++		vi.stubEnv("CREDENTIALS_DIRECTORY", tempDir);
++		loadSystemdCredentials();
++		expect(process.env.GH_TOKEN).toBe("ghp_AAAtestBBB");
++	});
++
++	// 10. MANDATORY sentinel-leak negative test (C2 carry-over).
++	it("NEVER leaks the credential value to telemetry, stdout, or stderr", async () => {
++		const sentinel = "sentinel_must_not_leak_AAA";
++		fs.writeFileSync(path.join(tempDir, "iago-telegram-token"), sentinel);
++		vi.stubEnv("CREDENTIALS_DIRECTORY", tempDir);
++
++		// Buffers: capture every byte written by the function under test.
++		const telemetryPayloads: unknown[] = [];
++		const stdoutBuf: string[] = [];
++		const stderrBuf: string[] = [];
++
++		const emitSpy = vi
++			.spyOn(telemetry, "emit")
++			.mockImplementation(async (event, extra) => {
++				telemetryPayloads.push({ event, extra });
++			});
++		const stdoutSpy = vi
++			.spyOn(process.stdout, "write")
++			.mockImplementation((chunk: unknown): boolean => {
++				stdoutBuf.push(typeof chunk === "string" ? chunk : String(chunk));
++				return true;
++			});
++		const stderrSpy = vi
++			.spyOn(process.stderr, "write")
++			.mockImplementation((chunk: unknown): boolean => {
++				stderrBuf.push(typeof chunk === "string" ? chunk : String(chunk));
++				return true;
++			});
++
++		loadSystemdCredentials();
++
++		// Restore so test framework can report without our spies in the way.
++		emitSpy.mockRestore();
++		stdoutSpy.mockRestore();
++		stderrSpy.mockRestore();
++
++		// Confirm the function did its job (loaded the value into env).
++		expect(process.env.IAGO_TELEGRAM_BOT_TOKEN).toBe(sentinel);
++
++		// Now the negative assertion: the sentinel literal must NOT appear
++		// anywhere the function wrote bytes.
++		const telemetryDump = JSON.stringify(telemetryPayloads);
++		const stdoutDump = stdoutBuf.join("");
++		const stderrDump = stderrBuf.join("");
++
++		expect(telemetryDump).not.toContain(sentinel);
++		expect(stdoutDump).not.toContain(sentinel);
++		expect(stderrDump).not.toContain(sentinel);
++	});
++
++	// 11. SIGHUP reload — credstore-sourced values ARE replaceable on reload
++	//     so a rotated token takes effect without a daemon restart. Guards
++	//     against the Codex-flagged regression where the helper would skip
++	//     replacement because the env var was already populated from its own
++	//     prior load.
++	it("replaces a credstore-sourced env value when the file rotates and the helper is re-called", () => {
++		const filePath = path.join(tempDir, "iago-telegram-token");
++		fs.writeFileSync(filePath, "initial-token");
++		vi.stubEnv("CREDENTIALS_DIRECTORY", tempDir);
++
++		loadSystemdCredentials();
++		expect(process.env.IAGO_TELEGRAM_BOT_TOKEN).toBe("initial-token");
++
++		// Simulate credential rotation: file content changes, env still
++		// holds the prior credstore-loaded value.
++		fs.writeFileSync(filePath, "rotated-token");
++		loadSystemdCredentials();
++		expect(process.env.IAGO_TELEGRAM_BOT_TOKEN).toBe("rotated-token");
++	});
++
++	// 12. SIGHUP reload — external env-var overrides MUST survive a reload.
++	//     Confirms the "external override beats credstore" contract still
++	//     holds across repeat invocations, not just the first one.
++	it("preserves an external env override across reloads (does NOT replace it)", () => {
++		const filePath = path.join(tempDir, "iago-telegram-token");
++		fs.writeFileSync(filePath, "file-A");
++		vi.stubEnv("CREDENTIALS_DIRECTORY", tempDir);
++		vi.stubEnv("IAGO_TELEGRAM_BOT_TOKEN", "external-override");
++
++		loadSystemdCredentials();
++		expect(process.env.IAGO_TELEGRAM_BOT_TOKEN).toBe("external-override");
++
++		// File rotates; external override must still win on reload.
++		fs.writeFileSync(filePath, "file-B");
++		loadSystemdCredentials();
++		expect(process.env.IAGO_TELEGRAM_BOT_TOKEN).toBe("external-override");
++	});
++
++	// 13. Reload — if an external actor mutates a credstore-loaded env var
++	//     between calls (env no longer matches what the helper last wrote),
++	//     the helper treats the new value as an external override and does
++	//     NOT clobber it on subsequent reloads.
++	it("treats a post-load external mutation as an override and stops replacing it", () => {
++		const filePath = path.join(tempDir, "iago-telegram-token");
++		fs.writeFileSync(filePath, "initial-token");
++		vi.stubEnv("CREDENTIALS_DIRECTORY", tempDir);
++
++		loadSystemdCredentials();
++		expect(process.env.IAGO_TELEGRAM_BOT_TOKEN).toBe("initial-token");
++
++		// External mutation diverges current env from our last-written value.
++		vi.stubEnv("IAGO_TELEGRAM_BOT_TOKEN", "external-after-load");
++		fs.writeFileSync(filePath, "rotated-token");
++		loadSystemdCredentials();
++		expect(process.env.IAGO_TELEGRAM_BOT_TOKEN).toBe("external-after-load");
++	});
++
++	// Helper-function coverage — these are consumed by main.ts to compute
++	// the `cred-bootstrap-loaded` telemetry payload. Verifying the shape
++	// here keeps cred-bootstrap.ts above the 80% line-coverage floor and
++	// confirms the CREDENTIALS array's two active entries are present.
++	describe("helper functions", () => {
++		it("getCredentialFileNames returns iago-telegram-token and iago-gh-token", () => {
++			const names = getCredentialFileNames();
++			expect(names).toContain("iago-telegram-token");
++			expect(names).toContain("iago-gh-token");
++		});
++
++		it("getCredentialEnvVars returns IAGO_TELEGRAM_BOT_TOKEN and GH_TOKEN", () => {
++			const vars = getCredentialEnvVars();
++			expect(vars).toContain("IAGO_TELEGRAM_BOT_TOKEN");
++			expect(vars).toContain("GH_TOKEN");
++		});
++
++		it("envVarToFileName maps IAGO_TELEGRAM_BOT_TOKEN to iago-telegram-token", () => {
++			expect(envVarToFileName("IAGO_TELEGRAM_BOT_TOKEN")).toBe(
++				"iago-telegram-token",
++			);
++		});
++
++		it("envVarToFileName maps GH_TOKEN to iago-gh-token", () => {
++			expect(envVarToFileName("GH_TOKEN")).toBe("iago-gh-token");
++		});
++
++		it("envVarToFileName returns null for an unregistered env var", () => {
++			expect(envVarToFileName("NOT_A_REAL_CREDENTIAL")).toBeNull();
++		});
++	});
++});
+diff --git a/runtime/daemon/cred-bootstrap.ts b/runtime/daemon/cred-bootstrap.ts
+new file mode 100644
+index 0000000..b70cb0c
+--- /dev/null
++++ b/runtime/daemon/cred-bootstrap.ts
+@@ -0,0 +1,145 @@
++/**
++ * Systemd credential bootstrap helper — Plan 01b Task 1.
++ *
++ * Reads files provisioned by systemd `LoadCredentialEncrypted=` (01a's
++ * `provision-credentials.sh` + `iago-os-v2-daemon.service` unit) into
++ * `process.env[<VAR>]` so the rest of the daemon (config loader,
++ * Telegram bot, PR-triage agent's `gh` invocations, etc.) reads
++ * credentials through the same env-var surface used for local-dev runs.
++ *
++ * Call order contract:
++ *   - MUST run BEFORE `loadConfig()` in `startDaemon()` (wired in
++ *     `runtime/daemon/main.ts`). Otherwise `loadConfig()` only sees
++ *     credentials that were already exported in the systemd unit's
++ *     `Environment=` — defeating the purpose of `LoadCredential=`.
++ *   - Local-dev path is a no-op: when `process.env.CREDENTIALS_DIRECTORY`
++ *     is unset (or empty), this returns immediately without touching
++ *     env vars. Santiago can run the daemon locally with
++ *     `IAGO_TELEGRAM_BOT_TOKEN=...` set directly in the shell and this
++ *     helper does not interfere.
++ *   - Env-var override path: if an env var is already set with a
++ *     non-empty value AND that value did NOT come from a prior
++ *     credstore load by this helper, the file value is NOT loaded
++ *     (external env wins over credstore). This lets unit-test runs
++ *     and one-off local overrides bypass systemd-provisioned values
++ *     permanently, even across SIGHUP reloads.
++ *   - Empty env-var values (`""`) are treated as not-set per spec:
++ *     `process.env[envVar] !== undefined && process.env[envVar]!.length > 0`.
++ *
++ * Credential value handling contract (C2 carry-over):
++ *   The value bytes flow from disk to `process.env` with no
++ *   intermediate observable. This function NEVER logs the value to
++ *   `console.log`, `console.error`, or any telemetry payload. Task 2
++ *   test case 10 enforces this with a sentinel-value grep across
++ *   telemetry buffers + stdout + stderr.
++ *
++ * Re-entrancy and reload semantics:
++ *   Safe to call multiple times. Plan 06's SIGHUP credential-reload
++ *   handler invokes this function on each `systemctl kill -s SIGHUP`
++ *   so credstore rotations take effect without a daemon restart.
++ *   Each invocation re-reads the credstore files. To support
++ *   credential rotation, env vars that this helper previously
++ *   populated are REPLACEABLE on reload — the helper tracks the last
++ *   value it wrote per env var and rewrites when the file content
++ *   changes (current env value still matches our last-written value).
++ *   External overrides (env vars whose current value differs from
++ *   what this helper last wrote, including values set before the
++ *   first call) are preserved across reloads.
++ */
++
++import * as fs from "node:fs";
++import * as path from "node:path";
++
++interface CredMap {
++	readonly fileName: string;
++	readonly envVar: string;
++}
++
++const CREDENTIALS: CredMap[] = [
++	{ fileName: "iago-telegram-token", envVar: "IAGO_TELEGRAM_BOT_TOKEN" },
++	{ fileName: "iago-gh-token", envVar: "GH_TOKEN" },
++	// Phase 3 entries — provisioned at Phase 2 by 01a's
++	// `provision-credentials.sh`, ACTIVATED at Phase 3 when the
++	// claude-pty adapter wires `authProfile` → per-spawn
++	// `ANTHROPIC_API_KEY` env override (see `config.ts` AgentConfig
++	// `authProfile` field). Until then, leaving these commented out
++	// prevents the env from being populated with Anthropic tokens
++	// that no caller yet consumes.
++	// { fileName: "iago-anthropic-default", envVar: "IAGO_ANTHROPIC_DEFAULT_TOKEN" },
++	// { fileName: "iago-anthropic-ilsantino", envVar: "IAGO_ANTHROPIC_ILSANTINO_TOKEN" },
++	// { fileName: "iago-anthropic-iaguito", envVar: "IAGO_ANTHROPIC_IAGUITO_TOKEN" },
++];
++
++/**
++ * Per-env-var record of the last value this helper wrote to `process.env`.
++ * Used to distinguish credstore-sourced env vars (replaceable on reload)
++ * from external overrides (preserved). The current `process.env[envVar]`
++ * value is considered "ours" only when it still matches the value we
++ * last wrote; any external mutation since then is respected as an override.
++ */
++const lastWrittenByCredstore = new Map<string, string>();
++
++export function loadSystemdCredentials(): void {
++	const dir = process.env.CREDENTIALS_DIRECTORY;
++	if (dir === undefined || dir.length === 0) return;
++
++	for (const entry of CREDENTIALS) {
++		const credPath = path.join(dir, entry.fileName);
++		if (!fs.existsSync(credPath)) continue;
++
++		const raw = fs.readFileSync(credPath, "utf8");
++		const value = raw.trim();
++		if (value.length === 0) continue;
++
++		const existing = process.env[entry.envVar];
++		if (existing !== undefined && existing.length > 0) {
++			const lastWritten = lastWrittenByCredstore.get(entry.envVar);
++			const isOurs = lastWritten !== undefined && existing === lastWritten;
++			if (!isOurs) continue;
++		}
++
++		process.env[entry.envVar] = value;
++		lastWrittenByCredstore.set(entry.envVar, value);
++	}
++}
++
++/**
++ * Test-only helper: clears the internal "last written by credstore"
++ * tracking map. Vitest cases that exercise reload semantics call this
++ * in `beforeEach` so module-level state does not leak across tests.
++ * Not for production use.
++ */
++export function __resetCredstoreStateForTests(): void {
++	lastWrittenByCredstore.clear();
++}
++
++/**
++ * Test-only helper: snapshot the CREDENTIALS array's file names. Used by
++ * `main.ts` to compute the `cred-bootstrap-loaded` telemetry event's
++ * `credentialsLoaded` field by diffing env-var keys-of-interest before
++ * and after `loadSystemdCredentials()`.
++ */
++export function getCredentialFileNames(): readonly string[] {
++	return CREDENTIALS.map((c) => c.fileName);
++}
++
++/**
++ * Test-only helper: snapshot the CREDENTIALS array's env-var names.
++ * Used by `main.ts` to compute the env-var keys-of-interest snapshot
++ * before/after `loadSystemdCredentials()` for telemetry.
++ */
++export function getCredentialEnvVars(): readonly string[] {
++	return CREDENTIALS.map((c) => c.envVar);
++}
++
++/**
++ * Test-only helper: map a credential env-var name back to its file name
++ * for telemetry. Returns `null` if the env var is not registered in
++ * `CREDENTIALS`.
++ */
++export function envVarToFileName(envVar: string): string | null {
++	for (const entry of CREDENTIALS) {
++		if (entry.envVar === envVar) return entry.fileName;
++	}
++	return null;
++}
+diff --git a/runtime/daemon/main.test.ts b/runtime/daemon/main.test.ts
+index 7762a3e..7b6eed8 100644
+--- a/runtime/daemon/main.test.ts
++++ b/runtime/daemon/main.test.ts
+@@ -37,6 +37,7 @@ import { ensureStateDirsSync, pathFor } from "./state-paths.js";
+ import {
+ 	SHUTDOWN_STAGE_TIMEOUT_MS,
+ 	buildFleetHealth,
++	computeRunUnder,
+ 	findHandleForAgent,
+ 	getShapeForAgent,
+ 	injectIntoAgent,
+@@ -587,3 +588,85 @@ describe("isDirectlyExecuted", () => {
+ 		expect(result).toBe(false);
+ 	});
+ });
++
++// ---------------------------------------------------------------------------
++// computeRunUnder — Plan 01b Task 4 C1 carry-over.
++// Enforces the contract: NODE_ENV=test is a HARD OVERRIDE that wins over
++// CREDENTIALS_DIRECTORY and INVOCATION_ID. A future refactor of the runUnder
++// branch could silently re-order these checks and the daemon-start event
++// would falsely report "systemd" from a unit-test harness; these tests fail
++// loudly if that happens.
++// ---------------------------------------------------------------------------
++
++describe("computeRunUnder", () => {
++	it('returns "test" when NODE_ENV=test and no systemd env vars are set', () => {
++		expect(computeRunUnder({ NODE_ENV: "test" })).toBe("test");
++	});
++
++	it('returns "test" when NODE_ENV=test EVEN IF CREDENTIALS_DIRECTORY is set (override)', () => {
++		expect(
++			computeRunUnder({
++				NODE_ENV: "test",
++				CREDENTIALS_DIRECTORY: "/run/credentials/iago-os-v2-daemon.service",
++			}),
++		).toBe("test");
++	});
++
++	it('returns "test" when NODE_ENV=test EVEN IF INVOCATION_ID is set (override)', () => {
++		expect(
++			computeRunUnder({
++				NODE_ENV: "test",
++				INVOCATION_ID: "deadbeefcafebabe",
++			}),
++		).toBe("test");
++	});
++
++	it('returns "test" when NODE_ENV=test AND BOTH systemd env vars are set (override)', () => {
++		expect(
++			computeRunUnder({
++				NODE_ENV: "test",
++				CREDENTIALS_DIRECTORY: "/run/credentials/iago-os-v2-daemon.service",
++				INVOCATION_ID: "deadbeefcafebabe",
++			}),
++		).toBe("test");
++	});
++
++	it('returns "systemd" when NODE_ENV is unset and CREDENTIALS_DIRECTORY is non-empty', () => {
++		expect(
++			computeRunUnder({
++				CREDENTIALS_DIRECTORY: "/run/credentials/iago-os-v2-daemon.service",
++			}),
++		).toBe("systemd");
++	});
++
++	it('returns "systemd" when NODE_ENV is unset and INVOCATION_ID is set', () => {
++		expect(
++			computeRunUnder({
++				INVOCATION_ID: "deadbeefcafebabe",
++			}),
++		).toBe("systemd");
++	});
++
++	it('returns "systemd" when NODE_ENV=production and INVOCATION_ID is set', () => {
++		expect(
++			computeRunUnder({
++				NODE_ENV: "production",
++				INVOCATION_ID: "deadbeefcafebabe",
++			}),
++		).toBe("systemd");
++	});
++
++	it('returns "local" when no systemd env vars are set and NODE_ENV is not "test"', () => {
++		expect(computeRunUnder({})).toBe("local");
++		expect(computeRunUnder({ NODE_ENV: "development" })).toBe("local");
++		expect(computeRunUnder({ NODE_ENV: "production" })).toBe("local");
++	});
++
++	it('returns "local" when CREDENTIALS_DIRECTORY is the empty string (matches Phase 2 spec)', () => {
++		expect(computeRunUnder({ CREDENTIALS_DIRECTORY: "" })).toBe("local");
++	});
++
++	it('returns "local" when INVOCATION_ID is the empty string (matches Phase 2 spec)', () => {
++		expect(computeRunUnder({ INVOCATION_ID: "" })).toBe("local");
++	});
++});
+diff --git a/runtime/daemon/main.ts b/runtime/daemon/main.ts
+index 35d8458..9b7b107 100644
+--- a/runtime/daemon/main.ts
++++ b/runtime/daemon/main.ts
+@@ -1,7 +1,13 @@
+ /**
+  * Daemon entry point — wires Plans 01–06 into a single runnable process.
+  *
+- * Startup sequence (Plan 07 stress-test EC2 binding):
++ * Startup sequence (Plan 07 stress-test EC2 binding + Plan 01b cred bootstrap):
++ *   0. `loadSystemdCredentials()` — read systemd `LoadCredentialEncrypted=`
++ *      files from `$CREDENTIALS_DIRECTORY` into `process.env` BEFORE
++ *      anything else. Local-dev no-op when `CREDENTIALS_DIRECTORY` is
++ *      unset. Emits `cred-bootstrap-loaded` telemetry with the credstore
++ *      FILE NAMES (never the values) of every credential that actually
++ *      wrote to env on this boot.
+  *   1. `ensureStateDirsSync()` — create state-root subtrees.
+  *   2. `loadConfig()` if no `config` was injected.
+  *   3. Side-effect import of `claude-pty` so the adapter registers itself.
+@@ -74,6 +80,11 @@ import { TelegramBot } from "../telegram/bot.js";
+ 
+ import { AgentManager, type RegisterAgentConfig } from "./agent-manager.js";
+ import { type AgentConfig, type DaemonConfig, loadConfig } from "./config.js";
++import {
++	envVarToFileName,
++	getCredentialEnvVars,
++	loadSystemdCredentials,
++} from "./cred-bootstrap.js";
+ import { HeartbeatController } from "./heartbeat.js";
+ import { IpcServer } from "./ipc-server.js";
+ import { ensureStateDirsSync, pathFor } from "./state-paths.js";
+@@ -194,6 +205,38 @@ export async function loadPersistedConfigs(): Promise<
+ 	return out;
+ }
+ 
++/**
++ * Plan 01b Task 4 (C1 carry-over): compute the `runUnder` field for the
++ * `daemon-start` telemetry event.
++ *
++ * `NODE_ENV=test` is a HARD OVERRIDE that always returns `"test"`,
++ * regardless of `CREDENTIALS_DIRECTORY` or `INVOCATION_ID`. This prevents
++ * unit tests that legitimately set `CREDENTIALS_DIRECTORY` to a tmp dir
++ * (e.g., `cred-bootstrap.test.ts`) from falsely tripping the systemd
++ * detector and emitting `runUnder: "systemd"` from a non-systemd
++ * harness.
++ *
++ * Outside test mode, presence of either `CREDENTIALS_DIRECTORY` (set by
++ * `LoadCredentialEncrypted=` directives) or `INVOCATION_ID` (set by
++ * systemd for every unit invocation) indicates a systemd unit run.
++ *
++ * Exported so main.test.ts can directly assert the override contract;
++ * inlining inside `startDaemon`'s IIFE made the rule un-unit-testable.
++ */
++export type RunUnder = "systemd" | "local" | "test";
++
++export function computeRunUnder(
++	env: NodeJS.ProcessEnv = process.env,
++): RunUnder {
++	if (env.NODE_ENV === "test") return "test";
++	const credDir = env.CREDENTIALS_DIRECTORY;
++	const invocationId = env.INVOCATION_ID;
++	const isSystemd =
++		(credDir !== undefined && credDir.length > 0) ||
++		(invocationId !== undefined && invocationId.length > 0);
++	return isSystemd ? "systemd" : "local";
++}
++
+ export interface DaemonHandle {
+ 	readonly shutdown: () => Promise<void>;
+ 	/** Resolves when shutdown() completes. Await this to block until teardown is done. */
+@@ -208,6 +251,40 @@ export interface DaemonHandle {
+ export async function startDaemon(
+ 	overrideConfig?: DaemonConfig,
+ ): Promise<DaemonHandle> {
++	// Plan 01b Task 4: bridge systemd `LoadCredentialEncrypted=` files into
++	// `process.env` BEFORE any config load or state-dir setup. This MUST be
++	// the first statement so `loadConfig()` reads
++	// `IAGO_TELEGRAM_BOT_TOKEN` populated by the credstore on systemd-on-VPS
++	// runs. Local-dev path is a no-op (no `CREDENTIALS_DIRECTORY`).
++	//
++	// Telemetry contract (spec § 10 criterion #5, C2 carry-over): the
++	// emitted event carries the credstore FILE NAMES that wrote to env on
++	// this call — NEVER the values. Detection works by snapshotting
++	// keys-of-interest before and after the call and diffing.
++	const targetEnvVars = getCredentialEnvVars();
++	const envBefore = new Map<string, string | undefined>();
++	for (const k of targetEnvVars) envBefore.set(k, process.env[k]);
++
++	loadSystemdCredentials();
++
++	const credentialsLoaded: string[] = [];
++	for (const envVar of targetEnvVars) {
++		const before = envBefore.get(envVar);
++		const after = process.env[envVar];
++		const beforeUnset = before === undefined || before.length === 0;
++		const afterSet = after !== undefined && after.length > 0;
++		if (beforeUnset && afterSet) {
++			const fileName = envVarToFileName(envVar);
++			if (fileName !== null) credentialsLoaded.push(fileName);
++		}
++	}
++	// Note: this `emit` precedes `ensureStateDirsSync()`. Safe because
++	// `emit()` lazily `fsp.mkdir(..., { recursive: true })`'s its own
++	// jsonl directory — it does not depend on the state-dir setup that
++	// follows. Order is intentional so the cred-bootstrap-loaded event
++	// appears as the first telemetry record of every boot.
++	await emit({ kind: "cred-bootstrap-loaded", credentialsLoaded });
++
+ 	ensureStateDirsSync();
+ 
+ 	const config = overrideConfig ?? (await loadConfig());
+@@ -505,10 +582,17 @@ export async function startDaemon(
+ 
+ 	heartbeat.start();
+ 
++	// Plan 01b Task 4 (C1 carry-over): determine `runUnder` for the
++	// `daemon-start` event via the exported `computeRunUnder` helper so
++	// the override semantics (NODE_ENV=test wins over CREDENTIALS_DIRECTORY)
++	// are directly unit-testable from main.test.ts.
++	const runUnder = computeRunUnder();
++
+ 	await emit({
+ 		kind: "daemon-start",
+ 		pid: process.pid,
+ 		nodeVersion: process.versions.node,
++		runUnder,
+ 	});
+ 
+ 	return {
+diff --git a/runtime/daemon/telemetry.ts b/runtime/daemon/telemetry.ts
+index 7ff9103..472d46d 100644
+--- a/runtime/daemon/telemetry.ts
++++ b/runtime/daemon/telemetry.ts
+@@ -46,6 +46,17 @@ export type DaemonEvent =
+ 			readonly kind: "daemon-start";
+ 			readonly pid: number;
+ 			readonly nodeVersion: string;
++			/**
++			 * Plan 01b Task 4 (C1 carry-over): identifies the runtime
++			 * context the daemon booted under so Phase 2 telemetry
++			 * consumers can filter systemd-on-VPS vs local-dev vs unit-test
++			 * runs cleanly. Detection order: `NODE_ENV=test` → `"test"`
++			 * (preserves Phase 1 test semantics); else
++			 * `CREDENTIALS_DIRECTORY` non-empty OR `INVOCATION_ID` set
++			 * (systemd auto-sets `INVOCATION_ID`) → `"systemd"`; else
++			 * `"local"`.
++			 */
++			readonly runUnder?: "systemd" | "local" | "test";
+ 	  }
+ 	| {
+ 			readonly kind: "daemon-stop";
+@@ -124,6 +135,20 @@ export type DaemonEvent =
+ 			readonly kind: "approval-claim-link-eperm";
+ 			readonly approvalIdHash: string;
+ 	  }
++	| {
++			/**
++			 * Plan 01b Task 4 (spec § 10 criterion #5): emitted by
++			 * `startDaemon()` immediately after `loadSystemdCredentials()`
++			 * returns. `credentialsLoaded` carries the credstore FILE NAMES
++			 * (e.g., `["iago-telegram-token"]`) that wrote to env on this
++			 * call — NEVER the values. Computed by diffing env-var
++			 * keys-of-interest before vs after the call so the rule
++			 * "credstore wins only when env is unset" stays
++			 * locally testable.
++			 */
++			readonly kind: "cred-bootstrap-loaded";
++			readonly credentialsLoaded: string[];
++	  }
+ 	| {
+ 			/**
+ 			 * Plan 07a (CronScheduler): a registered cron expression matched

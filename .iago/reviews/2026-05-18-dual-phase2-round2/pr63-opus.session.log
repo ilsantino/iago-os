@@ -1,0 +1,119 @@
+Write permission denied for the report file, and MSYS bash refuses my heredoc attempts. Printing report to stdout as instructed; user can copy or grant Write permission for the file save.
+
+---
+
+# PR #63 Adversarial Review — Opus (round 2)
+
+**Scope:** Plan 02b (WhatsApp deauth + Telegram rotation scripts + 2 runbooks).
+**Branch:** `feat/runtime-02b-whatsapp-telegram-and-runbooks`
+**HEAD:** `87f5eb8` (GH Action loop fix on top of `8324989`)
+**Files reviewed on disk (worktree `iago-os-d`):**
+- `runtime/deploy/revoke-whatsapp.sh` (191 lines)
+- `runtime/deploy/rotate-telegram-bot.sh` (218 lines)
+- `runtime/migration/02-whatsapp-deauth.md` (180 lines)
+- `runtime/migration/02-telegram-bot-rotation.md` (170 lines)
+
+## Re-verification of GH Action loop fix `87f5eb8`
+
+| Round-1 finding | Status | Evidence |
+|---|---|---|
+| Critical — `jq '// "missing"'` coalesced JSON `false` to `"missing"` so step 5 always failed on success path | **FIXED** | `revoke-whatsapp.sh:153` now `jq -r '.data.is_valid'` (no `//`); runbook failure-mode row updated to `is_valid:null` at line 170 |
+| Important — `IAGO_ROTATE_NONINTERACTIVE` only skipped `read -r`, step 3 still called `op read` (would still block CI) | **FIXED** | `rotate-telegram-bot.sh:107-114` exits via `noninteractive-exit` AFTER step 1, before both `read -r` AND `op read` |
+| Important — partial-deauth (network drop between step 2 and 4) had no operator guidance | **FIXED** | `02-whatsapp-deauth.md:172` adds row instructing manual Meta UI token revoke + warning NOT to re-run script |
+
+All three verified by reading current file state; no regressions vs round 1.
+
+## Critical
+None.
+
+## Important
+
+### I1 — `revoke-whatsapp.sh:96-108` is-active guard silently bypassed on operator's local box
+
+`02-whatsapp-deauth.md` Option A (line 70) instructs the operator to run `bash runtime/deploy/revoke-whatsapp.sh` from local Git Bash on Windows. The failure-mode table's `tailscale ssh root@srv1456441 -- su - ilsantino -c …` hint confirms local invocation is the intended host (the runbook tells operators to SSH only to *manually stop OpenClaw*, not to run the script itself).
+
+Script step 1:
+```bash
+if id "$OPENCLAW_USER" > /dev/null 2>&1; then
+  state=$(su - "$OPENCLAW_USER" -c "systemctl --user is-active …" || echo "unknown")
+  if [[ "$state" == "active" ]]; then ... exit 1 ; fi
+else
+  echo "  NOTE: user '$OPENCLAW_USER' not present on this host. Assuming OpenClaw never ran here."
+  emit_ndjson "1/6" "ok" "user $OPENCLAW_USER absent"
+fi
+```
+
+Verified locally on operator MINGW64 host: `id ilsantino` → `no such user`. Step 1 silently passes via the user-absent no-op branch — deauth proceeds **without ever verifying OpenClaw is stopped on the VPS**.
+
+**Concrete failure path the guard was supposed to catch:** Santiago skips/forgets `archive-openclaw.sh` (or the user-systemd unit was restarted manually). Meta webhook DELETE then races against a still-polling OpenClaw, leaving downstream state confused per spec §7's "stop OpenClaw FIRST" rationale. The step-1 guard is the only mechanical check; it never fires on the supported invocation host.
+
+**Impact:** loss of the only mechanical gate the spec demanded. The runbook's "When to run" prerequisite is a human checklist — exactly what the script guard was meant to backstop.
+
+**Fix options (pick one):**
+1. **Remote probe via Tailscale SSH** — `tailscale ssh "${VPS_USER:-root}@${VPS_HOST:-srv1456441}" -- "su - $OPENCLAW_USER -c 'systemctl --user is-active $OPENCLAW_SERVICE'"`. Lowest friction; matches the runbook's operator-on-Windows model and actually checks the VPS.
+2. **`IAGO_REVOKE_HOST=vps|local` env switch** — on `local`, require `IAGO_OPENCLAW_STOPPED=1` ack so the bypass becomes explicit, not silent.
+3. **Hard-fail when ilsantino is absent** unless `--remote-check` (or equivalent) is passed.
+
+Option 1 is the only one that delivers what the spec and plan thought the guard did.
+
+### I2 — runbook Option A omits "where do I run this" instruction
+
+`02-whatsapp-deauth.md` Procedure → Option A shows `bash runtime/deploy/revoke-whatsapp.sh` with no host context. The runbook never says "from Santiago's Windows box" nor "from inside `tailscale ssh root@srv1456441`". Given I1, this matters: if the operator does `tailscale ssh` first the guard fires; if they run locally it's silently bypassed. Add an explicit `Run from:` line above Option A.
+
+## Minor
+
+### M1 — Spec §7 text vs curl-block ordering contradiction inherited verbatim
+
+Spec §7 rationale (line 979): *"stop OpenClaw FIRST … **THEN revoke API token. THEN delete webhook subscription.**"*
+Spec §7 curl block (lines 996-1027) sequence: **DELETE webhook subscription (step 3) → revoke token (step 5a)** — opposite order.
+
+Both `revoke-whatsapp.sh` (steps 2→4) and runbook Option B (verbatim block) follow the curl-block order. Implementation is internally consistent with the spec's authoritative code, but the rationale text is wrong. Not a PR-blocker — flag for spec amendment.
+
+### M2 — `revoke-whatsapp.sh:130` step 3 echoes raw subscribed-apps JSON to stdout
+
+`jq .` dumps every subscribed app for the WABA, including ones unrelated to OpenClaw. Operator review is the intent, but consider redacting (`jq --arg a "$APP_ID" '.data | map(select(.id != $a))'`) or noting in the runbook that the dump may contain other apps' IDs.
+
+### M3 — `rotate-telegram-bot.sh:172-189` retry loop fragile to malformed responses
+
+```bash
+response=$(curl -sS "${TELEGRAM_BASE}/bot${OLD_TOKEN}/getMe")
+ok_field=$(echo "$response" | jq -r '.ok')
+```
+
+A transient 5xx with empty body → `curl -sS` exits 0 with empty stdout → `jq -r` errors → under `set -e` the assignment can exit the script mid-retry, defeating the 5×30s buffer. Wrap with `|| echo unknown` and treat `unknown` as "retry" instead of crashing.
+
+### M4 — NDJSON `detail` payload writes full Meta response bodies
+
+`emit_ndjson "2/6" "ok" "$response"` logs the entire Meta body into `/var/log/iago-os/cutover.ndjson`. Today's responses are safe, but if Meta ever echoes the bearer token in an error shape, it lands in the log. Consider capping `detail` to the parsed verdict (`success=true` / `http_code=400`) rather than verbatim body.
+
+### M5 — `shellcheck` gate not actually exercised
+
+Plan 02b verify requires shellcheck on both scripts. Pipeline log `02b.log:19`: *"shellcheck not installed locally so couldn't confirm that gate, but scripts look clean by eye."* Both pass `bash -n` (re-verified just now). Shellcheck would catch real classes of bugs (I1's silent-bypass pattern, unquoted expansions). Install on operator box before merge or add CI-side gate.
+
+## Cross-cutting
+
+- **Auth bypass:** env-var fail-loud guards on all 5 WhatsApp inputs + `OLD_TOKEN` ✓. Step 3 `op read` ≠ `OLD_TOKEN` catches operator pressing Enter without rotating ✓. Step 6 bot-id-match prevents wrong-bot rotation ✓. No token echoed to stdout ✓.
+- **Data loss:** WhatsApp non-idempotency documented + intentional ✓. Pre-rotation snapshot overwrite documented as intentional (round-1 fix) ✓. NDJSON appends best-effort ✓. **Concern:** I1 bypass enables one mode (revoke while OpenClaw polls) that can desync Meta webhook state — stateful drift, not strict data loss.
+- **Race conditions:** Operator-driven, single-flight per cutover. Only race surface is the I1 is-active guard, which doesn't actually guard. Telegram step 5 retry loop is single-threaded.
+- **Rollback safety:** WhatsApp explicitly NOT rolled back (spec §8 T+30 alignment), rationale documented ✓. Telegram rollback documents BotFather rate-limit + 60s wait + UI-pre-open advice ✓.
+
+## Spec-derived path translation (Phase 2 Codex P0-2)
+
+Spec §3 still references `scripts/vps-bootstrap/provision-credentials.sh` (line 575). Plan 01a (merged `20c8348`) ships `runtime/deploy/provision-credentials.sh`. Both `rotate-telegram-bot.sh:67` and `02-telegram-bot-rotation.md:54` correctly use `runtime/deploy/` — translation applied ✓. Spec text still has stale path (separate amendment ticket).
+
+## NDJSON shape consistency with spec §10 criterion 5
+
+Both scripts emit `{"ts","script","step","status","detail"}` with consistent schema. Status enum: `ok`, `fail`, `pending` (rotate retry). `script` field disambiguates source. `detail` is JSON-encoded via `jq -Rs` — single line per record ✓.
+
+## Verdict: PASS_WITH_CONCERNS
+
+I1 is the only finding that materially weakens implementation vs intent. Fixable in a one-line follow-up commit (Tailscale-SSH substitution) and does not block merge if Santiago is aware the local-host guard is cosmetic. All round-1 fixes from `87f5eb8` verified in place. Plan compliance, NDJSON shape, spec-path translation, and cross-cutting safety all hold.
+
+**Recommended follow-up before cutover-time use:**
+1. Apply I1 fix (option 1) so the OpenClaw-stopped guard actually fires on Santiago's host.
+2. Add "Run from: Santiago's Windows box (Git Bash)" callout above Option A in `02-whatsapp-deauth.md`.
+3. Install `shellcheck` on operator box and rerun verify block.
+
+---
+
+**Note:** Could not persist report to `.iago/reviews/2026-05-18-dual-phase2-round2/pr63-opus.md` — Write tool requires permission grant, and MSYS bash heredocs choke on the apostrophe/backtick mix. Approve the Write tool prompt or grant permission and I'll re-save.

@@ -1,0 +1,40 @@
+Apply 3 HIGH fixes from Codex dual-review on PR #63 (Plan 02b — WhatsApp + Telegram + runbooks). Files in C:/Users/sanal/dev/iago-os-d worktree.
+
+HIGH-1 — Runbook revokes Telegram token BEFORE script can snapshot it (runtime/migration/02-telegram-bot-rotation.md ~lines 48-54)
+
+Current: runbook says BotFather /revoke at T+1:00, run rotate-telegram-bot.sh at T+2:00.
+Bug: the script's first action is getMe with OLD_TOKEN, which is already dead by T+2:00, so the script aborts before provisioning. Cutover stranded.
+Fix: Re-read runtime/deploy/rotate-telegram-bot.sh to confirm its actual flow (the script is interactive — it prompts the operator after recording the pre-rotation snapshot). Update the runbook so the operator starts rotate-telegram-bot.sh BEFORE BotFather /revoke. Reorder the atomic-sequence table to:
+  - T-0:30 = start script (records pre-rotation getMe snapshot; then prompts for operator action)
+  - T+0:00 = operator runs BotFather /revoke + updates 1Password
+  - T+0:30 = operator presses Enter at script prompt
+  - T+1:00 = script provisions + verifies new token
+
+HIGH-2 — Telegram rotation puts live tokens in curl argv (runtime/deploy/rotate-telegram-bot.sh ~lines 89-195)
+
+Current: curl includes the OLD_TOKEN or new_token in the URL argument. Visible via ps while curl runs.
+Fix: route every Telegram API call so the bot token is NEVER in curl argv. Use `curl --silent --config -` with a here-doc on stdin containing the URL. Create a helper function like curl_telegram() that takes (token, method) and pipes the URL via stdin. Apply to all curl calls that include $OLD_TOKEN or $new_token_from_op in the URL.
+
+Acceptance: `grep -E "curl.*bot\\\$\\\{(OLD_TOKEN|new_token)" runtime/deploy/rotate-telegram-bot.sh` returns zero matches.
+
+HIGH-3 — WhatsApp deauth exposes Meta tokens + APP_SECRET in process args (runtime/deploy/revoke-whatsapp.sh ~lines 112-167)
+
+Current: `curl -X DELETE "..." -H "Authorization: Bearer $SYSTEM_USER_TOKEN"` — token in argv via -H. Also debug_token call has $SYSTEM_USER_TOKEN AND $APP_SECRET in the URL argument.
+Fix: same pattern as HIGH-2. Create curl_graph() helper that uses `curl --silent -X METHOD --config -` with stdin here-doc containing the full url and the Authorization header. For debug_token, put the URL with query params on stdin too. Apply to all 6 curl steps in revoke-whatsapp.sh.
+
+Acceptance:
+- `grep -cE "Authorization.*Bearer.*\\\$\\\{" runtime/deploy/revoke-whatsapp.sh` returns 0
+- `grep -c "input_token=\\\$\\\{" runtime/deploy/revoke-whatsapp.sh` returns 0
+
+ALSO update the Procedure-section curl examples in BOTH runbooks (02-whatsapp-deauth.md + 02-telegram-bot-rotation.md) to show the stdin-config pattern, not the argv pattern. Codex flagged "and the documented manual fallbacks" too.
+
+Verify everything:
+1. `bash -n runtime/deploy/rotate-telegram-bot.sh && shellcheck runtime/deploy/rotate-telegram-bot.sh`
+2. `bash -n runtime/deploy/revoke-whatsapp.sh && shellcheck runtime/deploy/revoke-whatsapp.sh`
+3. The 3 grep-acceptance checks above
+4. Print the new runbook atomic-sequence table
+
+Commit subject under 72 chars: `fix(02b): runbook order + scrub tokens from curl argv`
+Then push: `git push origin feat/02b-whatsapp-telegram-runbooks`
+
+Plan reference: .iago/plans/feature-phase-2-vps-bootstrap/02b-whatsapp-telegram-and-runbooks.md

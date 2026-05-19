@@ -1,0 +1,893 @@
+diff --git a/.iago/runs/round-2-dispatch/02b.log b/.iago/runs/round-2-dispatch/02b.log
+new file mode 100644
+index 0000000..e18b4e7
+--- /dev/null
++++ b/.iago/runs/round-2-dispatch/02b.log
+@@ -0,0 +1,104 @@
++[16:11:42] STRESS TEST — skipped (plan already stress-tested)
++[16:11:43] IMPLEMENT — 02b-whatsapp-telegram-and-runbooks
++[16:18:55] Implementation complete
++[16:18:56] BUILD GATE — attempt 1 [mode: sequential]
++[16:18:56] Build passed (tsc 0ms / vite 0ms / mode sequential)
++[16:18:57] CONSOLE GATE — skipped (no Vite config)
++[16:18:57] REVIEW — 02b-whatsapp-telegram-and-runbooks
++warning: in the working copy of '.iago/runs/round-2-dispatch/02b.log', LF will be replaced by CRLF the next time Git touches it
++warning: in the working copy of 'runtime/migration/02-telegram-bot-rotation.md', LF will be replaced by CRLF the next time Git touches it
++warning: in the working copy of 'runtime/migration/02-whatsapp-deauth.md', LF will be replaced by CRLF the next time Git touches it
++[16:19:00]   review-checks: all modules loaded (209 lines)
++[16:20:59] Review output:
++All plan verifications pass: `bash -n` clean on both scripts, step/comment counts well above thresholds (63, 57), runbooks within line budget (179, 170), section/keyword counts satisfied. shellcheck not installed locally so couldn't confirm that gate, but scripts look clean by eye.
++
++PASS 1 — Plan compliance
++- Task 1 (revoke-whatsapp.sh): all 6 steps present, env-var fail-loud, C1 jq/curl pre-flight, NDJSON telemetry, manual UI step reminder, non-idempotent warning ✓
++- Task 2 (rotate-telegram-bot.sh): C2 NONINTERACTIVE early-exit after step 1, M2 5×30s retry, op-read comparison vs OLD_TOKEN, bot-id-preservation check at step 6 ✓
++- Task 3 (whatsapp runbook): 179 lines, 9 sections, 6 curl refs, all 5 IDs in input table with Meta UI click paths, rollback explainer present ✓
++- Task 4 (telegram runbook): 170 lines, 9 sections, 23 BotFather/revoke/getMe refs, atomic T-0:00→T+3:00 sequence + pre-cutover test plan + rollback section present ✓
++
++PASS 2 — Domain routing
++Changed files: 2 bash scripts (`runtime/deploy/`), 2 markdown runbooks (`runtime/migration/`), 1 log file. NO `.tsx`, NO `amplify/`, NO Lambda handlers, NO React/API client code. **Selected:** Baseline + Pattern Consistency. **Skipped:** Amplify, React, Auth (Cognito-shaped — N/A to shell token revocation), API, Backend (Lambda), Data Integrity, i18n, Infra. Cross-cutting concerns apply regardless.
++
++PASS 3 — Adversarial
++
++Findings:
++
++**Minor — Unreachable post-loop guard (rotate-telegram-bot.sh:180-183)**
++```
++if [[ "$old_dead" != "yes" ]]; then
++  echo "ERROR: unexpected control flow exit from retry loop" >&2
++  exit 1
++fi
++```
++The for-loop either `break`s with `old_dead=yes` or exits on attempt 5. The post-loop branch can never fire. Defensive but dead code per Baseline "unreachable branches". Author can leave as belt-and-suspenders or remove.
++
++**Minor — `op read` failure swallowed (rotate-telegram-bot.sh:130)**
++`op read "$OP_ITEM" 2>/dev/null || true` discards stderr from `op`; if Santiago isn't signed in to 1Password, the operator sees "op read empty" instead of the actual signin error. Acceptable since signin is operator responsibility, but a friendlier surface would help.
++
++**Minor — Pre-rotation snapshot is unconditional overwrite (rotate-telegram-bot.sh:98-100)**
++`PRE_ROTATION_LOG` is overwritten each run if writable. Debug-only file, not user data. No data-loss concern but worth a note for repeated invocations.
++
++**Minor — TOCTOU on NDJSON writability check (both scripts)**
++The `[[ -w ]]` check + later append is non-atomic, but the append is `|| true` no-op and best-effort by design. Acceptable.
++
++**Note (not a finding) — Tokens in URL query string (revoke-whatsapp.sh:152, 165-167)**
++`debug_token` and `/me` calls put `SYSTEM_USER_TOKEN` (and `APP_ID|APP_SECRET`) in the URL. This matches Meta's API contract — not the script's fault. Runbook correctly instructs `unset` after invocation.
++
++Cross-cutting:
++- **Auth bypass:** env-var fail-loud guards, no exposed endpoints, no token echoing. Step 3 (`op read` ≠ `OLD_TOKEN`) catches operator pressing Enter without rotating. ✓
++- **Data loss:** No unconditional destructive writes besides the documented debug snapshot. WhatsApp deauth's non-idempotency is documented and intentional. ✓
++- **Race conditions:** Operator-driven cutover; OpenClaw is-active check is informational, not a TOCTOU concern at this scope. ✓
++- **Rollback safety:** Both runbooks have explicit Rollback sections — Telegram path documents the BotFather rate-limit re-revoke caveat; WhatsApp explicitly NOT rolled back per spec, with cost-of-leaving-deauth-during-rollback rationale. ✓
++
++Verdict: PASS_WITH_CONCERNS
++Verdict: PASS_WITH_CONCERNS
++[16:20:59] Findings detected — dispatching fix session (round 1)
++[16:22:01] Fix output (exit 0):
++All three actionable Minor findings fixed in `rotate-telegram-bot.sh`:
++
++1. **op read failure swallowed (line 130)** — now captures stderr to a tempfile, surfaces it on empty-result failure with a `op signin` hint, and includes it in NDJSON telemetry.
++2. **Pre-rotation snapshot overwrite (line 98-100)** — added comment explaining the intentional overwrite-on-each-run behavior.
++3. **Unreachable post-loop guard (line 180-183)** — removed the dead `if [[ old_dead != yes ]]` branch (loop exits only via `break` or `exit 1`), replaced with a one-line comment documenting the control flow.
++
++The 4th finding (TOCTOU on NDJSON writability) was explicitly marked "Acceptable" by the reviewer — no fix needed.
++
++Bash syntax clean on both scripts.
++SessionEnd hook [node "${CLAUDE_PLUGIN_ROOT}/scripts/session-lifecycle-hook.mjs" SessionEnd] failed: Hook cancelled
++warning: in the working copy of '.iago/runs/round-2-dispatch/02b.log', LF will be replaced by CRLF the next time Git touches it
++[16:22:02]   review-checks: all modules loaded (209 lines)
++[16:30:18] Re-review output:
++Round 1 had 3 actionable Minor findings plus 1 accepted-as-is. Let me verify each fix landed in the current files.
++
++**Verification of Round 1 fixes (rotate-telegram-bot.sh):**
++
++1. **Unreachable post-loop guard** (was lines 180-183) — FIXED. Lines 188-189 now show: `done` immediately followed by comment `# Loop exits only via 'break' (success → old_dead=yes) or 'exit 1' on attempt 5.` Dead branch removed.
++
++2. **`op read` failure swallowed** (was line 130) — FIXED. Lines 131-144 now capture stderr to tempfile, surface it with `op signin` hint, and emit to NDJSON: `op_stderr=$(mktemp); ... if [[ -n "$op_err" ]]; then echo "op stderr: $op_err" >&2; echo "Hint: run 'op signin' if you see a session error above." >&2; fi`.
++
++3. **Pre-rotation snapshot overwrite** (lines 98-100) — FIXED. Comment added at lines 98-99 explaining the intentional overwrite: `# Debug-only snapshot — overwritten on each invocation by design (latest pre-rotation state is the only useful one; re-runs are a re-rotation event).`
++
++4. **TOCTOU on NDJSON writability** — accepted as best-effort by design; no fix required.
++
++**Re-review of remaining content:**
++
++Domain routing: Baseline + Pattern Consistency only (2 bash scripts + 2 markdown runbooks; zero React/Amplify/Lambda/Auth/i18n surface). Cross-cutting still apply.
++
++- **Auth bypass:** env-var fail-loud guards intact (`:?ERROR` on `WABA_ID/APP_ID/APP_SECRET/SYSTEM_USER_TOKEN/OLD_TOKEN`); step 3 confirms 1Password rotation; step 6 bot-ID match prevents wrong-bot rotation. ✓
++- **Data loss:** WhatsApp non-idempotency documented; pre-rotation snapshot overwrite now documented as intentional. ✓
++- **Race conditions:** Operator-driven; openclaw is-active is informational. ✓
++- **Rollback safety:** Both runbooks have explicit Rollback sections (Telegram: BotFather rate-limit re-revoke caveat + UI-pre-open advice; WhatsApp: cost-of-leaving-deauth documented per spec). ✓
++
++Verify-block compliance:
++- revoke-whatsapp.sh: `set -euo pipefail`, jq+curl pre-flight, 6 numbered steps, NDJSON telemetry. ✓
++- rotate-telegram-bot.sh: NONINTERACTIVE flag at lines 66, 106; 5×30s retry loop intact at lines 170-188. ✓
++- 02-whatsapp-deauth.md: 179 lines (within 100-180), 9 top-level sections (≥7), 6 curl references (≥4). ✓
++- 02-telegram-bot-rotation.md: 170 lines (within 100-180), 9 sections (≥6), multiple BotFather/revoke/getMe references (≥6). ✓
++
++No new findings. All Round 1 actionable items resolved.
++
++Verdict: PASS
++[16:30:18] Review passed
++[16:30:19] CODEX REVIEW — 02b-whatsapp-telegram-and-runbooks
++[16:30:19] Running codex-companion adversarial-review (model from ~/.codex/config.toml)
+diff --git a/runtime/deploy/revoke-whatsapp.sh b/runtime/deploy/revoke-whatsapp.sh
+new file mode 100644
+index 0000000..1569384
+--- /dev/null
++++ b/runtime/deploy/revoke-whatsapp.sh
+@@ -0,0 +1,191 @@
++#!/usr/bin/env bash
++#
++# revoke-whatsapp.sh — Meta Graph API curl wrapper that revokes the
++# WhatsApp Cloud API webhook subscription + long-lived system-user
++# access token OpenClaw used. Run AFTER archive-openclaw.sh has
++# stopped openclaw-gateway.service (Plan 02a). Six-step sequence
++# verbatim from `.iago/research/2026-05-16-phase-2-vps-bootstrap-spec.md`
++# § 7.
++#
++# Meta credentials provenance:
++#   1Password vault `iago-os` item `whatsapp-app-credentials`
++#   (per OQ5 in the Phase 2 spec). The four IDs + the system-user
++#   token are stored there. This script NEVER touches 1Password
++#   directly — Santiago exports the values into the environment
++#   before invoking the script (see Inputs section of the runbook
++#   at runtime/migration/02-whatsapp-deauth.md). Reason: these are
++#   one-time-use values for a one-time deauth, not rotating runtime
++#   credentials. The provisioning-script pattern is overkill here.
++#
++# Non-idempotent — running twice on an already-revoked token will
++# fail at step 2 (DELETE subscribed_apps) because the binding is
++# already gone. That failure IS the intended verification signal
++# on a second run: it proves step 2 worked the first time. Do not
++# treat a step-2 failure as a re-run error — investigate the
++# previous run's manifest first.
++#
++# Required env vars (script fails loudly if missing):
++#   WABA_ID            WhatsApp Business Account ID (~15 digits)
++#   APP_ID             Meta App ID (~15 digits)
++#   APP_SECRET         Meta App secret (used for debug_token call)
++#   SYSTEM_USER_TOKEN  The long-lived access token to revoke
++#
++# Optional env vars:
++#   PHONE_NUMBER_ID    Cloud API phone number ID (echoed only)
++#
++# Steps:
++#   [1/6] Confirm OpenClaw is stopped (assertion only)
++#   [2/6] DELETE /<WABA_ID>/subscribed_apps  → success:true
++#   [3/6] GET    /<WABA_ID>/subscribed_apps  → empty or other apps
++#   [4/6] DELETE /me/permissions             → success:true
++#   [5/6] GET    /debug_token                → is_valid:false
++#   [6/6] GET    /me                         → HTTP 400 or 401
++#
++# Telemetry: writes one NDJSON line per step to
++# /var/log/iago-os/cutover.ndjson if writable (spec § 10 criterion 5).
++# Silent no-op if the path is not writable (script invoked standalone
++# outside the cutover-runbook context — Plan 03a cutover.sh creates
++# the dir + file).
++#
++# Source of truth: .iago/research/2026-05-16-phase-2-vps-bootstrap-spec.md § 7
++
++set -euo pipefail
++
++# ---------- Pre-flight: required commands ----------
++# C1 from stress test: defensive guards against a minimal Debian VPS
++# that lacks jq. Phase 0 audit confirmed jq present, but the cost of
++# the check is zero and the cost of a missing-jq surprise mid-cutover
++# is high.
++command -v curl > /dev/null || {
++  echo "ERROR: curl required. apt install curl" >&2
++  exit 1
++}
++command -v jq > /dev/null || {
++  echo "ERROR: jq required for response parsing. apt install jq" >&2
++  exit 1
++}
++
++# ---------- Pre-flight: required env vars ----------
++: "${WABA_ID:?ERROR: WABA_ID env var required (WhatsApp Business Account ID)}"
++: "${APP_ID:?ERROR: APP_ID env var required (Meta App ID)}"
++: "${APP_SECRET:?ERROR: APP_SECRET env var required (Meta App secret)}"
++: "${SYSTEM_USER_TOKEN:?ERROR: SYSTEM_USER_TOKEN env var required (long-lived access token)}"
++PHONE_NUMBER_ID="${PHONE_NUMBER_ID:-<not-set>}"
++
++# ---------- Constants ----------
++GRAPH_BASE="https://graph.facebook.com/v21.0"
++NDJSON_PATH="/var/log/iago-os/cutover.ndjson"
++OPENCLAW_USER="ilsantino"
++OPENCLAW_SERVICE="openclaw-gateway.service"
++
++# ---------- Telemetry helper ----------
++# Writes one NDJSON record per step. No-op if path is not writable.
++emit_ndjson() {
++  local step="$1"
++  local status="$2"
++  local detail="$3"
++  if [[ -w "$NDJSON_PATH" ]] || { [[ ! -e "$NDJSON_PATH" ]] && [[ -w "$(dirname "$NDJSON_PATH")" ]]; }; then
++    printf '{"ts":"%s","script":"revoke-whatsapp.sh","step":"%s","status":"%s","detail":%s}\n' \
++      "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$step" "$status" "$(printf '%s' "$detail" | jq -Rs .)" \
++      >> "$NDJSON_PATH" 2>/dev/null || true
++  fi
++}
++
++# ---------- Step 1/6: confirm OpenClaw stopped ----------
++echo "[1/6] Confirming OpenClaw is stopped (archive-openclaw.sh dependency)..."
++if id "$OPENCLAW_USER" > /dev/null 2>&1; then
++  state=$(su - "$OPENCLAW_USER" -c "systemctl --user is-active $OPENCLAW_SERVICE" 2>/dev/null || echo "unknown")
++  if [[ "$state" == "active" ]]; then
++    echo "ERROR: $OPENCLAW_SERVICE is still active. Run archive-openclaw.sh first (Plan 02a)." >&2
++    emit_ndjson "1/6" "fail" "openclaw still active"
++    exit 1
++  fi
++  echo "  OK OpenClaw state: $state (inactive/failed/unknown — safe to proceed)"
++  emit_ndjson "1/6" "ok" "openclaw state: $state"
++else
++  echo "  NOTE: user '$OPENCLAW_USER' not present on this host. Assuming OpenClaw never ran here."
++  emit_ndjson "1/6" "ok" "user $OPENCLAW_USER absent"
++fi
++
++# ---------- Step 2/6: DELETE webhook subscription ----------
++echo "[2/6] DELETE /${WABA_ID}/subscribed_apps (removes Meta webhook binding)..."
++response=$(curl -sS -X DELETE \
++  "${GRAPH_BASE}/${WABA_ID}/subscribed_apps" \
++  -H "Authorization: Bearer ${SYSTEM_USER_TOKEN}")
++success=$(echo "$response" | jq -r '.success // false')
++if [[ "$success" != "true" ]]; then
++  echo "ERROR: subscribed_apps DELETE did not return success:true. Response:" >&2
++  echo "$response" >&2
++  emit_ndjson "2/6" "fail" "$response"
++  exit 1
++fi
++echo "  OK subscribed_apps unsubscribed"
++emit_ndjson "2/6" "ok" "$response"
++
++# ---------- Step 3/6: VERIFY subscription removed ----------
++echo "[3/6] GET /${WABA_ID}/subscribed_apps (verify deletion)..."
++response=$(curl -sS -X GET \
++  "${GRAPH_BASE}/${WABA_ID}/subscribed_apps" \
++  -H "Authorization: Bearer ${SYSTEM_USER_TOKEN}")
++echo "  Subscribed apps after DELETE:"
++echo "$response" | jq .
++emit_ndjson "3/6" "ok" "$response"
++
++# ---------- Step 4/6: REVOKE access token (app-side) ----------
++echo "[4/6] DELETE /me/permissions (revokes this access token)..."
++response=$(curl -sS -X DELETE \
++  "${GRAPH_BASE}/me/permissions" \
++  -H "Authorization: Bearer ${SYSTEM_USER_TOKEN}")
++success=$(echo "$response" | jq -r '.success // false')
++if [[ "$success" != "true" ]]; then
++  echo "ERROR: /me/permissions DELETE did not return success:true. Response:" >&2
++  echo "$response" >&2
++  emit_ndjson "4/6" "fail" "$response"
++  exit 1
++fi
++echo "  OK token revoked at app level"
++emit_ndjson "4/6" "ok" "$response"
++
++# ---------- Step 5/6: debug_token must report is_valid:false ----------
++echo "[5/6] GET /debug_token (verify token is_valid=false)..."
++response=$(curl -sS \
++  "${GRAPH_BASE}/debug_token?input_token=${SYSTEM_USER_TOKEN}&access_token=${APP_ID}|${APP_SECRET}")
++is_valid=$(echo "$response" | jq -r '.data.is_valid')
++if [[ "$is_valid" != "false" ]]; then
++  echo "ERROR: debug_token reports is_valid=${is_valid} (expected false). Response:" >&2
++  echo "$response" >&2
++  emit_ndjson "5/6" "fail" "$response"
++  exit 1
++fi
++echo "  OK debug_token confirms is_valid:false"
++emit_ndjson "5/6" "ok" "$response"
++
++# ---------- Step 6/6: direct /me probe must return 400 or 401 ----------
++echo "[6/6] GET /me with revoked token (expect HTTP 400 or 401)..."
++http_code=$(curl -sS -o /dev/null -w "%{http_code}" \
++  "${GRAPH_BASE}/me" \
++  -H "Authorization: Bearer ${SYSTEM_USER_TOKEN}")
++if [[ "$http_code" != "400" && "$http_code" != "401" ]]; then
++  echo "ERROR: /me returned HTTP ${http_code} (expected 400 or 401 — token should be dead)" >&2
++  emit_ndjson "6/6" "fail" "http_code=$http_code"
++  exit 1
++fi
++echo "  OK /me returned HTTP ${http_code} (token rejected as expected)"
++emit_ndjson "6/6" "ok" "http_code=$http_code"
++
++# ---------- Final summary + manual step reminder ----------
++echo ""
++echo "WhatsApp deauth complete."
++echo "  WABA_ID         = ${WABA_ID}"
++echo "  PHONE_NUMBER_ID = ${PHONE_NUMBER_ID}"
++echo ""
++echo "Manual step required (NOT scripted):"
++echo "  Open Meta Business Suite -> Business Settings -> Users -> System Users"
++echo "  Find the system user OpenClaw used. Click 'Remove' (or disable token)."
++echo "  Document the click path in the PR description with a screenshot."
++echo ""
++echo "This script is non-idempotent: re-running will fail at step [2/6] because"
++echo "the subscribed_apps binding is already deleted. That failure is the"
++echo "intended verification signal — do not treat it as an error."
++
++emit_ndjson "complete" "ok" "waba=$WABA_ID phone=$PHONE_NUMBER_ID"
+diff --git a/runtime/deploy/rotate-telegram-bot.sh b/runtime/deploy/rotate-telegram-bot.sh
+new file mode 100644
+index 0000000..340de1f
+--- /dev/null
++++ b/runtime/deploy/rotate-telegram-bot.sh
+@@ -0,0 +1,218 @@
++#!/usr/bin/env bash
++#
++# rotate-telegram-bot.sh — wraps the SCRIPTABLE portion of the
++# Telegram bot rotation procedure (spec § 3 Option A). The BotFather
++# `/revoke` step is a manual Telegram-UI action; this script handles
++# the steps before and after:
++#
++#   (a) records the OLD bot token's metadata BEFORE rotation,
++#   (b) prompts the operator to perform the BotFather `/revoke` UI
++#       flow + paste the new token into 1Password,
++#   (c) invokes provision-credentials.sh telegram-token to push the
++#       new token through the systemd-creds encrypted pipeline,
++#   (d) verifies the OLD token is dead via Telegram getMe with a
++#       5-attempt × 30 s backoff (BotFather propagation can take up
++#       to 2.5 min in practice — see M2 in the Plan 02b stress test),
++#   (e) verifies the NEW token works AND points at the same bot.
++#
++# BotFather rate-limit note (I2 from stress test):
++#   BotFather's `/revoke` is informally rate-limited to roughly one
++#   per minute per bot. Mid-cutover debugging that triggers a second
++#   `/revoke` within the rate-limit window will fail silently in the
++#   UI. The retry buffer at step 5 (5 × 30 s = 2.5 min) absorbs the
++#   propagation delay; if step 5 still finds the old token live after
++#   2.5 min, abort and wait ≥60 s before re-attempting `/revoke`.
++#
++# WARNING: this script is INTERACTIVE; do not invoke from pipeline/CI.
++# Operator runs it at cutover-time per runtime/migration/02-telegram-bot-rotation.md.
++# Set IAGO_ROTATE_NONINTERACTIVE=1 to exit after step 1 (pre-rotation snapshot).
++# This flag skips BOTH the `read -r` UI prompt AND the 1Password consistency
++# check (step 3) — both belong to the rotation flow, which does not run in
++# this mode. NOT an "auto-rotate" flag. Use only for the Plan 03a dry-run
++# pre-flight that confirms the old token is still live; no rotation runs.
++#
++# Required env var (never echoed):
++#   OLD_TOKEN  the Telegram bot token IN USE before rotation
++#
++# Optional env var:
++#   PROVISION_SCRIPT  path to provision-credentials.sh (defaults to
++#                     the sibling script shipped by Plan 01a)
++#   IAGO_ROTATE_NONINTERACTIVE=1  exit after step 1 (skips read -r AND 1Password check — dry-run only)
++#
++# Telemetry: writes one NDJSON line per step (and per retry attempt
++# at step 5) to /var/log/iago-os/cutover.ndjson if writable.
++#
++# Source of truth: .iago/research/2026-05-16-phase-2-vps-bootstrap-spec.md § 3
++
++set -euo pipefail
++
++# ---------- Pre-flight: required commands ----------
++command -v curl > /dev/null || {
++  echo "ERROR: curl required. apt install curl" >&2
++  exit 1
++}
++command -v jq > /dev/null || {
++  echo "ERROR: jq required for response parsing. apt install jq" >&2
++  exit 1
++}
++command -v op > /dev/null || {
++  echo "ERROR: 1Password CLI 'op' required. Install per developer.1password.com/docs/cli" >&2
++  exit 1
++}
++
++# ---------- Pre-flight: required env vars ----------
++: "${OLD_TOKEN:?ERROR: OLD_TOKEN env var required (the bot token before rotation; never echoed)}"
++
++# ---------- Constants ----------
++PROVISION_SCRIPT="${PROVISION_SCRIPT:-$(dirname "$0")/provision-credentials.sh}"
++NONINTERACTIVE="${IAGO_ROTATE_NONINTERACTIVE:-0}"
++TELEGRAM_BASE="https://api.telegram.org"
++OP_ITEM="op://iago-os/v2-daemon-telegram-bot/token"
++PRE_ROTATION_LOG="/var/log/iago-os/telegram-rotation-pre.json"
++NDJSON_PATH="/var/log/iago-os/cutover.ndjson"
++
++# ---------- Telemetry helper ----------
++# Writes one NDJSON record per step. No-op if path is not writable.
++emit_ndjson() {
++  local step="$1"
++  local status="$2"
++  local detail="$3"
++  if [[ -w "$NDJSON_PATH" ]] || { [[ ! -e "$NDJSON_PATH" ]] && [[ -w "$(dirname "$NDJSON_PATH")" ]]; }; then
++    printf '{"ts":"%s","script":"rotate-telegram-bot.sh","step":"%s","status":"%s","detail":%s}\n' \
++      "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$step" "$status" "$(printf '%s' "$detail" | jq -Rs .)" \
++      >> "$NDJSON_PATH" 2>/dev/null || true
++  fi
++}
++
++# ---------- Step 1/6: record old bot metadata BEFORE rotation ----------
++echo "[1/6] Recording old bot metadata via getMe (pre-rotation snapshot)..."
++pre_response=$(curl -sS "${TELEGRAM_BASE}/bot${OLD_TOKEN}/getMe")
++pre_ok=$(echo "$pre_response" | jq -r '.ok')
++if [[ "$pre_ok" != "true" ]]; then
++  echo "ERROR: old token already dead — was rotation done previously?" >&2
++  echo "Response: $pre_response" >&2
++  emit_ndjson "1/6" "fail" "old token dead before rotation"
++  exit 1
++fi
++pre_username=$(echo "$pre_response" | jq -r '.result.username')
++pre_id=$(echo "$pre_response" | jq -r '.result.id')
++echo "  Bot: @${pre_username} (id=${pre_id})"
++# Debug-only snapshot — overwritten on each invocation by design (latest
++# pre-rotation state is the only useful one; re-runs are a re-rotation event).
++if [[ -w "$(dirname "$PRE_ROTATION_LOG")" ]] || [[ -w "$PRE_ROTATION_LOG" ]]; then
++  echo "$pre_response" | jq . > "$PRE_ROTATION_LOG" 2>/dev/null || true
++fi
++emit_ndjson "1/6" "ok" "username=$pre_username id=$pre_id"
++
++# ---------- NONINTERACTIVE early-exit (Plan 03a dry-run harness) ----------
++if [[ "$NONINTERACTIVE" == "1" ]]; then
++  echo ""
++  echo "IAGO_ROTATE_NONINTERACTIVE=1 — exiting after pre-rotation snapshot."
++  echo "No BotFather prompt issued; no provisioning run; OLD_TOKEN untouched."
++  emit_ndjson "noninteractive-exit" "ok" "stopped after step 1"
++  exit 0
++fi
++
++# ---------- Step 2/6: prompt for BotFather UI flow ----------
++echo ""
++echo "[2/6] MANUAL STEP — perform on your phone NOW:"
++echo "  1. Open Telegram, message @BotFather"
++echo "  2. Send: /mybots"
++echo "  3. Tap the bot @${pre_username}"
++echo "  4. Tap: API Token"
++echo "  5. Tap: Revoke current token"
++echo "  6. Copy the NEW token BotFather displays"
++echo "  7. Open 1Password app, edit item 'v2-daemon-telegram-bot'"
++echo "  8. Paste the new token into the 'token' field, save"
++echo ""
++echo "Press Enter to continue once 1Password has the new token..."
++read -r _ack
++emit_ndjson "2/6" "ok" "operator acked BotFather + 1Password update"
++
++# ---------- Step 3/6: confirm 1Password actually has a fresh value ----------
++echo "[3/6] Reading 1Password to confirm token was rotated..."
++op_stderr=$(mktemp)
++new_token_from_op=$(op read "$OP_ITEM" 2>"$op_stderr" || true)
++op_err=$(cat "$op_stderr")
++rm -f "$op_stderr"
++if [[ -z "$new_token_from_op" ]]; then
++  echo "ERROR: op read returned empty value for $OP_ITEM" >&2
++  if [[ -n "$op_err" ]]; then
++    echo "op stderr: $op_err" >&2
++    echo "Hint: run 'op signin' if you see a session error above." >&2
++  fi
++  emit_ndjson "3/6" "fail" "op read empty: $op_err"
++  exit 1
++fi
++if [[ "$new_token_from_op" == "$OLD_TOKEN" ]]; then
++  echo "ERROR: 1Password value matches OLD_TOKEN — rotation aborted (1Password not updated)" >&2
++  emit_ndjson "3/6" "fail" "1Password not updated"
++  exit 1
++fi
++echo "  OK 1Password holds a new value (differs from OLD_TOKEN)"
++emit_ndjson "3/6" "ok" "op item updated"
++
++# ---------- Step 4/6: provision via systemd-creds pipeline ----------
++echo "[4/6] Provisioning new token via $PROVISION_SCRIPT telegram-token..."
++if [[ ! -x "$PROVISION_SCRIPT" ]]; then
++  echo "ERROR: $PROVISION_SCRIPT not executable (expected sibling script from Plan 01a)" >&2
++  emit_ndjson "4/6" "fail" "provision script missing"
++  exit 1
++fi
++"$PROVISION_SCRIPT" telegram-token
++emit_ndjson "4/6" "ok" "provision-credentials.sh telegram-token"
++
++# ---------- Step 5/6: verify OLD token is dead (5 × 30s retry) ----------
++# M2 from stress test: BotFather revocation usually propagates in
++# seconds but is documented as "up to 5 minutes" in Telegram forum
++# discussions. 5 attempts × 30 s = 2.5 min covers the common case
++# without burning the cutover budget.
++echo "[5/6] Verifying OLD token is dead (max 5 × 30s = 2.5 min)..."
++old_dead="no"
++for i in $(seq 1 5); do
++  response=$(curl -sS "${TELEGRAM_BASE}/bot${OLD_TOKEN}/getMe")
++  ok_field=$(echo "$response" | jq -r '.ok')
++  if [[ "$ok_field" == "false" ]]; then
++    echo "  OK OLD token revoked (attempt $i)"
++    emit_ndjson "5/6" "ok" "old token dead on attempt $i"
++    old_dead="yes"
++    break
++  fi
++  emit_ndjson "5/6-retry" "pending" "attempt $i still valid"
++  if [[ "$i" -eq 5 ]]; then
++    echo "ERROR: OLD token still valid after 5 retries (2.5 min)." >&2
++    echo "BotFather /revoke may have rate-limited; wait 60s + manually re-revoke." >&2
++    emit_ndjson "5/6" "fail" "old token still valid after 5 retries"
++    exit 1
++  fi
++  echo "  OLD token still valid; retry $i/5 after 30s"
++  sleep 30
++done
++# Loop exits only via `break` (success → old_dead=yes) or `exit 1` on attempt 5.
++
++# ---------- Step 6/6: verify NEW token works AND identifies the same bot ----------
++echo "[6/6] Verifying NEW token resolves to the same bot (@${pre_username})..."
++new_response=$(curl -sS "${TELEGRAM_BASE}/bot${new_token_from_op}/getMe")
++new_ok=$(echo "$new_response" | jq -r '.ok')
++if [[ "$new_ok" != "true" ]]; then
++  echo "ERROR: NEW token getMe returned ok=false. Response:" >&2
++  echo "$new_response" >&2
++  emit_ndjson "6/6" "fail" "new token getMe failed"
++  exit 1
++fi
++new_username=$(echo "$new_response" | jq -r '.result.username')
++new_id=$(echo "$new_response" | jq -r '.result.id')
++if [[ "$new_id" != "$pre_id" ]]; then
++  echo "ERROR: NEW token points at bot id=${new_id}, expected ${pre_id}" >&2
++  echo "Wrong bot rotated? Aborting before daemon restart." >&2
++  emit_ndjson "6/6" "fail" "bot id mismatch new=$new_id pre=$pre_id"
++  exit 1
++fi
++echo "  OK NEW token resolves to @${new_username} (id=${new_id}) — same bot"
++emit_ndjson "6/6" "ok" "username=$new_username id=$new_id"
++
++# ---------- Final summary ----------
++echo ""
++echo "Telegram bot rotation complete. Bot username preserved: @${pre_username}"
++echo "Next: restart iago-os-v2-daemon.service via cutover.sh (Plan 03a) to pick up the new credential."
++emit_ndjson "complete" "ok" "bot @$pre_username id=$pre_id rotated"
+diff --git a/runtime/migration/02-telegram-bot-rotation.md b/runtime/migration/02-telegram-bot-rotation.md
+new file mode 100644
+index 0000000..623f124
+--- /dev/null
++++ b/runtime/migration/02-telegram-bot-rotation.md
+@@ -0,0 +1,170 @@
++# 02 — Telegram Bot Rotation Runbook (Phase 2 cutover step T+02)
++
++**Plan:** `.iago/plans/feature-phase-2-vps-bootstrap/02b-whatsapp-telegram-and-runbooks.md`
++**Spec source:** `.iago/research/2026-05-16-phase-2-vps-bootstrap-spec.md` § 3
++**Script wrapper:** `runtime/deploy/rotate-telegram-bot.sh`
++
++---
++
++## When to run
++
++At **T+02** of the cutover runbook (Plan 03b), AFTER:
++
++1. OpenClaw stopped + archived (`runtime/deploy/archive-openclaw.sh`, Plan 02a).
++2. Pre-cutover test plan (below) executed successfully against a throwaway bot.
++
++If OpenClaw is still polling the bot's token, BotFather rotation will still
++work — but the v2 daemon cannot validate the new token end-to-end (Telegram
++permits only one polling client per token, and OpenClaw still holds it).
++Always stop OpenClaw first.
++
++---
++
++## Why Option A (same bot, rotate token via BotFather)
++
++Verbatim from spec § 3:
++
++| Option | Pros | Cons | Verdict |
++|---|---|---|---|
++| **A. Same bot, rotate token via BotFather** | Same `@bot_handle` (zero Santiago-side reconfiguration); same chat IDs (no allowed-user-ID migration); BotFather revocation is atomic (old token dies instantly when new is issued) | Requires interactive BotFather session at cutover-time (no scripted rotation API) | **ACCEPT** |
++| B. New bot, new handle | Clean break; old bot remains for sentimental rollback test | Santiago must re-`/start` the new bot on phone; allowed-user-ID rebuild; chat ID changes invalidate any saved approval chat references; rollback requires reverting phone session too | REJECT — friction for zero benefit |
++| C. Keep same token (no rotation) | Zero work | OpenClaw retained the token for 30 days while archive sits; if archive leaks, token leaks | REJECT — security carry-over violates Garry standard |
++
++The new token gets provisioned via `provision-credentials.sh telegram-token`
++(Plan 01a). Atomic moment: at BotFather's "Revoke current token" tap, the old
++token dies, the new token is shown immediately. Santiago copies it into the
++1Password item `v2-daemon-telegram-bot::token`, then runs the provisioning
++script. Total wall clock: ~3 minutes.
++
++---
++
++## Procedure (atomic — T-0:00 → T+3:00)
++
++```
++T-0:00  Open Telegram, message @BotFather
++T+0:30  Send: /mybots
++T+0:40  Tap the bot's @handle (the one OpenClaw uses today)
++T+0:50  Tap: API Token
++T+1:00  Tap: Revoke current token
++T+1:10  BotFather confirms; new token appears in chat
++T+1:20  Copy new token to clipboard
++T+1:30  In 1Password app: edit item v2-daemon-telegram-bot, paste new token
++          into `token` field, save
++T+2:00  In Git Bash on Windows:
++          OLD_TOKEN="<old token>" bash runtime/deploy/rotate-telegram-bot.sh
++T+2:30  Script verifies credential round-trip succeeds, then verifies OLD
++          token returns getMe ok=false (5 × 30s retry buffer for BotFather
++          propagation), then verifies NEW token points at same bot
++T+3:00  ← bot token rotation complete; OpenClaw bot polling (if it were
++          still running) would now fail with 401
++```
++
++The 401-on-OpenClaw signal is intentional — it's the test that the new token
++is genuinely a new token and not BotFather displaying the cached old one.
++
++---
++
++## Allowed user IDs
++
++The v2 daemon authenticates Telegram messages against a single integer:
++**Santiago's Telegram user ID**, NOT the chat ID. Stored in the systemd unit
++as `Environment=IAGO_TELEGRAM_ALLOWED_USER_IDS=__SANTIAGO_USER_ID__` (set
++once at Plan 01a Task 1).
++
++Santiago obtains his user ID by messaging `@userinfobot` on Telegram (or any
++equivalent bot). Result is a 10-digit integer. The same number was likely
++already used by OpenClaw's `channels.telegram.allowFrom` — confirm via
++OpenClaw config inspection during pre-flight if needed.
++
++Future multi-user (Sebas onboarding in Phase 6): comma-separated decimals:
++
++```
++Environment=IAGO_TELEGRAM_ALLOWED_USER_IDS=1234567890,9876543210
++```
++
++Phase 1 config loader (`runtime/daemon/config.ts` lines 95-103) already
++parses comma-separated decimal integers via `parseAllowedUserIds`.
++
++---
++
++## Pre-cutover test plan (run BEFORE stopping OpenClaw)
++
++The v2 daemon cannot be validated against the production bot token while
++OpenClaw is still polling — Telegram allows only one polling client per
++token. Use a throwaway test bot instead:
++
++1. Create test bot in BotFather (1 min):
++   - Send `/newbot` to @BotFather
++   - Name it `iago-os-v2-test-bot` (or any unused name)
++   - Copy the test token
++2. Run the v2 daemon locally on Santiago's Windows box with the test token
++   (Phase 1 hello-world setup pattern).
++3. From Telegram on phone, confirm `/agents`, `/status <agent>`, and the
++   approval flow all work.
++4. Stop the local daemon. Delete the test bot via BotFather `/deletebot`.
++5. ONLY THEN proceed with the production bot rotation procedure above.
++
++The test bot proves the v2 daemon's Telegram routing works; the production
++rotation is the actual cutover step.
++
++---
++
++## Verification
++
++Automated by `rotate-telegram-bot.sh` (see Task 2 of Plan 02b):
++
++| Step | Check |
++|---|---|
++| [1/6] | OLD token getMe returns `ok:true` (snapshot bot @handle + id) |
++| [3/6] | 1Password item value differs from `OLD_TOKEN` |
++| [4/6] | `provision-credentials.sh telegram-token` round-trip succeeds |
++| [5/6] | OLD token getMe returns `ok:false` within 2.5 min |
++| [6/6] | NEW token getMe returns `ok:true` AND `result.id` matches step [1/6] snapshot |
++
++Manual verification: send `/agents` from Santiago's phone, expect bot reply
++from the v2 daemon (after `cutover.sh` restarts the daemon with the new
++credential — Plan 03a).
++
++---
++
++## Rollback
++
++If cutover rolls back, the BotFather-revoked OLD token **cannot** be
++un-revoked. Rollback requires:
++
++1. Another BotFather `/revoke` to get a FRESH token (counts as a third
++   rotation in the BotFather rate-limit window; if attempted within ~60s of
++   the cutover-time `/revoke`, BotFather may silently refuse — wait the full
++   minute first).
++2. Patching `~/.openclaw/openclaw.json` with the fresh token via the spec
++   § 9 rollback `jq` snippet (T+R+1:30).
++3. Re-starting `openclaw-gateway.service` via `systemctl --user start`.
++
++This is the most variable step in the rollback timeline. Spec § 9 reports
++~1:00 wall-clock for it; ensure Santiago has BotFather UI already open on
++his phone BEFORE triggering rollback, to compress steps 1+2 further.
++
++Pre-cutover: brief BotFather UI rehearsal (open `/mybots` → bot handle → API
++Token, stop short of tapping Revoke) so the muscle memory is fresh if
++rollback fires.
++
++---
++
++## Failure modes
++
++| Symptom | Likely cause | Resolution |
++|---|---|---|
++| `[1/6]` reports `old token already dead` | Rotation was done in a previous run; OLD_TOKEN env var is stale | Confirm in Telegram via BotFather → bot → API Token whether the current token matches OLD_TOKEN; if not, skip rotation (already done) |
++| `[3/6]` reports `1Password not updated` | Operator pressed Enter at the manual-step prompt before saving the new token in 1Password | Press Ctrl-C, save in 1Password, re-run with same OLD_TOKEN |
++| `[5/6]` exhausts 5 retries (2.5 min) | BotFather `/revoke` rate-limited the request silently (most likely a second `/revoke` within ~60s of the first); OR propagation actually exceeded 2.5 min (rare) | Wait 60s, in BotFather UI tap "Revoke current token" again, confirm new token appears, update 1Password if it changed, re-run script |
++| `[6/6]` reports `bot id mismatch` | Wrong bot rotated in BotFather UI (e.g., Santiago tapped a different `@handle` in `/mybots`) | DO NOT restart the daemon — re-run BotFather rotation against the correct bot; the daemon is still on the OLD credential at this point and is safe |
++| NDJSON line not written to `/var/log/iago-os/cutover.ndjson` | Script invoked standalone, log file does not exist + dir not writable | Acceptable — telemetry is best-effort. stdout is source of truth |
++
++---
++
++## Source of truth
++
++`.iago/research/2026-05-16-phase-2-vps-bootstrap-spec.md` § 3. Any divergence
++between this runbook and the spec is a bug in this runbook — open a fix PR
++against `runtime/migration/02-telegram-bot-rotation.md` referencing the spec
++line.
+diff --git a/runtime/migration/02-whatsapp-deauth.md b/runtime/migration/02-whatsapp-deauth.md
+new file mode 100644
+index 0000000..2263b45
+--- /dev/null
++++ b/runtime/migration/02-whatsapp-deauth.md
+@@ -0,0 +1,180 @@
++# 02 — WhatsApp Deauth Runbook (Phase 2 cutover step T+30)
++
++**Plan:** `.iago/plans/feature-phase-2-vps-bootstrap/02b-whatsapp-telegram-and-runbooks.md`
++**Spec source:** `.iago/research/2026-05-16-phase-2-vps-bootstrap-spec.md` § 7
++**Script wrapper:** `runtime/deploy/revoke-whatsapp.sh`
++
++---
++
++## When to run
++
++At **T+30** of the cutover runbook (Plan 03b), AFTER:
++
++1. Telegram bot rotation confirmed working on the v2 daemon (Plan 03b T+10).
++2. v2 daemon processing inbound Telegram traffic successfully.
++3. OpenClaw archived; `openclaw-gateway.service` inactive (`runtime/deploy/archive-openclaw.sh`, Plan 02a).
++
++If any gate has failed, **do not run this procedure**. WhatsApp deauth is
++post-cutover security hardening; running it while OpenClaw could still need
++to be re-started (rollback path) makes the rollback noticeably harder.
++
++---
++
++## Why this matters
++
++Santiago's 2026-05-13 decision: v2 daemon is **Telegram-only**. WhatsApp is
++dropped at cutover. Two consequences if Meta-side state is left dangling:
++
++- **Webhook retries forever.** Meta keeps POSTing WhatsApp inbound events at
++  the dead OpenClaw HTTP endpoint indefinitely.
++- **Token leak ≠ message-send compromise.** The long-lived system-user token
++  remains valid. If the encrypted OpenClaw archive leaks AND Santiago's age
++  private key leaks AND no deauth has run, the attacker can send WhatsApp
++  messages from Santiago's business number for the token's lifetime (often >
++  60 days). Deauth reduces the consequence from "attacker controls business
++  WhatsApp" to "attacker reads stale session state".
++
++---
++
++## Inputs
++
++Five values from Meta, stored in 1Password vault `iago-os` item
++`whatsapp-app-credentials` (per OQ5). The script never reads 1Password —
++Santiago exports each value into the shell before invoking, then unsets after.
++
++| Env var | What | Where to find in Meta Business Suite |
++|---|---|---|
++| `PHONE_NUMBER_ID` | Cloud API phone ID (~15 digits) | Business Settings → Accounts → WhatsApp Accounts → click WABA → Phone Numbers → click number → "Phone number ID" |
++| `WABA_ID` | WhatsApp Business Account ID | Business Settings → Accounts → WhatsApp Accounts → top of WABA detail panel |
++| `APP_ID` | Meta App ID | Apps → click app → Settings → Basic → "App ID" |
++| `APP_SECRET` | Meta App secret | Apps → click app → Settings → Basic → "App secret" (click "Show") |
++| `SYSTEM_USER_TOKEN` | Long-lived access token to revoke | Business Settings → Users → System Users → click OpenClaw system user → "Generate new token" history; OR the value already in 1Password |
++
++If any value is missing from 1Password, **stop**. Locate via click paths
++above and add to the 1Password item BEFORE proceeding. Mid-cutover credential
++hunting is the single most expensive failure mode of this runbook.
++
++---
++
++## Procedure
++
++### Option A — invoke the script wrapper (recommended)
++
++```bash
++export WABA_ID="<paste from 1Password>"
++export APP_ID="<paste from 1Password>"
++export APP_SECRET="<paste from 1Password>"
++export SYSTEM_USER_TOKEN="<paste from 1Password>"
++export PHONE_NUMBER_ID="<paste from 1Password>"  # optional; echoed only
++
++bash runtime/deploy/revoke-whatsapp.sh
++
++# Unset immediately — defence against shell-history scraping.
++unset WABA_ID APP_ID APP_SECRET SYSTEM_USER_TOKEN PHONE_NUMBER_ID
++```
++
++### Option B — run the four curls manually
++
++Verbatim from spec § 7. Use only if the script fails AND you have a specific
++reason to walk through the calls one at a time.
++
++```bash
++# Step 3 — DELETE webhook subscription for the WABA
++# Removes the subscribed_apps binding so Meta stops POSTing to OpenClaw.
++curl -X DELETE \
++  "https://graph.facebook.com/v21.0/${WABA_ID}/subscribed_apps" \
++  -H "Authorization: Bearer ${SYSTEM_USER_TOKEN}"
++# expected: {"success": true}
++
++# Step 4 — VERIFY subscription deletion (expect empty or other apps only)
++curl -X GET \
++  "https://graph.facebook.com/v21.0/${WABA_ID}/subscribed_apps" \
++  -H "Authorization: Bearer ${SYSTEM_USER_TOKEN}"
++
++# Step 5a — REVOKE the system-user access token (app-side)
++curl -X DELETE \
++  "https://graph.facebook.com/v21.0/me/permissions" \
++  -H "Authorization: Bearer ${SYSTEM_USER_TOKEN}"
++# expected: {"success": true}
++
++# Step 6 — VERIFY token is dead
++curl "https://graph.facebook.com/v21.0/debug_token?input_token=${SYSTEM_USER_TOKEN}&access_token=${APP_ID}|${APP_SECRET}"
++# expected: data.is_valid == false
++# OR direct probe (expect HTTP 400 or 401):
++curl "https://graph.facebook.com/v21.0/me" -H "Authorization: Bearer ${SYSTEM_USER_TOKEN}"
++```
++
++Why Graph API and not the Meta UI for webhook deletion: the App Dashboard
++webhook UI requires re-running the `hub.challenge` URL-verification handshake
++when removing subscriptions. With OpenClaw stopped, that verification fails
++and the UI gets stuck. The Graph API `DELETE` does not.
++
++---
++
++## Verification (post-script)
++
++The script enforces all of these inline. Re-verify manually only on failure.
++
++| Check | Expected |
++|---|---|
++| `debug_token` returns `data.is_valid` | `false` |
++| `GET /v21.0/me` with the revoked token | HTTP 400 or 401 |
++| `GET /v21.0/<WABA_ID>/subscribed_apps` | Empty `data`, or only apps unrelated to OpenClaw |
++| Test WhatsApp message from a different phone to the Cloud API number | Visible in Meta Business Suite → WhatsApp Manager; NO webhook POST hits OpenClaw's URL |
++
++---
++
++## Manual UI step (NOT scripted)
++
++Open Meta Business Suite → Business Settings → Users → System Users → click the
++system user OpenClaw used → **Remove** or disable token.
++
++Why this isn't scripted: the action is one-time and the Graph API for system-user
++deletion requires a different (admin-level) credential than the one being revoked.
++The two-credential setup is more dangerous to script than to click once.
++
++Document the click path in the PR description with a screenshot before merging
++the cutover PR.
++
++---
++
++## Rollback
++
++WhatsApp deauth is **NOT** undone in a Phase 2 rollback.
++
++If cutover rolls back at T+R+5 (Plan 03b rollback section), restarting OpenClaw
++will leave it unable to send WhatsApp: token dead, webhook unsubscribed. This is
++acceptable per spec § 8 T+30 — WhatsApp deauth is security-debt closure, NOT a
++rollback trigger.
++
++Fully restoring WhatsApp would require: create new Meta system user, generate
++new long-lived token, re-subscribe OpenClaw webhook to the WABA (also re-runs
++`hub.challenge` handshake), re-deploy token + restart. 30+ min of manual work,
++requires admin-level Meta credentials, undoes the security hardening just
++performed. Cost of leaving WhatsApp deauthed during a rollback: **WhatsApp
++inbound stops working; Telegram still works on OpenClaw**. Telegram is the
++primary surface. Net: acceptable for the rare rollback path.
++
++If WhatsApp restoration is required during a rollback, that becomes its own
++post-rollback follow-up plan — not an inline cutover step.
++
++---
++
++## Failure modes
++
++| Symptom | Likely cause | Resolution |
++|---|---|---|
++| `[1/6]` reports `openclaw still active` | Plan 02a archive-openclaw.sh did not run, or unit re-started | Stop OpenClaw first: `tailscale ssh root@srv1456441 -- su - ilsantino -c "systemctl --user stop openclaw-gateway.service"` then re-run |
++| `[2/6]` returns `success:false` | WABA already unsubscribed, OR token lacks `whatsapp_business_management` scope | Check Meta App Dashboard → WhatsApp → Configuration; if already unsubscribed, skip step 2 and continue from step 3 manually |
++| `[4/6]` returns `success:false` | Token already revoked, OR token is App-level and lacks `/me/permissions` access | If previously revoked, step 5/6 will still confirm dead — continue. If wrong type, regenerate as System User token |
++| `[5/6]` reports `is_valid:null` | `APP_ID` or `APP_SECRET` mismatched against the token's app (debug_token returns an error with no `data.is_valid` field) | Verify all three come from the SAME Meta App |
++| `[6/6]` returns HTTP 200 | Token did not actually revoke (Meta caching) | Wait 60s, re-run step 6 manually; if still 200, the `/me/permissions` DELETE silently failed — investigate Meta App Dashboard audit log |
++| Script failed between `[2/6]` and `[4/6]` (e.g. network drop) | Partial deauth: webhook subscription deleted, system-user token still live | Webhook cleanup is done. Manually revoke the system-user token: Meta Business Suite → Business Settings → Users → System Users → click the OpenClaw system user → Revoke token. Do NOT re-run the script — step 2 (`DELETE /subscribed_apps`) is non-idempotent and will error if re-run after a clean deletion. |
++
++---
++
++## Source of truth
++
++`.iago/research/2026-05-16-phase-2-vps-bootstrap-spec.md` § 7. Any divergence
++between this runbook and the spec is a bug in this runbook — open a fix PR
++against `runtime/migration/02-whatsapp-deauth.md` referencing the spec line.
