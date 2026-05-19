@@ -1,0 +1,115 @@
+You are Opus 4.7 applying remaining manual-review findings to PR #68 (Plan 03a — cutover + rollback executables + dry-run harness).
+
+Repo + worktree:
+- Run all edits in /c/Users/sanal/dev/iago-os-d
+- Branch: start/03a-base
+- HEAD: dba1970 (after GH Action loop round 1)
+
+Context already in-place (don't re-do):
+- I-3 (Opus): test 16 in test-cutover.mjs invokes real jq against fixture — already added by GH Action loop round 1
+- 3 Codex pipeline P0/P1 fixes verified (tests 13, 14, 15)
+- Octal parse + 30s daemon-start poll verified
+
+Findings to fix (priority ordered for cutover safety — Sunday 2026-05-25 8pm window):
+
+**I-1 (Important — silent credential check failure) — systemd-creds decrypt round-trip is silent-success on decrypt failure**
+File: runtime/deploy/cutover.sh:456 (the T+05 systemd-creds verification block)
+Issue: The remote pipeline `systemd-creds decrypt /etc/credstore.encrypted/iago-telegram-token.cred - | wc -c` runs under ssh's sh -c (no pipefail). If `systemd-creds decrypt` fails (corrupt ciphertext, missing key, wrong owner), wc -c reads empty stdin, prints "0", exits 0. The local `if vssh ...` sees success. The whole point of the check (catch busted creds before T+07) is silently neutered.
+
+Fix: Use the length-capture pattern (defensive):
+```bash
+local len
+len=$(vssh "systemd-creds decrypt /etc/credstore.encrypted/iago-telegram-token.cred - | wc -c" 2>/dev/null || echo 0)
+if (( len > 1 )); then
+  echo "  OK systemd-creds round-trip verified (${len} bytes)"
+else
+  trigger_rollback "systemd-creds decrypt round-trip empty/failed for iago-telegram-token (len=${len})"
+fi
+```
+
+Apply the same pattern to any other systemd-creds round-trip check (gh-token if present).
+
+Add a regression test in test-cutover.mjs (next test number — likely 17 if 16 already added by GH Action loop). The test injects `STUB_FAIL_TAILSCALE_PATTERN=systemd-creds decrypt` (or extends the existing tailscale stub to support a fail-pattern env var) and asserts cutover exits non-zero with the trigger_rollback banner.
+
+**I-2 (Important — token file 0644 leak) — Rollback's OpenClaw config patch leaves bot token world-readable**
+File: runtime/deploy/rollback.sh — find the PATCH_EOF heredoc that does `jq --arg t ... > ...tmp; mv ...tmp ...; chown ilsantino:ilsantino ...openclaw.json`
+Issue: The `jq > .tmp` redirect creates the new file with default umask (0022 → 0644). mv preserves mode. After chown, the freshly-tokened openclaw.json is `ilsantino:ilsantino 0644` — world-readable, holding the live bot token after rotation.
+
+Fix: Add explicit chmod after the chown:
+```bash
+chown ilsantino:ilsantino ~ilsantino/.openclaw/openclaw.json ~ilsantino/.openclaw/openclaw.json.pre-rollback
+chmod 0600 ~ilsantino/.openclaw/openclaw.json ~ilsantino/.openclaw/openclaw.json.pre-rollback
+```
+
+Add an assertion in test 8 (rollback with token patch) that captures chmod stub invocation count or verifies chmod 0600 appears in the stub log.
+
+**Manual Codex HIGH (split-brain risk) — Rollback can continue after v2 daemon stays active**
+File: runtime/deploy/rollback.sh (the post-stop+disable block, look for `is-active iago-os-v2-daemon.service` after the disable step — around line 248-262 per Codex)
+Issue: If `systemctl stop` times out (or fails for any reason) but `disable` succeeds, the script reaches the final is-active check, which is currently INFORMATIONAL only. Script logs the active state and continues to token rotation + openclaw start → split-brain (both daemons running).
+
+Fix: Make the final is-active check FATAL if the daemon is still active. Pattern:
+```bash
+local v2_state
+v2_state=$(vssh "systemctl is-active iago-os-v2-daemon.service 2>/dev/null" || echo "ssh-failed")
+case "${v2_state}" in
+  inactive|failed|not-found)
+    echo "  OK v2 daemon is ${v2_state} after stop+disable"
+    ;;
+  *)
+    echo "FATAL v2 daemon still ${v2_state} after stop+disable; cannot proceed to OpenClaw restart (split-brain risk)" >&2
+    exit 2
+    ;;
+esac
+```
+
+Add a regression test that simulates stop-fails-but-disable-succeeds (the existing stub can be extended with STUB_FAIL_STOP_BUT_DISABLE_OK=1 or similar) and asserts rollback exits 2 before the OpenClaw start step.
+
+**Manual Codex HIGH (journal trigger gap) — T+08 and T+50 journal checks accept failures**
+File: runtime/deploy/cutover.sh
+- T+08 block: Currently greps for the presence of "daemon-start". A log containing "daemon-start" PLUS a failure/stack-trace still passes.
+- T+50 block: Masks journal query failures with `|| echo 0`, records the step as ok even when error logs exist (only warns).
+
+Fix:
+- T+08: After confirming `daemon-start` is present, also scan recent logs for failure/error/stack-trace patterns and `trigger_rollback` on matches. Example:
+```bash
+if vssh "journalctl -u iago-os-v2-daemon.service --since '1 minute ago' --no-pager | grep -E 'daemon-start' >/dev/null"; then
+  echo "  OK daemon-start observed"
+else
+  trigger_rollback "T+08: daemon-start telemetry not observed in journal"
+fi
+# NEW: scan for failure patterns
+if vssh "journalctl -u iago-os-v2-daemon.service --since '1 minute ago' --no-pager | grep -E 'panic|Error: |Traceback|FATAL|terminated abnormally' >/dev/null"; then
+  trigger_rollback "T+08: failure/stack-trace pattern in journal"
+fi
+```
+- T+50: Drop the `|| echo 0` masking; if journal query fails, treat as failure. If error count > 0, fail (not warn) unless an explicit override env var (e.g., IAGO_CUTOVER_T50_TOLERATE_ERRORS=1) is set.
+
+Add regression tests for both: T+08 with stub-injected stack-trace log entry, T+50 with stub-injected error log entry. Both should trigger rollback / non-zero exit.
+
+**M-1 (Minor — telemetry safety) — NDJSON single-quote breakage**
+Files: runtime/deploy/cutover.sh (ndjson_write fn around line 162) + runtime/deploy/rollback.sh (similar fn around line 104)
+Issue: `vssh "echo '${line}' >> file"` breaks when `${line}` contains single quotes (very plausible — rollback-triggered events include reason strings like `state='inactive'`). Remote shell parses broken quoting, silently fails, `|| true` swallows the error → telemetry line is lost.
+
+Fix: Switch to stdin-pipe pattern (no quote escaping needed):
+```bash
+ndjson_write() {
+  local kind="$1" step="$2" result="$3" detail="${4:-}"
+  local line
+  line=$(printf '{"kind":"cutover-step","ts":"%s","step":"%s","result":"%s","detail":"%s"}' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$step" "$result" "$detail")
+  vssh "cat >> /var/log/iago-os/cutover.ndjson" <<< "$line" 2>/dev/null || true
+}
+```
+
+After applying fixes:
+1. Run the test harness: `cd /c/Users/sanal/dev/iago-os-d/runtime && node --test scripts/test-cutover.mjs` — verify all tests pass (16+ now, with new regression tests added for I-1, manual Codex HIGHs)
+2. Run `bash -n` on both scripts
+3. Run `npx tsc --noEmit` in runtime/ (should be clean)
+4. Commit with subject under 72 chars:
+   `fix(deploy): cutover safety hardening (I1-I2,split-brain,journal,NDJSON)`
+   Body explains each fix briefly with file:line refs.
+5. git push origin start/03a-base
+
+Do NOT re-tag @claude (per feedback_single_claude_tag — GH Action loop already ran round 2 verification clean).
+
+Report DONE when fixes are committed and pushed with the commit SHA and final test count.

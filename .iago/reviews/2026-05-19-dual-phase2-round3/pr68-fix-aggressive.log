@@ -1,0 +1,15 @@
+DONE — commit `10f0e40` pushed to `start/03a-base`.
+
+**Test pass count:** 23/23 in both concurrent mode (122.6s) AND `--test-concurrency=1` serial mode (122.8s).
+
+**Fixes applied:**
+- **C-1:** wrapped T+08 (`cutover.sh:553`) + T+50 (`cutover.sh:637`) remote pipes in `bash -c 'set -o pipefail; ...'`
+- **I-1A:** bumped systemd-creds threshold from `len > 1` to `len >= 40` (`cutover.sh:480`)
+- **I-2A:** added `umask 0077` inside PATCH_EOF body (`rollback.sh:329`)
+- **I-3:** retry-once + 2s sleep at T+05 verification (`cutover.sh:478-490`)
+- **M-1:** added Node JSON logger patterns (`level":50`, `level":"error"`, `level":"fatal"`, `UnhandledPromiseRejection`, `"err":`) to T+08 grep
+- **C-1 regression coverage:** new `STUB_FAIL_JOURNALCTL_PATTERN` stub knob + tests 22 (rollback on journalctl failure) + 23 (TOLERATE bypass WARN path); test 17 updated for I-1A + I-3
+
+**T-1 note:** the brief reported test 7 hanging — under both my concurrent and serial runs test 7 completes in ~3-7s deterministically. The Round 3 owner-checked release logic works as designed; no hang reproduced. Hang in the prior report likely was a Cygwin transient fork-exhaustion artifact (saw one `cygheap read copy failed` event in an earlier run — flake, not bug).
+
+No `@claude` re-tag per single-tag rule.

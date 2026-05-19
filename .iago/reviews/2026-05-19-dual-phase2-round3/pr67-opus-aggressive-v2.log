@@ -1,0 +1,13 @@
+Report written. Summary:
+
+**Verdict: BLOCK** — three CRITICAL defects survive the round-3 fix.
+
+**C-A1** (empirically proven): `user:ilsantino` scope drops every PR Santiago opens in `bas-labs/*` repos. Live `gh api graphql` confirms 1 missing PR right now (`bas-labs/munet-web` #90).
+
+**C-A2** (empirically proven): `waiting_claude` rule checks PR `body` for `@claude`, but the iaGO pipeline tags via `gh pr comment` (line 1017 of `execute-pipeline.sh`). Of the 3 live PRs, 2 (#67, #68) have `@claude` only in comments → silently dropped from the bucket the agent exists to surface.
+
+**C-A3**: commit claims "configuration is not silently dead", but the wiring is half-done. `loadAgentCronEntries` registers the cron, but `pr-triage` has `autoStart: false` and isn't in `daemon-config.json` → `isAgentRegistered("pr-triage")` returns `false` → `emitUnrouted` leaves files in pending forever. Even if it WERE registered, the `prompt` field in the task file is read by NO production code (grep confirms only the writer in `cron-scheduler.ts:656`). Daily file leak in `tasks/pending/` with no consumer.
+
+Plus H-A1 (APPROVED+FAILING PR mis-bucketed as `waiting_santiago` due to rule ordering) and H-A2 (STATE_ROOT divergence in dev mode), plus 3 MEDIUM and 4 MINOR findings.
+
+Report at `.iago/reviews/2026-05-19-dual-phase2-round3/pr67-opus-aggressive.md`.

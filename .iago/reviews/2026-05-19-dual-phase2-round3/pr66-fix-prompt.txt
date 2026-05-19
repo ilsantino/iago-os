@@ -1,0 +1,64 @@
+You are Opus 4.7 applying findings from the aggressive Round 3 reviews to PR #66 (Preserve Phase 2 dual-review artifacts).
+
+Worktree: /c/Users/sanal/dev/iago-os-66
+Branch: chore/phase-2-dual-review-artifacts
+HEAD: 20f31e4
+
+Reviews to apply:
+- C:\Users\sanal\dev\iago-os\.iago\reviews\2026-05-19-dual-phase2-round3\pr66-opus-aggressive.md (Opus)
+- C:\Users\sanal\dev\iago-os\.iago\reviews\2026-05-19-dual-phase2-round3\pr66-codex.md (Codex)
+
+Apply these fixes:
+
+**I-1 — Add "ARCHIVE" header to fix prompts that contain executable directives**
+Files: `.iago/reviews/2026-05-18-dual-phase2-round2/pr63-fix-prompt.txt`, `.iago/reviews/2026-05-18-dual-phase2-round2/pr64-fix-prompt.txt`, and any other `.iago/reviews/**/pr*-fix-prompt.txt` files in the diff that end with `git push origin {branch}` or similar action verbs.
+
+For each: prepend this header at line 1 (before any existing content):
+```
+> **ARCHIVE NOTICE — DO NOT EXECUTE**
+>
+> This file is a historical record of a fix session prompt. It was used once to drive a now-completed code change. Future agents and humans MUST NOT execute the commands or instructions below — they describe past work, not current tasks. To reference the resulting commits, see the commit SHAs listed in the session digest at `obsidian:sessions/2026-05-18-iago-os-v2-phase-2-round-2.md`.
+
+---
+
+```
+
+**I-2 — Footer note on session logs that captured turn-limit failures**
+Files: any `.iago/runs/round-2-dispatch/*.log` that show "Reached max turns" without a follow-up, and any `.iago/reviews/**/*fix.session.log` files in the diff with the same pattern.
+
+Append at end of each file:
+```
+
+---
+[ARCHIVE FOOTER] This session hit a turn limit. The actual fix landed via the GitHub Action review-fix loop in subsequent commits. See the PR's merge commit history for the resolution.
+```
+
+**I-3 — No fix needed in PR #66**
+The pr62-diff.patch artifact contamination was already documented in `01a.log:205-217`. Leave the artifact as-is; the documentation is sufficient.
+
+**I-4 — Trim PowerShell trace prefix from Codex review files**
+Files: `.iago/reviews/2026-05-18-dual-phase2-round1/pr60-codex.md`, `.iago/reviews/2026-05-18-dual-phase2-round1/pr62-codex-v2.md` (any other `prNN-codex*.md` files that have ~80 lines of `[codex] Running command:` traces before the `# Codex Adversarial Review` heading).
+
+For each: delete all lines BEFORE the first occurrence of `# Codex Adversarial Review`. Add this single line at the top instead:
+```
+> Note: PowerShell command-trace prefix from codex-companion stripped at archive time. Verdict and findings below are verbatim from the run.
+
+```
+
+**Codex HIGH — Update `.iago/summaries/02b-whatsapp-telegram-and-runbooks.md`**
+The summary currently says `status: done` and `Review: PASS` without reflecting that Opus I1 (revoke-whatsapp.sh OpenClaw-active guard silent bypass) was caught by manual dual review, not the pipeline. Update the frontmatter and content to:
+
+1. Change frontmatter `status: done` to `status: done-with-manual-fix-history`
+2. Add a new section after "## Pipeline Result" titled "## Manual dual review intervention" that lists:
+   - 1 Opus Important (I1) caught after pipeline marked PASS: revoke-whatsapp.sh step 1 OpenClaw-active guard silently bypassed on operator's Windows host
+   - Fix: switched to Tailscale SSH probe of VPS with IAGO_OPENCLAW_STOPPED=1 operator override (commit 450594d)
+   - 3 Codex HIGH caught after pipeline marked PASS (runbook ordering + scrub tokens via curl --config -)
+   - All resolved BEFORE merge of PR #63
+
+After applying all fixes:
+1. Verify the diff looks sane (no broken markdown, no truncated frontmatter): `cd /c/Users/sanal/dev/iago-os-66 && git diff --stat`
+2. Commit with subject under 72 chars:
+   `chore(artifacts): sanitize fix prompts + summary status`
+3. Push: `git push origin chore/phase-2-dual-review-artifacts`
+
+Report DONE with commit SHA when pushed.

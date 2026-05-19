@@ -1,0 +1,29 @@
+You are Opus 4.7 performing an adversarial review of PR #67 (Phase 2 / Plan 04a — PR-triage agent artifacts).
+
+Context:
+- Repo: C:\Users\sanal\dev\iago-os (you are reading from main repo; PR branch is feat/04a-pr-triage-artifacts in worktree C:\Users\sanal\dev\iago-os-c)
+- Plan: C:\Users\sanal\dev\iago-os\.iago\plans\feature-phase-2-vps-bootstrap\04a-pr-triage-artifacts.md
+- Diff: C:\Users\sanal\dev\iago-os\.iago\reviews\2026-05-19-dual-phase2-round3\pr67-diff.patch
+- Pre-impl base: fd9f27c (Round 2 HEAD)
+- Pipeline already ran local review + Codex stage. The pipeline-stage Codex caught 4 findings (1 CRITICAL crons.json not wired into daemon, 2 HIGH Telegram MD escape + fallback alert envelope, 1 MEDIUM missing labels/body fields). Pipeline CODEX FIX session hit max-turns (40) — verify what got fixed vs what's still latent.
+
+What to look for (PR-triage agent is a daemon-driven Anthropic agent that runs daily at 14:00 UTC, lists open PRs via gh, classifies them, sends a Telegram summary):
+- **Scope sanity**: 04a ships agent-config.json + crons.json + prompt-template.md + wake-check.sh ONLY. Runtime wiring is Plan 04b. The "crons.json not wired" Codex CRITICAL is explicitly deferred-by-design per CONTEXT.md and plan stress test — verify the diff includes a JSDoc/comment scope-note OR README note pointing to 04b for daemon wiring. If missing, that's a real finding.
+- **prompt-template.md**: Telegram MarkdownV2 escape semantics — does the prompt instruct the agent correctly on which chars to escape (`_`, `*`, `[`, `]`, `(`, `)`, `~`, `` ` ``, `>`, `#`, `+`, `-`, `=`, `|`, `{`, `}`, `.`, `!`)? Or does it just say "escape PR titles" and leave structural markup broken? If the message rendering itself uses unescaped `#`, `-`, etc., that's a real HTTP 400 bug at runtime.
+- **Fallback alert envelope**: does the prompt write task files compatible with AgentManager.processPendingTask (must contain string agentId)? Read runtime/daemon/agent-manager.ts to confirm the envelope contract. If the prompt tells the agent to write `{"ndjsonAlert": "...", "details": {...}}` without an agentId, those files will be moved to tasks/poisoned with reason "missing-agent-id" — exactly the telemetry path that was supposed to surface the failure.
+- **agent-config.json**: must use `authProfile: "default"` (Phase 2 only activates default profile; Phase 3 wires ilsantino + iaguito per CONTEXT.md Decided Constraints).
+- **wake-check.sh**: follows Hermes pattern — exit 0 if there's work, exit 1 if not. Check that the gh query reasonably returns >0 for the conditions the cron should fire on.
+- **gh json fields**: the PR list `gh pr list --json ...` must include `body` and `labels` if the prompt classification rules depend on them (the pipeline-stage Codex MEDIUM). Reproduce the field set vs the classification rule set.
+- **Cron schedule**: 0 14 * * * = 14:00 UTC = 09:00 EST (NY) / 08:00 CST (Mexico). Confirm this matches Santiago's morning routine intent.
+- **Auth/secrets**: no tokens in argv, no tokens echoed to NDJSON, no curl with token on command line (use `curl --config -` stdin pattern per the Round 2 02b pattern).
+- **prompt-template.md token usage**: prompt should expect TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID from environment (provided via authProfile credentials), not hardcoded.
+
+Procedure:
+1. Read the plan in full
+2. Read the diff in full
+3. Read source for: runtime/daemon/agent-manager.ts (processPendingTask contract), runtime/daemon/cron-scheduler.ts (cron registration), any existing agent configs in runtime/agents/ for reference
+4. Apply the checklist above; classify findings as Critical / Important / Minor
+5. Write a structured report with severity, file:line, evidence, recommended fix, and a final Verdict (PASS / PASS_WITH_CONCERNS / BLOCK)
+6. Save to: C:\Users\sanal\dev\iago-os\.iago\reviews\2026-05-19-dual-phase2-round3\pr67-opus.md
+
+Be specific and concrete. No vague "consider hardening" findings — every finding must have file:line evidence and a concrete fix. Do NOT re-raise the deferred-by-design daemon wiring as a Critical if the diff includes a clear scope-note pointing to 04b.

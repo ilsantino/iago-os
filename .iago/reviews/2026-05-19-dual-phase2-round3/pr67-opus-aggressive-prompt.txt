@@ -1,0 +1,80 @@
+You are Opus 4.7 performing an AGGRESSIVE second-pass adversarial review of PR #67 (Plan 04a — PR-triage agent artifacts), FOCUSED on the latest Round 3 fix commit and looking for new defects the prior review missed.
+
+Context:
+- PR: feat/04a-pr-triage-artifacts (worktree C:\Users\sanal\dev\iago-os-c)
+- HEAD: b475058 (latest manual fix — graphql swap + C1-C3 + M1-M3)
+- Pre-impl base: fd9f27c
+- Diff: C:\Users\sanal\dev\iago-os\.iago\reviews\2026-05-19-dual-phase2-round3\pr67-diff-v3.patch (855 lines)
+- Prior Opus review at: C:\Users\sanal\dev\iago-os\.iago\reviews\2026-05-19-dual-phase2-round3\pr67-opus.md (reviewed up to 448a4fb — pre-fix state)
+- Prior Codex review at: pr67-codex.md (also pre-fix)
+
+Aggressive mode: assume the fix commit b475058 introduced new bugs. Find them. The previous review verified the BUG existed; this review verifies the FIX is correct and didn't break anything else.
+
+**Primary focus — the graphql swap (commit b475058):**
+
+The fix replaced `gh pr list --owner ilsantino` with `gh api graphql` query. Check the new query body line-by-line:
+
+1. **GraphQL field validity**: Every field requested must exist on the PullRequest type in GitHub's GraphQL schema. Verify:
+   - `author { login }` — PR author is `Actor` union (User, Bot, Mannequin, EnterpriseUserAccount). `.login` exists on all.
+   - `reviewDecision` — exists on PullRequest? (Should — enum: APPROVED, CHANGES_REQUESTED, REVIEW_REQUIRED, null)
+   - `statusCheckRollup { state contexts(first: 20) { nodes { __typename ... on StatusContext { state context } ... on CheckRun { conclusion name } } } }` — verify the union structure. StatusContext + CheckRun are both possible variant types under StatusCheckRollupContext. Are there OTHER variants (e.g., `RequestedCheckRun`)? If yes, the query fails on PRs with those.
+   - `labels(first: 20) { nodes { name } }` — labels is paginated; if a PR has >20 labels, the query silently truncates. Real?
+   - `body` — string type, no issue.
+   - `createdAt updatedAt` — DateTime, no issue.
+
+2. **Search query syntax**: `query: "user:ilsantino is:pr is:open"` — does this actually return PRs across all of Santiago's repos? GraphQL `search` with type ISSUE returns both Issues and PullRequests; the `is:pr` qualifier should filter. Verify against GitHub docs. Edge case: `user:` qualifier on a User account returns only PRs in repos OWNED by that user — does NOT include PRs in repos forked by them or PRs in other people's repos where they're an author. Is that the intended scope?
+
+3. **Result limit**: `first: 50` — what happens if Santiago has 51+ open PRs across his account? The 51st silently drops. Should the prompt use cursor pagination, or is 50 a reasonable cap with a warning when hit?
+
+4. **Rate limit cost**: GraphQL is point-based (5000 points/hour budget). One search query with nested fields can cost 10-50 points. At 1 fire/day, no issue. But during testing/debugging the operator might trigger many runs — document the cost in the prompt.
+
+5. **Classification rule changes**: The new shape requires:
+   - `merge_ready` needs `reviewDecision == "APPROVED"` AND `statusCheckRollup.state == "SUCCESS"` — was the OLD rule "all checks green"? Compare with the NEW state enum (SUCCESS / FAILURE / PENDING / null). Are draft PRs handled (their statusCheckRollup is null)?
+   - `waiting_claude` — does the new rule still find PRs awaiting `@claude` review?
+   - `waiting_santiago` — `reviewDecision == "APPROVED"` (after Claude review) — does the rule disambiguate "approved by claude" from "approved by other reviewers"?
+   - `stuck` — what's the criterion now? PRs older than 5 days?
+   - Edge case: a PR with NO reviewers (just opened by Santiago, sitting idle) — which bucket?
+   - Edge case: a PR with `statusCheckRollup.state == null` (no CI configured) — does it fall into `merge_ready` or get dropped?
+
+6. **JSON parsing in the prompt**: The new prompt instructs the agent to parse `.data.search.nodes[]`. Did the prompt update the bucket-rule field paths? E.g., the OLD rule was `pr.statusCheckRollup[*].conclusion` (array) but the NEW shape is `pr.statusCheckRollup.contexts.nodes[*].conclusion` (nested). If the prompt still uses the OLD path, classification silently breaks on every PR.
+
+7. **`jq` filter syntax in the prompt**: If the prompt uses `gh api graphql --jq '.data.search.nodes[]'`, does the agent's downstream jq filters use compatible syntax for the new shape?
+
+**Secondary focus — cumulative review of the full PR state:**
+
+After all 5 fix commits, walk the agent flow end-to-end:
+
+8. **Cron fires at 14:00 UTC daily**: `crons.json` says `0 14 * * *` UTC. CronScheduler reads this and emits to its internal cron schedule. Does the scheduler use UTC or local time? If local, deployment on a VPS in any non-UTC tz silently fires at the wrong hour.
+
+9. **Wake-check.sh exit codes**: `exit 0` if PRs exist, `exit 1` if none. Does the CronScheduler interpret these the same way? (i.e., exit 0 = "fire the task", exit 1 = "skip this tick"). Mismatch = either daily noise or silent miss.
+
+10. **agent-config.json**: `autoStart: false` — does this mean the polling loop doesn't pick up tasks emitted by the cron? Verify the agent-manager.ts logic: does it skip agents with `autoStart: false` even when there are pending tasks for them?
+
+11. **Polling loop + ndjsonAlert envelope**: When the fallback POST writes a `{"agentId":"pr-triage","ndjsonAlert":"pr-triage-telegram-send-failed","details":"..."}` file, does agent-manager.ts processPendingTask actually emit the agent-alert telemetry event correctly? Or does the `ndjsonAlert` branch race with the registration check (file written before agent registered)?
+
+12. **Wake-check.sh user:ilsantino**: empirically verified to work, but does it return the COUNT correctly? `gh api -i '/search/issues?q=user:ilsantino+is:pr+is:open&per_page=1'` — the wake-check parses the `Link` header for total count? Or the body's `total_count`? If wrong parser, wake-check is either always-fires or never-fires.
+
+13. **prompt-template.md Telegram payload format**: switched to plain text — what if the message contains Markdown-looking characters that Telegram interprets? E.g., PR title `"Fix bug in [auth] (cleanup)"` — does plain text mode render literally? Or do square/round brackets need escaping?
+
+14. **Length cap M-2 fix**: 3500-char threshold + truncation algorithm — does it handle the edge case where Stuck bucket alone exceeds 3500 chars after truncating others? Infinite loop risk?
+
+15. **Telegram parse_mode absence**: prompt now says no parse_mode. Does the Telegram API default to plain or HTML when parse_mode is absent? Verify against Telegram Bot API docs.
+
+**Tertiary — recently-modified files that didn't get explicit review:**
+
+16. `runtime/daemon/main.ts`'s loadAgentCronEntries: does it correctly handle a malformed agent-config.json? An agent dir without crons.json? An agent with autoStart:false (should that cron still register)?
+
+17. `runtime/daemon/agent-manager.ts`'s ndjsonAlert branch: does it correctly handle alerts that lack `details` field? An alert with `agentId` for a non-existent agent (typo)?
+
+18. `runtime/daemon/telemetry.ts`'s agent-alert variant: does it serialize correctly to NDJSON? Does the alertKind field handle special chars (apostrophes, quotes)?
+
+Procedure:
+1. Read the latest PR diff in full (855 lines) at .iago/reviews/2026-05-19-dual-phase2-round3/pr67-diff-v3.patch
+2. Read the prior reviews (pr67-opus.md, pr67-codex.md) to know what's been covered
+3. Spot-check the actual committed files in worktree C:\Users\sanal\dev\iago-os-c
+4. Empirically test the graphql query (use `gh api graphql -f query='...' --jq '.data.search.nodes[0]'`) — does it return non-error?
+5. Apply EVERY check above
+6. Write report to: C:\Users\sanal\dev\iago-os\.iago\reviews\2026-05-19-dual-phase2-round3\pr67-opus-aggressive.md
+7. Final Verdict: PASS / PASS_WITH_CONCERNS / BLOCK
+
+Aggressive frame: the prior Opus review was generous (PASS_WITH_CONCERNS). The fix commit was also marked DONE without independent verification. Be HARSHER. The cost of merging a broken graphql query is daily noise to Santiago's Telegram for as long as it takes to notice.

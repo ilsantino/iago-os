@@ -1,0 +1,72 @@
+You are Opus 4.7 applying CRITICAL findings from the aggressive Round 3 review to PR #67 (Plan 04a — PR-triage agent artifacts).
+
+Worktree: /c/Users/sanal/dev/iago-os-c
+Branch: feat/04a-pr-triage-artifacts
+HEAD: b475058
+
+Review: C:\Users\sanal\dev\iago-os\.iago\reviews\2026-05-19-dual-phase2-round3\pr67-opus-aggressive.md
+
+Decision: **Option B — revert the cron wiring**, defer dispatch to Plan 04b (where it properly belongs with the PTY-spawn + prompt-dispatch wiring). 04a returns to its original "artifacts only" scope. Plus fix the query scope + waiting_claude detection bugs in the prompt template itself (those are 04a-scope content fixes, not wiring).
+
+Apply these fixes:
+
+**C-A1 — Fix query scope: `user:ilsantino` → `author:ilsantino`**
+Files:
+- `runtime/agents/pr-triage/prompt-template.md` (any `user:ilsantino` in the graphql search query string)
+- `runtime/agents/pr-triage/wake-check.sh` (the `q=user:ilsantino` parameter on line 31)
+
+Change to `author:ilsantino` in both places. This catches PRs Santiago authored in `bas-labs/*` repos and any other org repo where he's the author. Add a comment in prompt-template.md near the search query explaining the choice.
+
+**C-A2 — Fix `waiting_claude` detection: check comments, not body**
+File: `runtime/agents/pr-triage/prompt-template.md` (the graphql query block + the classification rules at lines 64-67)
+
+Update the graphql query to ALSO fetch comments:
+```graphql
+comments(last: 20) {
+  nodes {
+    author { login }
+    body
+  }
+}
+```
+
+Update the `waiting_claude` rule to:
+> A PR matches `waiting_claude` if (a) ANY comment body contains literal `@claude` (case-insensitive), OR (b) the PR body contains `@claude`, OR (c) `labels.nodes[]` contains `name === "claude-review-requested"`, AND `reviewDecision !== "APPROVED"`.
+
+Update the classifier instructions in the prompt to walk both body AND comments[].
+
+**C-A3 — Revert cron wiring back to 04b scope**
+This is the biggest reversal. The pipeline preempted Plan 04b's daemon wiring into 04a to satisfy the pipeline-stage Codex CRITICAL. Aggressive review showed the wiring is half-done and creates a daily file-leak. Revert to "artifacts only" scope:
+
+Files to REVERT (restore to pre-pipeline state — these were added by the pipeline + GH Action loop on top of the original plan scope):
+1. `runtime/daemon/main.ts` — remove the `loadAgentCronEntries` function (it was added in this PR), remove the `cronScheduler.registerCron`/`start`/`stop` calls in startDaemon/shutdown, remove the `import { CronScheduler, type RegisterCronOpts } from "./cron-scheduler.js"`, remove the `TASKS_POLLING_INTERVAL_MS` export. Restore to the state on `origin/main` (commit fd9f27c).
+2. `runtime/daemon/agent-manager.ts` — remove the `ndjsonAlert` branch added in this PR (it was added to support the alert-only task path). Restore to the state on `origin/main` (commit fd9f27c).
+3. `runtime/daemon/telemetry.ts` — remove the `agent-alert` DaemonEvent variant + `alertKind` field that this PR added. Restore to the state on `origin/main`.
+
+To find what was added: `git diff fd9f27c HEAD -- runtime/daemon/main.ts runtime/daemon/agent-manager.ts runtime/daemon/telemetry.ts` — that's the surface to revert.
+
+After reverting:
+- Update `runtime/agents/pr-triage/agent-config.json`'s `_comment_fields` to explicitly state: "Plan 04b is responsible for daemon discovery of this config and cron registration. Plan 04a ships configuration files only."
+- Update `runtime/agents/pr-triage/prompt-template.md` step (e) (the fallback envelope description) to acknowledge that the ndjsonAlert envelope contract is a Plan 04b dependency: "When 04b's polling loop ships, the daemon will surface these alerts. Until then, the fallback file accumulates in tasks/pending/ and a human must rotate them."
+
+This is the **honest** state. The cron will NOT fire daily until 04b wires the agent-spawn + prompt-dispatch + cron-startup path together.
+
+**H-A1 — Fix rule ordering: stuck BEFORE waiting_santiago**
+File: `runtime/agents/pr-triage/prompt-template.md` (classification rules block)
+
+Reorder: `merge_ready` → `stuck` → `waiting_claude` → `waiting_santiago`. Add explicit AND-not-FAILURE guard to `waiting_santiago`:
+> A PR matches `waiting_santiago` if `reviewDecision === "APPROVED"` AND `author === ilsantino` AND `statusCheckRollup.state !== "FAILURE"` AND `statusCheckRollup.state !== "ERROR"` AND no `TIMED_OUT` contexts.
+
+**Skip M findings** (M-A1 partial-error path, M-A2 body size, M-A3 ERROR/EXPECTED state). They're real but low-value for the agent's first ship. Will land in a future polish PR.
+
+**Skip H-A2** (STATE_ROOT divergence). The fix is "agent asks daemon via IPC" — that's 04b dispatch territory.
+
+After applying fixes:
+1. Verify the daemon code reverts cleanly: `cd /c/Users/sanal/dev/iago-os-c && git diff fd9f27c HEAD -- runtime/daemon/main.ts runtime/daemon/agent-manager.ts runtime/daemon/telemetry.ts` should show ONLY the file getting back to its original state — NO modifications.
+2. Run `npx tsc --noEmit` in the runtime/ — should be clean since we're removing code, not adding.
+3. Commit with subject under 72 chars:
+   `fix(04a): revert cron wiring to 04b; fix query scope + waiting_claude`
+4. Body: brief explanation that aggressive review (.iago/reviews/2026-05-19-dual-phase2-round3/pr67-opus-aggressive.md) showed cron wiring was half-done; reverting daemon changes back to 04b scope per Option B; fixing user→author query scope (C-A1) and @claude-in-comments detection (C-A2); fixing rule ordering (H-A1).
+5. Push: `git push origin feat/04a-pr-triage-artifacts`
+
+Report DONE with commit SHA when pushed.

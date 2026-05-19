@@ -1,0 +1,10 @@
+**DONE** — Commit `33e69a7` pushed to `feat/04a-pr-triage-artifacts`.
+
+Changes:
+- **Daemon revert**: `main.ts`, `agent-manager.ts`, `telemetry.ts` restored to `fd9f27c` baseline (0-line diff vs origin/main). Cron wiring deferred back to Plan 04b.
+- **C-A1**: `user:ilsantino` → `author:ilsantino` in `wake-check.sh:31` and `prompt-template.md` GraphQL query, with rationale comment.
+- **C-A2**: GraphQL query now fetches `comments(last:20){nodes{author{login}body}}`. `waiting_claude` rule walks comments[] body AND PR body AND label.
+- **H-A1**: Rule order reordered to `merge_ready → stuck → waiting_claude → waiting_santiago`. `waiting_santiago` requires `state !== FAILURE/ERROR` and no `TIMED_OUT`.
+- **Docs**: `agent-config.json _comment_fields`, Role section, file-write tool note, and step (d) explicitly mark daemon wiring as a 04b dependency.
+
+Verification: `npx tsc --noEmit` exit 0. Daemon diff vs `fd9f27c` is empty.

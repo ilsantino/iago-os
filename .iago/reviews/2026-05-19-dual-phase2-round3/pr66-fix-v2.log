@@ -1,0 +1,10 @@
+**DONE** — commit `4a83762` pushed to `chore/phase-2-dual-review-artifacts`.
+
+All four Round 3 fixes applied:
+- **I-1:** archive headers prepended to `pr63-fix-prompt.txt` and `pr64-fix-prompt.txt`
+- **I-2:** archive footers appended to 4 turn-limit session logs (`07b.log`, `pr60-fix.session.log`, `pr63-fix.session.log`, `pr64-fix.session.log`)
+- **I-3:** no-op (already documented in `01a.log:205-217`)
+- **I-4:** PowerShell traces stripped from 5 Codex review files (`pr60`, `pr61`, `pr62-v2`, `pr63`, `pr64`) — `pr62-codex.md` skipped because it has no `# Codex Adversarial Review` heading (would erase the file)
+- **Codex HIGH:** 02b summary status flipped to `done-with-manual-fix-history` with full `## Manual dual review intervention` section listing 1 Opus Important + 3 Codex HIGH + commit `450594d`
+
+Net: +64 / −319 lines across 12 files.

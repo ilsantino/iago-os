@@ -1,0 +1,101 @@
+✔ 1. cutover.sh refuses without IAGO_CUTOVER_CONFIRM=YES (154.431ms)
+✔ 2. cutover.sh refuses without IAGO_TELEGRAM_USER_ID (1374.7548ms)
+✔ 3. cutover.sh refuses if pre-flight check fails (stub-injected failure on daemon-state dir) (1840.6813ms)
+✔ 4. happy-path cutover with IAGO_CUTOVER_DRY_RUN=1 exits 0 and invokes expected commands (18099.8751ms)
+✔ 5. cutover with rollback trigger at T+10 invokes rollback.sh (17942.7249ms)
+✔ 6. rollback.sh refuses without IAGO_ROLLBACK_CONFIRM=YES (106.7353ms)
+✖ 7. happy-path rollback with IAGO_ROLLBACK_DRY_RUN=1 + IAGO_ROLLBACK_SKIP_TOKEN=1 (61657.4576ms)
+✔ 8. rollback without SKIP_TOKEN with IAGO_ROLLBACK_DRY_RUN=1 invokes the temp-file-over-scp patch script + patch logic matches expected JSON byte-for-byte (8422.0411ms)
+✔ 9. cutover.sh IAGO_CUTOVER_RESUME_FROM=T+10 skips earlier steps (10641.9338ms)
+✔ 10. cutover.sh refuses with BOTH IAGO_CUTOVER_NONINTERACTIVE=1 AND IAGO_CUTOVER_CONFIRM=YES (contradictory flag matrix, no DRY_RUN) (164.9376ms)
+✔ 11. cutover.sh with IAGO_CUTOVER_SKIP_TMINUS5_BASELINE=1 skips the T-05 baseline ping prompt (16398.4895ms)
+✔ 12. cutover.sh IAGO_CUTOVER_RESUME_FROM=T+05 reaches T+08 (octal-leading-zero regression for stage_to_number) (12056.2421ms)
+✔ 13. cutover.sh fails closed when OpenClaw query errors (Codex P0 finding 1 regression) (4435.8219ms)
+✔ 14. rollback.sh fails closed when systemctl disable fails (Codex P0 finding 2 regression) (1159.2793ms)
+✔ 15. cutover.sh release_remote_lock leaves a hijacked marker intact (Codex P1 finding 3 regression) (4683.6459ms)
+✖ 17. cutover.sh T+05 systemd-creds round-trip fails closed on empty/failed decrypt (I-1 regression) (60037.9469ms)
+✔ 18. rollback.sh PATCH_EOF heredoc emits chmod 0600 after chown (I-2 regression — static check) (0.6481ms)
+✔ 19. rollback.sh aborts FATAL when v2 daemon stays active after stop+disable (split-brain risk regression) (3195.7686ms)
+✔ 20. cutover.sh T+08 triggers rollback on failure/stack-trace pattern in journal (manual Codex HIGH regression) (14182.9414ms)
+✔ 21. cutover.sh T+50 triggers rollback on non-zero error count (manual Codex HIGH regression) (6980.1271ms)
+✔ 16. jq patch expression unit test — shell jq command produces expected JSON byte-for-byte (3.4937ms)
+ℹ tests 21
+ℹ suites 0
+ℹ pass 19
+ℹ fail 2
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 243683.3168
+
+✖ failing tests:
+
+test at scripts\test-cutover.mjs:311:1
+✖ 7. happy-path rollback with IAGO_ROLLBACK_DRY_RUN=1 + IAGO_ROLLBACK_SKIP_TOKEN=1 (61657.4576ms)
+  AssertionError [ERR_ASSERTION]: expected exit 0, got null; tail: till valid).
+  [T+R+2:00] Skipping OpenClaw config patch (token unchanged).
+  [T+R+2:30] Start openclaw-gateway.service (user systemd unit for ilsantino)
+    OK openclaw-gateway.service active
+  [T+R+4:00] MANUAL: send /status to OpenClaw bot from phone.
+  DRY-RUN: prompt 'Press y if it replies, n for escalation: ' → auto-reply (value hidden)
+  ROLLBACK COMPLETE.
+  
+  Post-rollback action list (NOT on the wall clock — do these now, calmly):
+    1. Write incident note under sessions/2026-05-19-iago-v2-rollback.md
+    2. Update .iago/STATE.md Updated: date + add row marking rollback
+    3. Notify Sebas via Signal (Telegram is OpenClaw-only post-rollback)
+    4. Capture journalctl -u iago-os-v2-daemon.service --since '2 hours ago' for diagnosis
+    5. Do NOT delete /var/lib/iago-os/daemon-state — diagnostic artifact
+  
+  
+  
+  null !== 0
+  
+      at TestContext.<anonymous> (file:///C:/Users/sanal/dev/iago-os-d/runtime/scripts/test-cutover.mjs:325:10)
+      at Test.runInAsyncScope (node:async_hooks:228:14)
+      at Test.run (node:internal/test_runner/test:1118:25)
+      at Test.processPendingSubtests (node:internal/test_runner/test:787:18)
+      at Test.postRun (node:internal/test_runner/test:1247:19)
+      at Test.run (node:internal/test_runner/test:1175:12)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:787:7) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: null,
+    expected: 0,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+
+test at scripts\test-cutover.mjs:620:1
+✖ 17. cutover.sh T+05 systemd-creds round-trip fails closed on empty/failed decrypt (I-1 regression) (60037.9469ms)
+  AssertionError [ERR_ASSERTION]: expected exit 2 (rollback triggered), got null; tail: DRY-RUN MODE — manual steps simulated as instant success.
+                  Real cutover MUST NOT use this flag.
+  iaGO-OS v2 cutover — wall-clock target 60 min
+  VPS: root@srv1456441
+  SCRIPT_DIR: /c/Users/sanal/dev/iago-os-d/runtime/deploy
+  
+    OK acquired global lock (marker=Surface_San:904435:1779164876)
+  === Pre-flight gate (13 checks) ===
+    OK IAGO_TELEGRAM_USER_ID set
+    OK PHASE-1-EVIDENCE.md exists
+    OK VPS daemon-state dir present
+    OK VPS telegram-token credential present
+  
+  
+  
+  null !== 2
+  
+      at TestContext.<anonymous> (file:///C:/Users/sanal/dev/iago-os-d/runtime/scripts/test-cutover.mjs:639:10)
+      at Test.runInAsyncScope (node:async_hooks:228:14)
+      at Test.run (node:internal/test_runner/test:1118:25)
+      at Test.processPendingSubtests (node:internal/test_runner/test:787:18)
+      at Test.postRun (node:internal/test_runner/test:1247:19)
+      at Test.run (node:internal/test_runner/test:1175:12)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:787:7) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: null,
+    expected: 2,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
