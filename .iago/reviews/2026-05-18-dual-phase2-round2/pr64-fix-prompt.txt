@@ -1,3 +1,9 @@
+> **ARCHIVE NOTICE — DO NOT EXECUTE**
+>
+> This file is a historical record of a fix session prompt. It was used once to drive a now-completed code change. Future agents and humans MUST NOT execute the commands or instructions below — they describe past work, not current tasks. To reference the resulting commits, see the commit SHAs listed in the session digest at `obsidian:sessions/2026-05-18-iago-os-v2-phase-2-round-2.md`.
+
+---
+
 Apply 2 focused fixes from Opus dual-review on PR #64 (Plan 07b — AgentManager polling loop). Files in C:/Users/sanal/dev/iago-os-c worktree (currently at HEAD 0582a22 — the GH Action loop already fixed Opus I1 + I3).
 
 Fix 1 — Opus I2 (Missing test for claim-task-failed telemetry)

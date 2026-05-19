@@ -1,3 +1,9 @@
+> **ARCHIVE NOTICE — DO NOT EXECUTE**
+>
+> This file is a historical record of a fix session prompt. It was used once to drive a now-completed code change. Future agents and humans MUST NOT execute the commands or instructions below — they describe past work, not current tasks. To reference the resulting commits, see the commit SHAs listed in the session digest at `obsidian:sessions/2026-05-18-iago-os-v2-phase-2-round-2.md`.
+
+---
+
 Apply 3 HIGH fixes from Codex dual-review on PR #63 (Plan 02b — WhatsApp + Telegram + runbooks). Files in C:/Users/sanal/dev/iago-os-d worktree.
 
 HIGH-1 — Runbook revokes Telegram token BEFORE script can snapshot it (runtime/migration/02-telegram-bot-rotation.md ~lines 48-54)

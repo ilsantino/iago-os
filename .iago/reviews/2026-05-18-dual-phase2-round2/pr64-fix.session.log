@@ -1,1 +1,4 @@
 Error: Reached max turns (20)SessionEnd hook [node "${CLAUDE_PLUGIN_ROOT}/scripts/session-lifecycle-hook.mjs" SessionEnd] failed: Hook cancelled
+
+---
+[ARCHIVE FOOTER] This session hit a turn limit. The actual fix landed via the GitHub Action review-fix loop in subsequent commits. See the PR's merge commit history for the resolution.
