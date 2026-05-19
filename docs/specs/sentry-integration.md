@@ -181,7 +181,7 @@ Cost ledger logs attempt + outcome (Phase 8 — see iago-os-v2-vision)
 
 ## Open questions
 
-- **OQ-1:** Should the daemon-sentry-fixer agent be a PTY (Claude/Codex) or an HTTP/SDK shape? PTY is simpler to wire today; HTTP/SDK shape is cheaper per-invocation since it's short-lived. Defer the call until Phase 4 implementation begins.
+- **OQ-1:** Should the daemon-sentry-fixer agent be a PTY (Claude/Codex) or an HTTP/SDK shape? PTY is simpler to wire today; HTTP/SDK shape is cheaper per-invocation since it's short-lived. Defer the call until Phase 10 implementation begins.
 - **OQ-2:** Per-agent Sentry projects, or one project with `agent_id` tag? Current spec says single project — but if the agent fleet grows past ~20 agents, splitting may be valuable for separate alert routing. Revisit at Phase 8 (cost ledger UI) when we have data on agent volume.
 - **OQ-3:** What's the LangGraph / HTTP/SDK shape Sentry integration pattern? `@sentry/node` works for any Node process, but instrumenting LangGraph workflow steps as Sentry transactions is non-obvious. Defer to Phase 3 when LangGraph adapter lands.
 
