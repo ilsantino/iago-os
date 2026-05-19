@@ -33,7 +33,7 @@ These rules cover the "script type-checks, lints, runs in dry-run, ships to prod
 
 - **Heredoc quote semantics.** `<<EOF` interpolates `$var`, backticks, and `\` — `<<'EOF'` does NOT. Audit every heredoc in deploy scripts: if it contains literal `$VAR_NAME` you want preserved (e.g. systemd unit `${MAINPID}`), use `<<'EOF'`. If you want local-variable expansion inside the body, use `<<EOF` but guarantee no command substitution or backslash-escape can leak from user-controlled input.
 
-- **`set -euo pipefail` at the top of every script.** Bash deploy scripts that omit `set -e` continue past failing commands. Without `set -u`, a typo in a variable name silently expands to empty string. Without `set -o pipefail`, the LOCAL pipelines (not just remote ones) silently swallow first-stage failures. Three lines, no exceptions.
+- **`set -euo pipefail` at the top of every script.** Bash deploy scripts that omit `set -e` continue past failing commands. Without `set -u`, a typo in a variable name silently expands to empty string. Without `set -o pipefail`, the LOCAL pipelines (not just remote ones) silently swallow first-stage failures. Three lines, no exceptions. Exclusion: sourced library files (invoked via `.` or `source`, not direct entry points) inherit the sourcing script's shell options and are exempt.
 
 - **`trap` cleanup runs on every exit path.** Cleanup handlers (`trap cleanup EXIT INT TERM`) must be idempotent (safe to run twice) and must NOT depend on global state set after the trap was installed. Pattern: install trap as the second line of `main()`, after `set -euo pipefail`. Test by injecting a `kill -INT $$` mid-script and verifying cleanup completes.
 
