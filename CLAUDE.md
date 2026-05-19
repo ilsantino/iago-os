@@ -180,7 +180,7 @@ Core: `/brainstorming`, `/writing-plans`, `/subagent-driven-development`, `/code
 Workflow: `/iago-init`, `/iago-discuss`, `/iago-plan`, `/iago-stress`, `/iago-execute`, `/iago-verify`, `/iago-fast`, `/iago-quick`, `/iago-pause`.
 Post-review: `/iago-prfix` — fix PR review comments, push, re-review.
 Proprietary: `/iago-scaffold`, `/iago-proposal`, `/iago-onboard`, `/iago-n8n`, `/iago-agents`.
-Audit (on-demand deep sweeps, not per-plan): `/amplify-bug-bounty`, `/frontend-bug-bounty` — full ~200-rule audits for pre-launch hardening, post-incident, periodic. Highest-leverage rules from both already run on every plan via `scripts/review-checks/data-integrity.md` and `scripts/review-checks/amplify.md`.
+Audit (on-demand deep sweeps, not per-plan): `/amplify-bug-bounty`, `/frontend-bug-bounty` — full ~200-rule audits for pre-launch hardening, post-incident, periodic. Highest-leverage rules from both already run on every plan via `scripts/review-checks/data-integrity.md` and `scripts/review-checks/amplify.md`. Shell + deploy hazards (remote ssh pipefail, secret-file mode races, systemctl state guards, log-pattern coverage) run via `scripts/review-checks/shell-deploy.md` and trigger when the diff touches `**/deploy/**`, `**/*.sh`, or systemd unit files.
 Full catalog: `.claude/rules/available-skills.md`.
 
 ## Agents

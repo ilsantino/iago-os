@@ -148,7 +148,7 @@ Every plan goes through these stages in `scripts/execute-pipeline.sh`:
 
 ### Audit / Bug Bounty (on-demand deep sweeps)
 
-The pipeline already runs the highest-leverage rules from these skills on every plan via `scripts/review-checks/data-integrity.md` and `scripts/review-checks/amplify.md`. Use the full skills for periodic deep sweeps — new client onboarding, pre-launch hardening, post-incident audits — not as a per-plan gate.
+The pipeline already runs the highest-leverage rules from these skills on every plan via `scripts/review-checks/data-integrity.md`, `scripts/review-checks/amplify.md`, and `scripts/review-checks/shell-deploy.md` (this last one auto-triggered on diffs touching `**/deploy/**`, `**/*.sh`, or systemd unit files — covers remote ssh pipefail, secret-file mode races, systemctl state guards, log-pattern coverage). Use the full skills for periodic deep sweeps — new client onboarding, pre-launch hardening, post-incident audits — not as a per-plan gate.
 
 | Skill | What | When to use | When NOT to use |
 |-------|------|-------------|-----------------|
