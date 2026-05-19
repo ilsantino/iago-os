@@ -8,9 +8,9 @@ _Date: 2026-05-19 | Status: **Planned** | Authors: Claude (orchestrator) + Santi
 
 iaGO-OS v2 is a multi-agent OS that hosts arbitrary agent shapes on a Hostinger VPS. The current v2 vision spec (`docs/specs/iago-os-v2-vision.md`) covers the runtime, control plane, dashboard, and preserved pipeline — but does **not** specify error observability, crash trace capture, or auto-fix dispatch on production errors.
 
-The `.claude/rules/layer-triage.md` rule already references "Sentry-trace → fix-dispatch" as a rule-based+AI hybrid pattern. The MCP server list already includes a Sentry MCP (`mcp__sentry__*`). Neither is wired into v2 operational planning. This spec closes that gap.
+The `.claude/rules/layer-triage.md` rule already references "Sentry-trace → fix-dispatch" as a rule-based+AI hybrid pattern. The Sentry MCP (`mcp__sentry__*`) is available via `claude mcp add` but has not yet been configured — install instructions are in `docs/specs/iago-os-v2-master-prompt.md:314`. Neither is wired into v2 operational planning. This spec closes that gap.
 
-This is **not** a Phase 2 scope addition. Phase 2 (locked, cutover 2026-05-25) ships VPS bootstrap + OpenClaw cutover only. Sentry integration is slotted across Phase 2 tail and Phases 3, 4, 5/6, and 9 as outlined below.
+This is **not** a Phase 2 scope addition. Phase 2 (locked, cutover 2026-05-25) ships VPS bootstrap + OpenClaw cutover only. Sentry integration is slotted across Phase 2 tail and Phases 3, 9, and 10 as outlined below.
 
 ---
 
@@ -82,16 +82,21 @@ Sentry sits across iaGO-OS v2 in four distinct integration layers, each independ
 - "How many users hit error X today?" — frequency-aware fix prioritization
 - "What did Sentry log when this PR deployed?" — release-correlation queries
 
-**Implementation:** the Sentry MCP server is already available in your MCP server list (`mcp__sentry__authenticate`, `mcp__sentry__complete_authentication` and presumably query tools). No new infrastructure needed.
+**Implementation:** the Sentry MCP server is available after a one-time setup. CLAUDE.md's active MCP table does not yet list Sentry — the install command is at `docs/specs/iago-os-v2-master-prompt.md:314`.
 
-**What's needed:**
-- Complete the Sentry MCP authentication flow
+**One-time setup checklist:**
+1. `claude mcp add --transport http sentry https://mcp.sentry.dev/mcp`
+2. Authenticate: `mcp__sentry__authenticate` → follow OAuth flow → `mcp__sentry__complete_authentication`
+3. Verify query tools are available (list tools after auth to confirm `mcp__sentry__find_issues`, `mcp__sentry__get_issue_details`, etc.)
+4. Add `sentry` to CLAUDE.md active MCP table once confirmed
+
+**What's needed after setup:**
 - Document which agents have Sentry MCP scope by default (probably all of them, gated by config)
 - Establish "ask Sentry MCP before grep" pattern for production triage tasks (parallel to the Graphify "check the graph first" pattern in CLAUDE.md)
 
 **Effort:** ~1 hour. One-time setup, one rules-doc addition.
 
-**Phase:** **Available NOW.** Use it next time you're triaging a production issue.
+**Phase:** **Available after one-time setup.** Run the checklist above before the next production triage session.
 
 ---
 
@@ -135,16 +140,18 @@ Cost ledger logs attempt + outcome (Phase 8 — see iago-os-v2-vision)
 3. **Issue alerts, not Event alerts.** Sentry webhooks must fire on new/resurfaced/regressed issues only — never on every event. Otherwise a runaway 500 storms the daemon.
 4. **HMAC signature verification** on every webhook payload. Tailscale-fronting alone is not sufficient (defense in depth).
 5. **PII scrubbing pre-Sentry-send.** Munet handles bookings; FullData handles data; default Sentry scrubbers must be verified ON, plus per-project denylist for known sensitive fields.
+6. **Fixer agent wall-clock timeout.** The 24h rate limit bounds invocation frequency, not duration. A pathological trace could run unbounded. Max wall-clock time per fixer agent invocation: 20 minutes. Kill via SIGTERM at timeout; write `aborted` to the rate-limit ledger to preserve the 24h window (prevents immediate retry on the same issue).
+7. **Code-scope path filter.** The fixer agent must not propose changes to auth, credential, or IAM paths. Enforced as a denylist at agent spawn time: `amplify/auth/`, any file matching `**/auth*`, `**/iam*`, `**/secrets*`, `**/credentials*`, billing Lambdas. Matching files → Telegram notification only ("Sentry trace touches sensitive path, manual review required"). This applies to the iago-os self-loop (D-1) as well as client loops (D-2+).
 
 **Implementation phases:**
 
-- **Phase 4 — one-off iago-os-self version (RECOMMENDED EARLY).** Wire the Sentry webhook → fixer-agent loop on the **iago-os repo itself first**. When the v2 daemon crashes in production, Sentry fires, fixer-agent proposes a fix, opens PR into iago-os. Test the entire loop on YOUR OWN infrastructure for a month before generalizing.
-- **Phase 5 — generalize to one client.** Pick the lowest-risk client (probably FullData since it's a pricing mock, not handling money). Same loop, with Telegram approval gate.
-- **Phase 9 — formalize as Webhook/event shape.** Webhook/event shape from the canonical v2 vision spec (`docs/specs/iago-os-v2-vision.md` Phase 9). Generalizes to all webhook sources (Sentry, GitHub, Linear, Slack, custom). Sentry becomes one of several. By this point the iago-os self-loop has been running for months and the patterns are battle-tested.
+- **Phase 10 — one-off iago-os-self version (RECOMMENDED EARLY).** Wire the Sentry webhook → fixer-agent loop on the **iago-os repo itself first**. When the v2 daemon crashes in production, Sentry fires, fixer-agent proposes a fix, opens PR into iago-os. Test the entire loop on YOUR OWN infrastructure for a month before generalizing. Requires Phase 9 webhook receiver infrastructure (`sentry-event` adapter, Shape 4) as a prerequisite — consistent with v2 vision Phase 10: *"Sentry → daemon → file-bus task → event-shape agent → pipeline → PR loop wired end-to-end."*
+- **Phase 10+ — generalize to one client.** Pick the lowest-risk client (probably FullData since it's a pricing mock, not handling money). Same loop, with Telegram approval gate. Post-Phase-10 generalization after the iago-os self-loop is battle-tested.
+- **Phase 9 — formalize as Webhook/event shape.** Webhook/event shape from the canonical v2 vision spec (`docs/specs/iago-os-v2-vision.md` Phase 9). Generalizes to all webhook sources (Sentry, GitHub, Linear, Slack, custom). Sentry becomes one of several. This is the prerequisite for D-1 and D-2.
 
 **Effort:**
-- Phase 4 one-off: ~2-3 days. Webhook endpoint, signature verification, payload parser, agent spawn, fixer-agent prompt template, rate-limit ledger, integration test against Sentry sandbox.
-- Phase 9 formalization: ~1 week. Generic webhook-shape abstraction, multi-source routing, dashboard integration.
+- Phase 10 one-off (D-1): ~2-3 days. Webhook endpoint, signature verification, payload parser, agent spawn, fixer-agent prompt template, rate-limit ledger, integration test against Sentry sandbox. Depends on Phase 9 webhook-shape scaffold.
+- Phase 9 formalization (D-3): ~1 week. Generic webhook-shape abstraction, multi-source routing, dashboard integration.
 
 ---
 
@@ -154,9 +161,9 @@ Cost ledger logs attempt + outcome (Phase 8 — see iago-os-v2-vision)
 |---|---|---|
 | **A** | Daemon observability (`iago-os-daemon` Sentry project, SDK in `runtime/daemon/`) | **Phase 3 head** (post-cutover, low-risk add-on) |
 | **B** | Per-client app observability (one Sentry project per client, React + Lambda) | **Phase 3** ongoing (audit + gap-fill sprint) |
-| **C** | Sentry MCP for agent queries | **NOW** (no infra needed, already available) |
-| **D-1** | One-off Sentry → fixer-agent loop on iago-os repo itself | **Phase 4** |
-| **D-2** | Generalize to one client (FullData first) | **Phase 5** |
+| **C** | Sentry MCP for agent queries | **After one-time setup** (see Layer C checklist; not yet configured) |
+| **D-1** | One-off Sentry → fixer-agent loop on iago-os repo itself | **Phase 10** (requires Phase 9 webhook infra) |
+| **D-2** | Generalize to one client (FullData first) | **Phase 10+** (post-Phase-10 generalization) |
 | **D-3** | Formalize as Webhook/event shape | **Phase 9** (per v2 vision) |
 
 ---
@@ -185,4 +192,4 @@ Cost ledger logs attempt + outcome (Phase 8 — see iago-os-v2-vision)
 - `docs/specs/iago-os-v2-vision.md` — Canonical v2 vision; Phase 9 references Webhook/event shape
 - `.claude/rules/layer-triage.md` — Mentions Sentry-trace → fix-dispatch as rule-based+AI hybrid
 - `.iago/decisions/2026-05-19-three-invocation-modes.md` — Three modes of agent invocation (this spec assumes Mode 3 for fixer agent)
-- Sentry MCP: `mcp__sentry__authenticate`, `mcp__sentry__complete_authentication` (already in MCP catalog)
+- Sentry MCP: `mcp__sentry__authenticate`, `mcp__sentry__complete_authentication` — install via `claude mcp add --transport http sentry https://mcp.sentry.dev/mcp` (see `docs/specs/iago-os-v2-master-prompt.md:314`; not yet active in CLAUDE.md MCP table)

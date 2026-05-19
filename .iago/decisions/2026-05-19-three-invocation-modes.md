@@ -44,7 +44,7 @@ In a Telegram session on 2026-05-19, Santiago surfaced the confusion explicitly:
 
 ### Mode 3 — Headless / scheduled invocation
 
-**Surface:** Cron (Phase 2 Plan 07a — in flight), webhook handlers (Phase 9), Sentry triggers (per `docs/specs/sentry-integration.md` Phase 4+), external event sources.
+**Surface:** Cron (Phase 2 Plan 07a — in flight), webhook handlers (Phase 9), Sentry triggers (per `docs/specs/sentry-integration.md` Phase 10+), external event sources.
 
 **What happens:** No user in the loop at invocation time. The daemon spawns the agent in response to a trigger. Agent does its task autonomously. May or may not require human approval before destructive actions — configured per-agent. Reports outcome to file-bus + Telegram notification (typically).
 
@@ -60,13 +60,13 @@ In a Telegram session on 2026-05-19, Santiago surfaced the confusion explicitly:
 
 - **No more "the pipeline is the only way."** When you want speed, use Mode 2. When you want discipline, use Mode 1. When you want it to happen without you, use Mode 3.
 - **One agent can serve all three modes simultaneously.** `claude-implement` lives on the VPS. The pipeline invokes it (Mode 1) for client-PR work. You invoke it directly via Telegram (Mode 2) for a quick refactor on internal infra. A cron job invokes it (Mode 3) at 3am to run a dependency-update sweep.
-- **Different agents for different intents is the design.** See the 14-agent fleet sketch referenced from the README's v2 framing — different LLMs (Claude, Codex, Gemini), different shapes (PTY, HTTP/SDK, MCP-as-agent, Webhook/event, Daemon), all on one VPS, all addressable.
+- **Different agents for different intents is the design.** See the 5-shape `AgentRuntime` registry in `docs/specs/iago-os-v2-vision.md` — different LLMs (Claude, Codex, Gemini), different shapes (PTY, HTTP/SDK, MCP-as-agent, Webhook/event, Daemon), all on one VPS, all addressable.
 
 ### For the orchestrator (this Claude session)
 
 - Stop treating `/iago-execute` as the only valid path to invoking an agent. When the user says "do X" and X is small / internal / exploratory, dispatch in Mode 2 (or fall back to direct edit if the user is operating on the laptop). When X is client-bound and needs discipline, route to Mode 1.
 - **The skill-invocation-is-required rule (`.claude/rules/execution-pipeline.md`) still applies for plan-driven work,** because plans exist specifically to capture the discipline contract. Direct invocation skips the plan; if a plan exists, use the skill.
-- Document Mode 3 triggers as they're built. The cron scheduler (07a) is a Mode 3 enabler; the Sentry-fix-dispatch (Phase 4+) is another; both should have their own ADRs as they land.
+- Document Mode 3 triggers as they're built. The cron scheduler (07a) is a Mode 3 enabler; the Sentry-fix-dispatch (Phase 10+, after Phase 9 webhook infra) is another; both should have their own ADRs as they land.
 
 ### For the v2 daemon
 
