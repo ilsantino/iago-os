@@ -320,6 +320,12 @@ main() {
 #!/usr/bin/env bash
 set -euo pipefail
 : "${FRESH_TOKEN:?FRESH_TOKEN env var not set}"
+# I-2A fix (round 3): set umask BEFORE any file is created. Without this,
+# `jq > .tmp` lands at 0644 (root's default umask 0022). mv preserves mode,
+# so openclaw.json holds the freshly-rotated bot token at 0644 during the
+# race window between mv and the trailing chmod. umask 0077 makes the
+# create-time mode 0600 from birth, closing the disclosure window.
+umask 0077
 cd ~ilsantino
 cp ~ilsantino/.openclaw/openclaw.json ~ilsantino/.openclaw/openclaw.json.pre-rollback
 jq --arg t "$FRESH_TOKEN" '.channels.telegram.botToken = $t' \
@@ -329,6 +335,8 @@ chown ilsantino:ilsantino ~ilsantino/.openclaw/openclaw.json ~ilsantino/.opencla
 # I-2 fix: `jq > .tmp` creates the new file with default umask (0022 → 0644).
 # mv preserves mode. Without explicit chmod, the freshly-tokened
 # openclaw.json ends up 0644 — world-readable, holding the live bot token.
+# (Defense-in-depth alongside I-2A umask above: chmod ensures final mode is
+# 0600 even if a future change relaxes the umask.)
 chmod 0600 ~ilsantino/.openclaw/openclaw.json ~ilsantino/.openclaw/openclaw.json.pre-rollback
 PATCH_EOF
     # Copy patch script to the VPS via tailscale scp (mirror of tailscale ssh)

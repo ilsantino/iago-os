@@ -465,14 +465,37 @@ main() {
     # owner), wc reads empty stdin, prints "0", exits 0 — the `if vssh ...`
     # would see success and silently neuter the check. Compare against the
     # length to fail closed on empty/missing decryption output.
-    local len
-    len=$(vssh "systemd-creds decrypt /etc/credstore.encrypted/iago-telegram-token.cred - | wc -c" 2>/dev/null || echo 0)
-    len="${len//[[:space:]]/}"
-    len="${len:-0}"
-    if (( len > 1 )); then
+    #
+    # C-1 fix (round 3): wrap the remote pipe in `bash -c 'set -o pipefail; ...'`
+    # so a journalctl/systemd-creds failure does NOT mask as wc reading empty
+    # stdin (which would print "0" and exit 0).
+    #
+    # I-1A fix (round 3): bump threshold from `> 1` to `>= 40` — real Telegram
+    # bot tokens are 46+ chars, gh tokens are 40+ chars. `len > 1` would accept
+    # 2-byte garbage from a corrupt cred file.
+    #
+    # I-3 fix (round 3): retry-once on transient blips. A single transient ssh
+    # hiccup at T+05 forces operators to re-rotate the BotFather token (the
+    # rollback path revokes the just-rotated token). One retry with 2s sleep
+    # eliminates 99% of transient false-positives without slowing real failures.
+    local len attempt
+    len=0
+    for attempt in 1 2; do
+      len=$(vssh "bash -c 'set -o pipefail; systemd-creds decrypt /etc/credstore.encrypted/iago-telegram-token.cred - | wc -c'" 2>/dev/null || echo 0)
+      len="${len//[[:space:]]/}"
+      len="${len:-0}"
+      if (( len >= 40 )); then
+        break
+      fi
+      if (( attempt == 1 )); then
+        echo "  RETRY systemd-creds round-trip returned len=${len} (<40) — sleeping 2s before retry"
+        sleep 2
+      fi
+    done
+    if (( len >= 40 )); then
       echo "  OK systemd-creds round-trip verified (${len} bytes)"
     else
-      trigger_rollback "systemd-creds decrypt round-trip empty/failed for iago-telegram-token (len=${len})"
+      trigger_rollback "systemd-creds decrypt round-trip empty/short for iago-telegram-token (len=${len}, expected >=40)"
     fi
     ndjson_write cutover-step T+05 ok
   fi
@@ -550,7 +573,19 @@ main() {
     # log containing daemon-start PLUS a panic/stack-trace still passes the
     # prior check. Scan recent logs for failure patterns and rollback on
     # match.
-    if vssh "journalctl -u iago-os-v2-daemon.service --since '5 minutes ago' --no-pager | grep -qE 'panic|Error: |Traceback|FATAL|terminated abnormally'"; then
+    #
+    # C-1 fix (round 3): wrap the remote pipe in `bash -c 'set -o pipefail; ...'`
+    # so a journalctl failure (auth, journal corruption, transient blip) does
+    # NOT silently mask as grep finding no matches (which would exit 1 → no
+    # rollback). Without pipefail, `if vssh ...` only catches the case where
+    # the whole ssh+pipe exits non-zero, which it won't when grep cleanly
+    # reports no match on empty stdin.
+    #
+    # M-1 fix (round 3): extend grep patterns for Node JSON logger (Pino-style:
+    # `level":50`, `level":"error"`, `level":"fatal"`, `UnhandledPromise...`,
+    # `"err":`). The v2 daemon is Node 20; the prior pattern only caught
+    # Go/Python/systemd-style errors.
+    if vssh "bash -c 'set -o pipefail; journalctl -u iago-os-v2-daemon.service --since \"5 minutes ago\" --no-pager | grep -qE \"panic|Error: |Traceback|FATAL|terminated abnormally|level\\\":50|level\\\":\\\"error\\\"|level\\\":\\\"fatal\\\"|UnhandledPromiseRejection|\\\"err\\\":\"'"; then
       trigger_rollback "T+08: failure/stack-trace pattern observed in daemon journal"
     fi
     echo "  OK no failure/stack-trace pattern in daemon journal"
@@ -624,8 +659,15 @@ TEST_BLOCK
     # on errors > 0 unless IAGO_CUTOVER_T50_TOLERATE_ERRORS=1 explicitly
     # opts out (rare — only set if cutover is intentionally running through
     # a known-noisy log window and Santiago has eyeballed the noise).
+    #
+    # C-1 fix (round 3): wrap the remote pipe in `bash -c 'set -o pipefail; ...'`
+    # so a journalctl failure (auth, journal corruption, transient blip) does
+    # NOT silently mask as wc reading empty stdin (which would print "0" and
+    # exit 0). Without pipefail the `if !` only fires when the entire
+    # ssh+pipe exits non-zero — which it wouldn't, masking a real failure as
+    # "0 errors → pass".
     local err_count
-    if ! err_count=$(vssh "journalctl -u iago-os-v2-daemon.service --since '1 hour ago' -p err -o cat | wc -l"); then
+    if ! err_count=$(vssh "bash -c 'set -o pipefail; journalctl -u iago-os-v2-daemon.service --since \"1 hour ago\" -p err -o cat | wc -l'"); then
       if [[ "${IAGO_CUTOVER_T50_TOLERATE_ERRORS:-0}" == "1" ]]; then
         echo "WARN: T+50 journalctl error-count query failed (TOLERATE override engaged)"
         err_count=0

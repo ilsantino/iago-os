@@ -19,6 +19,11 @@
 #     grep "find" a stack trace (regression test for journal trigger gap)
 #   * honoring STUB_INJECT_T50_ERRORS=N to make the T+50 journalctl wc -l
 #     report N error lines (regression test for journal trigger gap)
+#   * honoring STUB_FAIL_JOURNALCTL_PATTERN to fail the remote journalctl
+#     pipeline (regression test for C-1 round-3 pipefail wrap — verifies
+#     the bash -c 'set -o pipefail; journalctl | wc -l' or
+#     bash -c 'set -o pipefail; journalctl | grep' shape propagates the
+#     journalctl failure through wc/grep and back to the script)
 
 set +e
 
@@ -109,9 +114,14 @@ case "$ARGS" in
     exit 0
     ;;
   *"systemd-creds decrypt"*)
-    # Length must match local plaintext length captured by
-    # provision-credentials.sh. Stub op writes a 16-byte token.
-    echo "16"
+    # Round-3 I-1A threshold floor: production code requires len >= 40
+    # (telegram tokens are 46+ chars, gh tokens 40+ chars). Emit a 46-byte
+    # equivalent so the happy-path tests pass through verification. Tests
+    # that exercise the empty/short failure path use STUB_FAIL_TAILSCALE_PATTERN
+    # to short-circuit this case with exit 1 (which makes wc read empty
+    # stdin → "0" with pipefail off, OR with pipefail on the whole pipe
+    # exits non-zero → `if !` capture flips to rollback).
+    echo "46"
     exit 0
     ;;
   *"bash /opt/iago-os/runtime/deploy/archive-openclaw.sh"*)
@@ -174,16 +184,34 @@ case "$ARGS" in
     ;;
   *"journalctl"*"panic"*)
     # T+08 failure-pattern grep: production code is
-    #   journalctl ... | grep -qE 'panic|Error: |Traceback|FATAL|terminated abnormally'
+    #   bash -c 'set -o pipefail; journalctl ... | grep -qE "panic|..."'
+    # (C-1 round-3 fix wraps the remote pipe in bash -c + pipefail.)
     # Default behavior: pretend grep found nothing (exit 1 = no match).
     # When STUB_INJECT_DAEMON_FAILURE=1, pretend grep matched (exit 0)
     # so trigger_rollback fires — regression test for journal trigger gap.
+    # C-1 round-3 regression: when STUB_FAIL_JOURNALCTL_PATTERN is set, exit
+    # non-zero to simulate journalctl failing on the remote side. With
+    # pipefail on, the whole pipe inherits the failure; without pipefail
+    # (pre-fix) the failure would be masked by grep exiting 1 on empty stdin.
+    if [[ -n "${STUB_FAIL_JOURNALCTL_PATTERN:-}" ]]; then
+      exit 1
+    fi
     if [[ "${STUB_INJECT_DAEMON_FAILURE:-0}" == "1" ]]; then
       exit 0
     fi
     exit 1
     ;;
   *"journalctl"*"wc -l"*)
+    # T+50 error-count: production code is
+    #   bash -c 'set -o pipefail; journalctl ... | wc -l'
+    # (C-1 round-3 fix wraps the remote pipe in bash -c + pipefail.)
+    # C-1 round-3 regression: STUB_FAIL_JOURNALCTL_PATTERN exits non-zero
+    # so wc reads empty stdin → "0" (without pipefail this would silently
+    # pass as 0 errors). With pipefail on, the whole pipe inherits exit 1
+    # and the script's `if !` capture triggers rollback. Tested via test 22.
+    if [[ -n "${STUB_FAIL_JOURNALCTL_PATTERN:-}" ]]; then
+      exit 1
+    fi
     if [[ -n "${STUB_INJECT_T50_ERRORS:-}" ]]; then
       # Report N error lines for T+50; production code now triggers
       # rollback when N > 0 (no `|| echo 0` masking).

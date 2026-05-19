@@ -617,7 +617,7 @@ test("15. cutover.sh release_remote_lock leaves a hijacked marker intact (Codex 
 	}
 });
 
-test("17. cutover.sh T+05 systemd-creds round-trip fails closed on empty/failed decrypt (I-1 regression)", () => {
+test("17. cutover.sh T+05 systemd-creds round-trip fails closed on empty/short decrypt (I-1 + I-1A + I-3 regression)", () => {
 	const env = newTestEnv();
 	try {
 		// Inject a failure that ONLY matches cutover.sh's verification call
@@ -626,7 +626,11 @@ test("17. cutover.sh T+05 systemd-creds round-trip fails closed on empty/failed 
 		// quotes, so this pattern misses provision-credentials and only
 		// breaks the verification line. Pre-fix the `if vssh ...` ignored
 		// the failure because `wc -c` on empty stdin prints "0" exit 0.
-		// Post-fix: length-capture pattern sees len=0 → trigger_rollback.
+		// Post-fix (round 3): length-capture pattern wrapped in
+		// `bash -c 'set -o pipefail; ...'` (C-1) sees len=0; threshold
+		// bumped to >= 40 (I-1A — telegram tokens are 46+ chars); retry-once
+		// (I-3) before trigger_rollback. Total path: 2× vssh failure +
+		// 2s sleep between, then trigger_rollback fires with len=0.
 		const r = runCutover(env, {
 			env: {
 				IAGO_CUTOVER_DRY_RUN: "1",
@@ -643,10 +647,13 @@ test("17. cutover.sh T+05 systemd-creds round-trip fails closed on empty/failed 
 		);
 		const text = `${r.stdout}\n${r.stderr}`;
 		assert.match(text, /ROLLBACK TRIGGERED/);
+		// I-1A: message now references the >=40 threshold floor.
 		assert.match(
 			text,
-			/systemd-creds decrypt round-trip empty\/failed for iago-telegram-token \(len=0\)/,
+			/systemd-creds decrypt round-trip empty\/short for iago-telegram-token \(len=0, expected >=40\)/,
 		);
+		// I-3: retry-once happened (one RETRY banner before final trigger).
+		assert.match(text, /RETRY systemd-creds round-trip returned len=0/);
 	} finally {
 		destroyTestEnv(env);
 	}
@@ -786,6 +793,76 @@ test("21. cutover.sh T+50 triggers rollback on non-zero error count (manual Code
 			text,
 			/T\+50: 5 error-level log lines in last hour/,
 		);
+	} finally {
+		destroyTestEnv(env);
+	}
+});
+
+test("22. cutover.sh T+50 triggers rollback when journalctl query fails (C-1 pipefail regression)", () => {
+	const env = newTestEnv();
+	try {
+		// C-1 round-3 regression. Pre-fix: `vssh "journalctl ... | wc -l"`
+		// ran under remote sh with NO pipefail. journalctl failing would emit
+		// nothing → wc reads empty stdin → wc prints "0" → pipe exits 0 →
+		// ssh exits 0 → script silently passes "0 errors" check while
+		// journalctl was actually broken. Post-fix: the remote pipe is wrapped
+		// in `bash -c 'set -o pipefail; journalctl ... | wc -l'` so the
+		// journalctl failure propagates → ssh exits non-zero → the
+		// `if !` capture trips into the rollback branch.
+		const r = runCutover(env, {
+			env: {
+				IAGO_CUTOVER_DRY_RUN: "1",
+				IAGO_TELEGRAM_USER_ID: "12345",
+				IAGO_CUTOVER_RESUME_FROM: "T+45",
+				STUB_FAIL_JOURNALCTL_PATTERN: "1",
+			},
+			timeout: 120_000,
+		});
+		assert.strictEqual(
+			r.status,
+			2,
+			`expected exit 2 (rollback triggered), got ${r.status}; tail: ${`${r.stdout}\n${r.stderr}`.slice(-800)}`,
+		);
+		const text = `${r.stdout}\n${r.stderr}`;
+		assert.match(text, /ROLLBACK TRIGGERED/);
+		assert.match(
+			text,
+			/T\+50: journalctl error-count query failed/,
+		);
+	} finally {
+		destroyTestEnv(env);
+	}
+});
+
+test("23. cutover.sh T+50 tolerates non-zero error count when IAGO_CUTOVER_T50_TOLERATE_ERRORS=1 (bypass coverage)", () => {
+	const env = newTestEnv();
+	try {
+		// Round-3 M-2 coverage: the WARN branch when TOLERATE_ERRORS=1 was
+		// completely untested. Inject 5 errors AND set the bypass — script
+		// should WARN, not rollback, and proceed through T+55/T+60.
+		const r = runCutover(env, {
+			env: {
+				IAGO_CUTOVER_DRY_RUN: "1",
+				IAGO_TELEGRAM_USER_ID: "12345",
+				IAGO_CUTOVER_RESUME_FROM: "T+45",
+				STUB_INJECT_T50_ERRORS: "5",
+				IAGO_CUTOVER_T50_TOLERATE_ERRORS: "1",
+			},
+			timeout: 120_000,
+		});
+		assert.strictEqual(
+			r.status,
+			0,
+			`expected exit 0 (tolerate bypass), got ${r.status}; tail: ${`${r.stdout}\n${r.stderr}`.slice(-800)}`,
+		);
+		const text = `${r.stdout}\n${r.stderr}`;
+		assert.match(
+			text,
+			/WARN: 5 error-level log lines in last hour \(TOLERATE override engaged\)/,
+		);
+		// Rollback must NOT have fired.
+		assert.doesNotMatch(text, /ROLLBACK TRIGGERED/);
+		assert.match(text, /CUTOVER COMPLETE/);
 	} finally {
 		destroyTestEnv(env);
 	}

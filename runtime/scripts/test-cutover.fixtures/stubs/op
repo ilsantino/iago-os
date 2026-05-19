@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 # Stub: op (1Password CLI). Always succeeds for whoami/signin, returns a
-# fixed 16-byte token for `read` so provision-credentials.sh's length
-# round-trip matches the tailscale stub's `systemd-creds decrypt` length.
+# fixed 46-byte token for `read` so:
+#   (a) provision-credentials.sh's local-vs-remote length round-trip matches
+#       the tailscale stub's `systemd-creds decrypt` length (also 46), and
+#   (b) cutover.sh T+05 verification's I-1A `len >= 40` threshold passes.
+# Real Telegram bot tokens are 46+ chars (<digits>:<35-char alphanumeric>).
 STUB_LOG="${STUB_LOG:-}"
 if [[ -n "$STUB_LOG" ]]; then
   printf 'op %s\n' "$*" >> "$STUB_LOG"
@@ -12,7 +15,8 @@ case "$1" in
     exit 0
     ;;
   read)
-    printf 'STUBTOK16BYTES__'
+    # 46 bytes: "STUBTOK46BYTES" + ":" + 31 chars padding = 46
+    printf 'STUBTOK46BYTES:____________________padding__xx'
     exit 0
     ;;
   signin)
