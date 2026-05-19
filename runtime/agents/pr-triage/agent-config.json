@@ -1,0 +1,13 @@
+{
+	"agentId": "pr-triage",
+	"runtimeId": "claude-pty",
+	"_comment_fields": "Plan 04a ships configuration files only — it does NOT wire the daemon to discover or consume this file. Plan 04b is responsible for daemon-side discovery of agent-config.json and crons.json, cron registration, agent spawn via PTY, prompt dispatch, and the ndjsonAlert envelope contract used by the fallback path in prompt-template.md step (d). The authProfile, cwd, org, and env fields below are inputs 04b must forward to the PTY spawn opts. If 04b reads from a different source, these values will silently rot.",
+	"org": "internal",
+	"cwd": "/opt/iago-os",
+	"env": {
+		"IAGO_DAEMON_STATE_ROOT": "/var/lib/iago-os/daemon-state"
+	},
+	"autoStart": false,
+	"_comment_autoStart": "autoStart is documentational in this file — the auto-start loop in main.ts reads from DaemonConfig.agents[], not from agent-config.json.",
+	"authProfile": "default"
+}
