@@ -1,0 +1,9 @@
+{
+	"agentId": "pr-triage",
+	"runtimeId": "claude-pty",
+	"org": "internal",
+	"cwd": "/opt/iago-os",
+	"env": {},
+	"autoStart": false,
+	"authProfile": "default"
+}

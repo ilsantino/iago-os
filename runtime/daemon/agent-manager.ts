@@ -1616,6 +1616,34 @@ export class AgentManager extends EventEmitter {
 			return;
 		}
 		const agentId = (parsed as { agentId: string }).agentId;
+		// `ndjsonAlert` envelopes are out-of-band telemetry signals an agent
+		// emits when it cannot complete its primary side-effect (the canonical
+		// example is the pr-triage agent's Telegram-send-failure fallback file
+		// — see `runtime/agents/pr-triage/prompt-template.md` step (d)). They
+		// carry `{ agentId, ndjsonAlert, details }` and are NOT dispatchable
+		// work, so the registration check below would route them to
+		// `task-unrouted` (wrong — they would be re-emitted every tick until
+		// stopPollingLoop). Branch on them BEFORE the registration check:
+		// emit `<ndjsonAlert>` telemetry with the details payload and resolve
+		// the file. This is the contract Codex flagged as missing on PR
+		// review of plan 04a.
+		const alertKindRaw = (parsed as { ndjsonAlert?: unknown }).ndjsonAlert;
+		if (typeof alertKindRaw === "string" && alertKindRaw.length > 0) {
+			const detailsRaw = (parsed as { details?: unknown }).details;
+			const details = typeof detailsRaw === "string" ? detailsRaw : undefined;
+			await emitTelemetry({
+				kind: "agent-alert",
+				agentId,
+				alertKind: alertKindRaw,
+				filename,
+				...(details !== undefined ? { details } : {}),
+			});
+			// Move pending → resolved and emit task-resolved so any cron slot
+			// the agent occupied gets released. `claimTask` already handles
+			// the rename, telemetry, and event emission.
+			await this.claimTask(filename, agentId);
+			return;
+		}
 		if (!this.isAgentRegistered(agentId)) {
 			await this.emitUnrouted(filename, agentId);
 			return;

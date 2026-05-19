@@ -85,6 +85,7 @@ import {
 	getCredentialEnvVars,
 	loadSystemdCredentials,
 } from "./cred-bootstrap.js";
+import { CronScheduler, type RegisterCronOpts } from "./cron-scheduler.js";
 import { HeartbeatController } from "./heartbeat.js";
 import { IpcServer } from "./ipc-server.js";
 import { ensureStateDirsSync, pathFor } from "./state-paths.js";
@@ -99,6 +100,165 @@ import { emit } from "./telemetry.js";
  * (heartbeat + bot + ipc + handle loop ≈ 4 stages × 10s, fits under 30s).
  */
 export const SHUTDOWN_STAGE_TIMEOUT_MS = 10_000;
+
+/**
+ * Polling-loop interval for `AgentManager.startPollingLoop()`. Chosen
+ * to match the 5s default in `AgentManager.startPollingLoop()` and keep
+ * the daemon's tasks/pending sweep frequency consistent with the
+ * CronScheduler 60s tick (12 sweeps per cron-tick window — fast enough
+ * that fallback alert envelopes surface within a few seconds of being
+ * written, slow enough that the readdir cost is negligible).
+ */
+export const TASKS_POLLING_INTERVAL_MS = 5_000;
+
+/**
+ * Discover and register cron entries from `runtime/agents/<agent>/crons.json`.
+ *
+ * Each subdirectory under `<agentsRoot>` is inspected for:
+ *   - `agent-config.json` — supplies the `agentId` field (canonical name
+ *     the cron task envelope will carry; the polling loop's
+ *     `processPendingTask` matches on this string).
+ *   - `crons.json` — supplies `{ schedule, wakeCheck?, prompt,
+ *     outputTaskNamePrefix, maxConcurrent? }`. Path fields are
+ *     resolved relative to `<agentsRoot>/<agent>/` so the JSON can use
+ *     short relative names.
+ *
+ * Agents without a `crons.json` are skipped silently (e.g., interactive-
+ * only agents). Malformed or unreadable files surface as console.error
+ * lines but do NOT abort daemon startup — a typo in one agent's crons
+ * file must not take down the rest of the fleet.
+ *
+ * Plan 04a Codex critical fix: before this discovery existed, the
+ * `runtime/agents/pr-triage/crons.json` artifact was inert. The daemon
+ * never read it, the CronScheduler was never instantiated, and the
+ * 14:00 UTC fire never happened. Plan 04b originally owned this wiring;
+ * preempted into 04a so the configuration is not silently dead between
+ * 04a merge and 04b merge.
+ */
+export async function loadAgentCronEntries(
+	agentsRoot: string,
+): Promise<RegisterCronOpts[]> {
+	const out: RegisterCronOpts[] = [];
+	let entries: string[];
+	try {
+		entries = await fsp.readdir(agentsRoot);
+	} catch (err) {
+		const code = (err as NodeJS.ErrnoException).code;
+		if (code === "ENOENT") return out;
+		console.error(
+			`[daemon] loadAgentCronEntries readdir(${agentsRoot}) failed: ${err instanceof Error ? err.message : String(err)}`,
+		);
+		return out;
+	}
+	for (const entry of entries) {
+		const agentDir = path.join(agentsRoot, entry);
+		let stat;
+		try {
+			stat = await fsp.stat(agentDir);
+		} catch {
+			continue;
+		}
+		if (!stat.isDirectory()) continue;
+
+		const cronsPath = path.join(agentDir, "crons.json");
+		const configPath = path.join(agentDir, "agent-config.json");
+		let cronsRaw: string;
+		try {
+			cronsRaw = await fsp.readFile(cronsPath, "utf8");
+		} catch (err) {
+			const code = (err as NodeJS.ErrnoException).code;
+			if (code === "ENOENT") continue;
+			console.error(
+				`[daemon] loadAgentCronEntries read(${cronsPath}) failed: ${err instanceof Error ? err.message : String(err)}`,
+			);
+			continue;
+		}
+		let configRaw: string;
+		try {
+			configRaw = await fsp.readFile(configPath, "utf8");
+		} catch (err) {
+			console.error(
+				`[daemon] loadAgentCronEntries read(${configPath}) failed: ${err instanceof Error ? err.message : String(err)}`,
+			);
+			continue;
+		}
+
+		let cronsParsed: unknown;
+		try {
+			cronsParsed = JSON.parse(cronsRaw);
+		} catch (err) {
+			console.error(
+				`[daemon] loadAgentCronEntries parse(${cronsPath}) failed: ${err instanceof Error ? err.message : String(err)}`,
+			);
+			continue;
+		}
+		let configParsed: unknown;
+		try {
+			configParsed = JSON.parse(configRaw);
+		} catch (err) {
+			console.error(
+				`[daemon] loadAgentCronEntries parse(${configPath}) failed: ${err instanceof Error ? err.message : String(err)}`,
+			);
+			continue;
+		}
+
+		if (typeof cronsParsed !== "object" || cronsParsed === null) {
+			console.error(`[daemon] loadAgentCronEntries ${cronsPath}: not an object`);
+			continue;
+		}
+		if (typeof configParsed !== "object" || configParsed === null) {
+			console.error(
+				`[daemon] loadAgentCronEntries ${configPath}: not an object`,
+			);
+			continue;
+		}
+
+		const cfg = configParsed as Record<string, unknown>;
+		const cron = cronsParsed as Record<string, unknown>;
+		const agentId = typeof cfg.agentId === "string" ? cfg.agentId : null;
+		const schedule = typeof cron.schedule === "string" ? cron.schedule : null;
+		const promptRel = typeof cron.prompt === "string" ? cron.prompt : null;
+		const wakeRel = typeof cron.wakeCheck === "string" ? cron.wakeCheck : null;
+		const prefix =
+			typeof cron.outputTaskNamePrefix === "string"
+				? cron.outputTaskNamePrefix
+				: null;
+		const maxConcurrent =
+			typeof cron.maxConcurrent === "number" ? cron.maxConcurrent : undefined;
+
+		if (
+			agentId === null ||
+			schedule === null ||
+			promptRel === null ||
+			prefix === null
+		) {
+			console.error(
+				`[daemon] loadAgentCronEntries ${entry}: missing required field (agentId/schedule/prompt/outputTaskNamePrefix)`,
+			);
+			continue;
+		}
+
+		// `prompt` / `wakeCheck` are documented as repo-root-relative paths
+		// in the existing pr-triage artifacts (`runtime/agents/pr-triage/
+		// prompt-template.md`, `runtime/agents/pr-triage/wake-check.sh`),
+		// so resolve from process.cwd() (the daemon's working dir = repo
+		// root on systemd, /opt/iago-os in production). If the value is
+		// already absolute, `path.resolve` is a no-op on that argument.
+		const promptTemplatePath = path.resolve(process.cwd(), promptRel);
+		const wakeCheck =
+			wakeRel === null ? undefined : path.resolve(process.cwd(), wakeRel);
+
+		out.push({
+			agentId,
+			schedule,
+			...(wakeCheck !== undefined ? { wakeCheck } : {}),
+			promptTemplatePath,
+			outputTaskNamePrefix: prefix,
+			...(maxConcurrent !== undefined ? { maxConcurrent } : {}),
+		});
+	}
+	return out;
+}
 
 export async function withTimeout<T>(
 	label: string,
@@ -436,6 +596,41 @@ export async function startDaemon(
 	const shutdown = async (): Promise<void> => {
 		if (shuttingDown) return;
 		shuttingDown = true;
+		// Stop the cron scheduler FIRST so no new ticks fire during the
+		// rest of the teardown. `stop()` clears the interval AND awaits any
+		// in-flight tick — after this returns, no `cron-fired` events will
+		// surface and the `tasks/pending/` directory stops growing under
+		// us. Stopped before the polling loop so a final task-file emit
+		// from an in-flight tick still has a chance to be picked up and
+		// have its `runningCount` slot released (otherwise the slot leaks
+		// across daemon restarts, but `runningCount` is in-memory only so
+		// the leak is bounded by daemon lifetime).
+		await withTimeout(
+			"cronScheduler.stop",
+			async () => {
+				try {
+					await cronScheduler.stop();
+				} catch (err) {
+					console.error(
+						`[daemon] cronScheduler.stop failed: ${err instanceof Error ? err.message : String(err)}`,
+					);
+				}
+			},
+			stageTimeoutMs,
+		);
+		await withTimeout(
+			"agentManager.stopPollingLoop",
+			async () => {
+				try {
+					await agentManager.stopPollingLoop();
+				} catch (err) {
+					console.error(
+						`[daemon] agentManager.stopPollingLoop failed: ${err instanceof Error ? err.message : String(err)}`,
+					);
+				}
+			},
+			stageTimeoutMs,
+		);
 		// Opus I4: bound each stage with `withTimeout`. A hung adapter
 		// (heartbeat sweep, bot polling, IPC drain, or per-handle
 		// shutdown) would otherwise block the entire daemon and the
@@ -537,6 +732,29 @@ export async function startDaemon(
 	process.on("SIGTERM", sigtermHandler);
 	shutdownHandlers.add(() => process.removeListener("SIGINT", sigintHandler));
 	shutdownHandlers.add(() => process.removeListener("SIGTERM", sigtermHandler));
+
+	// Plan 04a (Codex critical fix carried into 04a from 04b): discover
+	// `runtime/agents/*/crons.json` and wire the CronScheduler before the
+	// auto-start loop. Without this, every `runtime/agents/<agent>/
+	// crons.json` artifact is inert and the cron-driven agents (pr-triage
+	// first) silently never fire. The discovery runs from the repo-root
+	// `runtime/agents/` tree on systemd-on-VPS (cwd=/opt/iago-os) and
+	// local-dev (cwd=repo root); a missing directory short-circuits with
+	// no error so a tree without any cron-driven agents starts cleanly.
+	const cronScheduler = new CronScheduler({ agentManager });
+	const agentsRoot = path.resolve(process.cwd(), "runtime", "agents");
+	const cronEntries = await loadAgentCronEntries(agentsRoot);
+	for (const cronOpts of cronEntries) {
+		try {
+			cronScheduler.registerCron(cronOpts);
+		} catch (err) {
+			console.error(
+				`[daemon] registerCron(${cronOpts.agentId}) failed: ${err instanceof Error ? err.message : String(err)}`,
+			);
+		}
+	}
+	cronScheduler.start();
+	agentManager.startPollingLoop({ intervalMs: TASKS_POLLING_INTERVAL_MS });
 
 	for (const cfg of config.agents) {
 		if (!cfg.autoStart) continue;

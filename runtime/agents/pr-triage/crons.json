@@ -1,0 +1,8 @@
+{
+	"_comment": "14:00 UTC = 09:00 EST = 06:00 PST. Daily. Hermes wake-check runs first; if no open PRs, LLM call skipped (saves $0.10). maxConcurrent=1 prevents overlap if a slow run wedges past the next tick. systemd unit Environment=TZ=UTC (Plan 01a) locks tick interpretation regardless of VPS host timezone.",
+	"schedule": "0 14 * * *",
+	"wakeCheck": "runtime/agents/pr-triage/wake-check.sh",
+	"prompt": "runtime/agents/pr-triage/prompt-template.md",
+	"outputTaskNamePrefix": "pr-triage",
+	"maxConcurrent": 1
+}
