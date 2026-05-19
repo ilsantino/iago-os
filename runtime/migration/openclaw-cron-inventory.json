@@ -1,0 +1,8 @@
+{
+  "scanned_at": "2026-05-18T00:00:00Z",
+  "user": "ilsantino",
+  "crontab_entries": [],
+  "systemd_user_timers": [],
+  "systemd_system_timers_owned_by_openclaw": [],
+  "notes": "Per Phase 0 audit (runtime/migration/00-vps-audit.md), VPS has no crontab; no OpenClaw-owned timers. Inventory empty by audit confirmation; satisfies migration-scope § 4 acceptance gate. Re-verified at cutover-time via the verify command below — if cutover-time re-verification surfaces a forgotten cron or timer, this file MUST be updated with the entries BEFORE proceeding (Plan 03b cutover-runbook Day -1 prep includes a re-verify checkbox)."
+}

@@ -22,6 +22,7 @@ import {
 	AgentIdAlreadyRegisteredError,
 	AgentManager,
 } from "./agent-manager.js";
+import { CronScheduler } from "./cron-scheduler.js";
 import { HeartbeatController } from "./heartbeat.js";
 import { listAllMarkers, readStopMarker, writeStopMarker } from "./markers.js";
 import {
@@ -30,6 +31,57 @@ import {
 	setHWM,
 } from "./session-log.js";
 import { ensureStateDirsSync, pathFor } from "./state-paths.js";
+import type { DaemonEvent } from "./telemetry.js";
+
+// Module-level telemetry mock for the Plan 07b polling-loop tests below.
+// Pass-through by default so Plan 07b tests using `readTelemetry()` still
+// see real NDJSON on disk; tests can also inspect `emitMock.mock.calls`
+// directly for synchronous assertions. Mocking telemetry at the module
+// boundary is the same pattern used by `cron-scheduler.test.ts`.
+const { emitMock, emitState } = vi.hoisted(() => ({
+	emitMock: vi.fn(),
+	emitState: {
+		real: null as ((e: DaemonEvent) => Promise<void>) | null,
+	},
+}));
+vi.mock("./telemetry.js", async () => {
+	const actual =
+		await vi.importActual<typeof import("./telemetry.js")>("./telemetry.js");
+	emitState.real = actual.emit;
+	return {
+		...actual,
+		emit: emitMock,
+	};
+});
+
+// PL-8: ESM namespace imports cannot be redefined with `vi.spyOn`, so the
+// only way to make `agent-manager.ts`'s `import * as fsp from
+// "node:fs/promises"` resolve to a mockable rename is via a module-level
+// `vi.mock` with a passthrough wrapper. The hoisted `renameMock` is
+// reset to pass-through in beforeEach so once-rejections do not leak
+// across tests. PL-8 queues a one-shot failure via
+// `renameMock.mockRejectedValueOnce(...)` to exercise the
+// `claim-task-failed` telemetry branch in `claimTask`; every other test
+// and every other fs method calls the real implementation.
+type RenameFn = (
+	source: import("node:fs").PathLike,
+	dest: import("node:fs").PathLike,
+) => Promise<void>;
+const { renameMock, renameState } = vi.hoisted(() => ({
+	renameMock: vi.fn(),
+	renameState: { real: null as RenameFn | null },
+}));
+vi.mock("node:fs/promises", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("node:fs/promises")>();
+	renameState.real = actual.rename as RenameFn;
+	return {
+		...actual,
+		rename: (
+			source: import("node:fs").PathLike,
+			dest: import("node:fs").PathLike,
+		) => renameMock(source, dest),
+	};
+});
 
 let tempDir: string;
 
@@ -39,6 +91,18 @@ beforeEach(async () => {
 	ensureStateDirsSync();
 	_resetRegistryForTests();
 	_resetSessionLogStateForTests();
+	emitMock.mockReset();
+	emitMock.mockImplementation((e: DaemonEvent) => {
+		if (emitState.real === null) return Promise.resolve();
+		return emitState.real(e);
+	});
+	renameMock.mockReset();
+	renameMock.mockImplementation((source, dest) => {
+		if (renameState.real === null) {
+			throw new Error("renameState.real not initialized by vi.mock factory");
+		}
+		return renameState.real(source, dest);
+	});
 	vi.spyOn(console, "error").mockImplementation(() => {});
 });
 
@@ -1477,5 +1541,404 @@ describe("AgentManager / shutdownAgent + cascadeShutdownChildren — mutex harde
 			const childId = (spawnResult as AgentHandle).id;
 			expect(mgr.getHandle(childId)).toBeUndefined();
 		}
+	});
+});
+
+// ============================================================
+// Plan 07b: polling-loop + claimTask tests (PL-1 through PL-6)
+// ============================================================
+
+function writePendingTask(filename: string, body: unknown): string {
+	const p = path.join(pathFor("tasks/pending"), filename);
+	const serialized = typeof body === "string" ? body : JSON.stringify(body);
+	// Sync write so the test observes the file before driving the polling
+	// tick. The polling loop's readdir+readFile are async — sync write keeps
+	// the test sequence simple.
+	// eslint-disable-next-line @typescript-eslint/no-require-imports
+	require("node:fs").writeFileSync(p, serialized, "utf8");
+	return p;
+}
+
+function emittedEventsOfKind(kind: DaemonEvent["kind"]): DaemonEvent[] {
+	const out: DaemonEvent[] = [];
+	for (const call of emitMock.mock.calls) {
+		const e = call[0] as DaemonEvent;
+		if (e.kind === kind) out.push(e);
+	}
+	return out;
+}
+
+describe("AgentManager / polling-loop (Plan 07b)", () => {
+	it("(PL-1) happy path: claims a registered agent's pending task and emits task-resolved", async () => {
+		const ctrl = makeMockRuntime("mock-pty-pl1");
+		registerRuntime(ctrl.runtime);
+		const mgr = new AgentManager();
+		await mgr.registerAgent({
+			agentId: "pr-triage",
+			runtimeId: "mock-pty-pl1",
+			cwd: "/tmp/w",
+			env: {},
+			sessionId: "sess-pl1",
+		});
+
+		const filename = "pr-triage__1700000000.json";
+		writePendingTask(filename, {
+			prompt: "do the triage",
+			agentId: "pr-triage",
+			needsApproval: false,
+		});
+
+		const eventLog: Array<{ agentId: string; filename: string }> = [];
+		mgr.on("task-resolved", (e: { agentId: string; filename: string }) => {
+			eventLog.push(e);
+		});
+
+		await mgr._pollingTickForTests();
+
+		// File moved from pending → resolved.
+		await expect(
+			fsp.access(path.join(pathFor("tasks/pending"), filename)),
+		).rejects.toThrow();
+		await fsp.access(path.join(pathFor("tasks/resolved"), filename));
+
+		// EventEmitter event emitted exactly once with correct payload.
+		expect(eventLog).toEqual([{ agentId: "pr-triage", filename }]);
+
+		// Telemetry mirror emitted.
+		const resolved = emittedEventsOfKind("task-resolved");
+		expect(resolved).toHaveLength(1);
+		expect(resolved[0]).toMatchObject({
+			kind: "task-resolved",
+			agentId: "pr-triage",
+			filename,
+		});
+	});
+
+	it("(PL-2) malformed JSON → moved to tasks/poisoned + task-poisoned telemetry", async () => {
+		const ctrl = makeMockRuntime("mock-pty-pl2");
+		registerRuntime(ctrl.runtime);
+		const mgr = new AgentManager();
+		await mgr.registerAgent({
+			agentId: "pr-triage",
+			runtimeId: "mock-pty-pl2",
+			cwd: "/tmp/w",
+			env: {},
+			sessionId: "sess-pl2",
+		});
+
+		const filename = "pr-triage__1700000001.json";
+		writePendingTask(filename, "{ not valid json");
+
+		await mgr._pollingTickForTests();
+
+		// Pending no longer has the file; poisoned has it.
+		await expect(
+			fsp.access(path.join(pathFor("tasks/pending"), filename)),
+		).rejects.toThrow();
+		await fsp.access(path.join(pathFor("tasks/poisoned"), filename));
+
+		const poisoned = emittedEventsOfKind("task-poisoned");
+		expect(poisoned).toHaveLength(1);
+		expect(poisoned[0]).toMatchObject({
+			kind: "task-poisoned",
+			filename,
+			reason: "json-parse-error",
+		});
+	});
+
+	it("(PL-3) unrouted agent: file stays in pending, task-unrouted emitted once across multiple ticks", async () => {
+		const mgr = new AgentManager();
+		// No agents registered — all tasks are unrouted.
+
+		const filename = "ghost__1700000002.json";
+		writePendingTask(filename, {
+			prompt: "nobody home",
+			agentId: "ghost",
+			needsApproval: false,
+		});
+
+		await mgr._pollingTickForTests();
+		await mgr._pollingTickForTests();
+		await mgr._pollingTickForTests();
+
+		// File still in pending (no agent claimed it).
+		await fsp.access(path.join(pathFor("tasks/pending"), filename));
+
+		// task-unrouted telemetry fired exactly once for this filename
+		// across all three ticks (suppression set).
+		const unrouted = emittedEventsOfKind("task-unrouted");
+		const forThisFile = unrouted.filter(
+			(e) => "filename" in e && e.filename === filename,
+		);
+		expect(forThisFile).toHaveLength(1);
+		expect(forThisFile[0]).toMatchObject({
+			kind: "task-unrouted",
+			filename,
+			agentId: "ghost",
+		});
+	});
+
+	it("(PL-4) task-resolved drives CronScheduler decrement: runningCount falls back to 0", async () => {
+		const ctrl = makeMockRuntime("mock-pty-pl4");
+		registerRuntime(ctrl.runtime);
+		const mgr = new AgentManager();
+		await mgr.registerAgent({
+			agentId: "pr-triage",
+			runtimeId: "mock-pty-pl4",
+			cwd: "/tmp/w",
+			env: {},
+			sessionId: "sess-pl4",
+		});
+
+		// Prompt template the scheduler will read on fire.
+		const promptPath = path.join(tempDir, "pr-triage-prompt.md");
+		// eslint-disable-next-line @typescript-eslint/no-require-imports
+		require("node:fs").writeFileSync(
+			promptPath,
+			"do the daily pr-triage",
+			"utf8",
+		);
+
+		// Fix the cron clock so `0 14 * * *` matches every _tickForTests().
+		const fixedNow = new Date(Date.UTC(2026, 4, 18, 14, 0, 0));
+		const scheduler = new CronScheduler({
+			agentManager: mgr,
+			nowFn: () => fixedNow,
+		});
+		scheduler.registerCron({
+			agentId: "pr-triage",
+			schedule: "0 14 * * *",
+			promptTemplatePath: promptPath,
+			outputTaskNamePrefix: "pr-triage",
+			maxConcurrent: 1,
+		});
+
+		// Fire 1: writes task file, runningCount → 1.
+		await scheduler._tickForTests();
+		expect(scheduler._runningCountForTests().get("pr-triage")).toBe(1);
+
+		// Polling tick claims the cron-fired task, emits task-resolved →
+		// CronScheduler decrement listener drops runningCount back to 0.
+		await mgr._pollingTickForTests();
+		expect(scheduler._runningCountForTests().get("pr-triage") ?? 0).toBe(0);
+
+		// Fire 2: same UTC minute as fire 1 — should NOT be overlap-prevented
+		// because the decrement landed.
+		await scheduler._tickForTests();
+		const overlap = emittedEventsOfKind("cron-overlap-prevented");
+		expect(overlap).toHaveLength(0);
+		expect(scheduler._runningCountForTests().get("pr-triage")).toBe(1);
+
+		await scheduler.stop();
+	});
+
+	it("(PL-5) .tmp mid-rename file is skipped; renamed to .json is picked up next tick", async () => {
+		const ctrl = makeMockRuntime("mock-pty-pl5");
+		registerRuntime(ctrl.runtime);
+		const mgr = new AgentManager();
+		await mgr.registerAgent({
+			agentId: "pr-triage",
+			runtimeId: "mock-pty-pl5",
+			cwd: "/tmp/w",
+			env: {},
+			sessionId: "sess-pl5",
+		});
+
+		const tmpName = ".pr-triage__1700000005.abc.tmp";
+		const tmpPath = path.join(pathFor("tasks/pending"), tmpName);
+		// eslint-disable-next-line @typescript-eslint/no-require-imports
+		require("node:fs").writeFileSync(
+			tmpPath,
+			JSON.stringify({
+				prompt: "mid rename",
+				agentId: "pr-triage",
+				needsApproval: false,
+			}),
+			"utf8",
+		);
+
+		// Tick 1: tmp file present, no .json yet → polling loop ignores.
+		await mgr._pollingTickForTests();
+
+		// Tmp file still there, untouched.
+		await fsp.access(tmpPath);
+		// No task-resolved fired.
+		expect(emittedEventsOfKind("task-resolved")).toHaveLength(0);
+
+		// Atomic rename .tmp → .json (simulates the cron tmp-rename completing).
+		const finalName = "pr-triage__1700000005.json";
+		const finalPath = path.join(pathFor("tasks/pending"), finalName);
+		await fsp.rename(tmpPath, finalPath);
+
+		// Tick 2: .json file present → claimed + task-resolved emitted.
+		await mgr._pollingTickForTests();
+		await fsp.access(path.join(pathFor("tasks/resolved"), finalName));
+		const resolved = emittedEventsOfKind("task-resolved");
+		expect(resolved).toHaveLength(1);
+		expect(resolved[0]).toMatchObject({
+			kind: "task-resolved",
+			agentId: "pr-triage",
+			filename: finalName,
+		});
+	});
+
+	it("(PL-7) cron fires → task poisoned → CronScheduler slot decrements back to 0", async () => {
+		const ctrl = makeMockRuntime("mock-pty-pl7");
+		registerRuntime(ctrl.runtime);
+		const mgr = new AgentManager();
+		await mgr.registerAgent({
+			agentId: "pr-triage",
+			runtimeId: "mock-pty-pl7",
+			cwd: "/tmp/w",
+			env: {},
+			sessionId: "sess-pl7",
+		});
+
+		const promptPath = path.join(tempDir, "pr-triage-prompt-pl7.md");
+		// eslint-disable-next-line @typescript-eslint/no-require-imports
+		require("node:fs").writeFileSync(promptPath, "do the daily pr-triage", "utf8");
+
+		const fixedNow = new Date(Date.UTC(2026, 4, 18, 15, 0, 0));
+		const scheduler = new CronScheduler({
+			agentManager: mgr,
+			nowFn: () => fixedNow,
+		});
+		scheduler.registerCron({
+			agentId: "pr-triage",
+			schedule: "0 15 * * *",
+			promptTemplatePath: promptPath,
+			outputTaskNamePrefix: "pr-triage",
+			maxConcurrent: 1,
+		});
+
+		// Fire 1: writes task file, runningCount → 1.
+		await scheduler._tickForTests();
+		expect(scheduler._runningCountForTests().get("pr-triage")).toBe(1);
+
+		// Corrupt the cron-fired task file so the polling tick poisons it.
+		const pendingDir = pathFor("tasks/pending");
+		const [taskFile] = (await fsp.readdir(pendingDir)).filter((f) =>
+			f.endsWith(".json"),
+		);
+		expect(taskFile).toBeDefined();
+		await fsp.writeFile(
+			path.join(pendingDir, taskFile),
+			"{ corrupted json",
+			"utf8",
+		);
+
+		// Polling tick: malformed JSON → poisonTask → emits task-poisoned with
+		// derived agentId "pr-triage" → CronScheduler decrements runningCount.
+		await mgr._pollingTickForTests();
+		expect(scheduler._runningCountForTests().get("pr-triage") ?? 0).toBe(0);
+
+		// Confirm the task landed in poisoned/.
+		await expect(
+			fsp.access(path.join(pathFor("tasks/poisoned"), taskFile)),
+		).resolves.toBeUndefined();
+
+		await scheduler.stop();
+	});
+
+	it("(PL-6) unrouted files beyond cap → overflow event emitted exactly once", async () => {
+		// Shrink the unroutedSet cap via the test-only setter so we can
+		// exercise the overflow branch without writing 1001 task files
+		// (1001 writeFileSync + 1001 readFile ops are prohibitively slow on
+		// Windows). The behavior under test is the cap-vs-overflow logic,
+		// not the cap's specific numeric value.
+		emitMock.mockImplementation(() => Promise.resolve());
+
+		const mgr = new AgentManager();
+		mgr._setUnroutedSetCapForTests(5);
+		// No agents registered → all 6 files are unrouted; the 6th trips
+		// the overflow branch (size >= cap of 5 before the add).
+
+		for (let i = 0; i < 6; i++) {
+			const filename = `ghost__${String(2000000000 + i).padStart(13, "0")}.json`;
+			writePendingTask(filename, {
+				prompt: `unrouted ${i}`,
+				agentId: "ghost",
+				needsApproval: false,
+			});
+		}
+
+		await mgr._pollingTickForTests();
+
+		const overflow = emittedEventsOfKind("task-unrouted-set-overflow");
+		expect(overflow).toHaveLength(1);
+		expect(overflow[0]).toMatchObject({
+			kind: "task-unrouted-set-overflow",
+			cap: 5,
+		});
+		// All 6 files emit task-unrouted on first appearance (first 5 via
+		// suppression-set add, the 6th via the overflow branch).
+		const unrouted = emittedEventsOfKind("task-unrouted");
+		expect(unrouted).toHaveLength(6);
+	});
+
+	it("(PL-8) claimTask: fs.rename failure emits claim-task-failed telemetry, no task-resolved event, file stays in pending", async () => {
+		const ctrl = makeMockRuntime("mock-pty-pl8");
+		registerRuntime(ctrl.runtime);
+		const mgr = new AgentManager();
+		await mgr.registerAgent({
+			agentId: "pr-triage",
+			runtimeId: "mock-pty-pl8",
+			cwd: "/tmp/w",
+			env: {},
+			sessionId: "sess-pl8",
+		});
+
+		const filename = "pr-triage__1700000000.json";
+		writePendingTask(filename, {
+			prompt: "do the triage",
+			agentId: "pr-triage",
+			needsApproval: false,
+		});
+
+		// Force the next fsp.rename to throw EACCES. The polling tick for a
+		// valid+routed task hits exactly one rename (claimTask), so the
+		// once-rejection fires precisely at the claim attempt; subsequent
+		// renames (and the afterEach cleanup) fall back to the pass-through
+		// implementation installed in beforeEach.
+		const renameErr = Object.assign(
+			new Error("EACCES: permission denied, rename"),
+			{ code: "EACCES" },
+		);
+		renameMock.mockRejectedValueOnce(renameErr);
+
+		const resolvedEvents: Array<{ agentId: string; filename: string }> = [];
+		mgr.on("task-resolved", (e: { agentId: string; filename: string }) => {
+			resolvedEvents.push(e);
+		});
+
+		await mgr._pollingTickForTests();
+
+		// claimTask attempted exactly one rename.
+		expect(renameMock).toHaveBeenCalledTimes(1);
+
+		// claim-task-failed telemetry emitted ONCE with filename + agentId
+		// and the underlying rename error surfaced via `message` + `errno`
+		// so operators can trace back to the fs failure.
+		const failures = emittedEventsOfKind("claim-task-failed");
+		expect(failures).toHaveLength(1);
+		expect(failures[0]).toMatchObject({
+			kind: "claim-task-failed",
+			agentId: "pr-triage",
+			filename,
+			errno: "EACCES",
+		});
+		expect((failures[0] as { message: string }).message).toContain("EACCES");
+
+		// task-resolved EventEmitter event NEVER fires when rename fails —
+		// CronScheduler's slot stays held until a retry succeeds.
+		expect(resolvedEvents).toHaveLength(0);
+		// And no task-resolved telemetry mirror either.
+		expect(emittedEventsOfKind("task-resolved")).toHaveLength(0);
+
+		// File still exists in tasks/pending/ (not moved to resolved).
+		await fsp.access(path.join(pathFor("tasks/pending"), filename));
+		await expect(
+			fsp.access(path.join(pathFor("tasks/resolved"), filename)),
+		).rejects.toThrow();
 	});
 });
