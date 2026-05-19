@@ -101,6 +101,14 @@ read_or_skip() {
   fi
 }
 
+# ndjson_write: write one structured-log line to the cutover NDJSON on the
+# VPS. Best-effort — never fails the script if the file is unreachable.
+# Parameters: stage action result
+#   stage  — time offset label, e.g. "+0:30"
+#   action — what ran, e.g. "stop-v2"
+#   result — outcome, default "ok"
+# Note: rollback.sh's ndjson_write has a different parameter order than
+# cutover.sh (stage/action vs kind/stage). Do not copy between scripts.
 ndjson_write() {
   local stage=$1 action=$2 result=${3:-ok}
   local ts line

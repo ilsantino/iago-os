@@ -159,6 +159,10 @@ read_or_skip() {
 
 # ndjson_write: write one structured-log line to the cutover NDJSON on the
 # VPS. Best-effort — never fails the script if the file is unreachable.
+# Parameters: kind stage result
+#   kind   — structural label, e.g. "cutover-step"
+#   stage  — T-step label, e.g. "T+07" or "preflight"
+#   result — outcome, default "ok"
 ndjson_write() {
   local kind=$1 stage=$2 result=${3:-ok}
   local ts line
@@ -253,12 +257,12 @@ EOF
 trap release_remote_lock EXIT
 
 # ============================================================================
-# Pre-flight gate — 12 checks, abort with the exact unchecked item if any
+# Pre-flight gate — 13 checks, abort with the exact unchecked item if any
 # fails. Always runs (not gated by RESUME_FROM).
 # ============================================================================
 
 run_preflight() {
-  echo "=== Pre-flight gate (12 checks) ==="
+  echo "=== Pre-flight gate (13 checks) ==="
 
   # 1. IAGO_TELEGRAM_USER_ID set
   [[ -n "$SANTIAGO_USER_ID" ]] || { echo "ABORT: IAGO_TELEGRAM_USER_ID not set" >&2; exit 1; }
@@ -302,7 +306,24 @@ run_preflight() {
   # 12. Local rollback.sh present (this plan, Task 2)
   preflight_check "local rollback.sh present" test -x "$DEPLOY_DIR/rollback.sh"
 
-  echo "=== Pre-flight gate: all 12 checks passed ==="
+  # 13. SendEnv FRESH_TOKEN end-to-end probe
+  # Verifies that (a) this tailscale CLI version passes -o SendEnv to the
+  # underlying SSH library, and (b) the VPS sshd has AcceptEnv FRESH_TOKEN
+  # configured (provisioned by 01a). Without this, rollback.sh silently fails
+  # at T+R+2:00 — under time pressure, when a confusing error is worst.
+  local sendenv_out
+  sendenv_out=$(FRESH_TOKEN=probe tailscale ssh -o SendEnv=FRESH_TOKEN \
+    "${VPS_USER}@${VPS_HOST}" -- 'echo "$FRESH_TOKEN"' 2>&1 || true)
+  if echo "$sendenv_out" | grep -q "^probe$"; then
+    echo "  OK SendEnv FRESH_TOKEN forwarded to VPS sshd"
+  else
+    echo "ABORT: SendEnv FRESH_TOKEN probe failed — rollback.sh token-patch will fail." >&2
+    echo "       Check: sshd_config AcceptEnv FRESH_TOKEN on ${VPS_HOST}." >&2
+    echo "       Probe output: ${sendenv_out}" >&2
+    exit 1
+  fi
+
+  echo "=== Pre-flight gate: all 13 checks passed ==="
   ndjson_write cutover-step preflight ok
 }
 

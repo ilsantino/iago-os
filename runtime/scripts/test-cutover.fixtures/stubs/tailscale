@@ -169,6 +169,14 @@ case "$ARGS" in
     echo "0000000000000000000000000000000000000000000000000000000000000000  missing"
     exit 0
     ;;
+  *"-o SendEnv=FRESH_TOKEN"*)
+    # Pre-flight SendEnv probe (cutover.sh preflight check 13). The real
+    # tailscale forwards the env var to the VPS sshd via SendEnv; the stub
+    # echoes FRESH_TOKEN directly from its own env (inherited from the
+    # FRESH_TOKEN=probe prefix on the caller's command line).
+    echo "${FRESH_TOKEN:-}"
+    exit 0
+    ;;
   *)
     exit 0
     ;;
