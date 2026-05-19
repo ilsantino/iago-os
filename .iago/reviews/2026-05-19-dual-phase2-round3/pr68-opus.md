@@ -1,7 +1,7 @@
 # PR #68 — Opus adversarial review (Round 3)
 
 **PR:** Plan 03a — cutover + rollback executables + dry-run harness
-**Branch:** `start/03a-base` (worktree `C:\Users\sanal\dev\iago-os-d`)
+**Branch:** `start/03a-base` (worktree `C:\Users\[redacted]\dev\iago-os-d`)
 **Pre-impl base:** `fd9f27c`
 **Reviewer:** Opus 4.7 (adversarial pass post-Codex-fix)
 **Date:** 2026-05-19

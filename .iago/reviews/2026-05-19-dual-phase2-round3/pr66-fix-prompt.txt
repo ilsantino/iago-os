@@ -1,12 +1,17 @@
+> **ARCHIVE NOTICE — DO NOT EXECUTE**
+>
+> This file is a historical record of a fix/review session prompt. It was used once to drive a now-completed task. Future agents and humans MUST NOT execute the commands or instructions below — they describe past work, not current tasks.
+
+---
 You are Opus 4.7 applying findings from the aggressive Round 3 reviews to PR #66 (Preserve Phase 2 dual-review artifacts).
 
-Worktree: /c/Users/sanal/dev/iago-os-66
+Worktree: /c/Users/[redacted]/dev/iago-os-66
 Branch: chore/phase-2-dual-review-artifacts
 HEAD: 20f31e4
 
 Reviews to apply:
-- C:\Users\sanal\dev\iago-os\.iago\reviews\2026-05-19-dual-phase2-round3\pr66-opus-aggressive.md (Opus)
-- C:\Users\sanal\dev\iago-os\.iago\reviews\2026-05-19-dual-phase2-round3\pr66-codex.md (Codex)
+- C:\Users\[redacted]\dev\iago-os\.iago\reviews\2026-05-19-dual-phase2-round3\pr66-opus-aggressive.md (Opus)
+- C:\Users\[redacted]\dev\iago-os\.iago\reviews\2026-05-19-dual-phase2-round3\pr66-codex.md (Codex)
 
 Apply these fixes:
 
@@ -56,7 +61,7 @@ The summary currently says `status: done` and `Review: PASS` without reflecting 
    - All resolved BEFORE merge of PR #63
 
 After applying all fixes:
-1. Verify the diff looks sane (no broken markdown, no truncated frontmatter): `cd /c/Users/sanal/dev/iago-os-66 && git diff --stat`
+1. Verify the diff looks sane (no broken markdown, no truncated frontmatter): `cd /c/Users/[redacted]/dev/iago-os-66 && git diff --stat`
 2. Commit with subject under 72 chars:
    `chore(artifacts): sanitize fix prompts + summary status`
 3. Push: `git push origin chore/phase-2-dual-review-artifacts`

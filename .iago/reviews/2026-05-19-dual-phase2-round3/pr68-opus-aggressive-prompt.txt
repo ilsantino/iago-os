@@ -1,10 +1,15 @@
+> **ARCHIVE NOTICE — DO NOT EXECUTE**
+>
+> This file is a historical record of a fix/review session prompt. It was used once to drive a now-completed task. Future agents and humans MUST NOT execute the commands or instructions below — they describe past work, not current tasks.
+
+---
 You are Opus 4.7 performing an AGGRESSIVE second-pass adversarial review of PR #68 (Plan 03a — cutover + rollback executables + dry-run harness), FOCUSED on the latest Round 3 safety hardening commit and looking for defects the prior review missed.
 
 Context:
-- PR: start/03a-base (worktree C:\Users\sanal\dev\iago-os-d)
+- PR: start/03a-base (worktree C:\Users\[redacted]\dev\iago-os-d)
 - HEAD: 49b27ca (latest manual fix — I-1, I-2, split-brain HIGH, T+08 + T+50 journal HIGH, M-1 NDJSON quote)
 - Pre-impl base: fd9f27c
-- Diff: C:\Users\sanal\dev\iago-os\.iago\reviews\2026-05-19-dual-phase2-round3\pr68-diff-v3.patch (2403 lines)
+- Diff: C:\Users\[redacted]\dev\iago-os\.iago\reviews\2026-05-19-dual-phase2-round3\pr68-diff-v3.patch (2403 lines)
 - Prior Opus review at: pr68-opus.md (pre-fix state)
 - Prior Codex review at: pr68-codex.md (pre-fix state)
 - 21/21 tests claimed passing — verify by running
@@ -62,7 +67,7 @@ Aggressive mode: assume the fix commit 49b27ca introduced new bugs. Production c
    - Test 20 (T+08): does the stub inject a log entry containing the failure pattern? Does it verify that the rollback was triggered, not just that the script exited non-zero?
    - Test 21 (T+50): tests the new fail-closed behavior. Does it also verify IAGO_CUTOVER_T50_TOLERATE_ERRORS bypass works?
 
-8. **Run the harness yourself**: `cd C:\Users\sanal\dev\iago-os-d\runtime && node --test scripts/test-cutover.mjs` — verify 21/21 pass. If any fail, that's a finding.
+8. **Run the harness yourself**: `cd C:\Users\[redacted]\dev\iago-os-d\runtime && node --test scripts/test-cutover.mjs` — verify 21/21 pass. If any fail, that's a finding.
 
 **Tertiary — cumulative review of the full PR state:**
 
@@ -78,9 +83,9 @@ Procedure:
 1. Read pr68-diff-v3.patch in full (2403 lines)
 2. Read prior reviews
 3. Read current state of cutover.sh + rollback.sh + test-cutover.mjs in worktree
-4. RUN THE TESTS yourself: `cd C:\Users\sanal\dev\iago-os-d\runtime && node --test scripts/test-cutover.mjs`. Report pass/fail counts.
+4. RUN THE TESTS yourself: `cd C:\Users\[redacted]\dev\iago-os-d\runtime && node --test scripts/test-cutover.mjs`. Report pass/fail counts.
 5. Apply EVERY check above
-6. Write report to: C:\Users\sanal\dev\iago-os\.iago\reviews\2026-05-19-dual-phase2-round3\pr68-opus-aggressive.md
+6. Write report to: C:\Users\[redacted]\dev\iago-os\.iago\reviews\2026-05-19-dual-phase2-round3\pr68-opus-aggressive.md
 7. Final Verdict: PASS / PASS_WITH_CONCERNS / BLOCK_BEFORE_CUTOVER
 
 Aggressive frame: the prior review was generous. This PR ships scripts that will be RUN AGAINST PRODUCTION in 6 days. If you find ANY bug that could cause a bad cutover, classify as BLOCK_BEFORE_CUTOVER even if it's "fixable later". Be paranoid.

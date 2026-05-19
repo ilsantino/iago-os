@@ -1,11 +1,16 @@
+> **ARCHIVE NOTICE — DO NOT EXECUTE**
+>
+> This file is a historical record of a fix/review session prompt. It was used once to drive a now-completed task. Future agents and humans MUST NOT execute the commands or instructions below — they describe past work, not current tasks.
+
+---
 You are Opus 4.7 performing an AGGRESSIVE second-pass adversarial review of PR #67 (Plan 04a — PR-triage agent artifacts), FOCUSED on the latest Round 3 fix commit and looking for new defects the prior review missed.
 
 Context:
-- PR: feat/04a-pr-triage-artifacts (worktree C:\Users\sanal\dev\iago-os-c)
+- PR: feat/04a-pr-triage-artifacts (worktree C:\Users\[redacted]\dev\iago-os-c)
 - HEAD: b475058 (latest manual fix — graphql swap + C1-C3 + M1-M3)
 - Pre-impl base: fd9f27c
-- Diff: C:\Users\sanal\dev\iago-os\.iago\reviews\2026-05-19-dual-phase2-round3\pr67-diff-v3.patch (855 lines)
-- Prior Opus review at: C:\Users\sanal\dev\iago-os\.iago\reviews\2026-05-19-dual-phase2-round3\pr67-opus.md (reviewed up to 448a4fb — pre-fix state)
+- Diff: C:\Users\[redacted]\dev\iago-os\.iago\reviews\2026-05-19-dual-phase2-round3\pr67-diff-v3.patch (855 lines)
+- Prior Opus review at: C:\Users\[redacted]\dev\iago-os\.iago\reviews\2026-05-19-dual-phase2-round3\pr67-opus.md (reviewed up to 448a4fb — pre-fix state)
 - Prior Codex review at: pr67-codex.md (also pre-fix)
 
 Aggressive mode: assume the fix commit b475058 introduced new bugs. Find them. The previous review verified the BUG existed; this review verifies the FIX is correct and didn't break anything else.
@@ -71,10 +76,10 @@ After all 5 fix commits, walk the agent flow end-to-end:
 Procedure:
 1. Read the latest PR diff in full (855 lines) at .iago/reviews/2026-05-19-dual-phase2-round3/pr67-diff-v3.patch
 2. Read the prior reviews (pr67-opus.md, pr67-codex.md) to know what's been covered
-3. Spot-check the actual committed files in worktree C:\Users\sanal\dev\iago-os-c
+3. Spot-check the actual committed files in worktree C:\Users\[redacted]\dev\iago-os-c
 4. Empirically test the graphql query (use `gh api graphql -f query='...' --jq '.data.search.nodes[0]'`) — does it return non-error?
 5. Apply EVERY check above
-6. Write report to: C:\Users\sanal\dev\iago-os\.iago\reviews\2026-05-19-dual-phase2-round3\pr67-opus-aggressive.md
+6. Write report to: C:\Users\[redacted]\dev\iago-os\.iago\reviews\2026-05-19-dual-phase2-round3\pr67-opus-aggressive.md
 7. Final Verdict: PASS / PASS_WITH_CONCERNS / BLOCK
 
 Aggressive frame: the prior Opus review was generous (PASS_WITH_CONCERNS). The fix commit was also marked DONE without independent verification. Be HARSHER. The cost of merging a broken graphql query is daily noise to Santiago's Telegram for as long as it takes to notice.

@@ -1,10 +1,15 @@
+> **ARCHIVE NOTICE — DO NOT EXECUTE**
+>
+> This file is a historical record of a fix/review session prompt. It was used once to drive a now-completed task. Future agents and humans MUST NOT execute the commands or instructions below — they describe past work, not current tasks.
+
+---
 You are Opus 4.7 applying CRITICAL findings from the aggressive Round 3 review to PR #67 (Plan 04a — PR-triage agent artifacts).
 
-Worktree: /c/Users/sanal/dev/iago-os-c
+Worktree: /c/Users/[redacted]/dev/iago-os-c
 Branch: feat/04a-pr-triage-artifacts
 HEAD: b475058
 
-Review: C:\Users\sanal\dev\iago-os\.iago\reviews\2026-05-19-dual-phase2-round3\pr67-opus-aggressive.md
+Review: C:\Users\[redacted]\dev\iago-os\.iago\reviews\2026-05-19-dual-phase2-round3\pr67-opus-aggressive.md
 
 Decision: **Option B — revert the cron wiring**, defer dispatch to Plan 04b (where it properly belongs with the PTY-spawn + prompt-dispatch wiring). 04a returns to its original "artifacts only" scope. Plus fix the query scope + waiting_claude detection bugs in the prompt template itself (those are 04a-scope content fixes, not wiring).
 
@@ -62,7 +67,7 @@ Reorder: `merge_ready` → `stuck` → `waiting_claude` → `waiting_santiago`. 
 **Skip H-A2** (STATE_ROOT divergence). The fix is "agent asks daemon via IPC" — that's 04b dispatch territory.
 
 After applying fixes:
-1. Verify the daemon code reverts cleanly: `cd /c/Users/sanal/dev/iago-os-c && git diff fd9f27c HEAD -- runtime/daemon/main.ts runtime/daemon/agent-manager.ts runtime/daemon/telemetry.ts` should show ONLY the file getting back to its original state — NO modifications.
+1. Verify the daemon code reverts cleanly: `cd /c/Users/[redacted]/dev/iago-os-c && git diff fd9f27c HEAD -- runtime/daemon/main.ts runtime/daemon/agent-manager.ts runtime/daemon/telemetry.ts` should show ONLY the file getting back to its original state — NO modifications.
 2. Run `npx tsc --noEmit` in the runtime/ — should be clean since we're removing code, not adding.
 3. Commit with subject under 72 chars:
    `fix(04a): revert cron wiring to 04b; fix query scope + waiting_claude`

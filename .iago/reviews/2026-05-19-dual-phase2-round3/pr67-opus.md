@@ -12,7 +12,7 @@
 
 1. Read plan 04a in full (104 lines).
 2. Read PR67 diff (831 lines: 250 log, 230 artifacts, 351 daemon wiring & telemetry).
-3. Verified each committed file against actual repo state (`C:\Users\sanal\dev\iago-os-c` @ 3549b37) — the diff in `.iago/reviews/2026-05-19-dual-phase2-round3/pr67-diff.patch` is an in-progress snapshot taken before Codex-fix; the committed files differ. Reviewed against the **committed** state, not the patch file.
+3. Verified each committed file against actual repo state (`C:\Users\[redacted]\dev\iago-os-c` @ 3549b37) — the diff in `.iago/reviews/2026-05-19-dual-phase2-round3/pr67-diff.patch` is an in-progress snapshot taken before Codex-fix; the committed files differ. Reviewed against the **committed** state, not the patch file.
 4. Cross-checked source contracts: `runtime/daemon/agent-manager.ts` (processPendingTask + claimTask), `runtime/daemon/cron-scheduler.ts` (RegisterCronOpts + fire path), `runtime/daemon/state-paths.ts` (assertSafeIdentifier), `runtime/deploy/iago-os-v2-daemon.service` (env vars).
 5. Empirically validated the gh CLI commands the prompt instructs the agent to run.
 

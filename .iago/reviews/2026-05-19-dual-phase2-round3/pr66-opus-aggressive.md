@@ -2,7 +2,7 @@
 
 Target: `chore/phase-2-dual-review-artifacts` (HEAD `20f31e4`)
 Base: `fd9f27c` (Round 2 head, same as PRs #67/#68)
-Worktree: `C:\Users\sanal\dev\iago-os-66`
+Worktree: `C:\Users\[redacted]\dev\iago-os-66`
 Scope: 31 file additions, 7906 insertions, 0 deletions (pure `.iago/` doc/artifact drop).
 
 ## Procedure followed

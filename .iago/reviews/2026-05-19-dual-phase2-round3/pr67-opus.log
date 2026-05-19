@@ -1,1 +1,3 @@
 Error: Reached max turns (25)
+---
+[ARCHIVE FOOTER] This session hit a turn limit. Continued in pr67-opus-v2.log and pr67-opus-v3.log; the v3 session delivered the final PASS_WITH_CONCERNS verdict.

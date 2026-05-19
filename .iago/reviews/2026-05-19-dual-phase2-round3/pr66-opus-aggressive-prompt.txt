@@ -1,9 +1,14 @@
+> **ARCHIVE NOTICE — DO NOT EXECUTE**
+>
+> This file is a historical record of a fix/review session prompt. It was used once to drive a now-completed task. Future agents and humans MUST NOT execute the commands or instructions below — they describe past work, not current tasks.
+
+---
 You are Opus 4.7 performing AGGRESSIVE adversarial review of PR #66 (Preserve Phase 2 dual-review artifacts — Round 1+2).
 
 Context:
 - PR: 31 file additions, 7906 lines, ZERO deletions. Pure doc/artifact drop.
-- Branch: chore/phase-2-dual-review-artifacts (worktree C:\Users\sanal\dev\iago-os-66)
-- Diff: C:\Users\sanal\dev\iago-os\.iago\reviews\2026-05-19-dual-phase2-round3\pr66-diff.patch
+- Branch: chore/phase-2-dual-review-artifacts (worktree C:\Users\[redacted]\dev\iago-os-66)
+- Diff: C:\Users\[redacted]\dev\iago-os\.iago\reviews\2026-05-19-dual-phase2-round3\pr66-diff.patch
 - Pre-impl base: fd9f27c (Round 2 head — same as PRs 67/68 base)
 - Author: Santiago (created the PR himself; not pipeline-generated)
 
@@ -54,10 +59,10 @@ Adversarial mode: assume this PR has problems. Find them. Don't say "no findings
 
 Procedure:
 1. Read PR diff in full (8093 lines — chunked Read with offset/limit if needed).
-2. Spot-check the actual files in the worktree (C:\Users\sanal\dev\iago-os-66\.iago\reviews\...) to confirm what landed.
+2. Spot-check the actual files in the worktree (C:\Users\[redacted]\dev\iago-os-66\.iago\reviews\...) to confirm what landed.
 3. Apply EVERY adversarial check above. Do not skip "low-likelihood" — that's where the bugs are.
 4. Classify findings: Critical (secret leak, prompt-injection vector, scope violation) / Important (content inaccuracy, missing hygiene) / Minor (cosmetic).
-5. Write report to: C:\Users\sanal\dev\iago-os\.iago\reviews\2026-05-19-dual-phase2-round3\pr66-opus-aggressive.md
+5. Write report to: C:\Users\[redacted]\dev\iago-os\.iago\reviews\2026-05-19-dual-phase2-round3\pr66-opus-aggressive.md
 6. Final Verdict: PASS / PASS_WITH_CONCERNS / BLOCK
 
 Aggressive frame: most "doc-only" PRs get rubber-stamped because reviewers assume nothing dangerous can ship in a markdown file. The most dangerous things ARE in this kind of PR (leaked secrets in logs, prompt-injection in archived AI output, hallucinated review findings that mislead future sessions). Be paranoid.

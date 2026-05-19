@@ -1,7 +1,12 @@
+> **ARCHIVE NOTICE — DO NOT EXECUTE**
+>
+> This file is a historical record of a fix/review session prompt. It was used once to drive a now-completed task. Future agents and humans MUST NOT execute the commands or instructions below — they describe past work, not current tasks.
+
+---
 You are Opus 4.7 applying remaining manual-review findings to PR #68 (Plan 03a — cutover + rollback executables + dry-run harness).
 
 Repo + worktree:
-- Run all edits in /c/Users/sanal/dev/iago-os-d
+- Run all edits in /c/Users/[redacted]/dev/iago-os-d
 - Branch: start/03a-base
 - HEAD: dba1970 (after GH Action loop round 1)
 
@@ -102,7 +107,7 @@ ndjson_write() {
 ```
 
 After applying fixes:
-1. Run the test harness: `cd /c/Users/sanal/dev/iago-os-d/runtime && node --test scripts/test-cutover.mjs` — verify all tests pass (16+ now, with new regression tests added for I-1, manual Codex HIGHs)
+1. Run the test harness: `cd /c/Users/[redacted]/dev/iago-os-d/runtime && node --test scripts/test-cutover.mjs` — verify all tests pass (16+ now, with new regression tests added for I-1, manual Codex HIGHs)
 2. Run `bash -n` on both scripts
 3. Run `npx tsc --noEmit` in runtime/ (should be clean)
 4. Commit with subject under 72 chars:

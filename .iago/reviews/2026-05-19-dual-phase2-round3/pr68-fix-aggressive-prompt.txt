@@ -1,10 +1,15 @@
+> **ARCHIVE NOTICE — DO NOT EXECUTE**
+>
+> This file is a historical record of a fix/review session prompt. It was used once to drive a now-completed task. Future agents and humans MUST NOT execute the commands or instructions below — they describe past work, not current tasks.
+
+---
 You are Opus 4.7 applying CRITICAL findings from the aggressive Round 3 review to PR #68 (Plan 03a — cutover + rollback executables + dry-run harness).
 
-Worktree: /c/Users/sanal/dev/iago-os-d
+Worktree: /c/Users/[redacted]/dev/iago-os-d
 Branch: start/03a-base
 HEAD: 49b27ca
 
-Review: C:\Users\sanal\dev\iago-os\.iago\reviews\2026-05-19-dual-phase2-round3\pr68-opus-aggressive.md
+Review: C:\Users\[redacted]\dev\iago-os\.iago\reviews\2026-05-19-dual-phase2-round3\pr68-opus-aggressive.md
 
 PRIORITY: this PR ships scripts that run against the real VPS during cutover (Sunday 2026-05-25 8pm US/Mexico). Fixes must be tight.
 
@@ -37,7 +42,7 @@ File: `runtime/scripts/test-cutover.mjs` (test 7 — "happy-path rollback skip-t
 The test hangs after "ROLLBACK COMPLETE." even with `--test-concurrency=1`. Likely cause: the EXIT trap interacts with `release_remote_lock` in a way that holds the process open.
 
 Investigation steps:
-1. Run `cd /c/Users/sanal/dev/iago-os-d/runtime && node --test --test-name-pattern='happy-path rollback' scripts/test-cutover.mjs` with a 30s timeout — does it hang?
+1. Run `cd /c/Users/[redacted]/dev/iago-os-d/runtime && node --test --test-name-pattern='happy-path rollback' scripts/test-cutover.mjs` with a 30s timeout — does it hang?
 2. Add `set -x` temporarily inside rollback.sh's EXIT trap to trace what runs
 3. Check if `release_remote_lock` waits on a process that never exits (vssh stub hanging?)
 4. The owner-checked release uses `bash -s` heredoc — verify the stub correctly responds to the release sentinel without blocking
@@ -48,7 +53,7 @@ Fix once root cause is identified. Common causes:
 - vssh stub's signal handling
 - `wait` with no PID
 
-After fix: `cd /c/Users/sanal/dev/iago-os-d/runtime && node --test scripts/test-cutover.mjs` should show 21/21 (or 23/23 with new C-1 tests) in BOTH default concurrent mode AND `--test-concurrency=1` serial mode.
+After fix: `cd /c/Users/[redacted]/dev/iago-os-d/runtime && node --test scripts/test-cutover.mjs` should show 21/21 (or 23/23 with new C-1 tests) in BOTH default concurrent mode AND `--test-concurrency=1` serial mode.
 
 **I-1A — Bump systemd-creds length threshold from `> 1` to `>= 40`**
 File: `runtime/deploy/cutover.sh` (around line 472)
@@ -71,8 +76,8 @@ Final: `grep -qE 'panic|Error: |Traceback|FATAL|terminated abnormally|level":50|
 **Skip M-2** — already covered by the new C-1 stub knob + tests 22-23.
 
 After all fixes:
-1. Run full harness: `cd /c/Users/sanal/dev/iago-os-d/runtime && node --test scripts/test-cutover.mjs` — verify pass count
-2. Run serial: `cd /c/Users/sanal/dev/iago-os-d/runtime && node --test --test-concurrency=1 scripts/test-cutover.mjs` — verify pass count matches
+1. Run full harness: `cd /c/Users/[redacted]/dev/iago-os-d/runtime && node --test scripts/test-cutover.mjs` — verify pass count
+2. Run serial: `cd /c/Users/[redacted]/dev/iago-os-d/runtime && node --test --test-concurrency=1 scripts/test-cutover.mjs` — verify pass count matches
 3. `bash -n runtime/deploy/cutover.sh runtime/deploy/rollback.sh` — must pass
 4. Commit with subject under 72 chars:
    `fix(deploy): pipefail T+08/T+50 + fix test 7 hang + threshold + umask`

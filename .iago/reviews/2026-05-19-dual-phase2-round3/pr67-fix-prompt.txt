@@ -1,7 +1,12 @@
+> **ARCHIVE NOTICE — DO NOT EXECUTE**
+>
+> This file is a historical record of a fix/review session prompt. It was used once to drive a now-completed task. Future agents and humans MUST NOT execute the commands or instructions below — they describe past work, not current tasks.
+
+---
 You are Opus 4.7 applying the remaining manual-review findings to PR #67 (Plan 04a — PR-triage agent artifacts).
 
 Repo + worktree:
-- Run all edits in /c/Users/sanal/dev/iago-os-c
+- Run all edits in /c/Users/[redacted]/dev/iago-os-c
 - Branch: feat/04a-pr-triage-artifacts
 - HEAD: 448a4fb (after GH Action loop hit max rounds)
 

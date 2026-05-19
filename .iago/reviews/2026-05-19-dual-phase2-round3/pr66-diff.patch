@@ -5111,7 +5111,7 @@ index 0000000..69ea9fe
 --- /dev/null
 +++ b/.iago/reviews/2026-05-18-dual-phase2-round2/pr63-fix-prompt.txt
 @@ -0,0 +1,40 @@
-+Apply 3 HIGH fixes from Codex dual-review on PR #63 (Plan 02b — WhatsApp + Telegram + runbooks). Files in C:/Users/sanal/dev/iago-os-d worktree.
++Apply 3 HIGH fixes from Codex dual-review on PR #63 (Plan 02b — WhatsApp + Telegram + runbooks). Files in C:/Users/[redacted]/dev/iago-os-d worktree.
 +
 +HIGH-1 — Runbook revokes Telegram token BEFORE script can snapshot it (runtime/migration/02-telegram-bot-rotation.md ~lines 48-54)
 +
@@ -6341,7 +6341,7 @@ index 0000000..1f04cf2
 --- /dev/null
 +++ b/.iago/reviews/2026-05-18-dual-phase2-round2/pr64-fix-prompt.txt
 @@ -0,0 +1,30 @@
-+Apply 2 focused fixes from Opus dual-review on PR #64 (Plan 07b — AgentManager polling loop). Files in C:/Users/sanal/dev/iago-os-c worktree (currently at HEAD 0582a22 — the GH Action loop already fixed Opus I1 + I3).
++Apply 2 focused fixes from Opus dual-review on PR #64 (Plan 07b — AgentManager polling loop). Files in C:/Users/[redacted]/dev/iago-os-c worktree (currently at HEAD 0582a22 — the GH Action loop already fixed Opus I1 + I3).
 +
 +Fix 1 — Opus I2 (Missing test for claim-task-failed telemetry)
 +- File: runtime/daemon/agent-manager.test.ts

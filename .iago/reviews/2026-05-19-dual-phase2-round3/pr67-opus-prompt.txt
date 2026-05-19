@@ -1,9 +1,14 @@
+> **ARCHIVE NOTICE — DO NOT EXECUTE**
+>
+> This file is a historical record of a fix/review session prompt. It was used once to drive a now-completed task. Future agents and humans MUST NOT execute the commands or instructions below — they describe past work, not current tasks.
+
+---
 You are Opus 4.7 performing an adversarial review of PR #67 (Phase 2 / Plan 04a — PR-triage agent artifacts).
 
 Context:
-- Repo: C:\Users\sanal\dev\iago-os (you are reading from main repo; PR branch is feat/04a-pr-triage-artifacts in worktree C:\Users\sanal\dev\iago-os-c)
-- Plan: C:\Users\sanal\dev\iago-os\.iago\plans\feature-phase-2-vps-bootstrap\04a-pr-triage-artifacts.md
-- Diff: C:\Users\sanal\dev\iago-os\.iago\reviews\2026-05-19-dual-phase2-round3\pr67-diff.patch
+- Repo: C:\Users\[redacted]\dev\iago-os (you are reading from main repo; PR branch is feat/04a-pr-triage-artifacts in worktree C:\Users\[redacted]\dev\iago-os-c)
+- Plan: C:\Users\[redacted]\dev\iago-os\.iago\plans\feature-phase-2-vps-bootstrap\04a-pr-triage-artifacts.md
+- Diff: C:\Users\[redacted]\dev\iago-os\.iago\reviews\2026-05-19-dual-phase2-round3\pr67-diff.patch
 - Pre-impl base: fd9f27c (Round 2 HEAD)
 - Pipeline already ran local review + Codex stage. The pipeline-stage Codex caught 4 findings (1 CRITICAL crons.json not wired into daemon, 2 HIGH Telegram MD escape + fallback alert envelope, 1 MEDIUM missing labels/body fields). Pipeline CODEX FIX session hit max-turns (40) — verify what got fixed vs what's still latent.
 
@@ -24,6 +29,6 @@ Procedure:
 3. Read source for: runtime/daemon/agent-manager.ts (processPendingTask contract), runtime/daemon/cron-scheduler.ts (cron registration), any existing agent configs in runtime/agents/ for reference
 4. Apply the checklist above; classify findings as Critical / Important / Minor
 5. Write a structured report with severity, file:line, evidence, recommended fix, and a final Verdict (PASS / PASS_WITH_CONCERNS / BLOCK)
-6. Save to: C:\Users\sanal\dev\iago-os\.iago\reviews\2026-05-19-dual-phase2-round3\pr67-opus.md
+6. Save to: C:\Users\[redacted]\dev\iago-os\.iago\reviews\2026-05-19-dual-phase2-round3\pr67-opus.md
 
 Be specific and concrete. No vague "consider hardening" findings — every finding must have file:line evidence and a concrete fix. Do NOT re-raise the deferred-by-design daemon wiring as a Critical if the diff includes a clear scope-note pointing to 04b.

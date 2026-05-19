@@ -1,7 +1,7 @@
 # PR #67 — Opus AGGRESSIVE Second-Pass Review (Round 3 fix verification)
 
 **Target:** commit `b475058` (graphql swap + C1-C3 + M1-M3) on `feat/04a-pr-triage-artifacts`
-**Worktree:** `C:\Users\sanal\dev\iago-os-c`
+**Worktree:** `C:\Users\[redacted]\dev\iago-os-c`
 **Prior reviews covered up to:** `448a4fb` (pre-graphql-swap)
 **Frame:** assume the fix introduced new bugs. Verify empirically. Be harsh.
 

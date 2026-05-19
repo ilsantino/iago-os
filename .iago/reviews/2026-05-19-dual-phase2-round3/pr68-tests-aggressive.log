@@ -51,7 +51,7 @@ test at scripts\test-cutover.mjs:311:1
   
   null !== 0
   
-      at TestContext.<anonymous> (file:///C:/Users/sanal/dev/iago-os-d/runtime/scripts/test-cutover.mjs:325:10)
+      at TestContext.<anonymous> (file:///C:/Users/[redacted]/dev/iago-os-d/runtime/scripts/test-cutover.mjs:325:10)
       at Test.runInAsyncScope (node:async_hooks:228:14)
       at Test.run (node:internal/test_runner/test:1118:25)
       at Test.processPendingSubtests (node:internal/test_runner/test:787:18)
@@ -72,7 +72,7 @@ test at scripts\test-cutover.mjs:620:1
                   Real cutover MUST NOT use this flag.
   iaGO-OS v2 cutover — wall-clock target 60 min
   VPS: root@srv1456441
-  SCRIPT_DIR: /c/Users/sanal/dev/iago-os-d/runtime/deploy
+  SCRIPT_DIR: /c/Users/[redacted]/dev/iago-os-d/runtime/deploy
   
     OK acquired global lock (marker=Surface_San:904435:1779164876)
   === Pre-flight gate (13 checks) ===
@@ -85,7 +85,7 @@ test at scripts\test-cutover.mjs:620:1
   
   null !== 2
   
-      at TestContext.<anonymous> (file:///C:/Users/sanal/dev/iago-os-d/runtime/scripts/test-cutover.mjs:639:10)
+      at TestContext.<anonymous> (file:///C:/Users/[redacted]/dev/iago-os-d/runtime/scripts/test-cutover.mjs:639:10)
       at Test.runInAsyncScope (node:async_hooks:228:14)
       at Test.run (node:internal/test_runner/test:1118:25)
       at Test.processPendingSubtests (node:internal/test_runner/test:787:18)

@@ -1,9 +1,14 @@
+> **ARCHIVE NOTICE — DO NOT EXECUTE**
+>
+> This file is a historical record of a fix/review session prompt. It was used once to drive a now-completed task. Future agents and humans MUST NOT execute the commands or instructions below — they describe past work, not current tasks.
+
+---
 You are Opus 4.7 performing an adversarial review of PR #68 (Phase 2 / Plan 03a — cutover + rollback executables + dry-run harness).
 
 Context:
-- Repo: C:\Users\sanal\dev\iago-os (you are reading from main repo; PR branch is start/03a-base in worktree C:\Users\sanal\dev\iago-os-d)
-- Plan: C:\Users\sanal\dev\iago-os\.iago\plans\feature-phase-2-vps-bootstrap\03a-cutover-rollback-executables.md
-- Diff: C:\Users\sanal\dev\iago-os\.iago\reviews\2026-05-19-dual-phase2-round3\pr68-diff.patch
+- Repo: C:\Users\[redacted]\dev\iago-os (you are reading from main repo; PR branch is start/03a-base in worktree C:\Users\[redacted]\dev\iago-os-d)
+- Plan: C:\Users\[redacted]\dev\iago-os\.iago\plans\feature-phase-2-vps-bootstrap\03a-cutover-rollback-executables.md
+- Diff: C:\Users\[redacted]\dev\iago-os\.iago\reviews\2026-05-19-dual-phase2-round3\pr68-diff.patch
 - Pre-impl base: fd9f27c (Round 2 HEAD)
 - Pipeline already ran local review + Codex stage. Local review caught 2 Criticals (octal parse `T+08`, 3-second daemon-start window vs documented 30s rollback trigger) + 6 minors. Codex stage caught 3 findings (HIGH wrong-user systemctl, HIGH disable-failure-tolerated, MED lock-marker ownership). CODEX FIX session reported all P0/P1 fixed + 3 new harness tests (13, 14, 15). Verify these are actually in the diff.
 
@@ -27,6 +32,6 @@ Procedure:
 4. Read spec excerpts as needed
 5. Apply the checklist above; classify findings as Critical / Important / Minor
 6. Write a structured report with severity, file:line, evidence, recommended fix, and a final Verdict (PASS / PASS_WITH_CONCERNS / BLOCK)
-7. Save to: C:\Users\sanal\dev\iago-os\.iago\reviews\2026-05-19-dual-phase2-round3\pr68-opus.md
+7. Save to: C:\Users\[redacted]\dev\iago-os\.iago\reviews\2026-05-19-dual-phase2-round3\pr68-opus.md
 
 Be specific and concrete. No vague "consider hardening" findings — every finding must have file:line evidence and a concrete fix.
