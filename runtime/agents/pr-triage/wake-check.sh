@@ -20,19 +20,21 @@ if [ -z "${GH_TOKEN:-}" ]; then
 	exit 2
 fi
 
+command -v jq > /dev/null 2>&1 || { echo "ERROR: jq not found in PATH; wake-check requires it." >&2; exit 2; }
+
 # Include response headers (-i) so we can grep the HTTP status line.
 # Plain `--jq '.total_count'` on a non-200 response silently produces
 # null + exit 0; defensive guard via explicit status check (C2 fix).
 # `|| true` is load-bearing: `gh api` exits non-zero on 401/403/429/5xx,
 # and `set -e` would otherwise abort the script before the rate-limit
 # branch below could distinguish 429 from generic auth failure.
-RESPONSE=$(gh api -i '/search/issues?q=org:ilsantino+is:pr+is:open&per_page=1' 2>&1) || true
+RESPONSE=$(gh api -i '/search/issues?q=user:ilsantino+is:pr+is:open&per_page=1' 2>&1) || true
 STATUS=$(echo "$RESPONSE" | head -1)
 
 if echo "$STATUS" | grep -qE 'HTTP/[12](\.[0-9])? 200'; then
 	# Match both object `{` and array `[` openers so the body extraction
 	# survives if a future endpoint returns a JSON array.
-	COUNT=$(echo "$RESPONSE" | grep -A 999 -E '^[{[]' | jq -r '.total_count // 0')
+	COUNT=$(echo "$RESPONSE" | awk '/^[{[]/{found=1} found{print}' | jq -r '.total_count // 0')
 else
 	if echo "$RESPONSE" | grep -qiE 'rate.?limit'; then
 		echo "Rate-limited: $STATUS" >&2

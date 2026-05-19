@@ -1,9 +1,13 @@
 {
 	"agentId": "pr-triage",
 	"runtimeId": "claude-pty",
+	"_comment_fields": "authProfile, cwd, org, and env below are NOT consumed by plan 04a. loadAgentCronEntries reads only agentId from this file. These fields are hard dependencies for plan 04b (wireAgentManagerIntoStartDaemon), which must explicitly forward them to the PTY spawn opts during cron dispatch. If 04b reads from a different source, these values will silently rot.",
 	"org": "internal",
 	"cwd": "/opt/iago-os",
-	"env": {},
+	"env": {
+		"IAGO_DAEMON_STATE_ROOT": "/var/lib/iago-os/daemon-state"
+	},
 	"autoStart": false,
+	"_comment_autoStart": "autoStart is documentational in this file — the auto-start loop in main.ts reads from DaemonConfig.agents[], not from agent-config.json.",
 	"authProfile": "default"
 }

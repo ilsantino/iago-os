@@ -21,7 +21,7 @@ Exit cleanly after a single Telegram message is sent (or a fallback task file is
 Run:
 
 ```
-gh pr list \
+gh search prs \
   --owner ilsantino \
   --state open \
   --json number,title,url,author,reviewDecision,statusCheckRollup,createdAt,updatedAt,body,labels \
@@ -32,7 +32,7 @@ Parse the JSON output. If the array is empty, set `SUMMARY` to a single line —
 
 The `body` field is required by the `waiting_claude` rule below (PRs that mention `@claude` only in the description and not in the title). The `labels` field is required for the `claude-review-requested` label match. Without these fields, label-only or body-only Claude PRs are silently misclassified or dropped.
 
-If `gh pr list` itself fails (auth, rate-limit, network), see the Errors section below.
+If `gh search prs` itself fails (auth, rate-limit, network), see the Errors section below.
 
 ### Step (b) — Classify into four buckets
 
@@ -99,17 +99,26 @@ No `parse_mode` is sent — Telegram defaults to plain text, which is what step 
 
 Capture the HTTP status code. On `200`, the message is delivered — terminate cleanly per the Termination section.
 
-On any non-`200` status (including the synthetic `000` from the empty-recipient guard above), fall back: write a task file at `$IAGO_DAEMON_STATE_ROOT/tasks/pending/pr-triage__<unix-ms>-<pid>.json` (Unix epoch in milliseconds plus the agent shell's PID, e.g. `date +%s%3N`-`$$`, so two failures inside the same wall-clock second do not collide and overwrite each other) with body:
+On any non-`200` status (including the synthetic `000` from the empty-recipient guard above), fall back: write a task file using the state root resolved below. Two failures inside the same wall-clock second must not collide, so use Unix epoch in milliseconds plus PID:
 
-```
+```bash
+STATE_ROOT="${IAGO_DAEMON_STATE_ROOT:-/var/lib/iago-os/daemon-state}"
+TASK_FILE="$STATE_ROOT/tasks/pending/pr-triage__$(date +%s%3N)-$$.json"
+DETAILS=$(head -c 256 /tmp/tg-resp.json | sed "s/${IAGO_TELEGRAM_BOT_TOKEN}/[REDACTED]/g")
+cat > "$TASK_FILE" <<EOF
 {
   "agentId": "pr-triage",
   "ndjsonAlert": "pr-triage-telegram-send-failed",
-  "details": "<http-status> <first 256 bytes of /tmp/tg-resp.json, with bot token redacted>"
+  "details": "${HTTP_STATUS} ${DETAILS}"
 }
+EOF
 ```
 
-The `agentId` field is mandatory — `runtime/daemon/agent-manager.ts` `processPendingTask` requires it on every envelope (including alert envelopes) and poisons files that omit it as `missing-agent-id`. The daemon's polling loop consumes this file via the `ndjsonAlert` branch (07b Task 1 + plan 04a Codex fix): it emits a `kind: "agent-alert"` telemetry event carrying `alertKind: "pr-triage-telegram-send-failed"` and the `details` payload verbatim, then moves the file to `tasks/resolved/`. NEVER include the bot token in the `details` field — if the response body would echo the token (Telegram errors sometimes do), redact it.
+The `STATE_ROOT` fallback to `/var/lib/iago-os/daemon-state` mirrors the `Environment=` line in `runtime/deploy/iago-os-v2-daemon.service`; the PTY inherits the daemon's env so `IAGO_DAEMON_STATE_ROOT` will normally be set, but the fallback prevents ENOENT on a silent empty path if the var is somehow absent.
+
+The `sed` redaction is mechanical: it replaces every literal occurrence of the bot token (which Telegram sometimes echoes back in error description fields) with `[REDACTED]` before the string enters any file or log.
+
+The `agentId` field is mandatory — `runtime/daemon/agent-manager.ts` `processPendingTask` requires it on every envelope (including alert envelopes) and poisons files that omit it as `missing-agent-id`. The daemon's polling loop consumes this file via the `ndjsonAlert` branch (07b Task 1 + plan 04a Codex fix): it emits a `kind: "agent-alert"` telemetry event carrying `alertKind: "pr-triage-telegram-send-failed"` and the `details` payload verbatim, then moves the file to `tasks/resolved/`.
 
 ## Constraints
 
@@ -126,7 +135,7 @@ The `agentId` field is mandatory — `runtime/daemon/agent-manager.ts` `processP
 
 ## Errors
 
-- **`gh pr list` fails (auth or rate-limit):** capture stderr, then POST a brief failure summary via the same curl pattern in step (d):
+- **`gh search prs` fails (auth or rate-limit):** capture stderr, then POST a brief failure summary via the same curl pattern in step (d):
 
   ```
   text=PR triage failed: <first 200 chars of the gh error>. Investigate.
@@ -134,7 +143,7 @@ The `agentId` field is mandatory — `runtime/daemon/agent-manager.ts` `processP
 
   Use plain text (no `parse_mode=MarkdownV2`) for the failure path so unescaped error messages cannot trip Telegram's parser.
 
-- **The failure-path POST ALSO returns non-200:** write the fallback task file at `$IAGO_DAEMON_STATE_ROOT/tasks/pending/pr-triage__<unix-ms>-<pid>.json` (same naming scheme as the primary fallback above) with body `{ "agentId": "pr-triage", "ndjsonAlert": "pr-triage-double-failure", "details": "<gh-error>; <telegram-status>" }`. The `agentId` field is mandatory (same reason as the primary fallback envelope above). The daemon polling loop emits an `agent-alert` telemetry event carrying `alertKind: "pr-triage-double-failure"` — this is the loudest possible signal short of paging.
+- **The failure-path POST ALSO returns non-200:** write the fallback task file using the same `STATE_ROOT` guard as above (`STATE_ROOT="${IAGO_DAEMON_STATE_ROOT:-/var/lib/iago-os/daemon-state}"`), with body `{ "agentId": "pr-triage", "ndjsonAlert": "pr-triage-double-failure", "details": "<gh-error>; <telegram-status>" }`. The `agentId` field is mandatory (same reason as the primary fallback envelope above). The daemon polling loop emits an `agent-alert` telemetry event carrying `alertKind: "pr-triage-double-failure"` — this is the loudest possible signal short of paging.
 
 ## Termination
 
