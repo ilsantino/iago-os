@@ -183,3 +183,10 @@ Tailscale stub now models OpenClaw/v2 state files, intercepts the release sentin
 warning: in the working copy of '.iago/runs/round-3-dispatch/03a.log', LF will be replaced by CRLF the next time Git touches it
 warning: in the working copy of 'runtime/scripts/test-cutover.fixtures/stubs/tailscale', LF will be replaced by CRLF the next time Git touches it
 [20:45:52] CREATE PR — 03a-cutover-rollback-executables
+[20:48:45] PR creation output:
+PR created: **https://github.com/ilsantino/iago-os/pull/68**
+[20:48:45] TAGGING @claude on PR #68
+https://github.com/ilsantino/iago-os/pull/68#issuecomment-4483988131
+[20:49:48] SUMMARY — 03a-cutover-rollback-executables
+[20:49:48] Summary written to .iago/summaries/03a-cutover-rollback-executables.md
+[20:49:48] PIPELINE COMPLETE — 03a-cutover-rollback-executables
