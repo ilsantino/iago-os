@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# Stub: op (1Password CLI). Always succeeds for whoami/signin, returns a
+# fixed 16-byte token for `read` so provision-credentials.sh's length
+# round-trip matches the tailscale stub's `systemd-creds decrypt` length.
+STUB_LOG="${STUB_LOG:-}"
+if [[ -n "$STUB_LOG" ]]; then
+  printf 'op %s\n' "$*" >> "$STUB_LOG"
+fi
+case "$1" in
+  whoami)
+    echo "stub-user"
+    exit 0
+    ;;
+  read)
+    printf 'STUBTOK16BYTES__'
+    exit 0
+    ;;
+  signin)
+    echo "stub-session"
+    exit 0
+    ;;
+  *)
+    exit 0
+    ;;
+esac

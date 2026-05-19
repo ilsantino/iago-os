@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# Generic no-op stub — the harness copies this file under each binary
+# name that the scripts may invoke (systemd-creds, age, tar, curl, jq,
+# shred, find, flock). Records invocation and exits 0.
+STUB_LOG="${STUB_LOG:-}"
+SELF=$(basename "$0")
+if [[ -n "$STUB_LOG" ]]; then
+  printf '%s %s\n' "$SELF" "$*" >> "$STUB_LOG"
+fi
+exit 0
