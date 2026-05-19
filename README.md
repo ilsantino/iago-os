@@ -2,148 +2,192 @@
 
 <div align="center">
 
-<img src="https://img.shields.io/badge/Claude_Code-config_layer-7C3AED?style=for-the-badge&logo=anthropic&logoColor=white" alt="Claude Code">
-<img src="https://img.shields.io/badge/Skills-37-blue?style=for-the-badge" alt="Skills">
-<img src="https://img.shields.io/badge/Agent_Profiles-12-green?style=for-the-badge" alt="Agent Profiles">
-<img src="https://img.shields.io/badge/Memory_Stack-opt--in-orange?style=for-the-badge" alt="Memory Stack">
-<img src="https://img.shields.io/badge/Platform-Windows_%7C_macOS-lightgrey?style=for-the-badge" alt="Platform">
+<img src="https://img.shields.io/badge/Multi--agent_OS-v2-7C3AED?style=for-the-badge&logo=anthropic&logoColor=white" alt="Multi-agent OS">
+<img src="https://img.shields.io/badge/Phone--controlled-Telegram-26A5E4?style=for-the-badge&logo=telegram&logoColor=white" alt="Telegram">
+<img src="https://img.shields.io/badge/Runtime-Hostinger_VPS_%2B_Tailscale-FF6B35?style=for-the-badge" alt="VPS + Tailscale">
+<img src="https://img.shields.io/badge/Delivery_layer-37_skills_%2B_12_agents-blue?style=for-the-badge" alt="Skills + Agents">
 <img src="https://img.shields.io/badge/License-Proprietary-red?style=for-the-badge" alt="License">
 
-**Turn Claude Code into a disciplined project delivery system.**
+**A multi-agent operating system, controlled from your phone.**
 
-*Plan with verification. Implement with TDD. Review with multiple models. Ship with evidence.*
+*Hosts agents of any execution shape on a VPS. Ships client work through a hardened review pipeline. Built by the system itself.*
 
 </div>
 
 ---
 
-A configuration layer for [Claude Code](https://claude.ai/code) that turns it into a structured project delivery system.
+## What this is
 
-iaGO-OS is not a framework, not an SDK, and not a SaaS product. It's a set of files — markdown skills, agent profiles, hook scripts, and state management — that sit alongside your code in `.claude/` and `.iago/` directories. When Claude Code loads your project, it reads these files and becomes a disciplined delivery system instead of a blank-slate chatbot.
+**iaGO-OS is a multi-agent OS** that hosts agents of any execution shape — PTY-based CLI runtimes (Claude Code, Codex, Gemini, opencode), HTTP/SDK programs, MCP-as-agent servers, webhook/event workers, long-running daemons — on a Hostinger VPS reached over Tailscale, controlled from a phone via Telegram, observed through a web dashboard.
 
-**Who it's for:** Teams and solo developers shipping real projects with Claude Code. We built it for our own 3-person AI consultancy running multiple client projects simultaneously.
+It is also the delivery system we use to ship our own client work and to build itself: a Claude Code configuration layer of 37 skills, 12 agent profiles, 8 hooks, and a cross-model review pipeline that gets fresh `claude -p` sessions to plan → implement → build → review → ship under discipline.
 
-**What it solves:**
+> **Two layers, one repo.** The OS (v2) runs on the VPS. The delivery pipeline (v1, still the moat) runs locally and in CI. The OS uses the pipeline to build itself.
 
-- **Context rot.** Claude forgets everything between sessions. Hooks save and restore session state automatically.
-- **Config drift.** Without constraints, Claude writes inconsistent code. Rules and hooks enforce your stack, conventions, and review standards.
-- **Invisible work.** Subagents run in the dark. Profiles define what each agent can do, and every task ends with evidence — not claims.
-- **No workflow.** Claude will skip tests and call it done. iaGO-OS imposes a pipeline: plan with verification, implement with TDD, review with multiple models, verify against goals.
+**Who it's for:** Our 3-person AI consultancy (iaGO) and any team that wants to make Claude Code into a real delivery system rather than a blank-slate chatbot.
 
 ---
 
-## What's Inside
+## The 5 layers
 
-```
- 37 Skills          12 Agent Profiles       8 Hooks            13 Capabilities
- ─────────          ────────────────        ──────             ───────────────
- Workflow (10)      fullstack               context-persist    react-19
- Setup (6)          frontend                usage-tracker      dynamodb
- Core (7)           backend                 safety-guard       lambda
- Content (5)        review-single           config-protection  cognito
- Experimental (5)   review-full             commit-quality     tdd
- Industry (2)       security-audit          post-edit-format   security
- Audit (2)          research                post-edit-types    e2e
-                    e2e                     post-edit-console  review-spec
- + Codex (6)        infra                                      review-quality
- + Claude Code (4)  schema                                     content
-                    content                                    infra
-                    debug                                      forms
-                                                               animation
-```
+| # | Layer | What | Tech |
+|---|---|---|---|
+| 1 | **Runtime substrate** | Hostinger VPS + Tailscale mesh + systemd | OS-native, no Docker |
+| 2 | **Agent execution** | Daemon hosting `AgentRuntime` adapters across 5 shapes; file-bus coordination; crash markers + auto-restart; `session.jsonl` replay; heartbeat health; subagent semantics | Node 20 + TypeScript strict + JSON/SQLite |
+| 3 | **Control plane** | Telegram-primary phone control (start/stop/inject/approve/abort); file-based approval handshake; cross-runtime event router | Telegram Bot API + file-bus |
+| 4 | **Dashboard** | Live agent state across all shapes, token spend per agent/project/model, intervention controls; same-host IPC, not REST | Next.js + Unix socket IPC |
+| 5 | **Pipeline (preserved)** | Cross-model Codex review, severity floors, secret-exclusion staging, skill routing, stress test — *this is the moat* | `claude -p` + Codex CLI + GitHub Actions |
 
-**Optional addon:** [Memory Architecture](CLAUDE.md) adds persistent cross-session memory via MemPalace (conversation recall) + Graphify (knowledge graphs).
+```mermaid
+flowchart TB
+    User([You — phone]) -->|Telegram| TG[Telegram bot]
+    TG -->|file-bus| Daemon
+
+    subgraph VPS [Hostinger VPS · Tailscale mesh · systemd]
+        Daemon["iago-os-v2-daemon
+        agent-manager · file-bus · IPC · cron"]
+        Daemon -->|spawns| PTY1[claude-pty adapter]
+        Daemon -->|spawns| PTY2[codex-pty adapter]
+        Daemon -->|spawns| HTTP[HTTP/SDK adapter]
+        Daemon -->|spawns| MCP[MCP-as-agent adapter]
+        Daemon -->|spawns| Daem[Daemon adapter]
+        IPC[(Unix socket)]
+        Daemon --- IPC
+    end
+
+    Dash[Next.js dashboard] -.->|same-host IPC| IPC
+    User -->|web| Dash
+
+    Daemon -->|delivers via| Pipeline
+    subgraph Pipeline [Delivery pipeline · v1 · still the moat]
+        Skills[37 skills]
+        Agents[12 agent profiles]
+        Review["8-stage review
+        (stress · build · review · codex · fix · PR)"]
+    end
+```
 
 ---
 
-## Quick Start
+## What's shipped — what's in flight
+
+**As of 2026-05-19:**
+
+| Phase | Scope | Status |
+|---|---|---|
+| **Phase 0** | Strategic validation + canonical v2 vision lock | Shipped |
+| **Phase 1** | Daemon skeleton (`runtime/`) — `AgentRuntime` interface, registry, `claude-pty` adapter (Shape 1), file-bus, IPC, `session.jsonl` two-phase replay, heartbeat, Telegram approval handshake, hello-world end-to-end | Shipped, local-only on Windows |
+| **Phase 2** | VPS bootstrap + OpenClaw cutover. systemd unit, credential bootstrap, WhatsApp deauth + Telegram rotation, PR-triage agent (04a), cutover/rollback scripts + dry-run harness (03a). Cutover scheduled **Sunday 2026-05-25 20:00 US/Mexico** | 7/12 plans merged; 04b · 05a · 05b · 06 · 07a remaining |
+| **Phase 3+** | Additional PTY adapters (Codex, Gemini, opencode), HTTP/SDK shape, MCP-as-agent shape, full Next.js dashboard, cost ledger (SQLite), Hermes pre-LLM cron wake gate, shell-hook router | Planned |
+
+The pipeline runs every plan through 0. Stress → 1. Implement → 2. Build gate → 3. Review (plan + domain + adversarial) → 4. Codex adversarial → 4b. Codex fix → 5. PR → 5b. @claude tag → 6. Summary. Each stage is a fresh `claude -p` session.
+
+---
+
+## Quick start
 
 ```bash
 # 1. Clone
-git clone https://github.com/iagoai/iago-os.git && cd iago-os
+git clone https://github.com/ilsantino/iago-os.git && cd iago-os
 
-# 2. Install skills globally
+# 2. Install skills + agents globally
 ./scripts/sync-skills.sh --global
 
-# 3. Scaffold a project
+# 3. (Optional) install the memory stack — MemPalace + Graphify
+bash scripts/setup-memory.sh        # macOS / Linux / Git Bash
+.\scripts\setup-memory.ps1          # Windows PowerShell
+
+# 4. Scaffold a client project
 ./scripts/new-client.sh --name "My Client" --project "my-app" --path ../my-app
 
-# 4. Start working
+# 5. Start working
 cd ../my-app && claude
 ```
 
-Inside Claude Code:
+Inside Claude Code on a client project:
 
 ```
 > /iago-init                    # Discovery → PROJECT.md + ROADMAP.md
 > /iago-discuss phase 1         # Clarify ambiguities → context artifact
-> /iago-plan phase 1            # Decompose → plan files with verify commands
-> /iago-execute phase 1         # Dispatch agents → build → review → PR
+> /iago-plan phase 1            # Decompose → plan files (with stress test)
+> /iago-execute phase 1         # Pipeline → build → review → PR
 > /iago-verify phase 1          # Goal verification → ship or re-plan
 ```
 
 Bypass modes:
 
 ```
-> /iago-quick Add email validation to the form    # 1-3 tasks, full pipeline
-> /iago-fast Fix the typo in the login button      # Inline, no agents
+> /iago-quick "Add email validation to the form"   # 1-3 tasks, full pipeline
+> /iago-fast  "Fix typo in login button"           # Inline, build gate only
 > /iago-prfix                                      # Auto-fix PR review comments
 ```
 
-See [docs/SETUP.md](docs/SETUP.md) for detailed instructions (Windows + macOS).
+See [docs/SETUP.md](docs/SETUP.md) for the full Windows + macOS install.
 
 ---
 
-## Choosing the Right Mode
+## Working on the OS itself
+
+The `runtime/` directory is the v2 daemon. It is a separate Node 20 + TypeScript-strict project with its own `package.json` and test suite.
+
+```bash
+cd runtime
+npm install
+npm test            # Vitest unit + integration
+npm run typecheck   # tsc --noEmit
+npm run lint        # biome check .
+```
+
+Phase 1 ships **Shape 1 (PTY) only** via the `claude-pty` adapter. The polymorphic `AgentRuntime` interface, registry, file-bus, IPC, session-log, heartbeat, and Telegram approval handshake are all live. Cutover from OpenClaw to v2 on the VPS lands Sunday 2026-05-25.
+
+**Local-only today, VPS Sunday.** See [`runtime/README.md`](runtime/README.md) for the adapter authoring guide and [`docs/specs/iago-os-v2-vision.md`](docs/specs/iago-os-v2-vision.md) for the full 5-shape taxonomy and phase sequencing.
+
+---
+
+## Choosing the right mode
 
 | | `/iago-execute` | `/iago-quick` | `/iago-fast` | `/iago-prfix` |
 |---|---|---|---|---|
 | **Plans** | Uses existing | Creates on-the-fly | None | None |
 | **Pipeline** | Full 8-stage | Full 8-stage | Build gate only | GitHub Action loop |
-| **Review** | Plan+adversarial + Codex + fix | Plan+adversarial + Codex + fix | None | Async (up to 5 rounds) |
+| **Review** | Plan + adversarial + Codex + fix | Plan + adversarial + Codex + fix | None | Async (up to 5 rounds) |
 | **Scope** | Phase (2+ plans) | 1-3 tasks | ≤3 files | Existing PR |
 | **PR** | Yes (per plan) | Yes | No | Fixes existing |
 | **Time** | 30-60 min/plan | 10-20 min | < 1 min | Async |
 
 ---
 
-## Review Pipeline
+## The delivery pipeline
 
-Both `/iago-execute` and `/iago-quick` run `scripts/execute-pipeline.sh`. Every plan goes through 8 stages as separate `claude -p` sessions — no context bleed, no token burn in the orchestrator.
-
-### Local Pipeline
-
-Each step is a fresh `claude -p` session — isolated context, no token burn in the orchestrator. All findings are fixed locally before PR creation; the async loop is a safety net, not the primary fix path.
+Every plan goes through `scripts/execute-pipeline.sh`. Each step is a fresh `claude -p` session — isolated context, no token burn in the orchestrator. Findings are fixed locally before PR creation; the async GitHub loop is a safety net.
 
 | Step | Model | What it does |
 |------|-------|-------------|
-| **0. Stress test** | Opus | Adversarial review of the plan itself — checks precision, edge cases, contradictions, simpler alternatives. Outputs structured findings with delimiters for reliable extraction. Skipped if plan has `## Stress Test` section. |
-| **1. Implement** | Opus | Reads plan file + stress-test findings (MANDATORY, not advisory). Max 50 turns. |
-| **2. Build gate** | — | Compile check — verifies code compiles and bundles before review. Catches type errors, broken imports, missing deps. Max 2 retries with fix sessions. Skipped for config-only repos. |
-| **3. Review** | Opus | Three-pass: plan compliance + domain routing (selects relevant check modules from 10 loaded) + adversarial (auth bypass, data loss, races, rollback). Stress test enforcement verifies each finding was addressed. Severity floors on critical checks. Max 2 fix rounds. |
-| **4. Codex adversarial** | GPT-5.5 / Opus fallback | Cross-model review with plan context. Invokes `codex-companion adversarial-review` (bypasses the Codex agent sandbox, runs identically on Windows / Mac / Linux). Falls back to Claude Opus adversarial when the companion plugin isn't installed or fails at runtime. |
+| **0. Stress test** | Opus | Adversarial review of the plan itself — precision, edge cases, contradictions, simpler alternatives. Skipped if plan has a `## Stress Test` section. |
+| **1. Implement** | Opus | Reads plan + stress-test findings. Max 50 turns. |
+| **2. Build gate** | — | `tsc --noEmit && vite build`. Max 2 retries with fix sessions. Skipped for config-only repos. |
+| **3. Review** | Opus | Three-pass: plan compliance + domain routing (selects from 11 check modules) + adversarial (auth bypass, data loss, races, rollback). Severity floors enforced. Max 2 fix rounds. |
+| **4. Codex adversarial** | GPT-5.5 / Opus fallback | Cross-model review with plan context. `codex-companion adversarial-review` bypasses the Codex sandbox so it runs identically on Windows / Mac / Linux. |
 | **4b. Codex fix** | Opus | Fixes all Codex findings (P0 → P1 → P2) + rebuild gate. Skipped if clean. |
-| **5. Create PR** | Sonnet | Stages, commits, pushes branch, creates PR via `gh`. |
-| **5b. Tag @claude** | Sonnet | Synthesizes review request from pipeline context, posts on PR. Triggers async loop. |
-| **6. Summary** | — | Writes pipeline results to `.iago/summaries/`. |
+| **5. Create PR** | Sonnet | Stages, commits, pushes, opens PR via `gh`. |
+| **5b. Tag @claude** | Sonnet | Synthesizes context-rich review request from plan + diff. Triggers async loop. |
+| **6. Summary** | — | Writes results to `.iago/summaries/`. |
 
 ```mermaid
 flowchart TD
-    Plan[Plan file] --> Stress["0. Stress Test — Opus
-    Adversarial plan review"]
+    Plan[Plan file] --> Stress["0. Stress test — Opus"]
     Stress -->|BLOCK| Stop[Pipeline stops]
     Stress -->|PROCEED / notes| Impl[1. Implement — Opus]
-    Impl --> Build[2. Build gate — tsc + vite]
+    Impl --> Build[2. Build gate]
     Build -->|fail| Fix[Fix — Opus]
     Fix --> Build
     Build -->|pass| Review["3. Review — Opus
-    Plan + Domain routing + Adversarial
-    + Stress enforcement"]
+    Plan + Domain + Adversarial"]
     Review -->|findings| Fix2["Fix — Opus
-    Critical→Important→Minor"]
+    Critical → Important → Minor"]
     Fix2 --> Build
-    Review -->|pass| Codex["4. Codex Adversarial — GPT-5.5"]
-    Codex -->|findings| CdxFix[4b. Codex Fix — Opus]
+    Review -->|pass| Codex["4. Codex adversarial — GPT-5.5"]
+    Codex -->|findings| CdxFix[4b. Codex fix — Opus]
     CdxFix --> Rebuild[Rebuild gate]
     Rebuild --> PR[5. Create PR — Sonnet]
     Codex -->|clean| PR
@@ -151,77 +195,37 @@ flowchart TD
     Tag --> Summary[6. Summary]
 ```
 
-### Async Review-Fix Loop (GitHub Actions)
+### Async review-fix loop (GitHub Actions)
 
-Triggered by the @claude tag on the PR (step 5b). Two GitHub Actions workflows handle the loop — no local machine needed. `claude.yml` reviews the PR and posts findings; `claude-review-fix.yml` fixes findings, commits, pushes, and re-tags @claude. Loops until clean or max 5 rounds. Both `/iago-execute` and `/iago-quick` auto-tag by default — pass `--no-tag` (or `--no-review` on `/iago-execute`) to suppress. Manual trigger anytime: `/iago-prfix`.
+Triggered by the @claude tag on the PR. `claude.yml` reviews → posts findings. `claude-review-fix.yml` fixes → commits → re-tags. Loops until clean or max 5 rounds. **Humans merge — the loop never auto-merges.**
 
 ```mermaid
-flowchart TD
-    Tag["@claude tagged on PR"] --> CY["claude.yml reviews PR"]
-    CY --> Signal["[claude-review-complete] signal"]
-    Signal --> Check{"Findings?"}
-    Check -->|clean| Sum["Post summary → human merges"]
-    Check -->|round > 5| Max["Max rounds → manual review"]
-    Check -->|findings| FA["Fix agent → commit + push"]
-    FA --> Retag["Re-tag @claude"]
+flowchart LR
+    Tag["@claude tagged"] --> CY[claude.yml]
+    CY --> Check{Findings?}
+    Check -->|clean| Sum[Summary → human merges]
+    Check -->|round > 5| Max[Manual review]
+    Check -->|findings| FA[Fix agent → commit + push]
+    FA --> Retag[Re-tag @claude]
     Retag --> CY
 ```
 
-Humans merge — the loop never auto-merges.
-
 ---
 
-## Agent Architecture
+## Agent architecture
 
-Hub-and-spoke model. Your main session is the **orchestrator** (Opus). It plans, reasons, and dispatches. Agents are capability-based — each task is matched to a profile. Agents never spawn other agents.
+Hub-and-spoke. The main session is the **orchestrator** (Opus). It plans, reasons, and dispatches. Profiles are pre-composed `base + capabilities`; agents never spawn other agents.
 
-```mermaid
-flowchart TD
-    You([You]) -->|talk to| Orch
-
-    subgraph Orchestrator [Orchestrator — Opus]
-        Orch[Main Session]
-        PM[Profile Matching]
-        MC[Model Selection]
-        Orch --> PM --> MC
-    end
-
-    MC -->|compose + dispatch| E[Executor Base]
-    MC -->|compose + dispatch| A[Analyst Base]
-    MC -->|compose + dispatch| O[Operator Base]
-
-    subgraph Capabilities [13 Capability Modules]
-        direction LR
-        C1[react-19]
-        C2[dynamodb]
-        C3[tdd]
-        C4[security]
-        C5[...]
-    end
-
-    Capabilities -.->|injected into| E
-    Capabilities -.->|injected into| A
-    Capabilities -.->|injected into| O
-
-    E -->|status| Orch
-    A -->|status| Orch
-    O -->|status| Orch
-```
-
-### Tool Sandboxing
-
-| Base | Read | Write | Run commands | Search web |
-|------|------|-------|-------------|------------|
-| `executor` | Yes | Yes | Yes | No |
-| `analyst` | Yes | No | Yes (diagnostics) | No |
-| `operator` | Yes | No | Yes | Yes |
-
-### Model Routing
+| Base | Read | Write | Run commands | Web |
+|---|---|---|---|---|
+| `executor` | ✓ | ✓ | ✓ | — |
+| `analyst` | ✓ | — | ✓ (diagnostics) | — |
+| `operator` | ✓ | — | ✓ | ✓ |
 
 | Model | Role | Used by |
-|-------|------|---------|
+|---|---|---|
 | **Opus** | Planning, implementation, debugging | Orchestrator + executor profiles |
-| **Sonnet** | Analysis, PR creation, @claude tags, research | Analyst/operator profiles, pipeline PR + tagging |
+| **Sonnet** | Analysis, PR creation, @claude tags, research | Analyst / operator profiles |
 | **Codex (GPT-5.5)** | Cross-model adversarial review | `/codex:*` skills (falls back to Claude if unavailable) |
 
 ---
@@ -229,132 +233,86 @@ flowchart TD
 <details>
 <summary><h2>Skills (37)</h2></summary>
 
-Skills are reusable workflows invoked with `/skill-name`. Each one knows what to do, which profiles to dispatch, and what evidence to collect.
+Invoked with `/skill-name`. Each skill knows what to do, which profiles to dispatch, and what evidence to collect.
 
-### Workflow — Delivery Pipeline
+### Workflow — delivery pipeline
 
-| Skill | What it does | Dispatches |
-|-------|-------------|------------|
+| Skill | What | Dispatches |
+|---|---|---|
 | `/iago-init` | Interactive discovery → PROJECT.md, ROADMAP.md, STATE.md | `research` (optional) |
-| `/iago-discuss` | Surfaces ambiguities in a phase, records decisions | None (interactive) |
-| `/iago-plan` | Decomposes phase into plans with verify commands | `research` (optional) |
+| `/iago-discuss` | Surfaces ambiguities in a phase, records decisions | None |
+| `/iago-plan` | Decomposes phase into plans with stress test | `research` (optional) |
 | `/iago-execute` | Full pipeline: agent dispatch → build → review → PR | Profile + review + Codex |
-| `/iago-stress` | Adversarial stress test on a plan before execution. `--deep` for council-style multi-lens (5 reviewers + peer review) | `analyst` (opus) |
+| `/iago-stress` | Adversarial stress test on a plan. `--deep` for council-style multi-lens | `analyst` (opus) |
 | `/iago-verify` | Goal-backward verification, opens PR if passed | None |
-| `/iago-quick` | One-shot: plan + full pipeline. Flags: `--discuss`, `--research`, `--verify` | Pipeline (same as execute) |
+| `/iago-quick` | One-shot: plan + full pipeline | Pipeline |
 | `/iago-fast` | Inline edit + atomic commit. No agents, no review | None |
-| `/iago-prfix` | Fixes PR review comments, pushes, re-tags for re-review | Matching profile per fix |
+| `/iago-prfix` | Fixes PR review comments, pushes, re-tags | Matching profile per fix |
 | `/iago-pause` | Writes HANDOFF.json for session resume | None |
 
-### Workflow — Project Setup
+### Project setup
 
-| Skill | What it does |
-|-------|-------------|
-| `/iago-scaffold` | New project from iaGO template (React 19 + Vite + TS + Tailwind + ShadCN + Amplify Gen 2) |
+| Skill | What |
+|---|---|
+| `/iago-scaffold` | New client project (React 19 + Vite + TS + Tailwind + ShadCN + Amplify Gen 2) |
 | `/iago-proposal` | Client proposal: scope, timeline, cost, tech approach |
 | `/iago-onboard` | Scan existing codebase → architecture map → PROJECT.md |
 | `/iago-n8n` | Design n8n automation workflow specs |
 | `/iago-agents` | Design multi-agent architectures (Claude SDK + LangGraph) |
-| `/iago-schedule` | Install recurring automation triggers from templates |
+| `/iago-schedule` | Install recurring automation triggers |
 
-### Core — Design, Plan, Build, Review, Research
+### Core — design, plan, build, review, research
 
-| Skill | What it does | Dispatches |
-|-------|-------------|------------|
-| `/brainstorming` | Socratic design exploration → spec in `docs/specs/` | None (interactive) |
+| Skill | What | Dispatches |
+|---|---|---|
+| `/brainstorming` | Socratic design exploration → spec in `docs/specs/` | None |
 | `/writing-plans` | Break spec into 2-5 min tasks with verify commands | None |
 | `/subagent-driven-development` | Execute plan with fresh profile per task. `--pipeline` for 8-stage isolation | Profile + review + Codex |
-| `/code-review` | Severity-categorized findings (Critical/Important/Minor) | `review-single` or `review-full` |
-| `/deep-research` | Multi-source research → recommendation doc. `--focus market` for competitive analysis | `research` |
-| `/council` | 5-advisor council (Karpathy LLM Council pattern) — independent analysis, anonymous peer review, synthesis. For high-stakes business/strategic decisions | `analyst` × 5 + chairman |
-| `/prompt-optimizer` | Analyze, rewrite, test LLM prompts for client features | None |
+| `/code-review` | Severity-categorized findings (Critical / Important / Minor) | `review-single` / `review-full` |
+| `/deep-research` | Multi-source research → recommendation doc | `research` |
+| `/council` | 5-advisor council (Karpathy pattern) — independent analysis + anonymous peer review + synthesis | `analyst` × 5 + chairman |
+| `/prompt-optimizer` | Analyze, rewrite, test LLM prompts | None |
 
-### Content
+### Content / experimental / industry / audit
 
-| Skill | What it does |
-|-------|-------------|
-| `/content-engine` | Multi-format: blog, social, newsletter. `--formats blog` for articles |
-| `/investor-materials` | Pitch decks, one-pagers, executive summaries |
-| `/investor-outreach` | Personalized investor emails and follow-ups |
-| `/visa-doc-translate` | Visa document translation with legal terminology |
-| `/frontend-slides` | Presentation slides for React rendering or Marp |
-
-### Experimental
-
-| Skill | What it does |
-|-------|-------------|
-| `/autonomous-loops` | Bounded autonomous work with safety rails |
-| `/continuous-agent-loop` | Persistent agent: watches, reacts, checkpoints |
-| `/agent-payment-x402` | Agent-to-agent payment via x402 protocol |
-| `/liquid-glass-design` | Glassmorphism UI with TailwindCSS 4 + ShadCN |
-| `/santa-method` | SANTA decomposition for ambiguous problems |
-
-### Industry
-
-| Skill | Domain |
-|-------|--------|
-| `/healthcare-phi-compliance` | HIPAA encryption, access controls, audit logging |
-| `/industry-patterns` | 8 domains via `--domain`: logistics, carrier, customs, energy, inventory, production, quality, returns |
-
-### Audit (deep sweeps)
-
-The pipeline already runs the highest-leverage rules from these skills on every plan via `scripts/review-checks/`. Use the full skills for periodic sweeps — pre-launch, post-incident, or new-client onboarding — not as a per-plan gate.
-
-| Skill | What it does |
-|-------|-------------|
-| `/amplify-bug-bounty` | Full Amplify Gen 2 audit (~200 rules): CFN cycles, AppSync auth, multi-tenancy, IAM, Cognito, S3 |
-| `/frontend-bug-bounty` | Full React 19 + Vite + TS + Tailwind audit (~280 rules), incl. data-pipeline correctness (paginated KPIs, NaN aggregates, money drift) |
-
-Full reference: [.claude/rules/available-skills.md](.claude/rules/available-skills.md)
+Full reference in [.claude/rules/available-skills.md](.claude/rules/available-skills.md). Categories: content (5), experimental (5), industry (2), audit deep-sweep (2), Codex (6), Claude Code native (4).
 
 </details>
 
 <details>
-<summary><h2>Agent Profiles (12)</h2></summary>
+<summary><h2>Agent profiles (12)</h2></summary>
 
-Pre-composed base + capability combinations. The orchestrator selects the right profile based on file paths and task description.
+Pre-composed `base + capabilities`. The orchestrator selects by file path + task description.
 
 | Profile | Base | Capabilities | Model | When dispatched |
-|---------|------|-------------|-------|-----------------|
+|---|---|---|---|---|
 | `fullstack` | executor | react-19, dynamodb, lambda, tdd, forms, animation | opus | Touches both `src/` and `amplify/` |
 | `frontend` | executor | react-19, tdd, forms, animation | opus | Only `src/` |
 | `backend` | executor | dynamodb, lambda, cognito, tdd | opus | Only `amplify/` |
 | `review-single` | analyst | security, review-spec, review-quality | sonnet | Default review |
 | `review-full` | analyst | security, review-spec, review-quality | sonnet | Two-stage gated review |
-| `security-audit` | analyst | security, cognito, review-quality | opus | Auth/payment/data — always Opus |
+| `security-audit` | analyst | security, cognito, review-quality | opus | Auth / payment / data — always Opus |
 | `research` | operator | dynamic | sonnet | `/deep-research`, `--research` flag |
 | `e2e` | executor | e2e, react-19 | opus | Playwright tests |
 | `infra` | operator | infra | sonnet | AWS CLI, Amplify deployments |
 | `schema` | analyst | dynamodb | sonnet | DynamoDB schema design |
 | `content` | operator | content | sonnet | Articles, proposals, outreach |
-| `debug` | executor | dynamic | opus | Build/typecheck/lint failures |
+| `debug` | executor | dynamic | opus | Build / typecheck / lint failures |
 
 </details>
 
 <details>
 <summary><h2>Hooks (8)</h2></summary>
 
-Automatic behaviors wired in `.claude/settings.json`. Fire on Claude Code lifecycle events — never invoked manually.
-
-### Context & State
+Wired in `.claude/settings.json`. Fire on Claude Code lifecycle events.
 
 | Hook | Fires on | What it does |
-|------|----------|-------------|
-| `context-persistence` | Session start, pre-compact, stop | Saves/restores session state. Loads HANDOFF.json from `/iago-pause` |
+|---|---|---|
+| `context-persistence` | Session start, pre-compact, stop | Saves/restores session state. Loads `HANDOFF.json` from `/iago-pause` |
 | `usage-tracker` | After skill/agent use, stop | Logs invocations to `.iago/state/usage-log.jsonl` |
-
-### Safety & Quality
-
-| Hook | Fires on | What it does |
-|------|----------|-------------|
 | `safety-guard` | Before bash, edit, write | Blocks secret leaks, destructive ops |
-| `config-protection` | Before edit, write | Blocks weakening Biome/TypeScript/linter configs |
+| `config-protection` | Before edit, write | Blocks weakening of Biome/TypeScript/linter configs |
 | `commit-quality` | Before git commit | Validates conventional commit format |
-
-### Post-Edit Pipeline
-
-| Hook | Fires on | What it does |
-|------|----------|-------------|
 | `post-edit-format` | After file edit | `npx biome format --write` on edited file |
 | `post-edit-typecheck` | After TS/TSX edit | `npx tsc --noEmit` with immediate error reporting |
 | `post-edit-console-warn` | After file edit | Warns on `console.log` in production code |
@@ -363,184 +321,186 @@ Automatic behaviors wired in `.claude/settings.json`. Fire on Claude Code lifecy
 
 ---
 
-## Memory Stack (Optional)
+## Memory stack (optional)
 
-Adds persistent cross-session memory. Not required — iaGO-OS works without it. Install once, benefits every session after.
+Adds persistent cross-session memory. Not required — iaGO-OS works without it.
 
 ```bash
 bash scripts/setup-memory.sh        # macOS / Linux / Git Bash
 .\scripts\setup-memory.ps1          # Windows PowerShell
-bash scripts/setup-memory.sh --dry-run   # Preview first
 ```
 
-**Requires:** Python 3.10+
+**Requires:** Python 3.10+.
 
-### What you get
+| Layer | What | Access |
+|---|---|---|
+| **MemPalace** | Semantic search over all past conversations. Auto-writes a diary at session end | `mempalace_search`, `mempalace_diary_read` (MCP) |
+| **Graphify** | Knowledge graph + navigable wiki over any document corpus (Obsidian vault, Drive, project files) | `query_graph`, `get_node` (MCP) + static wiki |
 
-| Layer | What it does | Access |
-|-------|-------------|--------|
-| **MemPalace** | Semantic search over all past conversations. Auto-writes diary at session end for cross-session continuity | MCP tools (`mempalace_search`, `mempalace_diary_read`) |
-| **Graphify** | Knowledge graph + navigable wiki over any document corpus (Obsidian vault, Drive docs, project files) | MCP tools (`query_graph`, `get_node`) or static wiki |
-
-### What it automates
-
-- **PreToolUse hook** — nudges Claude to check the knowledge graph before grep/glob searching raw files
-- **Stop hook** — writes a diary entry at the end of every session (zero effort)
-- **Nightly rebuild** — scheduled graph + wiki regeneration (Task Scheduler on Windows, cron on macOS)
-
-### How it works
-
-```
-Work happens → conversations stored → mined into MemPalace wings
-                                    → session diary auto-written
-Documents change → nightly rebuild → Graphify re-indexes → wiki updates
-Next session → Claude checks graph first → searches MemPalace for context
-```
-
-Full architecture, retrieval routing, and cross-platform notes: see the **Memory Architecture** section in [CLAUDE.md](CLAUDE.md).
+Full architecture and retrieval routing in the **Memory Architecture** section of [CLAUDE.md](CLAUDE.md).
 
 ---
 
-## Ecosystem Integrations
+## Ecosystem integrations
 
-### Codex Plugin (Cross-Model)
+### Codex (cross-model)
 
-GPT-5.5 via Codex CLI for a second opinion from a different model family. Installed separately. Requires Codex CLI ≥ 0.125.0 for `gpt-5.5` (older versions reject the model). Each operator pins their preferred model in `~/.codex/config.toml` — the pipeline never passes `--model`, so this is the single source of truth:
+GPT-5.5 via Codex CLI for a second opinion from a different model family. Each operator pins their model in `~/.codex/config.toml`:
 
 ```toml
-# ~/.codex/config.toml
 model = "gpt-5.5"
 model_reasoning_effort = "high"
 ```
 
-If a machine has no `config.toml`, Codex CLI resolves to its built-in default. GPT-5.5 is currently ChatGPT-sign-in only during rollout (API-key auth still on `gpt-5.4`).
+Requires Codex CLI ≥ 0.125.0. GPT-5.5 is currently ChatGPT-sign-in only during rollout.
 
-| Skill | What it does |
-|-------|-------------|
-| `/codex:adversarial-review` | **Mandatory** cross-model review on every plan — auth, data loss, race conditions |
-| `/codex:review` | Read-only code review — GPT-5.5 perspective |
+| Skill | What |
+|---|---|
+| `/codex:adversarial-review` | Mandatory cross-model review on every plan |
+| `/codex:review` | Read-only GPT-5.5 code review |
 | `/codex:rescue` | Delegate debugging/implementation to Codex in background |
-| `/codex:status` `/codex:result` `/codex:cancel` | Manage background Codex jobs |
-| `/codex:setup` | Check CLI readiness and manage review gate |
+| `/codex:status` / `/codex:result` / `/codex:cancel` | Manage background Codex jobs |
 
-### MCP Servers
+### MCP servers
 
-[Model Context Protocol](https://modelcontextprotocol.io) servers for external data access during sessions.
-
-| Server | What it provides | Setup |
-|--------|-----------------|-------|
-| `context7` | Live library/framework docs (React, Tailwind, AWS SDK, etc.) | Built-in |
+| Server | What | Setup |
+|---|---|---|
+| `context7` | Live library/framework docs | Built-in |
 | `obsidian` | Read/write access to Obsidian vault | Built-in |
-| `markitdown` | Convert DOCX, PPTX, XLSX, EPub, large PDFs, and YouTube URLs to markdown | Global install |
-| `youtube-transcript` | Fetch YouTube video transcripts via InnerTube API | Global install |
+| `markitdown` | DOCX, PPTX, XLSX, EPub, large PDFs, YouTube → markdown | Global install |
+| `youtube-transcript` | YouTube transcripts via InnerTube | Global install |
 | `mempalace` | Semantic search over conversation history + agent diary | `setup-memory.sh` |
-| `graphify` | Knowledge graph queries (BFS/DFS, node lookup, community stats) | `setup-memory.sh` |
-
-### Claude Code Native
-
-| Skill | What it does |
-|-------|-------------|
-| `/simplify` | Review changed code for reuse and quality |
-| `/loop` | Recurring checks (e.g., `/loop 5m /codex:status`) |
-| `/schedule` | Cron-scheduled remote agents |
-| `/claude-api` | Build apps with Claude API / Anthropic SDK |
+| `graphify` | Knowledge graph queries | `setup-memory.sh` |
 
 ---
 
-## Folder Structure
+## Folder structure
 
 ```
 iago-os/
+  runtime/                  # v2 daemon (Node 20 + TS strict — separate project)
+    agent-runtime/
+      registry.ts           # AgentRuntime polymorphic interface + module-scope registry
+      types.ts              # AgentShape, AgentHandle, AgentMessage, SpawnOpts...
+      pty/claude-pty.ts     # Shape 1 (PTY) — Phase 1 reference adapter
+    daemon/                 # agent-manager, file-bus, IPC server, session-log, heartbeat, cron stub
+    telegram/               # approval handshake + per-agent file-bus tagging
+    deploy/                 # systemd unit, cutover.sh, rollback.sh, test-cutover.mjs
+    migration/              # Per-phase audit + rollback docs
+    integration/            # End-to-end Vitest harness (hello-world flow)
+
   .claude/
-    settings.json             # Hook wiring
-    skills/                   # 37 skill definitions
-    agents/                   # 3 bases + 13 capabilities + 12 profiles
-    rules/                    # 8 behavioral rules (TDD, debugging, git, etc.)
-  .iago/
-    hooks/                    # 8 hooks + shared lib
-    state/                    # Runtime state (sessions, usage log)
-  .github/
-    workflows/
-      claude.yml              # PR review via Claude Code Action
-      claude-review-fix.yml   # Async review-fix loop
-  templates/
-    client-project/           # Client project template
-    internal-project/         # Internal project template
-    memory/                   # Memory stack configs (wing_config, session-diary, etc.)
+    settings.json           # Hook wiring
+    skills/                 # 37 skill definitions
+    agents/                 # 3 bases + 13 capabilities + 12 profiles
+    rules/                  # 8 behavioral rules (TDD, debugging, git, execution-pipeline...)
+
+  .iago/                    # Workflow artifacts
+    plans/                  # Per-phase / per-feature plan files
+    summaries/              # Pipeline run summaries
+    reviews/                # Per-PR Opus + Codex review artifacts
+    runs/                   # Per-wave dispatch logs
+    decisions/              # ADRs
+    learnings/              # Accumulated review patterns
+    hooks/                  # 8 hooks + shared lib
+    state/                  # Runtime state (sessions, usage log)
+    STATE.md                # Always-loaded digest
+    CONTEXT.md              # L2 stage contract
+
+  .github/workflows/
+    claude.yml              # PR review via Claude Code Action
+    claude-review-fix.yml   # Async review-fix loop
+
   scripts/
-    new-client.sh/.ps1        # Scaffold new project
-    sync-skills.sh/.ps1       # Sync skills/agents/rules to project or globally
-    setup-memory.sh/.ps1      # Install memory stack (MemPalace + Graphify)
-    execute-pipeline.sh       # Cross-session review pipeline (8-stage)
-    review-checks/            # 10 review modules (baseline, amplify, api, auth, backend, data-integrity, i18n, infra, patterns, react)
-    usage-report.sh/.ps1      # Usage analytics from telemetry
-    validate-hooks.sh         # CI: hook validation
-    validate-skills.sh        # CI: skill validation
+    execute-pipeline.sh     # 8-stage cross-session review pipeline
+    review-checks/          # 11 review modules (baseline, amplify, api, auth, backend,
+                            #   data-integrity, i18n, infra, patterns, react, shell-deploy)
+    new-client.sh / .ps1    # Scaffold new client project
+    sync-skills.sh / .ps1   # Sync skills to project or globally
+    setup-memory.sh / .ps1  # Install MemPalace + Graphify
+    lib/                    # Shared bash + node helpers
+
+  templates/
+    client-project/         # Client project template
+    internal-project/       # Internal project template
+    memory/                 # Memory stack configs
+
   docs/
-    MANUAL.md                 # Complete usage manual
-    SETUP.md                  # First-time setup (Windows + macOS)
-    ARCHITECTURE.md           # How it works under the hood
-    WORKFLOW.md               # Workflow phases explained
-    automations/              # Trigger templates + pipeline specs
-    patterns/                 # Industry domain reference docs
-  n8n/                        # Optional: n8n visual orchestration
-  CLAUDE.md                   # Root config — stack, standards, workflow
+    ARCHITECTURE.md         # How iaGO-OS works under the hood
+    SETUP.md                # First-time setup (Windows + macOS)
+    MANUAL.md               # Complete usage manual
+    WORKFLOW.md             # Phase flow, state transitions, artifact locations
+    specs/                  # Vision specs, ADRs, feature specs (iago-os-v2-vision.md is canonical)
+
+  CLAUDE.md                 # Root config — stack, standards, workflow
 ```
 
 ---
 
 ## Prerequisites
 
-| Tool | Min Version | Install | Verify |
-|------|-------------|---------|--------|
+| Tool | Min version | Install | Verify |
+|---|---|---|---|
 | **Node.js** | 20+ | [nodejs.org](https://nodejs.org/) | `node --version` |
 | **Git** | 2.30+ | [git-scm.com](https://git-scm.com/) | `git --version` |
 | **Claude Code** | Latest | `npm install -g @anthropic-ai/claude-code` | `claude --version` |
-| **AWS CLI** | 2.x | [AWS CLI](https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html) | `aws --version` |
 | **GitHub CLI** | 2.x | [cli.github.com](https://cli.github.com/) | `gh --version` |
+| **AWS CLI** | 2.x | [AWS docs](https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html) | `aws --version` |
 
 Optional:
 
 | Tool | What for | Install |
-|------|----------|---------|
-| **Codex CLI** | Cross-model GPT-5.5 review (requires ≥ 0.125.0 for `gpt-5.5`) | `npm install -g @openai/codex@latest` |
+|---|---|---|
+| **Codex CLI** | Cross-model GPT-5.5 review (≥ 0.125.0 for `gpt-5.5`) | `npm install -g @openai/codex@latest` |
 | **Python 3.10+** | Memory stack (MemPalace + Graphify) | [python.org](https://python.org/downloads/) |
 | **Playwright** | E2E testing | `npx playwright install` |
+| **GNU coreutils** | macOS only — for `gtimeout` / `gsort` used by `execute-pipeline.sh` | `brew install coreutils` |
 
-## Tech Stack
+---
 
-Projects built with iaGO-OS use (configurable per project):
+## Tech stack
 
-- **Frontend:** React 19 + Vite + TypeScript (strict) + TailwindCSS 4 + ShadCN/UI + Framer Motion + GSAP + Lenis
-- **Backend:** AWS Amplify Gen 2 + Lambda + API Gateway + DynamoDB + Cognito + SES
-- **Agents:** Claude SDK + LangGraph + n8n
-- **Testing:** Vitest + Playwright
-- **Tooling:** Biome (formatter + linter)
+| Layer | Stack |
+|---|---|
+| **OS runtime (v2)** | Node 20 + TypeScript strict + ESM; Hostinger VPS (Debian 13) + Tailscale; systemd; SQLite (cost ledger) + JSON/JSONL (everything else); no Docker, no Postgres, no ORMs |
+| **Client projects** | React 19 + Vite + TypeScript strict + TailwindCSS 4 + ShadCN/UI + Framer Motion + GSAP + Lenis |
+| **Client backend** | AWS Amplify Gen 2 + Lambda + API Gateway + DynamoDB + Cognito + SES |
+| **Agents** | Claude SDK + LangGraph + n8n |
+| **Testing** | Vitest (unit/integration) + Playwright (E2E) |
+| **Tooling** | Biome (formatter + linter) — never Prettier, ESLint, gofmt |
 
-## Built On
+---
 
-iaGO-OS synthesizes patterns from six open-source Claude Code configurations:
+## Built on
 
-| Project | What we took |
-|---------|-------------|
+iaGO-OS synthesizes patterns from upstream Claude Code configurations and v2 adopts primitives from cortextOS + Hermes.
+
+| Upstream | What we took |
+|---|---|
+| [cortextOS](https://github.com/grandamenium/cortextos) | PTY adapter per runtime, `O_EXCL` file-lock task claiming, file-based approval handshake, `.daemon-stop` crash markers, multi-org agent resolution, `session.jsonl` replay, subagent semantics, heartbeat health, IPC server, full Next.js dashboard |
+| [Hermes v0.11](https://github.com/NousResearch/hermes-agent) | Pre-LLM cron wake gate, shell-hook matchers, MCP sampling caps + rate-limiter, compression-threshold safety valve, parallel delegation limit |
 | [Everything Claude Code](https://github.com/affaan-m/everything-claude-code) | Session lifecycle model, post-edit pipeline, config protection |
-| [Ruflo](https://github.com/ruvnet/ruflo) | Token tracking from JSONL, context injection, statusline pattern |
-| [Get Shit Done](https://github.com/gsd-build/get-shit-done) | HANDOFF.json pause/resume, compaction warnings |
+| [Ruflo](https://github.com/ruvnet/ruflo) | Token tracking from JSONL, context injection, statusline |
+| [Get Shit Done](https://github.com/gsd-build/get-shit-done) | HANDOFF.json pause/resume |
 | [Paperclip](https://github.com/paperclipai/paperclip) | Multi-client isolation model |
-| [The Architect](https://github.com/Hainrixz/the-architect) | Agent-produces-agent-config pattern |
 | [Superpowers](https://github.com/obra/superpowers) | Verification discipline, anti-performative-agreement rules |
+
+---
 
 ## Documentation
 
-| Doc | What it covers |
-|-----|---------------|
-| **[Usage Manual](docs/MANUAL.md)** | Complete how-to: workflow walkthrough, every mode, configuration, multi-client |
-| [Setup Guide](docs/SETUP.md) | First-time installation (Windows + macOS) |
-| [Architecture](docs/ARCHITECTURE.md) | How iaGO-OS works under the hood |
-| [Skills Reference](.claude/rules/available-skills.md) | Full catalog with triggers, arguments, examples |
-| [Workflow](docs/WORKFLOW.md) | Phase flow, state transitions, artifact locations |
-| [Trigger Templates](docs/automations/trigger-templates.md) | 6 ready-to-use scheduled automations |
-| [n8n Pipeline](n8n/README.md) | Cross-session visual orchestration |
+| Doc | Covers |
+|---|---|
+| [docs/specs/iago-os-v2-vision.md](docs/specs/iago-os-v2-vision.md) | **Canonical v2 vision** — 5-shape agent taxonomy, phase sequencing, primitive provenance |
+| [docs/MANUAL.md](docs/MANUAL.md) | Complete how-to: workflow walkthrough, every mode, multi-client |
+| [docs/SETUP.md](docs/SETUP.md) | First-time installation (Windows + macOS) |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | How iaGO-OS works under the hood |
+| [docs/WORKFLOW.md](docs/WORKFLOW.md) | Phase flow, state transitions, artifact locations |
+| [runtime/README.md](runtime/README.md) | v2 daemon adapter authoring guide |
+| [.claude/rules/available-skills.md](.claude/rules/available-skills.md) | Skill + agent catalog with triggers, args, examples |
+| [.iago/STATE.md](.iago/STATE.md) | Live digest — what shipped, what's in flight, known issues |
+
+---
 
 ## License
 
