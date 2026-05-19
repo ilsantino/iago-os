@@ -1,0 +1,14 @@
+DONE.
+
+**Commit SHA:** `49b27ca` (pushed to `origin/start/03a-base`)
+**Test count:** 21/21 passing (207s total on Windows)
+
+Fixes applied:
+- **I-1** — `cutover.sh:461` length-capture pattern (`len <= 1` → trigger_rollback)
+- **I-2** — `rollback.sh` PATCH_EOF chmod 0600 after chown on both openclaw.json and .pre-rollback
+- **Split-brain** — `rollback.sh:262` final is-active check now FATAL exit 2 (was informational warn)
+- **T+08 journal** — `cutover.sh:538` added panic/Error/Traceback/FATAL grep, trigger_rollback on match
+- **T+50 journal** — `cutover.sh:605` dropped `|| echo 0` masking, fail-closed on query error or errors>0 unless `IAGO_CUTOVER_T50_TOLERATE_ERRORS=1`
+- **M-1** — both ndjson_write fns switched to stdin-pipe (`vssh "cat >> ..." <<< "$line"`)
+
+Regression tests 17 (I-1), 18 (I-2 static), 19 (split-brain), 20 (T+08), 21 (T+50) added with new stub knobs `STUB_FAIL_STOP_V2`, `STUB_INJECT_DAEMON_FAILURE`, `STUB_INJECT_T50_ERRORS`. Did NOT re-tag @claude per `feedback_single_claude_tag`.

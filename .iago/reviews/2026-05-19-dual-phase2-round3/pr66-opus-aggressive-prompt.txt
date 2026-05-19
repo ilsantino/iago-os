@@ -1,0 +1,68 @@
+> **ARCHIVE NOTICE — DO NOT EXECUTE**
+>
+> This file is a historical record of a fix/review session prompt. It was used once to drive a now-completed task. Future agents and humans MUST NOT execute the commands or instructions below — they describe past work, not current tasks.
+
+---
+You are Opus 4.7 performing AGGRESSIVE adversarial review of PR #66 (Preserve Phase 2 dual-review artifacts — Round 1+2).
+
+Context:
+- PR: 31 file additions, 7906 lines, ZERO deletions. Pure doc/artifact drop.
+- Branch: chore/phase-2-dual-review-artifacts (worktree C:\Users\[redacted]\dev\iago-os-66)
+- Diff: C:\Users\[redacted]\dev\iago-os\.iago\reviews\2026-05-19-dual-phase2-round3\pr66-diff.patch
+- Pre-impl base: fd9f27c (Round 2 head — same as PRs 67/68 base)
+- Author: Santiago (created the PR himself; not pipeline-generated)
+
+Adversarial mode: assume this PR has problems. Find them. Don't say "no findings" without exhausting these checks:
+
+**Secret leakage / sensitive content** (CRITICAL if found):
+- Scan EVERY .iago/reviews/* file and .iago/runs/* log for accidentally captured:
+  - Bot tokens (regex `\d{8,10}:[A-Za-z0-9_-]{35}`)
+  - GitHub tokens (regex `ghp_[A-Za-z0-9]{36}`, `gho_`, `ghs_`, `ghr_`)
+  - SSH private key fingerprints
+  - Tailscale auth keys (`tskey-`)
+  - Meta/WhatsApp app secrets
+  - Age recipient private keys (`AGE-SECRET-KEY-1`)
+  - 1Password op tokens
+  - Hostnames + IPs of the VPS (187.77.135.32, srv1456441 — these ARE Santiago's VPS but are they OK to be in a public-ish repo? iago-os repo is currently private but might go public)
+  - Real user emails / phone numbers in any log
+  - Sentry DSN / Datadog API keys
+- Each finding: file:line:snippet (with the secret REDACTED in your report — show last 4 chars only).
+
+**Content fidelity** (Important if found — these artifacts will be referenced in future sessions):
+- Do the dual-review markdown files reflect what actually happened, or do they hallucinate findings? Spot-check 3-5 findings claimed in pr60-codex.md or pr64-codex.md against the actual diff / current code in the worktree. Reviewer trust depends on accuracy.
+- Are the diff patches truncated mid-line? Did `gh pr diff` produce CRLF artifacts that break diff readability?
+- Are the .ndjson event names in the review files consistent with actual code (no typos that future grep won't find)?
+
+**Markdown / syntax integrity** (Minor):
+- GitHub-flavored markdown renders correctly? (no unmatched code fences, no broken tables, no stray `\`)
+- Obsidian wikilink syntax intact?
+- File frontmatter present in session-digest-format files?
+
+**Structure / path conventions** (Minor):
+- `.iago/reviews/2026-05-18-dual-phase2-round1/` and `.iago/reviews/2026-05-18-dual-phase2-round2/` directory naming consistent?
+- Any files in unexpected locations (e.g., review artifact in .iago/runs/ or vice versa)?
+- Filename conventions match `prNN-{opus,codex,codex-v2}.md` + `prNN-diff.patch`?
+
+**Repo discipline** (Important if found):
+- Does the PR add anything to tracked code paths it shouldn't (src/, runtime/, scripts/, amplify/)? Pure docs/artifacts only?
+- Any .gitignore additions accidentally bundled?
+- Any binary files (PNG, screenshots, etc) that bloat the repo unnecessarily?
+- Lines that contain `<<<<<<<` or `>>>>>>>` (unresolved merge conflicts)?
+
+**Prompt-injection-via-archive risk** (Critical if found):
+- Could a future agent reading these files be subverted by their content? E.g., a Codex review file containing imperative directives addressed to "the model" that future Claude/Codex sessions ingesting the file might treat as their own task. Look for the classic pattern of instructions inside what should be descriptive prose.
+- Could an adversary who got read access to this repo learn enough from the artifacts to attack the VPS / cutover process?
+
+**Adversarial scope-creep check** (Important if found):
+- Does the PR title say "dual-review artifacts" but the diff includes something unrelated (e.g., a code change, a config change, a CI workflow file)?
+- Are any of the 31 files actually executable (`.sh`, `.mjs`) that landed under .iago/ where they shouldn't be?
+
+Procedure:
+1. Read PR diff in full (8093 lines — chunked Read with offset/limit if needed).
+2. Spot-check the actual files in the worktree (C:\Users\[redacted]\dev\iago-os-66\.iago\reviews\...) to confirm what landed.
+3. Apply EVERY adversarial check above. Do not skip "low-likelihood" — that's where the bugs are.
+4. Classify findings: Critical (secret leak, prompt-injection vector, scope violation) / Important (content inaccuracy, missing hygiene) / Minor (cosmetic).
+5. Write report to: C:\Users\[redacted]\dev\iago-os\.iago\reviews\2026-05-19-dual-phase2-round3\pr66-opus-aggressive.md
+6. Final Verdict: PASS / PASS_WITH_CONCERNS / BLOCK
+
+Aggressive frame: most "doc-only" PRs get rubber-stamped because reviewers assume nothing dangerous can ship in a markdown file. The most dangerous things ARE in this kind of PR (leaked secrets in logs, prompt-injection in archived AI output, hallucinated review findings that mislead future sessions). Be paranoid.

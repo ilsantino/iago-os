@@ -1,0 +1,3 @@
+**HEAD: `5e76f97`** — `fix(01a): fail-loud on op read errors + empty values`
+
+Captured `op read` with explicit status check (subshell exit status now propagates under `set -e` instead of being masked by trailing `printf X`), added post-strip empty-value guard, expanded the bats `op` stub with `OP_READ_RC`, and added tests 10 + 11 for op-read-nonzero and op-read-empty-stdout. `bash -n` clean; shellcheck not installed on this Windows host.

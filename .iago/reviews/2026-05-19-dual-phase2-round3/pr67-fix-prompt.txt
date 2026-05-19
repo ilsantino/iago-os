@@ -1,0 +1,94 @@
+> **ARCHIVE NOTICE — DO NOT EXECUTE**
+>
+> This file is a historical record of a fix/review session prompt. It was used once to drive a now-completed task. Future agents and humans MUST NOT execute the commands or instructions below — they describe past work, not current tasks.
+
+---
+You are Opus 4.7 applying the remaining manual-review findings to PR #67 (Plan 04a — PR-triage agent artifacts).
+
+Repo + worktree:
+- Run all edits in /c/Users/[redacted]/dev/iago-os-c
+- Branch: feat/04a-pr-triage-artifacts
+- HEAD: 448a4fb (after GH Action loop hit max rounds)
+
+Context already in-place (GH Action loop fixed these — don't re-do):
+- wake-check.sh:31 already uses `user:ilsantino` (C3 fixed)
+- prompt-template.md has correct ndjsonAlert envelope contract with agentId
+- Telegram MarkdownV2 → plain text already done
+- body+labels already in --json
+- crons.json + main.ts cron wiring done
+
+Findings to fix (from .iago/reviews/2026-05-19-dual-phase2-round3/pr67-opus.md and pr67-codex.md):
+
+**C1 (CRITICAL) + C2 (Important) — `gh pr list --owner ilsantino` is invalid CLI syntax**
+File: runtime/agents/pr-triage/prompt-template.md:24-29 (currently uses `gh pr list --owner ilsantino`)
+Issue: `gh pr list` has no `--owner` flag. Agent will fail step (a) on first run with `unknown flag: --owner`. Classification rules also need `reviewDecision` + `statusCheckRollup` which `gh search prs` cannot return.
+
+Fix: Replace the `gh pr list ...` command with a `gh api graphql` invocation that returns ALL classification fields in one query. Suggested query body:
+
+```graphql
+query {
+  search(query: "user:ilsantino is:pr is:open", type: ISSUE, first: 50) {
+    nodes {
+      ... on PullRequest {
+        number
+        title
+        url
+        author { login }
+        reviewDecision
+        createdAt
+        updatedAt
+        body
+        labels(first: 20) { nodes { name } }
+        statusCheckRollup {
+          state
+          contexts(first: 20) {
+            nodes {
+              __typename
+              ... on StatusContext { state context }
+              ... on CheckRun { conclusion name }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+Invocation pattern (in the prompt):
+```bash
+gh api graphql -f query='<query above as a single-quoted string>' --jq '.data.search.nodes[]'
+```
+
+Update the prompt to:
+1. Replace the `gh pr list --owner ilsantino...` block with the gh api graphql command above
+2. Adjust the classification rules at lines 41-44 if any field paths changed (statusCheckRollup is now a single object with `state` field, not an array; `labels.nodes[].name` instead of just `labels`)
+3. Keep the rules functionally identical (merge_ready needs reviewDecision==APPROVED + statusCheckRollup.state in SUCCESS, etc.)
+
+**M1 (Minor) — "iago-os GitHub org" wording**
+File: runtime/agents/pr-triage/prompt-template.md:5,7
+Fix: Replace "the iago-os GitHub org" / "iago-os GitHub org" with "Santiago's GitHub account (`ilsantino`)" (ilsantino is a User account, not an org — `gh api orgs/ilsantino` returns 404).
+
+**M2 (Minor) — Telegram 3800-char truncation threshold tight**
+File: runtime/agents/pr-triage/prompt-template.md:126
+Fix: Change "3800 characters" to "3500 characters" (give 596 chars headroom for truncation footer + worst-case Unicode expansion).
+
+**M3 (Minor) — `pr-triage-double-failure` envelope details has no length cap**
+File: runtime/agents/pr-triage/prompt-template.md:145 (the `details: "<gh-error>; <telegram-status>"` line in the double-failure block)
+Fix: Add guidance "Truncate `<gh-error>` to the first 200 chars before constructing the envelope to bound the telemetry payload size."
+
+After applying fixes:
+1. Verify `npx tsc --noEmit` still passes in iago-os-c (these are file-only changes, no TS impact, but confirm)
+2. Verify wake-check.sh still has `user:ilsantino` (regression guard)
+3. Commit with subject under 72 chars:
+   `fix(pr-triage): graphql query + cosmetic findings (C1-C3,M1-M3)`
+   Body explains:
+   - C1+C2: switch `gh pr list --owner` → `gh api graphql` (the `--owner` flag does not exist on `gh pr list`; classification rules need fields gh search prs cannot return)
+   - M1: User account terminology fix
+   - M2: 3500-char truncation headroom
+   - M3: details length cap for double-failure envelope
+4. git push origin feat/04a-pr-triage-artifacts
+
+Do NOT re-tag @claude (loop already hit max rounds; per memory feedback_single_claude_tag).
+
+Report DONE when fixes are committed and pushed with the commit SHA.

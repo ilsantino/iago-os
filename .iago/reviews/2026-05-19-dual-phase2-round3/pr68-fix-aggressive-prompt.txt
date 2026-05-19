@@ -1,0 +1,87 @@
+> **ARCHIVE NOTICE — DO NOT EXECUTE**
+>
+> This file is a historical record of a fix/review session prompt. It was used once to drive a now-completed task. Future agents and humans MUST NOT execute the commands or instructions below — they describe past work, not current tasks.
+
+---
+You are Opus 4.7 applying CRITICAL findings from the aggressive Round 3 review to PR #68 (Plan 03a — cutover + rollback executables + dry-run harness).
+
+Worktree: /c/Users/[redacted]/dev/iago-os-d
+Branch: start/03a-base
+HEAD: 49b27ca
+
+Review: C:\Users\[redacted]\dev\iago-os\.iago\reviews\2026-05-19-dual-phase2-round3\pr68-opus-aggressive.md
+
+PRIORITY: this PR ships scripts that run against the real VPS during cutover (Sunday 2026-05-25 8pm US/Mexico). Fixes must be tight.
+
+Apply these fixes:
+
+**C-1 — Add `set -o pipefail` to T+08 and T+50 remote pipes**
+File: `runtime/deploy/cutover.sh`
+
+The T+05 fix from the previous round only addressed systemd-creds. T+08 and T+50 still have unprotected remote pipes.
+
+T+08 (around line 553): change
+```bash
+if vssh "journalctl -u iago-os-v2-daemon.service --since '5 minutes ago' --no-pager | grep -qE '...'"; then
+```
+to:
+```bash
+if vssh "bash -c 'set -o pipefail; journalctl -u iago-os-v2-daemon.service --since \"5 minutes ago\" --no-pager | grep -qE \"...\"'"; then
+```
+(or use the explicit-bash variant that the existing helper supports — pick whichever the `vssh` helper handles best).
+
+T+50 (around line 618-635): the `if ! err_count=$(vssh "journalctl ... | wc -l")` block. Change the remote command to also use `bash -c 'set -o pipefail; ...'`. If pipefail makes wc fail when journalctl errors, that triggers the `if !` branch correctly.
+
+Add `STUB_FAIL_JOURNALCTL_PATTERN` knob to `runtime/scripts/test-cutover.fixtures/stubs/tailscale`. When set, the stub's journalctl branch exits non-zero. Add tests 22 + 23:
+- Test 22: T+50 with STUB_FAIL_JOURNALCTL_PATTERN injected — assert trigger_rollback fires (unless IAGO_CUTOVER_T50_TOLERATE_ERRORS=1 set)
+- Test 23: T+50 with STUB_INJECT_T50_ERRORS=5 AND IAGO_CUTOVER_T50_TOLERATE_ERRORS=1 — assert WARN logged and cutover continues
+
+**T-1 — Root-cause and fix test 7 hang**
+File: `runtime/scripts/test-cutover.mjs` (test 7 — "happy-path rollback skip-token") and `runtime/deploy/rollback.sh`
+
+The test hangs after "ROLLBACK COMPLETE." even with `--test-concurrency=1`. Likely cause: the EXIT trap interacts with `release_remote_lock` in a way that holds the process open.
+
+Investigation steps:
+1. Run `cd /c/Users/[redacted]/dev/iago-os-d/runtime && node --test --test-name-pattern='happy-path rollback' scripts/test-cutover.mjs` with a 30s timeout — does it hang?
+2. Add `set -x` temporarily inside rollback.sh's EXIT trap to trace what runs
+3. Check if `release_remote_lock` waits on a process that never exits (vssh stub hanging?)
+4. The owner-checked release uses `bash -s` heredoc — verify the stub correctly responds to the release sentinel without blocking
+
+Fix once root cause is identified. Common causes:
+- Background process not awaited
+- Open file descriptor on stub log
+- vssh stub's signal handling
+- `wait` with no PID
+
+After fix: `cd /c/Users/[redacted]/dev/iago-os-d/runtime && node --test scripts/test-cutover.mjs` should show 21/21 (or 23/23 with new C-1 tests) in BOTH default concurrent mode AND `--test-concurrency=1` serial mode.
+
+**I-1A — Bump systemd-creds length threshold from `> 1` to `>= 40`**
+File: `runtime/deploy/cutover.sh` (around line 472)
+Telegram bot tokens are 46+ chars; gh tokens are 40+ chars. `len > 1` accepts 2-byte garbage. Change to `len >= 40`. Update test 17 (the I-1 regression test) to assert the new threshold.
+
+**I-2A — Add `umask 0077` to PATCH_EOF body**
+File: `runtime/deploy/rollback.sh` (the PATCH_EOF heredoc body)
+After `: "${FRESH_TOKEN:?...}"`, add `umask 0077`. This makes the `jq > .tmp` redirect create the file at 0600 from birth, closing the race window between mv and chmod.
+
+**I-3 — Retry-once on T+05 systemd-creds verification**
+File: `runtime/deploy/cutover.sh` (around line 469)
+Wrap the systemd-creds check in a 2-attempt loop with a 2-second sleep between. Only trigger rollback if BOTH attempts fail. This prevents transient ssh/network blips from forcing operators to re-rotate the BotFather token.
+
+**M-1 — Extend T+08 grep patterns for Node JSON logger**
+File: `runtime/deploy/cutover.sh` (T+08 grep block)
+Current: `grep -qE 'panic|Error: |Traceback|FATAL|terminated abnormally'`
+Add Node-specific patterns: `|level":50|level":"error"|level":"fatal"|UnhandledPromiseRejection|"err":`
+Final: `grep -qE 'panic|Error: |Traceback|FATAL|terminated abnormally|level":50|level":"error"|level":"fatal"|UnhandledPromiseRejection|"err":'`
+
+**Skip M-2** — already covered by the new C-1 stub knob + tests 22-23.
+
+After all fixes:
+1. Run full harness: `cd /c/Users/[redacted]/dev/iago-os-d/runtime && node --test scripts/test-cutover.mjs` — verify pass count
+2. Run serial: `cd /c/Users/[redacted]/dev/iago-os-d/runtime && node --test --test-concurrency=1 scripts/test-cutover.mjs` — verify pass count matches
+3. `bash -n runtime/deploy/cutover.sh runtime/deploy/rollback.sh` — must pass
+4. Commit with subject under 72 chars:
+   `fix(deploy): pipefail T+08/T+50 + fix test 7 hang + threshold + umask`
+5. Body: list each fix with file:line refs.
+6. Push: `git push origin start/03a-base`
+
+Report DONE with commit SHA + final test pass count when pushed. Do NOT re-tag @claude (single-tag rule).

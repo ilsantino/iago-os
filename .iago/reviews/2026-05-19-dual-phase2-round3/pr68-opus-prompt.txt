@@ -1,0 +1,37 @@
+> **ARCHIVE NOTICE — DO NOT EXECUTE**
+>
+> This file is a historical record of a fix/review session prompt. It was used once to drive a now-completed task. Future agents and humans MUST NOT execute the commands or instructions below — they describe past work, not current tasks.
+
+---
+You are Opus 4.7 performing an adversarial review of PR #68 (Phase 2 / Plan 03a — cutover + rollback executables + dry-run harness).
+
+Context:
+- Repo: C:\Users\[redacted]\dev\iago-os (you are reading from main repo; PR branch is start/03a-base in worktree C:\Users\[redacted]\dev\iago-os-d)
+- Plan: C:\Users\[redacted]\dev\iago-os\.iago\plans\feature-phase-2-vps-bootstrap\03a-cutover-rollback-executables.md
+- Diff: C:\Users\[redacted]\dev\iago-os\.iago\reviews\2026-05-19-dual-phase2-round3\pr68-diff.patch
+- Pre-impl base: fd9f27c (Round 2 HEAD)
+- Pipeline already ran local review + Codex stage. Local review caught 2 Criticals (octal parse `T+08`, 3-second daemon-start window vs documented 30s rollback trigger) + 6 minors. Codex stage caught 3 findings (HIGH wrong-user systemctl, HIGH disable-failure-tolerated, MED lock-marker ownership). CODEX FIX session reported all P0/P1 fixed + 3 new harness tests (13, 14, 15). Verify these are actually in the diff.
+
+What to look for (cutover.sh + rollback.sh wrap the spec § 8 T-15 → T+60 sequence; test-cutover.mjs is a Vitest stub harness that replaces systemd/tailscale/age/curl with mock binaries):
+- **Idempotency**: every T+N step must be safely re-runnable (operator may set IAGO_CUTOVER_RESUME_FROM=T+05 after manual recovery). Verify each step has a guard that detects "already done" state and skips. The octal parse fix should make `(( 10#$cur >= 10#$resume ))` work for T+05, T+07, T+08, T+09.
+- **Lock semantics**: remote flock + persisted PID-marker pattern. Owner-checked release prevents another run from accidentally deleting the marker. Verify the bash -s heredoc sentinel approach the fix claims to use actually works (the heredoc runs in a remote subshell — the sentinel must be parseable AND the marker comparison must use the actual file contents not env). Confirm rollback.sh has the same fix applied (Codex said "apply to rollback.sh too").
+- **systemctl user context**: OpenClaw runs as `ilsantino` user unit. The fix should query `is-active openclaw-gateway` via `su - ilsantino -c` not root --user. Both cutover.sh and rollback.sh should use the same approach.
+- **stop+disable separation**: the fix says rollback.sh now issues separate stop (warn) + disable (fatal) + is-enabled assertion. Verify the diff matches this claim. Also verify cutover.sh's openclaw-stop path has the same hardening.
+- **FRESH_TOKEN handling**: token forwarded via SSH SendEnv, never on argv, never logged. read -rs for silent token entry. Don't regress this from the original implementation.
+- **Rollback safety**: trigger_rollback releases the local lock before invoking rollback.sh (so rollback can acquire). Sets LOCK_MARKER="" so EXIT trap doesn't double-release. set -euo pipefail propagates rollback's exit code if it fails.
+- **Test harness**: 15 tests claimed. Verify test 13/14/15 actually cover the 3 Codex fixes (OpenClaw query failure, disable failure, owner-mismatched lock cleanup). Verify test 9 (RESUME_FROM=T+10) plus a new test covering T+08 octal parse boundary if the original test 9 was insufficient.
+- **Spec § 8 alignment**: read the spec at .iago/research/2026-05-16-phase-2-vps-bootstrap-spec.md if needed. Each T+N step in cutover.sh must implement what § 8 says without skipping or reordering. The 3-second daemon-start fix should poll is-active in a loop (every 2s for up to 30s) before triggering rollback.
+- **NDJSON telemetry**: every step writes structured NDJSON (kind, ts, step, result, detail). No tokens or full Meta response bodies in detail field. Confirm.
+- **No-mocks-in-prod risk**: test-cutover.mjs is Vitest — confirm it's marked as a test file (lives under runtime/scripts/ but only invoked via npm/vitest, never sourced by cutover.sh). The NOOP_BINARIES stub directory should be vitest-tmpdir only, never end up on a real operator's PATH.
+- **bash -n + shellcheck**: bash -n must pass for both scripts. shellcheck unavailable on Windows host (graceful fallback ok).
+
+Procedure:
+1. Read the plan in full
+2. Read the diff in full (large — 2054 lines)
+3. Read source for: runtime/deploy/cutover.sh, runtime/deploy/rollback.sh, runtime/scripts/test-cutover.mjs from the PR branch (worktree iago-os-d) — fetch latest with git -C ../iago-os-d show start/03a-base:<path> or just cat the worktree file
+4. Read spec excerpts as needed
+5. Apply the checklist above; classify findings as Critical / Important / Minor
+6. Write a structured report with severity, file:line, evidence, recommended fix, and a final Verdict (PASS / PASS_WITH_CONCERNS / BLOCK)
+7. Save to: C:\Users\[redacted]\dev\iago-os\.iago\reviews\2026-05-19-dual-phase2-round3\pr68-opus.md
+
+Be specific and concrete. No vague "consider hardening" findings — every finding must have file:line evidence and a concrete fix.

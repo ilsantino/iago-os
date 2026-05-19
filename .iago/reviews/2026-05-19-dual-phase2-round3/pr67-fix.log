@@ -1,0 +1,10 @@
+DONE. Commit `b475058` pushed to `feat/04a-pr-triage-artifacts`.
+
+Summary:
+- **C1+C2**: `gh search prs --owner ilsantino` → `gh api graphql` block; classification rules adjusted for new shape (`statusCheckRollup.state` object, `labels.nodes[].name`)
+- **M1**: "iago-os GitHub org" → "Santiago's GitHub account (`ilsantino`)" in Role + summary template
+- **M2**: 3800 → 3500 char Telegram threshold (596-char headroom rationale added)
+- **M3**: `<gh-error>` capped to 200 chars in `pr-triage-double-failure` envelope details
+- Errors-section `gh search prs` reference also aligned to `gh api graphql`
+- wake-check.sh unchanged (already has `user:ilsantino` at line 31)
+- No @claude re-tag (loop hit max rounds, per memory rule)

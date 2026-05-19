@@ -1,0 +1,15 @@
+Review complete. Saved to `.iago/reviews/2026-05-19-dual-phase2-round3/pr67-opus.md`.
+
+**Verdict: PASS_WITH_CONCERNS**
+
+Key findings (verified against committed HEAD 3549b37, not the stale diff patch):
+
+**All 4 Codex pipeline findings are correctly fixed** despite the Codex-fix session hitting max-turns (40). MarkdownV2 → plain text, ndjsonAlert envelope contract honored on both sides (prompt writes `agentId` + agent-manager.ts branches on `ndjsonAlert` before registration check), body/labels added to `--json`, crons.json wiring exists in main.ts via `loadAgentCronEntries`.
+
+**One new CRITICAL found by Opus pass:**
+- **C1** — `gh pr list --owner ilsantino` is invalid syntax. `gh pr list` has no `--owner` flag (verified empirically: `unknown flag: --owner`). The Codex fix attempted `gh search prs` but didn't land in the commit. Daily run will fail step (a) and POST `"PR triage failed: unknown flag: --owner"` to Telegram forever. Recommended fix: `gh api graphql` with org-wide PR search returning `reviewDecision` + `statusCheckRollup` (the only command that satisfies both C1 and C2).
+- **C2** (Important, co-located) — Even `gh search prs` cannot return `reviewDecision`/`statusCheckRollup`; classification rules require both. Bundle the fix.
+- **C3** (Important) — wake-check uses `q=org:ilsantino` against a User account; works by undocumented aliasing, recommend `user:ilsantino`.
+- M1-M3 — cosmetic / hardening.
+
+Recommendation: bundle C1+C2+C3 fix into Plan 04b (which is already wiring the PTY dispatch). Phase 2 daemon isn't running on the VPS yet — no production blast radius window.

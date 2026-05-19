@@ -1,0 +1,855 @@
+diff --git a/.iago/runs/round-3-dispatch/04a.log b/.iago/runs/round-3-dispatch/04a.log
+new file mode 100644
+index 0000000..ffd5662
+--- /dev/null
++++ b/.iago/runs/round-3-dispatch/04a.log
+@@ -0,0 +1,250 @@
++[20:05:29] STRESS TEST — skipped (plan already stress-tested)
++[20:05:29] IMPLEMENT — 04a-pr-triage-artifacts
++[20:11:00] Implementation complete
++[20:11:00] BUILD GATE — attempt 1 [mode: sequential]
++[20:11:00] Build passed (tsc 0ms / vite 0ms / mode sequential)
++[20:11:00] CONSOLE GATE — skipped (no Vite config)
++[20:11:01] REVIEW — 04a-pr-triage-artifacts
++warning: in the working copy of '.iago/runs/round-3-dispatch/04a.log', LF will be replaced by CRLF the next time Git touches it
++warning: in the working copy of 'runtime/agents/pr-triage/agent-config.json', LF will be replaced by CRLF the next time Git touches it
++warning: in the working copy of 'runtime/agents/pr-triage/crons.json', LF will be replaced by CRLF the next time Git touches it
++warning: in the working copy of 'runtime/agents/pr-triage/prompt-template.md', LF will be replaced by CRLF the next time Git touches it
++[20:11:02]   review-checks: all modules loaded (209 lines)
++[20:15:04] Review output:
++Confirmed — `set -e` exits on failing command substitution, so the rate-limit branch is unreachable. Now writing the review.
++
++---
++
++PASS 1 — PLAN COMPLIANCE
++
++- **Task 1 (agent-config.json):** Matches spec — `agentId=pr-triage`, `runtimeId=claude-pty`, `authProfile=default`, `autoStart=false`, `cwd=/opt/iago-os`, `org=internal`, `env={}`. Valid JSON. ✓
++- **Task 2 (crons.json):** Matches spec — schedule `0 14 * * *`, wake-check + prompt paths, `outputTaskNamePrefix=pr-triage`, `maxConcurrent=1`, `_comment` field documenting rationale. ✓
++- **Task 3 (prompt-template.md):** 128 lines (in 90-160 range), contains all four bucket names, includes Role / Tools / Algorithm / Constraints / Errors / Termination sections; documents token-redaction, 3800-char truncation, MarkdownV2 escaping, fallback task file on send failure. ✓
++- **Task 4 (wake-check.sh):** 46 lines (in 25-50 range), shebang + `set -euo pipefail`, GH_TOKEN guard, `gh api -i` with status-line grep, rate-limit branch (exit 2), wake-check-tz forensics echo. ✓ on surface — but see Important finding below for a behavioral defect.
++
++PASS 2 — DOMAIN ROUTING
++
++Diff touches: one JSON config (agent-config), one JSON cron config (crons), one prompt-template markdown, one shell script. Domains selected:
++
++- **Baseline (always)** — silent failure, business logic errors.
++- **Backend (loose fit)** — wake-check.sh is the boundary script the daemon spawns; treat as a "thin handler" analog. Severity floors do not apply (no Lambda ARNs/env vars in a hardcoded sense).
++- **Pattern consistency** — compare against existing cron-scheduler `RegisterCronOpts` field names.
++
++Skipped:
++- React, Amplify, API, Auth (frontend/cognito) — no .tsx, no amplify/, no auth modules touched.
++- Data integrity — no aggregates, no money math, no multi-tenant queries.
++- i18n — no Spanish strings.
++- Infra — no amplify/ infra; systemd unit not touched here.
++
++PASS 3 — ADVERSARIAL
++
++Read all four files in full. Cross-cutting checks:
++
++**Critical** — none.
++
++**Important**
++
++1. **wake-check.sh: rate-limit branch is unreachable under `set -e`.** The script declares `set -euo pipefail` at line 12, then assigns `RESPONSE=$(gh api -i '...' 2>&1)` at line 26. `gh api` exits non-zero on any HTTP error (rate-limit 403, auth 401, network failure). Standalone command-substitution assignments propagate the exit status, and `set -e` triggers an immediate exit (confirmed: `bash -c 'set -e; x=$(false); echo alive'` exits 1 without printing). Consequence: the entire `if echo "$STATUS" | grep -qE 'HTTP/[12](\.[0-9])? 200'; then ... else ... rate-limit ... exit 2 ...; fi` block never executes on the rate-limit path that C2 was designed to detect. The script exits with code 1 (from `gh api`), which the cron-scheduler interprets as "no work" (`reason: "wake-check-failed"`), not `"wake-check-rate-limited"`. C2's intended fix is incompletely realized. Fix: `RESPONSE=$(gh api -i '...' 2>&1) || true` (then either inspect `$?` separately or rely solely on the existing status-line grep), or wrap with `set +e ... set -e`. wake-check.sh:26.
++
++2. **Pattern-consistency: field-name mismatch with `RegisterCronOpts`.** `crons.json` uses `"prompt"` (per the plan's migration-scope contract), while `runtime/daemon/cron-scheduler.ts:116` exposes `promptTemplatePath`. The crons.json loader does not yet exist (deferred to 04b daemon wiring per the plan split), so this is a forward-coupling risk: 04b will need to translate `prompt → promptTemplatePath` (and `wakeCheck → wakeCheck`, `outputTaskNamePrefix → outputTaskNamePrefix`, etc.) when reading the JSON. Flag here so 04b implementer does not blindly pass the parsed object to `registerCron`. Plan explicitly specifies `"prompt"`, so 04a matches plan; this is a hand-off note, not a 04a defect.
++
++**Minor**
++
++1. **`crons.json` `_comment` field** depends on a permissive loader. CronScheduler's `RegisterCronOpts` is strict-typed, so 04b's loader must strip `_comment` before calling `registerCron`. Verify in 04b.
++2. **Empty `IAGO_TELEGRAM_ALLOWED_USER_IDS` not guarded** in the prompt template. `cut -d, -f1` on an empty string yields empty `FIRST_ID`, Telegram returns 400, and the fallback task-file path fires — recoverable, but a one-line guard would be cheaper than a wasted POST.
++3. **Fallback task-file naming uses Unix seconds** (`pr-triage__<unix>.json`). Two failures in the same second collide. With daily cron this is improbable; if 04b's polling loop processes the file atomically the second write would overwrite the first. Document the assumption or switch to milliseconds + monotonic counter.
++4. **wake-check.sh: `grep -A 999 '^{'`** assumes the response body starts on a line with `{` (JSON object). `/search/issues` returns an object, so safe. If a future endpoint returns a JSON array `[...]`, the extraction silently fails.
++
++Cross-cutting (auth bypass / data loss / races / rollback):
++- Auth bypass: token redaction explicit in prompt; first-ID recipient only; GH_TOKEN never echoed. ✓
++- Data loss: no destructive writes; only fallback task file creation. ✓
++- Races: `maxConcurrent: 1` documented and enforced by scheduler (cron-scheduler.ts:556). ✓
++- Rollback: artifact-only commit; reversible by file deletion. ✓
++
++Verdict: PASS_WITH_CONCERNS
++[20:15:04] Findings detected — dispatching fix session (round 1)
++[20:18:41] Fix output (exit 0):
++All findings addressed. Summary:
++
++**Important #1 — wake-check.sh set -e bug (FIXED):** Added `|| true` after the `gh api` command substitution so set -e doesn't abort before the rate-limit branch. Verified empirically: `bash -c 'set -e; x=$(false); echo alive'` exits without printing, `... || true` continues. Comment added explaining why the `|| true` is load-bearing.
++
++**Important #2 — `prompt` vs `promptTemplatePath` field-name (NOT FIXED — hand-off note):** Reviewer explicitly flagged "Plan explicitly specifies `prompt`, so 04a matches plan; this is a hand-off note, not a 04a defect." Defer to 04b loader.
++
++**Minor #1 — `_comment` strip in loader (NOT FIXED — hand-off):** Reviewer says "Verify in 04b." Not a 04a defect.
++
++**Minor #2 — empty `IAGO_TELEGRAM_ALLOWED_USER_IDS` guard (FIXED):** Added `if [ -z "$FIRST_ID" ]` branch that sets `HTTP_STATUS=000` to short-circuit straight to the fallback task-file path instead of burning a Telegram 400.
++
++**Minor #3 — fallback task-file collision (FIXED):** Renamed pattern from `pr-triage__<unix>.json` to `pr-triage__<unix-ms>-<pid>.json` in all three prompt-template references; cron-scheduler envelope naming is a separate code path (different test) and remains untouched.
++
++**Minor #4 — `grep -A 999 '^{'` array tolerance (FIXED):** Switched to `grep -A 999 -E '^[{[]'` so the body extraction survives if a future endpoint returns a JSON array.
++
++Bash syntax of wake-check.sh validated. No other source files needed changes.
++warning: in the working copy of '.iago/runs/round-3-dispatch/04a.log', LF will be replaced by CRLF the next time Git touches it
++warning: in the working copy of 'runtime/agents/pr-triage/prompt-template.md', LF will be replaced by CRLF the next time Git touches it
++[20:18:43]   review-checks: all modules loaded (209 lines)
++[20:21:48] Re-review output:
++Verifying all round-1 findings are resolved.
++
++PASS 1 — VERIFY PREVIOUS FINDINGS
++
++- **Important #1 (rate-limit branch unreachable under `set -e`)** — **RESOLVED**. wake-check.sh:29 now has `|| true` after the command substitution. Comment at lines 26-28 explicitly documents the load-bearing nature of `|| true` for the rate-limit branch. The else block (lines 36-43) is now reachable on non-200 responses.
++- **Important #2 (field-name mismatch `prompt` vs `promptTemplatePath`)** — Hand-off note, not a 04a defect. Plan explicitly specifies `"prompt"` in migration-scope contract. 04b loader must translate. No action required in 04a.
++- **Minor #1 (`_comment` field needs permissive loader)** — Deferred to 04b loader. Acceptable per plan-explicit instruction.
++- **Minor #2 (empty `IAGO_TELEGRAM_ALLOWED_USER_IDS` not guarded)** — **RESOLVED**. prompt-template.md:81-92 now guards with synthetic `HTTP_STATUS=000` and explanatory comment; falls through to fallback task-file path.
++- **Minor #3 (fallback task-file naming uses Unix seconds — collision risk)** — **RESOLVED**. prompt-template.md:97 + tools-available (line 15) now spec `<unix-ms>-<pid>` naming via `date +%s%3N`-`$$`.
++- **Minor #4 (`grep -A 999 '^{'` doesn't handle JSON arrays)** — **RESOLVED**. wake-check.sh:35 now uses `-E '^[{[]'` to match both object and array body openers, with comment.
++
++PASS 2 — RE-SCAN CHANGED FILES IN FULL
++
++All four files read end-to-end. No new findings:
++
++- agent-config.json (9 lines): unchanged, plan-compliant.
++- crons.json (8 lines): unchanged, plan-compliant.
++- prompt-template.md (135 lines, within 90-160 range): two fix-edits (empty-recipient guard + ms+pid naming) cleanly applied; no regression to MarkdownV2 escaping, length cap, or token-redaction guidance.
++- wake-check.sh (51 lines, within 25-50 range): `|| true` correctly placed; `set -euo pipefail` still active for the rest of the script; rate-limit branch now reachable; array-opener regex covers future endpoints.
++
++Cross-cutting (auth bypass / data loss / races / rollback):
++- Auth bypass: token-redaction guidance intact; first-ID-only recipient; empty-recipient guard added. ✓
++- Data loss: no destructive writes; only fallback task-file creation, now with PID-disambiguated naming preventing same-second overwrite. ✓
++- Races: `maxConcurrent: 1`; ms+pid fallback file naming prevents two failures in same second from clobbering. ✓
++- Rollback: artifact-only commit; reversible by file deletion. ✓
++
++No remaining Critical, Important, or Minor findings.
++
++Verdict: PASS
++[20:21:48] Review passed
++[20:21:48] CODEX REVIEW — 04a-pr-triage-artifacts
++[20:21:48] Running codex-companion adversarial-review (model from ~/.codex/config.toml)
++[20:25:24] Codex findings:
++(node:19604) [DEP0190] DeprecationWarning: Passing args to a child process with shell option true can lead to security vulnerabilities, as the arguments are not escaped, only concatenated.
++(Use `node --trace-deprecation ...` to show where the warning was created)
++[codex] Starting Codex task thread.
++[codex] Thread ready (019e3e0a-3114-7373-9f89-a07feb2f598f).
++[codex] Turn started (019e3e0a-3578-7583-8ab3-a824079da25d).
++[codex] Assistant message captured: {"verdict":"approve","summary":"No branch diff was provided in the repository context, so the...
++[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git diff --name-on...
++[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git diff --stat fd...
++[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git status --short'
++[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git diff --name-on... (exit 0)
++[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git diff --stat fd... (exit 0)
++[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git status --short' (exit 0)
++[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git rev-parse HEAD'
++[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git diff --stat fd...
++[codex] Command declined: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git rev-parse HEAD' (exit -1)
++[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git diff --cached ...
++[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git diff --stat'
++[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git diff --cached ... (exit 0)
++[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git diff --stat fd... (exit 0)
++[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git diff --stat' (exit 0)
++[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git diff --cached ...
++[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git diff --cached ...
++[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git diff --cached ...
++[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git diff --cached ...
++[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git diff --cached ... (exit 0)
++[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git diff --cached ... (exit 0)
++[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git diff --cached ... (exit 0)
++[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git diff --cached ... (exit 0)
++[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'rg "wakeCheck|outp...
++[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'rg "agent-config|a...
++[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'rg "IAGO_DAEMON_ST...
++[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'rg "CronScheduler|...
++[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'rg "wakeCheck|outp... (exit 0)
++[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'rg "CronScheduler|... (exit 0)
++[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'rg "agent-config|a... (exit 0)
++[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'rg "IAGO_DAEMON_ST... (exit 0)
++[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'gh pr list --help'
++[codex] Command declined: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'gh pr list --help' (exit -1)
++[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'Select-String -Pat...
++[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'Select-String -Pat...
++[codex] Command declined: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'Select-String -Pat... (exit -1)
++[codex] Command declined: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'Select-String -Pat... (exit -1)
++[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'Select-String -Pat...
++[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'Select-String -Pat...
++[codex] Command declined: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'Select-String -Pat... (exit -1)
++[codex] Command declined: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'Select-String -Pat... (exit -1)
++[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command "rg -n gh\\ pr\\ li...
++[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'rg -n -- "--owner|...
++[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'rg -n "search/issu...
++[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'rg -n "ndjsonAlert...
++[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'rg -n -- "--owner|... (exit 0)
++[codex] Command failed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command "rg -n gh\\ pr\\ li... (exit 1)
++[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'rg -n "search/issu... (exit 0)
++[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'rg -n "ndjsonAlert... (exit 0)
++[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'rg -n -C 4 "gh pr ...
++[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'rg -n -C 4 "body o...
++[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command "rg -n -C 5 \"typeo...
++[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'rg -n -C 4 "pr-tri...
++[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'rg -n -C 4 "gh pr ... (exit 0)
++[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'rg -n -C 4 "body o... (exit 0)
++[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command "rg -n -C 5 \"typeo... (exit 0)
++[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'rg -n -C 4 "pr-tri... (exit 0)
++[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'rg -n -C 10 "async...
++[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'rg -n -C 12 "proce...
++[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'rg -n -C 8 "poison...
++[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'rg -n -C 8 "prompt...
++[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'rg -n -C 10 "async... (exit 0)
++[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'rg -n -C 8 "poison... (exit 0)
++[codex] Command failed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'rg -n -C 12 "proce... (exit 1)
++[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'rg -n -C 8 "prompt... (exit 0)
++[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'Get-Content runtim...
++[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'Get-Content runtim... (exit 0)
++[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'Get-Content runtim...
++[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'Get-Content runtim...
++[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'rg -n "loadPersist...
++[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'rg -n "loadPersist... (exit 0)
++[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'Get-Content runtim... (exit 0)
++[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'Get-Content runtim... (exit 0)
++[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'Get-Content runtim...
++[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'Get-Content runtim...
++[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'rg -n "loadConfig|...
++[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'rg -n "loadConfig|... (exit 0)
++[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'Get-Content runtim... (exit 0)
++[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'Get-Content runtim... (exit 0)
++[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'Get-Content runtim...
++[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'Get-Content runtim... (exit 0)
++[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'Get-Content runtim...
++[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'Get-Content runtim...
++[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'rg -n "GH_TOKEN|IA...
++[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'rg -n "GH_TOKEN|IA... (exit 0)
++[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'Get-Content runtim... (exit 0)
++[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'Get-Content runtim... (exit 0)
++[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'rg -n -C 5 "# PR T...
++[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'rg -n -C 3 "--json...
++[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'rg -n -C 3 "body o...
++[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'rg -n -C 5 "# PR T... (exit 0)
++[codex] Command failed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'rg -n -C 3 "--json... (exit 1)
++[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'rg -n -C 3 "body o... (exit 0)
++[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'rg -n -F -- "--jso...
++[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'rg -n -F -- "--jso... (exit 0)
++[codex] Assistant message captured: {"verdict":"needs-attention","summary":"No ship: the added PR-triage config is not wired into...
++[codex] Turn completion inferred after the main thread finished and subagent work drained.
++# Codex Adversarial Review
++
++Target: branch diff against fd9f27c9d03fcab515797a818f32eaf45c2169c3
++Verdict: needs-attention
++
++No ship: the added PR-triage config is not wired into the daemon, and the prompt's primary and fallback delivery paths have concrete failure modes.
++
++Findings:
++- [critical] Cron config is inert because nothing registers it (runtime/agents/pr-triage/crons.json:3-7)
++  `crons.json` declares the daily schedule, wake check, prompt, and concurrency limit, but the production daemon only loads `runtime/daemon-config.json` agents and persisted state; repository search shows `registerCron` is only called in tests and no production code discovers `runtime/agents/*/crons.json`. Inference: this PR-triage agent will never fire in production, so the feature silently does nothing.
++  Recommendation: Wire daemon startup to discover these per-agent cron files and call `CronScheduler.registerCron`/`start`, or put this cron into an existing loaded daemon config path with an integration test proving a task is emitted.
++- [high] Telegram MarkdownV2 payload is malformed by construction (runtime/agents/pr-triage/prompt-template.md:50-64)
++  The required summary shape emits Markdown-style headings and list bullets (`#`, `##`, `-`) while the POST forces `parse_mode=MarkdownV2`. The escaping rule later only tells the agent to escape PR titles and URLs, but Telegram MarkdownV2 also reserves these structural characters. A normal non-empty summary can be rejected with HTTP 400 before the user ever receives the daily triage.
++  Recommendation: Either use plain text/HTML, or specify and test escaping for the entire rendered message, including headings, bullets, counters, dates, author names, and truncation text.
++- [high] Fallback alert files are incompatible with the polling loop (runtime/agents/pr-triage/prompt-template.md:97-104)
++  The prompt tells the agent to write fallback files containing only `ndjsonAlert` and `details`, but `AgentManager.processPendingTask` requires every `tasks/pending/*.json` file to contain a string `agentId`; otherwise it moves the file to `tasks/poisoned` as `missing-agent-id`. The claimed `pr-triage-telegram-send-failed`/`double-failure` telemetry path will not run, hiding exactly the delivery failures it is supposed to surface.
++  Recommendation: Define a real alert envelope that the daemon supports, or extend the polling loop to handle `ndjsonAlert` files before deploying this fallback path; add a test that a failed Telegram POST emits the intended telemetry.
++- [medium] Classification asks for fields the command never fetches (runtime/agents/pr-triage/prompt-template.md:24-28)
++  The PR list command requests `number,title,url,author,reviewDecision,statusCheckRollup,createdAt,updatedAt`, but the `waiting_claude` rule depends on PR body content and labels. Any PR with `@claude` only in the body or only the `claude-review-requested` label will be misclassified or dropped, so the summary can miss actionable Claude-owned PRs.
++  Recommendation: Include `body` and `labels` in the `--json` fields, or change the bucket rules to use only fetched data and add a fixture covering a label-only Claude PR.
++
++Next steps:
++- Add production cron registration/discovery and an end-to-end test from cron tick to pending task.
++- Fix Telegram rendering and fallback telemetry before relying on this as an unattended daily job.
++[20:25:24] Codex review complete
++[20:25:24] CODEX FIX — fixing findings before PR
++[20:32:42] Codex fix output (exit 1):
++Error: Reached max turns (40)
++[20:32:42] BUILD GATE (post-codex-fix)
++[20:32:42] Build passed after Codex fix
+diff --git a/runtime/agents/pr-triage/agent-config.json b/runtime/agents/pr-triage/agent-config.json
+new file mode 100644
+index 0000000..eee8cc0
+--- /dev/null
++++ b/runtime/agents/pr-triage/agent-config.json
+@@ -0,0 +1,13 @@
++{
++	"agentId": "pr-triage",
++	"runtimeId": "claude-pty",
++	"_comment_fields": "authProfile, cwd, org, and env below are NOT consumed by plan 04a. loadAgentCronEntries reads only agentId from this file. These fields are hard dependencies for plan 04b (wireAgentManagerIntoStartDaemon), which must explicitly forward them to the PTY spawn opts during cron dispatch. If 04b reads from a different source, these values will silently rot.",
++	"org": "internal",
++	"cwd": "/opt/iago-os",
++	"env": {
++		"IAGO_DAEMON_STATE_ROOT": "/var/lib/iago-os/daemon-state"
++	},
++	"autoStart": false,
++	"_comment_autoStart": "autoStart is documentational in this file — the auto-start loop in main.ts reads from DaemonConfig.agents[], not from agent-config.json.",
++	"authProfile": "default"
++}
+diff --git a/runtime/agents/pr-triage/crons.json b/runtime/agents/pr-triage/crons.json
+new file mode 100644
+index 0000000..091b0ec
+--- /dev/null
++++ b/runtime/agents/pr-triage/crons.json
+@@ -0,0 +1,8 @@
++{
++	"_comment": "14:00 UTC = 09:00 EST = 06:00 PST. Daily. Hermes wake-check runs first; if no open PRs, LLM call skipped (saves $0.10). maxConcurrent=1 prevents overlap if a slow run wedges past the next tick. systemd unit Environment=TZ=UTC (Plan 01a) locks tick interpretation regardless of VPS host timezone.",
++	"schedule": "0 14 * * *",
++	"wakeCheck": "runtime/agents/pr-triage/wake-check.sh",
++	"prompt": "runtime/agents/pr-triage/prompt-template.md",
++	"outputTaskNamePrefix": "pr-triage",
++	"maxConcurrent": 1
++}
+diff --git a/runtime/agents/pr-triage/prompt-template.md b/runtime/agents/pr-triage/prompt-template.md
+new file mode 100644
+index 0000000..ede5f0d
+--- /dev/null
++++ b/runtime/agents/pr-triage/prompt-template.md
+@@ -0,0 +1,172 @@
++# PR Triage Agent — Daily Prompt
++
++## Role
++
++You are the PR triage agent for Santiago's GitHub account (`ilsantino`). Your job: classify all open PRs across the account and produce a single Telegram-friendly summary message that Santiago reads on his phone.
++
++You run once per day at 14:00 UTC (09:00 EST), spawned by the iaGO v2 daemon's CronScheduler via the Shape 1 PTY adapter (`claude-pty`). The daemon has already run `runtime/agents/pr-triage/wake-check.sh` and confirmed at least one open PR exists; otherwise this prompt would not have been piped to your stdin.
++
++Exit cleanly after a single Telegram message is sent (or a fallback task file is written on send failure). Do not poll, do not wait for follow-ups, do not start a conversation.
++
++## Tools available
++
++- `gh` CLI — authenticated via `$GH_TOKEN` (loaded from the systemd credstore by `runtime/daemon/cred-bootstrap.ts`; the spawned PTY inherits the daemon's `process.env`). PAT scopes: `repo` + `read:org`.
++- `curl` — for direct POSTs to the Telegram Bot API `sendMessage` endpoint. Bypasses `runtime/telegram/bot.ts` because the bot's primary role is inbound message routing; the agent emits an outbound notification on its own.
++- File write — ONLY for the fallback task file at `tasks/pending/pr-triage__<unix-ms>-<pid>.json` (relative to the daemon state root), and only when the Telegram POST fails non-200. The daemon's polling loop (Plan 07b Task 1) picks it up and emits a telemetry alert for post-mortem.
++
++## Algorithm
++
++### Step (a) — Enumerate open PRs
++
++Run a single GraphQL query — `gh pr list` has no `--owner` flag (it requires `--repo` and cannot enumerate across an account), and `gh search prs` does NOT return `reviewDecision`, `statusCheckRollup`, or `labels.nodes[].name`, which the classification rules below require. GraphQL returns all classification fields in one round trip:
++
++```
++gh api graphql -f query='
++query {
++  search(query: "user:ilsantino is:pr is:open", type: ISSUE, first: 50) {
++    nodes {
++      ... on PullRequest {
++        number
++        title
++        url
++        author { login }
++        reviewDecision
++        createdAt
++        updatedAt
++        body
++        labels(first: 20) { nodes { name } }
++        statusCheckRollup {
++          state
++          contexts(first: 20) {
++            nodes {
++              __typename
++              ... on StatusContext { state context }
++              ... on CheckRun { conclusion name }
++            }
++          }
++        }
++      }
++    }
++  }
++}' --jq '.data.search.nodes'
++```
++
++Parse the JSON output (an array of PR objects). If the array is empty, set `SUMMARY` to a single line — `No open PRs today.` — and proceed to step (d) without classification.
++
++The `body` field is required by the `waiting_claude` rule below (PRs that mention `@claude` only in the description and not in the title). The `labels.nodes[].name` field is required for the `claude-review-requested` label match. Without these fields, label-only or body-only Claude PRs are silently misclassified or dropped.
++
++If `gh api graphql` itself fails (auth, rate-limit, network), see the Errors section below.
++
++### Step (b) — Classify into four buckets
++
++For each PR, assign exactly one bucket from the following set. Apply the rules in order; first match wins:
++
++- `merge_ready` — `reviewDecision === "APPROVED"` AND `statusCheckRollup.state === "SUCCESS"` (or `statusCheckRollup === null` when no checks are configured on the repo). The PR is ready to merge; Santiago just needs to hit the button.
++- `waiting_claude` — the PR `body` or `title` contains a literal `@claude` mention OR `labels.nodes[]` contains an entry with `name === "claude-review-requested"`, AND `reviewDecision !== "APPROVED"`. The async Claude review-fix loop owns this PR right now.
++- `waiting_santiago` — `reviewDecision === "APPROVED"` AND `author.login === "ilsantino"`. Santiago opened the PR, it has been approved, and only he can merge.
++- `stuck` — `updatedAt` is more than 5 days before now (i.e., `now - updatedAt > 5 * 86400 * 1000` ms) OR `statusCheckRollup.state === "FAILURE"` OR any entry in `statusCheckRollup.contexts.nodes[]` has `conclusion === "TIMED_OUT"`.
++
++If a PR matches none of the four rules, drop it from the summary entirely — it is healthy and in motion, neither Claude nor Santiago needs to act today.
++
++### Step (c) — Produce the summary text
++
++Build a single plain-text document with this exact shape (replace `<…>` placeholders; omit any section whose bucket has zero entries). The summary is sent to Telegram as plain text — no MarkdownV2, no HTML. Telegram caps plain text at 4096 characters; PR titles and URLs are embedded verbatim and need no escaping:
++
++```
++PR Triage <YYYY-MM-DD HH:MM UTC>
++
++N open PRs across ilsantino
++
++Merge Ready (n)
++- #NN <title> — <author> — <url>
++
++Waiting on Claude (n)
++- #NN <title> — age:Xd — <url>
++
++Waiting on Santiago (n)
++- #NN <title> — <author> — <url>
++
++Stuck (n)
++- #NN <title> — age:Xd — checks:<status> — <url>
++```
++
++`age:Xd` is `floor((now - updatedAt) / 86400000)` whole days since last activity. Total PR count (N) is the input from step (a), not the sum across buckets — the goal is to show how many were inspected even when most are healthy and not listed.
++
++Plain text was chosen over MarkdownV2 (Codex high-severity fix). MarkdownV2 reserves `#`, `-`, `(`, `)`, `_`, `.`, `!`, and others as structural characters — every heading, every bullet, every age suffix, and every author name with a period or underscore would have to be escaped. A single missed escape sends Telegram a 400 and the daily triage silently never arrives. Plain text removes the escape surface entirely.
++
++### Step (d) — POST to Telegram
++
++Read these two environment variables from the spawned shell (both are inherited from the daemon process — see `runtime/daemon/cred-bootstrap.ts`):
++
++- `IAGO_TELEGRAM_BOT_TOKEN` — bot token. Never echo to stdout, stderr, or any file.
++- `IAGO_TELEGRAM_ALLOWED_USER_IDS` — comma-separated decimal Telegram user IDs (per `runtime/deploy/iago-os-v2-daemon.service` `Environment=`). The first ID is Santiago.
++
++Concrete invocation pattern (run from inside the agent's PTY shell):
++
++```
++: > /tmp/tg-resp.json   # ensure file exists before either branch writes/reads it
++FIRST_ID=$(echo "$IAGO_TELEGRAM_ALLOWED_USER_IDS" | cut -d, -f1)
++if [ -z "$FIRST_ID" ]; then
++  # IAGO_TELEGRAM_ALLOWED_USER_IDS unset or empty — skip the POST and
++  # drop straight to the fallback task-file path so the daemon emits
++  # a misconfiguration alert instead of burning a wasted Telegram 400.
++  HTTP_STATUS=000
++else
++  HTTP_STATUS=$(curl -sS -w "%{http_code}" -o /tmp/tg-resp.json \
++    --data-urlencode "chat_id=$FIRST_ID" \
++    --data-urlencode "text=$SUMMARY" \
++    "https://api.telegram.org/bot${IAGO_TELEGRAM_BOT_TOKEN}/sendMessage")
++fi
++```
++
++No `parse_mode` is sent — Telegram defaults to plain text, which is what step (c) produces. Do NOT pass `parse_mode=MarkdownV2`: the headings and bullets in `$SUMMARY` would each need escaping and a single missed character would 400 the entire daily message.
++
++Capture the HTTP status code. On `200`, the message is delivered — terminate cleanly per the Termination section.
++
++On any non-`200` status (including the synthetic `000` from the empty-recipient guard above), fall back: write a task file using the state root resolved below. Two failures inside the same wall-clock second must not collide, so use Unix epoch in milliseconds plus PID:
++
++```bash
++STATE_ROOT="${IAGO_DAEMON_STATE_ROOT:-/var/lib/iago-os/daemon-state}"
++TASK_FILE="$STATE_ROOT/tasks/pending/pr-triage__$(date +%s%3N)-$$.json"
++DETAILS=$(head -c 256 /tmp/tg-resp.json | sed "s|${IAGO_TELEGRAM_BOT_TOKEN}|[REDACTED]|g")
++mkdir -p "$STATE_ROOT/tasks/pending"
++jq -n \
++  --arg details "${HTTP_STATUS} ${DETAILS}" \
++  '{"agentId":"pr-triage","ndjsonAlert":"pr-triage-telegram-send-failed","details":$details}' \
++  > "$TASK_FILE"
++```
++
++The `STATE_ROOT` fallback to `/var/lib/iago-os/daemon-state` mirrors the `Environment=` line in `runtime/deploy/iago-os-v2-daemon.service`; the PTY inherits the daemon's env so `IAGO_DAEMON_STATE_ROOT` will normally be set, but the fallback prevents ENOENT on a silent empty path if the var is somehow absent.
++
++The `sed` redaction is mechanical: it replaces every literal occurrence of the bot token (which Telegram sometimes echoes back in error description fields) with `[REDACTED]` before the string enters any file or log.
++
++The `agentId` field is mandatory — `runtime/daemon/agent-manager.ts` `processPendingTask` requires it on every envelope (including alert envelopes) and poisons files that omit it as `missing-agent-id`. The daemon's polling loop consumes this file via the `ndjsonAlert` branch (07b Task 1 + plan 04a Codex fix): it emits a `kind: "agent-alert"` telemetry event carrying `alertKind: "pr-triage-telegram-send-failed"` and the `details` payload verbatim, then moves the file to `tasks/resolved/`.
++
++## Constraints
++
++- **Single Telegram message only.** Do NOT split into multiple messages, do NOT thread, do NOT page. One POST per cron tick.
++- **Plain text only — no MarkdownV2, no HTML.** Step (c) emits plain text and step (d) sends it with no `parse_mode`. Do not introduce backticks, asterisks, underscores, or `[label](url)` link syntax expecting Telegram to render them — they will render as literal characters. PR titles, author handles, and URLs are embedded verbatim and require no escaping.
++- **Length cap (I4 carry-over from original Plan 04).** Telegram caps messages at 4096 characters. If `$SUMMARY` exceeds 3500 characters (596-char headroom for the truncation footer + worst-case Unicode expansion under UTF-16 counting on Telegram's side), truncate sections in this order: first drop entries from `Stuck` (oldest PRs are least likely actionable), then from `Merge Ready` (Santiago can always pull `gh pr list --search 'is:open review:approved' --json number,url`). Keep `Waiting on Claude` and `Waiting on Santiago` intact — these are the high-signal buckets. After truncation, append a single line:
++
++  ```
++  (N PRs truncated for length; see dashboard)
++  ```
++
++  where `N` is the count removed. Plain parentheses, no italics markup.
++- **NEVER echo `$IAGO_TELEGRAM_BOT_TOKEN` to stdout, stderr, or any file.** The token never appears outside the curl invocation — not in logs, not in error messages, not in the fallback task file.
++
++## Errors
++
++- **`gh api graphql` fails (auth or rate-limit):** capture stderr, then POST a brief failure summary via the same curl pattern in step (d):
++
++  ```
++  text=PR triage failed: <first 200 chars of the gh error>. Investigate.
++  ```
++
++  Use plain text (no `parse_mode=MarkdownV2`) for the failure path so unescaped error messages cannot trip Telegram's parser.
++
++- **The failure-path POST ALSO returns non-200:** write the fallback task file using the same `STATE_ROOT` guard as above (`STATE_ROOT="${IAGO_DAEMON_STATE_ROOT:-/var/lib/iago-os/daemon-state}"`), with body `{ "agentId": "pr-triage", "ndjsonAlert": "pr-triage-double-failure", "details": "<gh-error>; <telegram-status>" }`. Truncate `<gh-error>` to the first 200 chars before constructing the envelope to bound the telemetry payload size (the same cap used for the Telegram failure-summary text above). The `agentId` field is mandatory (same reason as the primary fallback envelope above). The daemon polling loop emits an `agent-alert` telemetry event carrying `alertKind: "pr-triage-double-failure"` — this is the loudest possible signal short of paging.
++
++## Termination
++
++After a successful POST (HTTP 200) OR after writing the fallback task file, exit cleanly with status 0. Do not poll, do not loop, do not wait for a follow-up message. The daemon's CronScheduler treats this agent as fire-and-forget — the next tick fires 24 hours from now.
+diff --git a/runtime/agents/pr-triage/wake-check.sh b/runtime/agents/pr-triage/wake-check.sh
+new file mode 100644
+index 0000000..114b3d9
+--- /dev/null
++++ b/runtime/agents/pr-triage/wake-check.sh
+@@ -0,0 +1,53 @@
++#!/usr/bin/env bash
++# Hermes wake-check for the PR-triage agent.
++#
++# Returns exit 0 if there is work for pr-triage (≥1 open PR org-wide),
++# exit 1 if there is none. Saves ~$0.10 per skipped LLM invocation by
++# letting the daemon's CronScheduler short-circuit before spawning
++# claude-pty. Exit 2 if rate-limited (distinct signal so the scheduler
++# can emit a richer telemetry event — I2 carry-over from original Plan 04).
++#
++# Requires GH_TOKEN in env (loaded from systemd credstore by
++# runtime/daemon/cred-bootstrap.ts). PAT scopes: repo + read:org.
++set -euo pipefail
++
++# Timezone for telemetry forensics (I1 carry-over). systemd unit pins
++# Environment=TZ=UTC (Plan 01a) so this should always print "UTC".
++echo "wake-check-tz $(date -u +%Z)" >&2
++
++if [ -z "${GH_TOKEN:-}" ]; then
++	echo "ERROR: GH_TOKEN unset; wake-check needs it to query gh." >&2
++	exit 2
++fi
++
++command -v jq > /dev/null 2>&1 || { echo "ERROR: jq not found in PATH; wake-check requires it." >&2; exit 2; }
++
++# Include response headers (-i) so we can grep the HTTP status line.
++# Plain `--jq '.total_count'` on a non-200 response silently produces
++# null + exit 0; defensive guard via explicit status check (C2 fix).
++# `|| true` is load-bearing: `gh api` exits non-zero on 401/403/429/5xx,
++# and `set -e` would otherwise abort the script before the rate-limit
++# branch below could distinguish 429 from generic auth failure.
++RESPONSE=$(gh api -i '/search/issues?q=user:ilsantino+is:pr+is:open&per_page=1' 2>&1) || true
++STATUS=$(echo "$RESPONSE" | head -1)
++
++if echo "$STATUS" | grep -qE 'HTTP/[12](\.[0-9])? 200'; then
++	# Match both object `{` and array `[` openers so the body extraction
++	# survives if a future endpoint returns a JSON array.
++	COUNT=$(echo "$RESPONSE" | awk '/^[{[]/{found=1} found{print}' | jq -r '.total_count // 0')
++else
++	if echo "$RESPONSE" | grep -qiE 'rate.?limit'; then
++		echo "Rate-limited: $STATUS" >&2
++		exit 2
++	fi
++	echo "ERROR: gh api returned non-200: $STATUS" >&2
++	exit 2
++fi
++
++if [ -z "$COUNT" ] || [ "$COUNT" = "0" ]; then
++	echo "No open PRs; skipping LLM invocation."
++	exit 1
++fi
++
++echo "Found $COUNT open PR(s); proceeding."
++exit 0
+diff --git a/runtime/daemon/agent-manager.ts b/runtime/daemon/agent-manager.ts
+index fd992bf..d152052 100644
+--- a/runtime/daemon/agent-manager.ts
++++ b/runtime/daemon/agent-manager.ts
+@@ -1616,6 +1616,34 @@ export class AgentManager extends EventEmitter {
+ 			return;
+ 		}
+ 		const agentId = (parsed as { agentId: string }).agentId;
++		// `ndjsonAlert` envelopes are out-of-band telemetry signals an agent
++		// emits when it cannot complete its primary side-effect (the canonical
++		// example is the pr-triage agent's Telegram-send-failure fallback file
++		// — see `runtime/agents/pr-triage/prompt-template.md` step (d)). They
++		// carry `{ agentId, ndjsonAlert, details }` and are NOT dispatchable
++		// work, so the registration check below would route them to
++		// `task-unrouted` (wrong — they would be re-emitted every tick until
++		// stopPollingLoop). Branch on them BEFORE the registration check:
++		// emit `<ndjsonAlert>` telemetry with the details payload and resolve
++		// the file. This is the contract Codex flagged as missing on PR
++		// review of plan 04a.
++		const alertKindRaw = (parsed as { ndjsonAlert?: unknown }).ndjsonAlert;
++		if (typeof alertKindRaw === "string" && alertKindRaw.length > 0) {
++			const detailsRaw = (parsed as { details?: unknown }).details;
++			const details = typeof detailsRaw === "string" ? detailsRaw : undefined;
++			await emitTelemetry({
++				kind: "agent-alert",
++				agentId,
++				alertKind: alertKindRaw,
++				filename,
++				...(details !== undefined ? { details } : {}),
++			});
++			// Move pending → resolved and emit task-resolved so any cron slot
++			// the agent occupied gets released. `claimTask` already handles
++			// the rename, telemetry, and event emission.
++			await this.claimTask(filename, agentId);
++			return;
++		}
+ 		if (!this.isAgentRegistered(agentId)) {
+ 			await this.emitUnrouted(filename, agentId);
+ 			return;
+diff --git a/runtime/daemon/main.ts b/runtime/daemon/main.ts
+index 9b7b107..ddd5a57 100644
+--- a/runtime/daemon/main.ts
++++ b/runtime/daemon/main.ts
+@@ -85,6 +85,7 @@ import {
+ 	getCredentialEnvVars,
+ 	loadSystemdCredentials,
+ } from "./cred-bootstrap.js";
++import { CronScheduler, type RegisterCronOpts } from "./cron-scheduler.js";
+ import { HeartbeatController } from "./heartbeat.js";
+ import { IpcServer } from "./ipc-server.js";
+ import { ensureStateDirsSync, pathFor } from "./state-paths.js";
+@@ -100,6 +101,165 @@ import { emit } from "./telemetry.js";
+  */
+ export const SHUTDOWN_STAGE_TIMEOUT_MS = 10_000;
+ 
++/**
++ * Polling-loop interval for `AgentManager.startPollingLoop()`. Chosen
++ * to match the 5s default in `AgentManager.startPollingLoop()` and keep
++ * the daemon's tasks/pending sweep frequency consistent with the
++ * CronScheduler 60s tick (12 sweeps per cron-tick window — fast enough
++ * that fallback alert envelopes surface within a few seconds of being
++ * written, slow enough that the readdir cost is negligible).
++ */
++export const TASKS_POLLING_INTERVAL_MS = 5_000;
++
++/**
++ * Discover and register cron entries from `runtime/agents/<agent>/crons.json`.
++ *
++ * Each subdirectory under `<agentsRoot>` is inspected for:
++ *   - `agent-config.json` — supplies the `agentId` field (canonical name
++ *     the cron task envelope will carry; the polling loop's
++ *     `processPendingTask` matches on this string).
++ *   - `crons.json` — supplies `{ schedule, wakeCheck?, prompt,
++ *     outputTaskNamePrefix, maxConcurrent? }`. Path fields are
++ *     resolved relative to `<agentsRoot>/<agent>/` so the JSON can use
++ *     short relative names.
++ *
++ * Agents without a `crons.json` are skipped silently (e.g., interactive-
++ * only agents). Malformed or unreadable files surface as console.error
++ * lines but do NOT abort daemon startup — a typo in one agent's crons
++ * file must not take down the rest of the fleet.
++ *
++ * Plan 04a Codex critical fix: before this discovery existed, the
++ * `runtime/agents/pr-triage/crons.json` artifact was inert. The daemon
++ * never read it, the CronScheduler was never instantiated, and the
++ * 14:00 UTC fire never happened. Plan 04b originally owned this wiring;
++ * preempted into 04a so the configuration is not silently dead between
++ * 04a merge and 04b merge.
++ */
++export async function loadAgentCronEntries(
++	agentsRoot: string,
++): Promise<RegisterCronOpts[]> {
++	const out: RegisterCronOpts[] = [];
++	let entries: string[];
++	try {
++		entries = await fsp.readdir(agentsRoot);
++	} catch (err) {
++		const code = (err as NodeJS.ErrnoException).code;
++		if (code === "ENOENT") return out;
++		console.error(
++			`[daemon] loadAgentCronEntries readdir(${agentsRoot}) failed: ${err instanceof Error ? err.message : String(err)}`,
++		);
++		return out;
++	}
++	for (const entry of entries) {
++		const agentDir = path.join(agentsRoot, entry);
++		let stat;
++		try {
++			stat = await fsp.stat(agentDir);
++		} catch {
++			continue;
++		}
++		if (!stat.isDirectory()) continue;
++
++		const cronsPath = path.join(agentDir, "crons.json");
++		const configPath = path.join(agentDir, "agent-config.json");
++		let cronsRaw: string;
++		try {
++			cronsRaw = await fsp.readFile(cronsPath, "utf8");
++		} catch (err) {
++			const code = (err as NodeJS.ErrnoException).code;
++			if (code === "ENOENT") continue;
++			console.error(
++				`[daemon] loadAgentCronEntries read(${cronsPath}) failed: ${err instanceof Error ? err.message : String(err)}`,
++			);
++			continue;
++		}
++		let configRaw: string;
++		try {
++			configRaw = await fsp.readFile(configPath, "utf8");
++		} catch (err) {
++			console.error(
++				`[daemon] loadAgentCronEntries read(${configPath}) failed: ${err instanceof Error ? err.message : String(err)}`,
++			);
++			continue;
++		}
++
++		let cronsParsed: unknown;
++		try {
++			cronsParsed = JSON.parse(cronsRaw);
++		} catch (err) {
++			console.error(
++				`[daemon] loadAgentCronEntries parse(${cronsPath}) failed: ${err instanceof Error ? err.message : String(err)}`,
++			);
++			continue;
++		}
++		let configParsed: unknown;
++		try {
++			configParsed = JSON.parse(configRaw);
++		} catch (err) {
++			console.error(
++				`[daemon] loadAgentCronEntries parse(${configPath}) failed: ${err instanceof Error ? err.message : String(err)}`,
++			);
++			continue;
++		}
++
++		if (typeof cronsParsed !== "object" || cronsParsed === null) {
++			console.error(`[daemon] loadAgentCronEntries ${cronsPath}: not an object`);
++			continue;
++		}
++		if (typeof configParsed !== "object" || configParsed === null) {
++			console.error(
++				`[daemon] loadAgentCronEntries ${configPath}: not an object`,
++			);
++			continue;
++		}
++
++		const cfg = configParsed as Record<string, unknown>;
++		const cron = cronsParsed as Record<string, unknown>;
++		const agentId = typeof cfg.agentId === "string" ? cfg.agentId : null;
++		const schedule = typeof cron.schedule === "string" ? cron.schedule : null;
++		const promptRel = typeof cron.prompt === "string" ? cron.prompt : null;
++		const wakeRel = typeof cron.wakeCheck === "string" ? cron.wakeCheck : null;
++		const prefix =
++			typeof cron.outputTaskNamePrefix === "string"
++				? cron.outputTaskNamePrefix
++				: null;
++		const maxConcurrent =
++			typeof cron.maxConcurrent === "number" ? cron.maxConcurrent : undefined;
++
++		if (
++			agentId === null ||
++			schedule === null ||
++			promptRel === null ||
++			prefix === null
++		) {
++			console.error(
++				`[daemon] loadAgentCronEntries ${entry}: missing required field (agentId/schedule/prompt/outputTaskNamePrefix)`,
++			);
++			continue;
++		}
++
++		// `prompt` / `wakeCheck` are documented as repo-root-relative paths
++		// in the existing pr-triage artifacts (`runtime/agents/pr-triage/
++		// prompt-template.md`, `runtime/agents/pr-triage/wake-check.sh`),
++		// so resolve from process.cwd() (the daemon's working dir = repo
++		// root on systemd, /opt/iago-os in production). If the value is
++		// already absolute, `path.resolve` is a no-op on that argument.
++		const promptTemplatePath = path.resolve(process.cwd(), promptRel);
++		const wakeCheck =
++			wakeRel === null ? undefined : path.resolve(process.cwd(), wakeRel);
++
++		out.push({
++			agentId,
++			schedule,
++			...(wakeCheck !== undefined ? { wakeCheck } : {}),
++			promptTemplatePath,
++			outputTaskNamePrefix: prefix,
++			...(maxConcurrent !== undefined ? { maxConcurrent } : {}),
++		});
++	}
++	return out;
++}
++
+ export async function withTimeout<T>(
+ 	label: string,
+ 	op: () => Promise<T>,
+@@ -436,6 +596,41 @@ export async function startDaemon(
+ 	const shutdown = async (): Promise<void> => {
+ 		if (shuttingDown) return;
+ 		shuttingDown = true;
++		// Stop the cron scheduler FIRST so no new ticks fire during the
++		// rest of the teardown. `stop()` clears the interval AND awaits any
++		// in-flight tick — after this returns, no `cron-fired` events will
++		// surface and the `tasks/pending/` directory stops growing under
++		// us. Stopped before the polling loop so a final task-file emit
++		// from an in-flight tick still has a chance to be picked up and
++		// have its `runningCount` slot released (otherwise the slot leaks
++		// across daemon restarts, but `runningCount` is in-memory only so
++		// the leak is bounded by daemon lifetime).
++		await withTimeout(
++			"cronScheduler.stop",
++			async () => {
++				try {
++					await cronScheduler.stop();
++				} catch (err) {
++					console.error(
++						`[daemon] cronScheduler.stop failed: ${err instanceof Error ? err.message : String(err)}`,
++					);
++				}
++			},
++			stageTimeoutMs,
++		);
++		await withTimeout(
++			"agentManager.stopPollingLoop",
++			async () => {
++				try {
++					await agentManager.stopPollingLoop();
++				} catch (err) {
++					console.error(
++						`[daemon] agentManager.stopPollingLoop failed: ${err instanceof Error ? err.message : String(err)}`,
++					);
++				}
++			},
++			stageTimeoutMs,
++		);
+ 		// Opus I4: bound each stage with `withTimeout`. A hung adapter
+ 		// (heartbeat sweep, bot polling, IPC drain, or per-handle
+ 		// shutdown) would otherwise block the entire daemon and the
+@@ -538,6 +733,29 @@ export async function startDaemon(
+ 	shutdownHandlers.add(() => process.removeListener("SIGINT", sigintHandler));
+ 	shutdownHandlers.add(() => process.removeListener("SIGTERM", sigtermHandler));
+ 
++	// Plan 04a (Codex critical fix carried into 04a from 04b): discover
++	// `runtime/agents/*/crons.json` and wire the CronScheduler before the
++	// auto-start loop. Without this, every `runtime/agents/<agent>/
++	// crons.json` artifact is inert and the cron-driven agents (pr-triage
++	// first) silently never fire. The discovery runs from the repo-root
++	// `runtime/agents/` tree on systemd-on-VPS (cwd=/opt/iago-os) and
++	// local-dev (cwd=repo root); a missing directory short-circuits with
++	// no error so a tree without any cron-driven agents starts cleanly.
++	const cronScheduler = new CronScheduler({ agentManager });
++	const agentsRoot = path.resolve(process.cwd(), "runtime", "agents");
++	const cronEntries = await loadAgentCronEntries(agentsRoot);
++	for (const cronOpts of cronEntries) {
++		try {
++			cronScheduler.registerCron(cronOpts);
++		} catch (err) {
++			console.error(
++				`[daemon] registerCron(${cronOpts.agentId}) failed: ${err instanceof Error ? err.message : String(err)}`,
++			);
++		}
++	}
++	cronScheduler.start();
++	agentManager.startPollingLoop({ intervalMs: TASKS_POLLING_INTERVAL_MS });
++
+ 	for (const cfg of config.agents) {
+ 		if (!cfg.autoStart) continue;
+ 		try {
+diff --git a/runtime/daemon/telemetry.ts b/runtime/daemon/telemetry.ts
+index aa77820..20d6a3b 100644
+--- a/runtime/daemon/telemetry.ts
++++ b/runtime/daemon/telemetry.ts
+@@ -292,6 +292,35 @@ export type DaemonEvent =
+ 			readonly filename: string;
+ 			readonly errno?: string;
+ 			readonly message: string;
++	  }
++	| {
++			/**
++			 * Plan 04a (PR-triage carry-over). Emitted by the polling loop
++			 * when a pending task file is shaped as an out-of-band alert
++			 * envelope rather than dispatchable work:
++			 *
++			 *   {
++			 *     "agentId": "pr-triage",
++			 *     "ndjsonAlert": "pr-triage-telegram-send-failed",
++			 *     "details": "..."
++			 *   }
++			 *
++			 * The polling loop branches on the presence of `ndjsonAlert`
++			 * BEFORE the registration check (without this branch the file
++			 * would route to `task-unrouted` because `pr-triage` is a
++			 * cron-spawned agent with `autoStart:false` and is therefore
++			 * never tracked as a long-running handle). `alertKind` carries
++			 * the raw `ndjsonAlert` field verbatim so downstream consumers
++			 * (dashboards, alert rules) can filter on the specific alert
++			 * name without depending on a per-agent enum here — adding a
++			 * new alert name in an agent prompt-template requires no
++			 * DaemonEvent change.
++			 */
++			readonly kind: "agent-alert";
++			readonly agentId: string;
++			readonly alertKind: string;
++			readonly filename: string;
++			readonly details?: string;
+ 	  };
+ 
+ let missingSessionIdWarned = false;

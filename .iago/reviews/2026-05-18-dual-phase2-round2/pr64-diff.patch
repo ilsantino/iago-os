@@ -1,0 +1,871 @@
+diff --git a/runtime/daemon/agent-manager.test.ts b/runtime/daemon/agent-manager.test.ts
+index 17cca81..7a8575a 100644
+--- a/runtime/daemon/agent-manager.test.ts
++++ b/runtime/daemon/agent-manager.test.ts
+@@ -22,6 +22,7 @@ import {
+ 	AgentIdAlreadyRegisteredError,
+ 	AgentManager,
+ } from "./agent-manager.js";
++import { CronScheduler } from "./cron-scheduler.js";
+ import { HeartbeatController } from "./heartbeat.js";
+ import { listAllMarkers, readStopMarker, writeStopMarker } from "./markers.js";
+ import {
+@@ -30,6 +31,28 @@ import {
+ 	setHWM,
+ } from "./session-log.js";
+ import { ensureStateDirsSync, pathFor } from "./state-paths.js";
++import type { DaemonEvent } from "./telemetry.js";
++
++// Module-level telemetry mock for the Plan 07b polling-loop tests below.
++// Pass-through by default so Plan 07b tests using `readTelemetry()` still
++// see real NDJSON on disk; tests can also inspect `emitMock.mock.calls`
++// directly for synchronous assertions. Mocking telemetry at the module
++// boundary is the same pattern used by `cron-scheduler.test.ts`.
++const { emitMock, emitState } = vi.hoisted(() => ({
++	emitMock: vi.fn(),
++	emitState: {
++		real: null as ((e: DaemonEvent) => Promise<void>) | null,
++	},
++}));
++vi.mock("./telemetry.js", async () => {
++	const actual =
++		await vi.importActual<typeof import("./telemetry.js")>("./telemetry.js");
++	emitState.real = actual.emit;
++	return {
++		...actual,
++		emit: emitMock,
++	};
++});
+ 
+ let tempDir: string;
+ 
+@@ -39,6 +62,11 @@ beforeEach(async () => {
+ 	ensureStateDirsSync();
+ 	_resetRegistryForTests();
+ 	_resetSessionLogStateForTests();
++	emitMock.mockReset();
++	emitMock.mockImplementation((e: DaemonEvent) => {
++		if (emitState.real === null) return Promise.resolve();
++		return emitState.real(e);
++	});
+ 	vi.spyOn(console, "error").mockImplementation(() => {});
+ });
+ 
+@@ -1479,3 +1507,336 @@ describe("AgentManager / shutdownAgent + cascadeShutdownChildren — mutex harde
+ 		}
+ 	});
+ });
++
++// ============================================================
++// Plan 07b: polling-loop + claimTask tests (PL-1 through PL-6)
++// ============================================================
++
++function writePendingTask(filename: string, body: unknown): string {
++	const p = path.join(pathFor("tasks/pending"), filename);
++	const serialized = typeof body === "string" ? body : JSON.stringify(body);
++	// Sync write so the test observes the file before driving the polling
++	// tick. The polling loop's readdir+readFile are async — sync write keeps
++	// the test sequence simple.
++	// eslint-disable-next-line @typescript-eslint/no-require-imports
++	require("node:fs").writeFileSync(p, serialized, "utf8");
++	return p;
++}
++
++function emittedEventsOfKind(kind: DaemonEvent["kind"]): DaemonEvent[] {
++	const out: DaemonEvent[] = [];
++	for (const call of emitMock.mock.calls) {
++		const e = call[0] as DaemonEvent;
++		if (e.kind === kind) out.push(e);
++	}
++	return out;
++}
++
++describe("AgentManager / polling-loop (Plan 07b)", () => {
++	it("(PL-1) happy path: claims a registered agent's pending task and emits task-resolved", async () => {
++		const ctrl = makeMockRuntime("mock-pty-pl1");
++		registerRuntime(ctrl.runtime);
++		const mgr = new AgentManager();
++		await mgr.registerAgent({
++			agentId: "pr-triage",
++			runtimeId: "mock-pty-pl1",
++			cwd: "/tmp/w",
++			env: {},
++			sessionId: "sess-pl1",
++		});
++
++		const filename = "pr-triage__1700000000.json";
++		writePendingTask(filename, {
++			prompt: "do the triage",
++			agentId: "pr-triage",
++			needsApproval: false,
++		});
++
++		const eventLog: Array<{ agentId: string; filename: string }> = [];
++		mgr.on("task-resolved", (e: { agentId: string; filename: string }) => {
++			eventLog.push(e);
++		});
++
++		await mgr._pollingTickForTests();
++
++		// File moved from pending → resolved.
++		await expect(
++			fsp.access(path.join(pathFor("tasks/pending"), filename)),
++		).rejects.toThrow();
++		await fsp.access(path.join(pathFor("tasks/resolved"), filename));
++
++		// EventEmitter event emitted exactly once with correct payload.
++		expect(eventLog).toEqual([{ agentId: "pr-triage", filename }]);
++
++		// Telemetry mirror emitted.
++		const resolved = emittedEventsOfKind("task-resolved");
++		expect(resolved).toHaveLength(1);
++		expect(resolved[0]).toMatchObject({
++			kind: "task-resolved",
++			agentId: "pr-triage",
++			filename,
++		});
++	});
++
++	it("(PL-2) malformed JSON → moved to tasks/poisoned + task-poisoned telemetry", async () => {
++		const ctrl = makeMockRuntime("mock-pty-pl2");
++		registerRuntime(ctrl.runtime);
++		const mgr = new AgentManager();
++		await mgr.registerAgent({
++			agentId: "pr-triage",
++			runtimeId: "mock-pty-pl2",
++			cwd: "/tmp/w",
++			env: {},
++			sessionId: "sess-pl2",
++		});
++
++		const filename = "pr-triage__1700000001.json";
++		writePendingTask(filename, "{ not valid json");
++
++		await mgr._pollingTickForTests();
++
++		// Pending no longer has the file; poisoned has it.
++		await expect(
++			fsp.access(path.join(pathFor("tasks/pending"), filename)),
++		).rejects.toThrow();
++		await fsp.access(path.join(pathFor("tasks/poisoned"), filename));
++
++		const poisoned = emittedEventsOfKind("task-poisoned");
++		expect(poisoned).toHaveLength(1);
++		expect(poisoned[0]).toMatchObject({
++			kind: "task-poisoned",
++			filename,
++			reason: "json-parse-error",
++		});
++	});
++
++	it("(PL-3) unrouted agent: file stays in pending, task-unrouted emitted once across multiple ticks", async () => {
++		const mgr = new AgentManager();
++		// No agents registered — all tasks are unrouted.
++
++		const filename = "ghost__1700000002.json";
++		writePendingTask(filename, {
++			prompt: "nobody home",
++			agentId: "ghost",
++			needsApproval: false,
++		});
++
++		await mgr._pollingTickForTests();
++		await mgr._pollingTickForTests();
++		await mgr._pollingTickForTests();
++
++		// File still in pending (no agent claimed it).
++		await fsp.access(path.join(pathFor("tasks/pending"), filename));
++
++		// task-unrouted telemetry fired exactly once for this filename
++		// across all three ticks (suppression set).
++		const unrouted = emittedEventsOfKind("task-unrouted");
++		const forThisFile = unrouted.filter(
++			(e) => "filename" in e && e.filename === filename,
++		);
++		expect(forThisFile).toHaveLength(1);
++		expect(forThisFile[0]).toMatchObject({
++			kind: "task-unrouted",
++			filename,
++			agentId: "ghost",
++		});
++	});
++
++	it("(PL-4) task-resolved drives CronScheduler decrement: runningCount falls back to 0", async () => {
++		const ctrl = makeMockRuntime("mock-pty-pl4");
++		registerRuntime(ctrl.runtime);
++		const mgr = new AgentManager();
++		await mgr.registerAgent({
++			agentId: "pr-triage",
++			runtimeId: "mock-pty-pl4",
++			cwd: "/tmp/w",
++			env: {},
++			sessionId: "sess-pl4",
++		});
++
++		// Prompt template the scheduler will read on fire.
++		const promptPath = path.join(tempDir, "pr-triage-prompt.md");
++		// eslint-disable-next-line @typescript-eslint/no-require-imports
++		require("node:fs").writeFileSync(
++			promptPath,
++			"do the daily pr-triage",
++			"utf8",
++		);
++
++		// Fix the cron clock so `0 14 * * *` matches every _tickForTests().
++		const fixedNow = new Date(Date.UTC(2026, 4, 18, 14, 0, 0));
++		const scheduler = new CronScheduler({
++			agentManager: mgr,
++			nowFn: () => fixedNow,
++		});
++		scheduler.registerCron({
++			agentId: "pr-triage",
++			schedule: "0 14 * * *",
++			promptTemplatePath: promptPath,
++			outputTaskNamePrefix: "pr-triage",
++			maxConcurrent: 1,
++		});
++
++		// Fire 1: writes task file, runningCount → 1.
++		await scheduler._tickForTests();
++		expect(scheduler._runningCountForTests().get("pr-triage")).toBe(1);
++
++		// Polling tick claims the cron-fired task, emits task-resolved →
++		// CronScheduler decrement listener drops runningCount back to 0.
++		await mgr._pollingTickForTests();
++		expect(scheduler._runningCountForTests().get("pr-triage") ?? 0).toBe(0);
++
++		// Fire 2: same UTC minute as fire 1 — should NOT be overlap-prevented
++		// because the decrement landed.
++		await scheduler._tickForTests();
++		const overlap = emittedEventsOfKind("cron-overlap-prevented");
++		expect(overlap).toHaveLength(0);
++		expect(scheduler._runningCountForTests().get("pr-triage")).toBe(1);
++
++		await scheduler.stop();
++	});
++
++	it("(PL-5) .tmp mid-rename file is skipped; renamed to .json is picked up next tick", async () => {
++		const ctrl = makeMockRuntime("mock-pty-pl5");
++		registerRuntime(ctrl.runtime);
++		const mgr = new AgentManager();
++		await mgr.registerAgent({
++			agentId: "pr-triage",
++			runtimeId: "mock-pty-pl5",
++			cwd: "/tmp/w",
++			env: {},
++			sessionId: "sess-pl5",
++		});
++
++		const tmpName = ".pr-triage__1700000005.abc.tmp";
++		const tmpPath = path.join(pathFor("tasks/pending"), tmpName);
++		// eslint-disable-next-line @typescript-eslint/no-require-imports
++		require("node:fs").writeFileSync(
++			tmpPath,
++			JSON.stringify({
++				prompt: "mid rename",
++				agentId: "pr-triage",
++				needsApproval: false,
++			}),
++			"utf8",
++		);
++
++		// Tick 1: tmp file present, no .json yet → polling loop ignores.
++		await mgr._pollingTickForTests();
++
++		// Tmp file still there, untouched.
++		await fsp.access(tmpPath);
++		// No task-resolved fired.
++		expect(emittedEventsOfKind("task-resolved")).toHaveLength(0);
++
++		// Atomic rename .tmp → .json (simulates the cron tmp-rename completing).
++		const finalName = "pr-triage__1700000005.json";
++		const finalPath = path.join(pathFor("tasks/pending"), finalName);
++		await fsp.rename(tmpPath, finalPath);
++
++		// Tick 2: .json file present → claimed + task-resolved emitted.
++		await mgr._pollingTickForTests();
++		await fsp.access(path.join(pathFor("tasks/resolved"), finalName));
++		const resolved = emittedEventsOfKind("task-resolved");
++		expect(resolved).toHaveLength(1);
++		expect(resolved[0]).toMatchObject({
++			kind: "task-resolved",
++			agentId: "pr-triage",
++			filename: finalName,
++		});
++	});
++
++	it("(PL-7) cron fires → task poisoned → CronScheduler slot decrements back to 0", async () => {
++		const ctrl = makeMockRuntime("mock-pty-pl7");
++		registerRuntime(ctrl.runtime);
++		const mgr = new AgentManager();
++		await mgr.registerAgent({
++			agentId: "pr-triage",
++			runtimeId: "mock-pty-pl7",
++			cwd: "/tmp/w",
++			env: {},
++			sessionId: "sess-pl7",
++		});
++
++		const promptPath = path.join(tempDir, "pr-triage-prompt-pl7.md");
++		// eslint-disable-next-line @typescript-eslint/no-require-imports
++		require("node:fs").writeFileSync(promptPath, "do the daily pr-triage", "utf8");
++
++		const fixedNow = new Date(Date.UTC(2026, 4, 18, 15, 0, 0));
++		const scheduler = new CronScheduler({
++			agentManager: mgr,
++			nowFn: () => fixedNow,
++		});
++		scheduler.registerCron({
++			agentId: "pr-triage",
++			schedule: "0 15 * * *",
++			promptTemplatePath: promptPath,
++			outputTaskNamePrefix: "pr-triage",
++			maxConcurrent: 1,
++		});
++
++		// Fire 1: writes task file, runningCount → 1.
++		await scheduler._tickForTests();
++		expect(scheduler._runningCountForTests().get("pr-triage")).toBe(1);
++
++		// Corrupt the cron-fired task file so the polling tick poisons it.
++		const pendingDir = pathFor("tasks/pending");
++		const [taskFile] = (await fsp.readdir(pendingDir)).filter((f) =>
++			f.endsWith(".json"),
++		);
++		expect(taskFile).toBeDefined();
++		await fsp.writeFile(
++			path.join(pendingDir, taskFile),
++			"{ corrupted json",
++			"utf8",
++		);
++
++		// Polling tick: malformed JSON → poisonTask → emits task-poisoned with
++		// derived agentId "pr-triage" → CronScheduler decrements runningCount.
++		await mgr._pollingTickForTests();
++		expect(scheduler._runningCountForTests().get("pr-triage") ?? 0).toBe(0);
++
++		// Confirm the task landed in poisoned/.
++		await expect(
++			fsp.access(path.join(pathFor("tasks/poisoned"), taskFile)),
++		).resolves.toBeUndefined();
++
++		await scheduler.stop();
++	});
++
++	it("(PL-6) unrouted files beyond cap → overflow event emitted exactly once", async () => {
++		// Shrink the unroutedSet cap via the test-only setter so we can
++		// exercise the overflow branch without writing 1001 task files
++		// (1001 writeFileSync + 1001 readFile ops are prohibitively slow on
++		// Windows). The behavior under test is the cap-vs-overflow logic,
++		// not the cap's specific numeric value.
++		emitMock.mockImplementation(() => Promise.resolve());
++
++		const mgr = new AgentManager();
++		mgr._setUnroutedSetCapForTests(5);
++		// No agents registered → all 6 files are unrouted; the 6th trips
++		// the overflow branch (size >= cap of 5 before the add).
++
++		for (let i = 0; i < 6; i++) {
++			const filename = `ghost__${String(2000000000 + i).padStart(13, "0")}.json`;
++			writePendingTask(filename, {
++				prompt: `unrouted ${i}`,
++				agentId: "ghost",
++				needsApproval: false,
++			});
++		}
++
++		await mgr._pollingTickForTests();
++
++		const overflow = emittedEventsOfKind("task-unrouted-set-overflow");
++		expect(overflow).toHaveLength(1);
++		expect(overflow[0]).toMatchObject({
++			kind: "task-unrouted-set-overflow",
++			cap: 5,
++		});
++		// All 6 files emit task-unrouted on first appearance (first 5 via
++		// suppression-set add, the 6th via the overflow branch).
++		const unrouted = emittedEventsOfKind("task-unrouted");
++		expect(unrouted).toHaveLength(6);
++	});
++});
+diff --git a/runtime/daemon/agent-manager.ts b/runtime/daemon/agent-manager.ts
+index 3325878..167b190 100644
+--- a/runtime/daemon/agent-manager.ts
++++ b/runtime/daemon/agent-manager.ts
+@@ -31,6 +31,7 @@
+  * interleave with live appends.
+  */
+ 
++import { EventEmitter } from "node:events";
+ import * as fsp from "node:fs/promises";
+ import * as path from "node:path";
+ 
+@@ -63,6 +64,7 @@ import {
+ 	cancelPendingAppends,
+ } from "./session-log.js";
+ import { assertSafeIdentifier, getErrnoCode, pathFor } from "./state-paths.js";
++import { emit as emitTelemetry } from "./telemetry.js";
+ 
+ export interface AgentManagerOpts {
+ 	readonly heartbeat?: HeartbeatController;
+@@ -210,7 +212,7 @@ function mergeEnv(
+ 	return merged;
+ }
+ 
+-export class AgentManager {
++export class AgentManager extends EventEmitter {
+ 	private readonly heartbeat: HeartbeatController | undefined;
+ 	private readonly handles = new Map<string, TrackedHandle>();
+ 	private readonly parentChildren = new Map<string, Set<string>>();
+@@ -238,8 +240,24 @@ export class AgentManager {
+ 	// Same promise-capture pattern as restartingPromises: assigned synchronously
+ 	// before the first await so concurrent callers share a single in-flight run.
+ 	private bootRecoveryPromise: Promise<BootRecoveryResult> | null = null;
++	// Plan 07b: tasks/pending/ polling loop state (deferred from Phase 1
++	// Plan 07 stress-test M3).
++	private pollingInterval: NodeJS.Timeout | null = null;
++	private pollingTickInFlight: Promise<void> | null = null;
++	private pollingStopped = false;
++	private readonly unroutedSet = new Set<string>();
++	private unroutedSetOverflowed = false;
++	private unroutedSetCap = 1000;
+ 
+ 	constructor(opts?: AgentManagerOpts) {
++		super();
++		// EventEmitter's default `maxListeners` is 10; the cron-scheduler
++		// alone subscribes 3 listeners (`task-resolved`/`task-poisoned`/
++		// `task-unrouted`) and downstream consumers (dashboards, audit
++		// hooks) will subscribe more. Bump to 0 (unlimited) since the
++		// daemon controls its own listener surface — we are not exposing
++		// the EventEmitter to untrusted callers.
++		this.setMaxListeners(0);
+ 		this.heartbeat = opts?.heartbeat;
+ 		// Auto-wire `onForceRestart → restartAgent` so heartbeat-triggered
+ 		// recycle/stall events drive the manager's restart path. Required by
+@@ -1382,4 +1400,302 @@ export class AgentManager {
+ 		// Children of this handle stay tracked separately — the cascade is
+ 		// fired from handleStatusChange when the parent emits exited/crashed.
+ 	}
++
++	// ============================================================
++	// Plan 07b: tasks/pending polling loop + claimTask
++	// ============================================================
++
++	/**
++	 * Atomically move a pending task file to `tasks/resolved/` and emit the
++	 * `'task-resolved'` EventEmitter event + telemetry. The event is the
++	 * decrement hook CronScheduler (07a) subscribes to — without it,
++	 * `runningCount` only grows and `maxConcurrent` permanently blocks
++	 * after the first cron-fire.
++	 *
++	 * Failure handling (stress-test I2): `fs.rename` errors are caught and
++	 * surfaced as `claim-task-failed` telemetry. The file is left in
++	 * `tasks/pending/` so the next polling tick retries; `task-resolved`
++	 * is NOT emitted, so the cron `runningCount` stays elevated. Sustained
++	 * filesystem faults eventually surface as `cron-overlap-prevented` —
++	 * the operator should investigate the upstream `claim-task-failed`
++	 * events first.
++	 */
++	async claimTask(filename: string, agentId: string): Promise<void> {
++		assertSafeIdentifier(filename, "filename");
++		assertSafeIdentifier(agentId, "agentId");
++		const src = path.join(pathFor("tasks/pending"), filename);
++		const dst = path.join(pathFor("tasks/resolved"), filename);
++		try {
++			await fsp.rename(src, dst);
++		} catch (err) {
++			const errno = getErrnoCode(err);
++			const message = err instanceof Error ? err.message : String(err);
++			await emitTelemetry({
++				kind: "claim-task-failed",
++				agentId,
++				filename,
++				errno,
++				message,
++			});
++			return;
++		}
++		await emitTelemetry({ kind: "task-resolved", agentId, filename });
++		// EventEmitter emit comes AFTER telemetry so a subscriber crash
++		// does not lose the audit trail. The cron-scheduler listener is
++		// synchronous; if it throws, EventEmitter will surface that to the
++		// caller — but the file is already moved and telemetry already
++		// flushed, so the only observable side-effect is the throw.
++		this.emit("task-resolved", { agentId, filename });
++	}
++
++	/**
++	 * Start the `tasks/pending/` polling loop (Plan 07b — deferred from
++	 * Phase 1 Plan 07 stress-test M3). Every `intervalMs` (default 5s),
++	 * the loop:
++	 *
++	 *   1. `fs.readdir(pathFor('tasks/pending'))`, filter to `.json`
++	 *      (skip `.tmp` mid-rename files per C1 stress-test fix).
++	 *   2. Sort ascending by name (unix timestamp embedded in filename
++	 *      gives FIFO order).
++	 *   3. For each file:
++	 *        a. `JSON.parse` → malformed → move to `tasks/poisoned/`,
++	 *           emit `task-poisoned` (EventEmitter + telemetry).
++	 *        b. Inspect `agentId` field → unregistered → leave in pending,
++	 *           emit `task-unrouted` once per filename (in-memory Set
++	 *           suppression; cap 1000 per C2; `stopPollingLoop` clears).
++	 *        c. Registered → `claimTask(filename, agentId)` → atomic
++	 *           rename + `task-resolved` emit.
++	 *
++	 * Boolean re-entrancy guard: a tick that overruns the interval skips
++	 * the next firing instead of overlapping. Tick exceptions are caught
++	 * and surfaced as `polling-loop-error` telemetry; the interval
++	 * continues. `stopPollingLoop()` clears the interval AND awaits any
++	 * in-flight tick.
++	 *
++	 * The wire-up (calling `startPollingLoop()` from `startDaemon`) is
++	 * Plan 04b Task 3's responsibility — this method only owns the loop
++	 * mechanics.
++	 */
++	startPollingLoop(opts?: { intervalMs?: number }): void {
++		if (this.pollingInterval !== null) return;
++		if (this.pollingStopped) {
++			throw new Error(
++				"AgentManager.startPollingLoop() called after stopPollingLoop(); construct a fresh instance",
++			);
++		}
++		const intervalMs =
++			typeof opts?.intervalMs === "number" && opts.intervalMs > 0
++				? opts.intervalMs
++				: 5_000;
++		this.pollingInterval = setInterval(() => {
++			void this.runPollingTickGuarded();
++		}, intervalMs);
++		// `unref` so the interval does not pin the Node event loop if a
++		// test forgets to call `stopPollingLoop()`. Production daemon has
++		// its own keepalive sources.
++		if (typeof this.pollingInterval.unref === "function") {
++			this.pollingInterval.unref();
++		}
++	}
++
++	/**
++	 * Stop the polling loop. Clears the interval, awaits any in-flight
++	 * tick, and clears the unrouted-suppression set (so a future
++	 * `startPollingLoop()` on a fresh instance re-emits `task-unrouted`).
++	 */
++	async stopPollingLoop(): Promise<void> {
++		this.pollingStopped = true;
++		if (this.pollingInterval !== null) {
++			clearInterval(this.pollingInterval);
++			this.pollingInterval = null;
++		}
++		if (this.pollingTickInFlight !== null) {
++			try {
++				await this.pollingTickInFlight;
++			} catch {
++				// Already surfaced via telemetry.
++			}
++		}
++		this.unroutedSet.clear();
++		this.unroutedSetOverflowed = false;
++	}
++
++	/**
++	 * Test-only: synchronously fire a polling tick and await it. Allows
++	 * tests to drive the loop deterministically without running the
++	 * actual `setInterval`. @internal
++	 */
++	async _pollingTickForTests(): Promise<void> {
++		await this.runPollingTickGuarded();
++	}
++
++	private async runPollingTickGuarded(): Promise<void> {
++		if (this.pollingTickInFlight !== null) return;
++		const p = this.runPollingTick();
++		this.pollingTickInFlight = p;
++		try {
++			await p;
++		} finally {
++			this.pollingTickInFlight = null;
++		}
++	}
++
++	private async runPollingTick(): Promise<void> {
++		const pendingDir = pathFor("tasks/pending");
++		let entries: string[];
++		try {
++			entries = await fsp.readdir(pendingDir);
++		} catch (err) {
++			const errno = getErrnoCode(err);
++			if (errno === "ENOENT") return;
++			const message = err instanceof Error ? err.message : String(err);
++			await emitTelemetry({
++				kind: "polling-loop-error",
++				errno,
++				message,
++			});
++			return;
++		}
++		// C1 stress-test fix: only process `.json` files. During the
++		// tmp-rename window the file is named `.<...>.tmp` and only renames
++		// to `.json` atomically; skipping non-`.json` filenames prevents
++		// half-written JSON.parse failures.
++		const jsonFiles = entries.filter((f) => f.endsWith(".json")).sort();
++		for (const filename of jsonFiles) {
++			try {
++				await this.processPendingTask(filename);
++			} catch (err) {
++				const errno = getErrnoCode(err);
++				const message = err instanceof Error ? err.message : String(err);
++				await emitTelemetry({
++					kind: "polling-loop-error",
++					errno,
++					message: `processPendingTask(${filename}): ${message}`,
++				});
++			}
++		}
++	}
++
++	private async processPendingTask(filename: string): Promise<void> {
++		const pendingDir = pathFor("tasks/pending");
++		const src = path.join(pendingDir, filename);
++		let raw: string;
++		try {
++			raw = await fsp.readFile(src, "utf8");
++		} catch (err) {
++			const errno = getErrnoCode(err);
++			if (errno === "ENOENT") {
++				// Concurrent claim moved it out from under us — fine.
++				return;
++			}
++			throw err;
++		}
++		let parsed: unknown;
++		try {
++			parsed = JSON.parse(raw);
++		} catch (err) {
++			await this.poisonTask(filename, "json-parse-error", getErrnoCode(err));
++			return;
++		}
++		if (
++			typeof parsed !== "object" ||
++			parsed === null ||
++			typeof (parsed as { agentId?: unknown }).agentId !== "string"
++		) {
++			await this.poisonTask(filename, "missing-agent-id");
++			return;
++		}
++		const agentId = (parsed as { agentId: string }).agentId;
++		if (!this.isAgentRegistered(agentId)) {
++			await this.emitUnrouted(filename, agentId);
++			return;
++		}
++		await this.claimTask(filename, agentId);
++	}
++
++	private async poisonTask(
++		filename: string,
++		reason: "json-parse-error" | "missing-agent-id",
++		errno?: string,
++	): Promise<void> {
++		const src = path.join(pathFor("tasks/pending"), filename);
++		const dst = path.join(pathFor("tasks/poisoned"), filename);
++		try {
++			await fsp.mkdir(pathFor("tasks/poisoned"), { recursive: true });
++			await fsp.rename(src, dst);
++		} catch (err) {
++			const moveErrno = getErrnoCode(err);
++			const message = err instanceof Error ? err.message : String(err);
++			// Mirror claimTask's failure shape so operators get the same
++			// taxonomy. The file stays in pending; the polling loop will
++			// re-trip on it next tick — that's acceptable because the
++			// surrounding `polling-loop-error` catch will surface the
++			// repeated failure.
++			await emitTelemetry({
++				kind: "polling-loop-error",
++				errno: moveErrno,
++				message: `poisonTask(${filename}): ${message}`,
++			});
++			return;
++		}
++		await emitTelemetry({
++			kind: "task-poisoned",
++			filename,
++			reason,
++			errno,
++		});
++		// EventEmitter emit so cron-scheduler can release the slot if this
++		// poisoned file was cron-fired. Extract agentId from the cron filename
++		// convention (<agentId>__<unix>.json); fall back to "(unknown)" for
++		// files that don't follow the convention (no cron slot to release).
++		const separatorIdx = filename.indexOf("__");
++		const derivedAgentId =
++			separatorIdx > 0 ? filename.slice(0, separatorIdx) : "(unknown)";
++		this.emit("task-poisoned", { agentId: derivedAgentId, filename });
++	}
++
++	private async emitUnrouted(filename: string, agentId: string): Promise<void> {
++		if (this.unroutedSet.has(filename)) {
++			// Already emitted for this filename — suppress.
++			return;
++		}
++		if (this.unroutedSet.size >= this.unroutedSetCap) {
++			// C2 stress-test fix: cap the suppression set at `unroutedSetCap`
++			// (default 1000). On overflow, emit a single overflow telemetry
++			// event (one-time flag) and continue without further suppression.
++			// From this point until `stopPollingLoop()`, every unrouted file
++			// will emit `task-unrouted` on every tick (deliberately lossy —
++			// the operator should be looking at the overflow event first).
++			if (!this.unroutedSetOverflowed) {
++				this.unroutedSetOverflowed = true;
++				await emitTelemetry({
++					kind: "task-unrouted-set-overflow",
++					cap: this.unroutedSetCap,
++				});
++			}
++			// Still emit task-unrouted for this filename (no suppression).
++			await emitTelemetry({ kind: "task-unrouted", filename, agentId });
++			this.emit("task-unrouted", { agentId, filename });
++			return;
++		}
++		this.unroutedSet.add(filename);
++		await emitTelemetry({ kind: "task-unrouted", filename, agentId });
++		this.emit("task-unrouted", { agentId, filename });
++	}
++
++	private isAgentRegistered(agentId: string): boolean {
++		for (const tracked of this.handles.values()) {
++			if (tracked.handle.agentId === agentId) return true;
++		}
++		return false;
++	}
++
++	/**
++	 * Test-only: shrink the unroutedSet cap so PL-6 can exercise the
++	 * overflow path without writing 1001 task files (prohibitively slow on
++	 * Windows). Not part of the public API.
++	 */
++	_setUnroutedSetCapForTests(n: number): void {
++		this.unroutedSetCap = n;
++	}
+ }
+diff --git a/runtime/daemon/state-paths.ts b/runtime/daemon/state-paths.ts
+index e300a17..1b5552a 100644
+--- a/runtime/daemon/state-paths.ts
++++ b/runtime/daemon/state-paths.ts
+@@ -39,6 +39,7 @@ export type StateKind =
+ 	| "tasks/pending"
+ 	| "tasks/claimed"
+ 	| "tasks/resolved"
++	| "tasks/poisoned"
+ 	| "approvals/pending"
+ 	| "approvals/resolved"
+ 	| "agents"
+@@ -50,6 +51,7 @@ const ALL_KINDS: ReadonlyArray<StateKind> = [
+ 	"tasks/pending",
+ 	"tasks/claimed",
+ 	"tasks/resolved",
++	"tasks/poisoned",
+ 	"approvals/pending",
+ 	"approvals/resolved",
+ 	"agents",
+diff --git a/runtime/daemon/telemetry.ts b/runtime/daemon/telemetry.ts
+index 7ff9103..88a360f 100644
+--- a/runtime/daemon/telemetry.ts
++++ b/runtime/daemon/telemetry.ts
+@@ -188,6 +188,85 @@ export type DaemonEvent =
+ 			readonly schedule: string;
+ 			readonly taskFile: string;
+ 			readonly errno: string;
++	  }
++	| {
++			/**
++			 * Plan 07b (AgentManager polling loop): `claimTask` successfully
++			 * moved a task file from `tasks/pending/` to `tasks/resolved/`.
++			 * Mirrors the EventEmitter `'task-resolved'` event the
++			 * CronScheduler subscribes to — closes the decrement chain so
++			 * cron `runningCount` releases its slot.
++			 */
++			readonly kind: "task-resolved";
++			readonly agentId: string;
++			readonly filename: string;
++	  }
++	| {
++			/**
++			 * Plan 07b (AgentManager polling loop): a pending task file was
++			 * unreadable JSON. The file was moved to `tasks/poisoned/` so
++			 * the polling loop does not re-trip on it. The matching
++			 * EventEmitter `'task-poisoned'` event releases the cron
++			 * concurrency slot (if any) via the CronScheduler listener.
++			 */
++			readonly kind: "task-poisoned";
++			readonly filename: string;
++			readonly reason: "json-parse-error" | "missing-agent-id";
++			readonly errno?: string;
++	  }
++	| {
++			/**
++			 * Plan 07b (AgentManager polling loop): a pending task references
++			 * an `agentId` that is not registered with the manager. The
++			 * file stays in pending (a later registration may pick it up).
++			 * Emitted once per (filename) until `stopPollingLoop()` clears
++			 * the suppression set; the matching EventEmitter
++			 * `'task-unrouted'` event releases the cron concurrency slot
++			 * (if any) so a cron-fired-then-deregistered agent does not
++			 * leak its slot forever.
++			 */
++			readonly kind: "task-unrouted";
++			readonly filename: string;
++			readonly agentId: string;
++	  }
++	| {
++			/**
++			 * Plan 07b (AgentManager polling loop): the suppression set for
++			 * repeated `task-unrouted` events hit the 1000-entry cap. From
++			 * this point until `stopPollingLoop()`, every unrouted file
++			 * emits `task-unrouted` again on each tick. Fires exactly once
++			 * per polling-loop lifetime (C2 stress-test mitigation).
++			 */
++			readonly kind: "task-unrouted-set-overflow";
++			readonly cap: number;
++	  }
++	| {
++			/**
++			 * Plan 07b (AgentManager polling loop): the tick body threw an
++			 * uncaught exception. The interval continues; the next tick
++			 * starts fresh. Surfacing this lets operators see polling-loop
++			 * health without scraping the daemon log.
++			 */
++			readonly kind: "polling-loop-error";
++			readonly errno?: string;
++			readonly message: string;
++	  }
++	| {
++			/**
++			 * Plan 07b (AgentManager polling loop): `claimTask`'s
++			 * `fs.rename` failed (ENOSPC, EACCES, EBUSY, etc.). The task
++			 * file is left in `tasks/pending/` so the next tick retries.
++			 * `'task-resolved'` is NOT emitted, so the cron `runningCount`
++			 * stays elevated — sustained failures eventually exhaust the
++			 * overlap budget and surface as `cron-overlap-prevented`
++			 * (intentional; the operator should be looking at this event
++			 * first).
++			 */
++			readonly kind: "claim-task-failed";
++			readonly agentId: string;
++			readonly filename: string;
++			readonly errno?: string;
++			readonly message: string;
+ 	  };
+ 
+ let missingSessionIdWarned = false;
+diff --git a/runtime/migration/openclaw-cron-inventory.json b/runtime/migration/openclaw-cron-inventory.json
+new file mode 100644
+index 0000000..b40f5e3
+--- /dev/null
++++ b/runtime/migration/openclaw-cron-inventory.json
+@@ -0,0 +1,8 @@
++{
++  "scanned_at": "2026-05-18T00:00:00Z",
++  "user": "ilsantino",
++  "crontab_entries": [],
++  "systemd_user_timers": [],
++  "systemd_system_timers_owned_by_openclaw": [],
++  "notes": "Per Phase 0 audit (runtime/migration/00-vps-audit.md), VPS has no crontab; no OpenClaw-owned timers. Inventory empty by audit confirmation; satisfies migration-scope § 4 acceptance gate. Re-verified at cutover-time via the verify command below — if cutover-time re-verification surfaces a forgotten cron or timer, this file MUST be updated with the entries BEFORE proceeding (Plan 03b cutover-runbook Day -1 prep includes a re-verify checkbox)."
++}

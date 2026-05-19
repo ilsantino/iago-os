@@ -1,0 +1,14 @@
+Review report on disk: `.iago/reviews/2026-05-19-dual-phase2-round3/pr68-opus.md` (274 lines, 23 KB).
+
+**Verdict: PASS_WITH_CONCERNS**
+
+Summary of findings:
+- **Codex fixes verified** — all 3 (P0-1 wrong-user systemctl, P0-2 disable-failure-tolerated, P1-5 lock-marker ownership) applied to cutover.sh + rollback.sh with regression tests 13/14/15
+- **0 Critical** / **3 Important** / **7 Minor**
+- I-1: `systemd-creds decrypt | wc -c` silent-success across SSH (no remote pipefail) — `cutover.sh:435`
+- I-2: jq-rewritten openclaw.json lands at default umask (0644) inside PATCH_EOF — token mode leak — `rollback.sh:296-306`
+- I-3: Test 8 "byte-for-byte" assertion re-applies the transformation in JS instead of invoking real jq — false confidence — `test-cutover.mjs:363-368`
+- 15/15 harness tests pass; `bash -n` clean on both scripts
+- Spec § 8 alignment: 2 minor divergences (T+50 retention timer substitution, T+55 pgrep openclaw check dropped)
+
+Recommendation: merge PR #68, land I-1/I-2/I-3 as a stacked follow-up PR before the production cutover window.

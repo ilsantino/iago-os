@@ -1,0 +1,44 @@
+# Adversarial Review — PR #65 (Plan 01b)
+
+**Verdict: PASS_WITH_CONCERNS**
+
+## Critical
+None.
+
+## Important
+
+**I1 — `credentialsLoaded` telemetry diff misses rotation (latent Plan 06 bug).** `main.ts:264-280` uses `beforeUnset && afterSet`. On SIGHUP rotation where env is already set from prior boot, both `before` and `after` are non-empty → conditional false → emits `credentialsLoaded: []`. Doesn't fire today (called only once at boot), but Plan 06 SIGHUP wiring will silently lose rotation observability. Mitigation: change criterion to `after !== before`, or have helper return the list.
+
+**I2 — Coincidental external-value match trap in reload fix.** `cred-bootstrap.ts:94-99`: if env preset to same value as credstore file on first boot AND `lastWrittenByCredstore` is undefined, helper marks it "external override" forever. Subsequent rotations skipped, stale value persists across SIGHUPs. Edge case but undermines the reload contract Codex's fix promised. Mitigation: gate on "first invocation only" not "ever-written."
+
+## Minor
+
+- **M1** — Sentinel-leak test 10 partially tautological: helper today never calls emit/console; main.ts call site (which DOES emit) not covered. Forward-looking guard, acceptable.
+- **M2** — TOCTOU `existsSync` → `readFileSync`. Impossible in single-tenant credstore.
+- **M3** — No per-credential error isolation; one bad credstore file aborts entire bootstrap. Fail-loud as intended for Phase 2; revisit for Phase 3 (5 active creds).
+- **M4** — `vi.stubEnv("")` + `delete` pattern brittle; works today.
+
+## Cross-cutting verified
+
+| Check | Status |
+|---|---|
+| Auth bypass via env override | PASS — env source is systemd root-only |
+| Value leak (stdout/stderr/telemetry) | PASS — sentinel test confirms |
+| SIGHUP re-entrancy | PASS — helper is sync, signal handlers queued |
+| Rollback safety on partial-throw | PASS — propagates to `main()` exitCode=1 |
+| C1 NODE_ENV=test override | PASS — `computeRunUnder()` exported + 10 tests at `main.test.ts:601-672` |
+| C2 sentinel-leak | PASS (M1 caveat) — 3 buffer asserts present |
+| Codex reload fix | PASS (I2 caveat) — tests 11-13 cover rotation, override survival, post-load mutation |
+| authProfile JSDoc | PASS — `config.ts:38-48` documents undefined≡"default" |
+| 01a↔01b contract | PASS — `iago-telegram-token` / `iago-gh-token` exact match across unit file, CRED_MAP, and CREDENTIALS array |
+
+## What pipeline + Codex missed
+
+I1 (telemetry diff on rotation) and I2 (coincidental-match trap) — both stem from chasing the helper without chasing the consumer/contract surface. Codex fixed the helper correctly; neither reviewer chased main.ts's `credentialsLoaded` computation against the reload semantics they just fixed.
+
+**Recommendation:** Land as-is. Add forward-notes for Plan 06 SIGHUP implementer.
+
+Report saved to `.iago/reviews/2026-05-18-dual-phase2-round2/pr65-opus.md`.
+
+Verdict: PASS_WITH_CONCERNS
+SessionEnd hook [node "${CLAUDE_PLUGIN_ROOT}/scripts/session-lifecycle-hook.mjs" SessionEnd] failed: Hook cancelled

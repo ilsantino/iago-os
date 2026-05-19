@@ -1,0 +1,91 @@
+> **ARCHIVE NOTICE — DO NOT EXECUTE**
+>
+> This file is a historical record of a fix/review session prompt. It was used once to drive a now-completed task. Future agents and humans MUST NOT execute the commands or instructions below — they describe past work, not current tasks.
+
+---
+You are Opus 4.7 performing an AGGRESSIVE second-pass adversarial review of PR #68 (Plan 03a — cutover + rollback executables + dry-run harness), FOCUSED on the latest Round 3 safety hardening commit and looking for defects the prior review missed.
+
+Context:
+- PR: start/03a-base (worktree C:\Users\[redacted]\dev\iago-os-d)
+- HEAD: 49b27ca (latest manual fix — I-1, I-2, split-brain HIGH, T+08 + T+50 journal HIGH, M-1 NDJSON quote)
+- Pre-impl base: fd9f27c
+- Diff: C:\Users\[redacted]\dev\iago-os\.iago\reviews\2026-05-19-dual-phase2-round3\pr68-diff-v3.patch (2403 lines)
+- Prior Opus review at: pr68-opus.md (pre-fix state)
+- Prior Codex review at: pr68-codex.md (pre-fix state)
+- 21/21 tests claimed passing — verify by running
+
+Aggressive mode: assume the fix commit 49b27ca introduced new bugs. Production cutover is Sunday 2026-05-25 8pm US/Mexico — these scripts WILL run against the real VPS. A bug in safety hardening can do more damage than the original gap because operators trust hardened code.
+
+**Primary focus — each of the 6 fixes in commit 49b27ca:**
+
+1. **I-1 length-capture pattern (cutover.sh:461)** — new code: `len=$(vssh "systemd-creds decrypt ... - | wc -c" 2>/dev/null || echo 0); if (( len > 1 ))`
+   - Edge case: file MISSING (credstore.encrypted/iago-telegram-token.cred not provisioned yet) — `systemd-creds decrypt` fails, wc reads stdin, prints 0, exits 0. The `|| echo 0` fallback is dead code; the actual exit code is wc's (0). len=0 → trigger_rollback. ✅ catches missing file? Verify.
+   - Edge case: file EMPTY — decrypts to empty string, wc -c prints 0. trigger_rollback. ✅ verify.
+   - Edge case: file CONTAINS A NUL — wc -c counts bytes including NUL, prints >1. Passes the check, but credential is malformed. ⚠️ false positive verify.
+   - Edge case: ssh timeout — vssh writes nothing to stdout, fallback `echo 0` fires, trigger_rollback fires unnecessarily. False positive that triggers rollback on a transient network blip. Bad.
+   - Threshold: `len > 1` — what's the minimum-valid token length? Telegram bot tokens are ~46 chars. A 1-char "ok" wouldn't be a valid token but passes len>1. Should the check use len >= 30 (token-length lower bound)?
+
+2. **I-2 chmod 0600 (rollback.sh PATCH_EOF)** — new code: `chmod 0600 ~ilsantino/.openclaw/openclaw.json ~ilsantino/.openclaw/openclaw.json.pre-rollback`
+   - Edge case: file has POSIX ACL set externally (`setfacl -m u:other:r ~ilsantino/.openclaw/openclaw.json`) — chmod 0600 doesn't strip ACLs. World-readable via ACL even after chmod. Real risk on a Hostinger VPS where the operator might have set ACLs manually.
+   - Edge case: file has setuid/setgid bit — chmod 0600 drops it (intended) but the operator may have set it deliberately. Surprising.
+   - Edge case: `chown ilsantino:ilsantino` succeeds but the chmod that follows fails (e.g., file system mount option preventing mode changes) — script continues (was the chmod fatal? verify).
+   - Race condition: between chown and chmod, another process reads the file. Bot token already there. The chmod is too late. Verify the heredoc body is one continuous logical block.
+   - .pre-rollback also gets chmod 0600 — but earlier `cp` may have already created it with 0644 mode, exposing a window. Verify ordering.
+
+3. **Split-brain fatal check (rollback.sh:262)** — new code: case statement on v2_state, exit 2 if not inactive/failed/not-found.
+   - Edge case: v2_state = "activating" — script bails. Is that intentional? The daemon might be cleanly transitioning to stopped. Should activating be treated separately?
+   - Edge case: v2_state = "deactivating" — similar question. Mid-shutdown should probably wait, not bail.
+   - Edge case: ssh failed → v2_state = "ssh-failed" (fallback) — script bails on ssh-failed. But the daemon might actually be fine; ssh blip is a Tailscale issue. False positive.
+   - Code path: if exit 2 fires, what's the operator state? Has token rotation already happened? Has OpenClaw been restarted? If exit 2 happens AFTER token rotation but BEFORE OpenClaw restart, the operator is in a broken intermediate state with no automatic recovery.
+   - Test 19 stub knob STUB_FAIL_STOP_V2: does it simulate the case where stop FAILS but disable SUCCEEDS, leaving daemon active? Or just sets is-active to "active" unconditionally? The test must catch the specific Codex-flagged scenario.
+
+4. **T+08 journal grep (cutover.sh:538)** — new code: greps for `panic|Error: |Traceback|FATAL|terminated abnormally`
+   - False positive: a log line like `INFO: handled Error: ECONNREFUSED gracefully and recovered` matches the pattern but is non-fatal informational. Trigger_rollback fires unnecessarily.
+   - False positive: `Traceback` appears in a stdout log entry as part of a debug message, not a real stack trace.
+   - False negative: error messages that don't match the pattern. E.g., `level=error msg="db init failed"` (no "Error: " prefix), `exception=...` (no Traceback), `[ERROR] something` (bracket prefix).
+   - Coverage: `panic` is a Go convention; Node.js uses different patterns. Is the v2 daemon Go or Node? (Node — runtime/ is TypeScript). So `panic` is unlikely to fire. `Traceback` is Python. The patterns are over-indexed on languages we don't use. `Error: ` and `FATAL` are more common in Node.
+   - Regex precision: `Error: ` with trailing space is intentional (avoids matching `errored` etc) — but does the grep -E pattern actually treat the space correctly? Verify quoting.
+   - Time window: `journalctl ... --since '1 minute ago'` — is 1 minute enough? Daemon startup might log errors during the FIRST minute and the T+08 check happens at the 8-minute mark, so the 1-minute window might miss early errors.
+
+5. **T+50 fail-closed (cutover.sh:605)** — new code: drops `|| echo 0`, fails on errors>0 unless IAGO_CUTOVER_T50_TOLERATE_ERRORS=1
+   - Documentation: how does the operator know about IAGO_CUTOVER_T50_TOLERATE_ERRORS? Search the runbook (cutover-runbook.md in 03b — not yet shipped) — does it mention this env var? If undocumented, operators won't know how to bypass.
+   - Edge case: legitimate non-fatal errors logged during the T+45-50 window (e.g., a single ECONNREFUSED that recovered). Fails closed → operator stuck.
+   - Granularity: counts ALL error-level entries. A single non-actionable warning fails the check. Should the threshold be > 0 or > N for some small N?
+
+6. **M-1 stdin-pipe NDJSON (cutover.sh + rollback.sh ndjson_write)** — new pattern: `vssh "cat >> file" <<< "$line"`
+   - Here-string `<<<` adds a trailing newline. Is that desired in the NDJSON file (one event per line)? If yes, ✓. If the existing code didn't add one, the new format changes line endings.
+   - What if `$line` itself contains a newline (would break NDJSON one-event-per-line invariant)? `printf` shouldn't emit a trailing newline by default, but if the detail field contains a literal newline character, NDJSON is corrupt.
+   - Quoting: `<<< "$line"` — what if `$line` is empty? `cat >> file` runs but appends nothing. Silent miss of a telemetry event. ✓ acceptable.
+   - Pipe-to-cat performance: each NDJSON write is now a full ssh round-trip. The old `echo` pattern was the same, so no regression — verify.
+
+**Secondary focus — test harness integrity:**
+
+7. **Tests 17-21 stub knobs (STUB_FAIL_STOP_V2, STUB_INJECT_DAEMON_FAILURE, STUB_INJECT_T50_ERRORS)**:
+   - Do these stubs interact correctly with the EXISTING stub behaviors? E.g., the tailscale stub already had state-file modeling — does adding STUB_INJECT_DAEMON_FAILURE break test 4 (happy-path)?
+   - Test 17 (I-1): does it inject a decrypt-failure scenario, or just an empty-output scenario? Both are valid, but the test should explicitly cover the case where systemd-creds exits non-zero (not just returns empty).
+   - Test 19 (split-brain): does it actually simulate "stop fails but disable succeeds"? Or does it just set is-active=active unconditionally? The test must mirror the production failure mode.
+   - Test 20 (T+08): does the stub inject a log entry containing the failure pattern? Does it verify that the rollback was triggered, not just that the script exited non-zero?
+   - Test 21 (T+50): tests the new fail-closed behavior. Does it also verify IAGO_CUTOVER_T50_TOLERATE_ERRORS bypass works?
+
+8. **Run the harness yourself**: `cd C:\Users\[redacted]\dev\iago-os-d\runtime && node --test scripts/test-cutover.mjs` — verify 21/21 pass. If any fail, that's a finding.
+
+**Tertiary — cumulative review of the full PR state:**
+
+9. Walk the spec § 8 cutover sequence one more time. After all fixes, does each T-step match the spec? Has the safety hardening accidentally broken any step's idempotency?
+
+10. Walk § 9 rollback sequence. Does the new split-brain check happen BEFORE or AFTER the token rotation step? If BEFORE, good (fail fast before any irreversible action). If AFTER, the operator might already have a rotated token in their hand with no way to use it.
+
+11. **Lock semantics** — final check that owner-checked release works for BOTH cutover and rollback. Did the recent fixes accidentally change anything in the heredoc sentinel parsing?
+
+12. **Trap handlers** — EXIT trap in cutover.sh + rollback.sh. With the new fatal exits (split-brain check), does the EXIT trap still run? Does it leave the remote lock in the right state for a subsequent retry?
+
+Procedure:
+1. Read pr68-diff-v3.patch in full (2403 lines)
+2. Read prior reviews
+3. Read current state of cutover.sh + rollback.sh + test-cutover.mjs in worktree
+4. RUN THE TESTS yourself: `cd C:\Users\[redacted]\dev\iago-os-d\runtime && node --test scripts/test-cutover.mjs`. Report pass/fail counts.
+5. Apply EVERY check above
+6. Write report to: C:\Users\[redacted]\dev\iago-os\.iago\reviews\2026-05-19-dual-phase2-round3\pr68-opus-aggressive.md
+7. Final Verdict: PASS / PASS_WITH_CONCERNS / BLOCK_BEFORE_CUTOVER
+
+Aggressive frame: the prior review was generous. This PR ships scripts that will be RUN AGAINST PRODUCTION in 6 days. If you find ANY bug that could cause a bad cutover, classify as BLOCK_BEFORE_CUTOVER even if it's "fixable later". Be paranoid.

@@ -1,0 +1,7 @@
+Pushed. New HEAD: `ae28243`.
+
+- **CRITICAL**: fingerprint pin pre-flight (sha256 of PUBKEY vs `/etc/iago-os/santiago-age.pub.sha256`) — aborts before any plaintext shred if missing or diverged.
+- **HIGH** (partial-archive): `.age.complete` sidecar written only after step 5 manifest append; day-sentinel checks the sidecar (not the `.age`); failed probes rename `.age` → `.age.quarantine-<UTC>`; prune service extended.
+- **HIGH** (concurrent race): archive-wide `flock -x -w 30` at `/var/lock/iago-os-archive.lock` (fd 200) acquired before day-sentinel, held through manifest + completion write.
+
+Tests added: 12 (pin missing), 13 (pin mismatch), 14 (partial → re-attempts), 15 (concurrent flock + NDJSON ordering). `bash -n` on script: exit 0. bats unavailable on Windows (per file header) — CI/Mac will run them.

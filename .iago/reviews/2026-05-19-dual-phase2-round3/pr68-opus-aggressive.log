@@ -1,0 +1,9 @@
+Report written. **Verdict: BLOCK_BEFORE_CUTOVER.**
+
+Two CRITICAL findings:
+- **C-1**: T+50 and T+08 retain the exact remote-pipefail gap the Codex HIGH fix was supposed to close. `journalctl | wc -l` and `journalctl | grep -q` under `tailscale ssh` have no `pipefail` — failed journalctl silently passes the check. Fix is one line: prefix the remote commands with `bash -c 'set -o pipefail; ...'`.
+- **T-1**: Test harness actually shows 19/21 (not the claimed 21/21). Test 7 (happy-path rollback) hangs even with `--test-concurrency=1` after the "ROLLBACK COMPLETE." banner — likely EXIT trap or owner-checked lock release. Same code path the operator will run Sunday if anything goes wrong.
+
+Three IMPORTANT (`len > 1` accepts garbage; mv→chmod race leaks fresh bot token; T+05 transient blip forces token re-rotation), two MINOR (grep patterns miss Node JSON logger; test 21 doesn't cover bypass or query-failure paths).
+
+Recommended sequence: ~90 minutes of fixes. Sunday 2026-05-25 8pm slot still comfortable.

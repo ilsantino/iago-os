@@ -1,0 +1,15 @@
+Report written to `.iago/reviews/2026-05-19-dual-phase2-round3/pr66-opus-aggressive.md`.
+
+**Verdict: PASS_WITH_CONCERNS**
+
+**No Critical findings.** No real secrets — only env-var refs (`$SYSTEM_USER_TOKEN`, `$APP_SECRET`) and a literal `FAKE` Age stub. VPS hostname `srv1456441` + IP `187.77.135.32` are present but pre-existing in the repo from earlier merged PRs; PR #66 is not new exposure.
+
+**4 Important findings:**
+- **I-1** — `pr63-fix-prompt.txt` and `pr64-fix-prompt.txt` end with `git push origin {branch}` and lack an "ARCHIVE: do not execute" header. Future agents loading them as context could be subverted. Trivial fix.
+- **I-2** — `pr63-fix.session.log`, `pr64-fix.session.log`, `.iago/runs/round-2-dispatch/07b.log` only capture turn-limit failures; the actual fixes landed via the async GH loop but no footer notes that. Misleading by omission.
+- **I-3** — `pr62-diff.patch` bundles in PR #60/#61's review artifacts (upstream pipeline behavior), causing Codex to hallucinate findings against `archive-openclaw.sh` for the wrong plan. Documented accurately in `01a.log:205-217`.
+- **I-4** — `pr60-codex.md` and `pr62-codex-v2.md` lead with ~80 lines of raw `[codex] Running command:` PowerShell traces before the actual review markdown.
+
+**5 Minor** (CRLF, stale summary line count, asymmetric v2-codex coverage, etc.).
+
+**Cross-cutting checks all clean:** zero binaries, zero conflict markers, zero scope creep outside `.iago/`, zero executable mode changes, content fidelity verified against the worktree (Codex correctly hallucinated; archive faithfully captured the hallucination).
