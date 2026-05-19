@@ -1,0 +1,104 @@
+[16:11:42] STRESS TEST — skipped (plan already stress-tested)
+[16:11:43] IMPLEMENT — 02b-whatsapp-telegram-and-runbooks
+[16:18:55] Implementation complete
+[16:18:56] BUILD GATE — attempt 1 [mode: sequential]
+[16:18:56] Build passed (tsc 0ms / vite 0ms / mode sequential)
+[16:18:57] CONSOLE GATE — skipped (no Vite config)
+[16:18:57] REVIEW — 02b-whatsapp-telegram-and-runbooks
+warning: in the working copy of '.iago/runs/round-2-dispatch/02b.log', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'runtime/migration/02-telegram-bot-rotation.md', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'runtime/migration/02-whatsapp-deauth.md', LF will be replaced by CRLF the next time Git touches it
+[16:19:00]   review-checks: all modules loaded (209 lines)
+[16:20:59] Review output:
+All plan verifications pass: `bash -n` clean on both scripts, step/comment counts well above thresholds (63, 57), runbooks within line budget (179, 170), section/keyword counts satisfied. shellcheck not installed locally so couldn't confirm that gate, but scripts look clean by eye.
+
+PASS 1 — Plan compliance
+- Task 1 (revoke-whatsapp.sh): all 6 steps present, env-var fail-loud, C1 jq/curl pre-flight, NDJSON telemetry, manual UI step reminder, non-idempotent warning ✓
+- Task 2 (rotate-telegram-bot.sh): C2 NONINTERACTIVE early-exit after step 1, M2 5×30s retry, op-read comparison vs OLD_TOKEN, bot-id-preservation check at step 6 ✓
+- Task 3 (whatsapp runbook): 179 lines, 9 sections, 6 curl refs, all 5 IDs in input table with Meta UI click paths, rollback explainer present ✓
+- Task 4 (telegram runbook): 170 lines, 9 sections, 23 BotFather/revoke/getMe refs, atomic T-0:00→T+3:00 sequence + pre-cutover test plan + rollback section present ✓
+
+PASS 2 — Domain routing
+Changed files: 2 bash scripts (`runtime/deploy/`), 2 markdown runbooks (`runtime/migration/`), 1 log file. NO `.tsx`, NO `amplify/`, NO Lambda handlers, NO React/API client code. **Selected:** Baseline + Pattern Consistency. **Skipped:** Amplify, React, Auth (Cognito-shaped — N/A to shell token revocation), API, Backend (Lambda), Data Integrity, i18n, Infra. Cross-cutting concerns apply regardless.
+
+PASS 3 — Adversarial
+
+Findings:
+
+**Minor — Unreachable post-loop guard (rotate-telegram-bot.sh:180-183)**
+```
+if [[ "$old_dead" != "yes" ]]; then
+  echo "ERROR: unexpected control flow exit from retry loop" >&2
+  exit 1
+fi
+```
+The for-loop either `break`s with `old_dead=yes` or exits on attempt 5. The post-loop branch can never fire. Defensive but dead code per Baseline "unreachable branches". Author can leave as belt-and-suspenders or remove.
+
+**Minor — `op read` failure swallowed (rotate-telegram-bot.sh:130)**
+`op read "$OP_ITEM" 2>/dev/null || true` discards stderr from `op`; if Santiago isn't signed in to 1Password, the operator sees "op read empty" instead of the actual signin error. Acceptable since signin is operator responsibility, but a friendlier surface would help.
+
+**Minor — Pre-rotation snapshot is unconditional overwrite (rotate-telegram-bot.sh:98-100)**
+`PRE_ROTATION_LOG` is overwritten each run if writable. Debug-only file, not user data. No data-loss concern but worth a note for repeated invocations.
+
+**Minor — TOCTOU on NDJSON writability check (both scripts)**
+The `[[ -w ]]` check + later append is non-atomic, but the append is `|| true` no-op and best-effort by design. Acceptable.
+
+**Note (not a finding) — Tokens in URL query string (revoke-whatsapp.sh:152, 165-167)**
+`debug_token` and `/me` calls put `SYSTEM_USER_TOKEN` (and `APP_ID|APP_SECRET`) in the URL. This matches Meta's API contract — not the script's fault. Runbook correctly instructs `unset` after invocation.
+
+Cross-cutting:
+- **Auth bypass:** env-var fail-loud guards, no exposed endpoints, no token echoing. Step 3 (`op read` ≠ `OLD_TOKEN`) catches operator pressing Enter without rotating. ✓
+- **Data loss:** No unconditional destructive writes besides the documented debug snapshot. WhatsApp deauth's non-idempotency is documented and intentional. ✓
+- **Race conditions:** Operator-driven cutover; OpenClaw is-active check is informational, not a TOCTOU concern at this scope. ✓
+- **Rollback safety:** Both runbooks have explicit Rollback sections — Telegram path documents the BotFather rate-limit re-revoke caveat; WhatsApp explicitly NOT rolled back per spec, with cost-of-leaving-deauth-during-rollback rationale. ✓
+
+Verdict: PASS_WITH_CONCERNS
+Verdict: PASS_WITH_CONCERNS
+[16:20:59] Findings detected — dispatching fix session (round 1)
+[16:22:01] Fix output (exit 0):
+All three actionable Minor findings fixed in `rotate-telegram-bot.sh`:
+
+1. **op read failure swallowed (line 130)** — now captures stderr to a tempfile, surfaces it on empty-result failure with a `op signin` hint, and includes it in NDJSON telemetry.
+2. **Pre-rotation snapshot overwrite (line 98-100)** — added comment explaining the intentional overwrite-on-each-run behavior.
+3. **Unreachable post-loop guard (line 180-183)** — removed the dead `if [[ old_dead != yes ]]` branch (loop exits only via `break` or `exit 1`), replaced with a one-line comment documenting the control flow.
+
+The 4th finding (TOCTOU on NDJSON writability) was explicitly marked "Acceptable" by the reviewer — no fix needed.
+
+Bash syntax clean on both scripts.
+SessionEnd hook [node "${CLAUDE_PLUGIN_ROOT}/scripts/session-lifecycle-hook.mjs" SessionEnd] failed: Hook cancelled
+warning: in the working copy of '.iago/runs/round-2-dispatch/02b.log', LF will be replaced by CRLF the next time Git touches it
+[16:22:02]   review-checks: all modules loaded (209 lines)
+[16:30:18] Re-review output:
+Round 1 had 3 actionable Minor findings plus 1 accepted-as-is. Let me verify each fix landed in the current files.
+
+**Verification of Round 1 fixes (rotate-telegram-bot.sh):**
+
+1. **Unreachable post-loop guard** (was lines 180-183) — FIXED. Lines 188-189 now show: `done` immediately followed by comment `# Loop exits only via 'break' (success → old_dead=yes) or 'exit 1' on attempt 5.` Dead branch removed.
+
+2. **`op read` failure swallowed** (was line 130) — FIXED. Lines 131-144 now capture stderr to tempfile, surface it with `op signin` hint, and emit to NDJSON: `op_stderr=$(mktemp); ... if [[ -n "$op_err" ]]; then echo "op stderr: $op_err" >&2; echo "Hint: run 'op signin' if you see a session error above." >&2; fi`.
+
+3. **Pre-rotation snapshot overwrite** (lines 98-100) — FIXED. Comment added at lines 98-99 explaining the intentional overwrite: `# Debug-only snapshot — overwritten on each invocation by design (latest pre-rotation state is the only useful one; re-runs are a re-rotation event).`
+
+4. **TOCTOU on NDJSON writability** — accepted as best-effort by design; no fix required.
+
+**Re-review of remaining content:**
+
+Domain routing: Baseline + Pattern Consistency only (2 bash scripts + 2 markdown runbooks; zero React/Amplify/Lambda/Auth/i18n surface). Cross-cutting still apply.
+
+- **Auth bypass:** env-var fail-loud guards intact (`:?ERROR` on `WABA_ID/APP_ID/APP_SECRET/SYSTEM_USER_TOKEN/OLD_TOKEN`); step 3 confirms 1Password rotation; step 6 bot-ID match prevents wrong-bot rotation. ✓
+- **Data loss:** WhatsApp non-idempotency documented; pre-rotation snapshot overwrite now documented as intentional. ✓
+- **Race conditions:** Operator-driven; openclaw is-active is informational. ✓
+- **Rollback safety:** Both runbooks have explicit Rollback sections (Telegram: BotFather rate-limit re-revoke caveat + UI-pre-open advice; WhatsApp: cost-of-leaving-deauth documented per spec). ✓
+
+Verify-block compliance:
+- revoke-whatsapp.sh: `set -euo pipefail`, jq+curl pre-flight, 6 numbered steps, NDJSON telemetry. ✓
+- rotate-telegram-bot.sh: NONINTERACTIVE flag at lines 66, 106; 5×30s retry loop intact at lines 170-188. ✓
+- 02-whatsapp-deauth.md: 179 lines (within 100-180), 9 top-level sections (≥7), 6 curl references (≥4). ✓
+- 02-telegram-bot-rotation.md: 170 lines (within 100-180), 9 sections (≥6), multiple BotFather/revoke/getMe references (≥6). ✓
+
+No new findings. All Round 1 actionable items resolved.
+
+Verdict: PASS
+[16:30:18] Review passed
+[16:30:19] CODEX REVIEW — 02b-whatsapp-telegram-and-runbooks
+[16:30:19] Running codex-companion adversarial-review (model from ~/.codex/config.toml)
