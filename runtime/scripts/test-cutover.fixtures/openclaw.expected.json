@@ -1,0 +1,7 @@
+{
+  "channels": {
+    "telegram": {
+      "botToken": "DRYRUN_TOKEN_AAA"
+    }
+  }
+}

@@ -1,0 +1,185 @@
+[20:05:29] STRESS TEST — skipped (plan already stress-tested)
+[20:05:29] IMPLEMENT — 03a-cutover-rollback-executables
+[20:21:39] Implementation complete
+[20:21:39] BUILD GATE — attempt 1 [mode: sequential]
+[20:21:39] Build passed (tsc 0ms / vite 0ms / mode sequential)
+[20:21:40] CONSOLE GATE — skipped (no Vite config)
+[20:21:40] REVIEW — 03a-cutover-rollback-executables
+warning: in the working copy of '.iago/runs/round-3-dispatch/03a.log', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'runtime/scripts/test-cutover.fixtures/openclaw.expected.json', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'runtime/scripts/test-cutover.fixtures/openclaw.json', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'runtime/scripts/test-cutover.fixtures/stubs/_generic-noop', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'runtime/scripts/test-cutover.fixtures/stubs/op', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'runtime/scripts/test-cutover.fixtures/stubs/tailscale', LF will be replaced by CRLF the next time Git touches it
+[20:21:41]   review-checks: all modules loaded (209 lines)
+[20:26:39] Review output:
+All 10 harness tests pass and both bash scripts parse clean. Let me complete the review.
+
+## PASS 1 — Plan Compliance
+
+Task 1 (`cutover.sh`): All elements present — shebang + `set -euo pipefail`, robust `SCRIPT_DIR`, 12-check pre-flight gate, full flag matrix (C1: CONFIRM, NONINTERACTIVE, DRY_RUN, RESUME_FROM, SKIP_TMINUS5_BASELINE), global flock lock (Codex P1-5), all 13 T-step markers, idempotency checks (sha256 unit compare, enabled+active check, NDJSON path bootstrap I1), `should_run` resume helper (I2), `trigger_rollback` invokes rollback.sh.
+
+Task 2 (`rollback.sh`): All elements present — shebang + `set -euo pipefail`, robust `SCRIPT_DIR`, IAGO_ROLLBACK_{CONFIRM,SKIP_TOKEN,DRY_RUN}, global flock lock, all 5 T+R markers, temp-file-over-scp patch pattern (C3), `SendEnv=FRESH_TOKEN` (not on argv), `.pre-rollback` backup before patch, post-rollback wall-clock comment (I4).
+
+Task 3 (`test-cutover.mjs`): 10 test cases, all pass; fixture files present; stub harness with PATH isolation; per-test temp dirs; behavior-rich stubs for tailscale + op, generic noop for the rest.
+
+## PASS 2 — Domain Routing
+
+Diff is entirely operational bash + Node test harness + JSON fixtures + bash stubs. SKIPPED: react (no .tsx), amplify (no amplify/), auth (no Cognito), api (no API client), data-integrity (no aggregates), i18n (no Spanish), backend (no Lambda), infra (no Amplify infra). RELEVANT: Baseline checks + Pattern consistency + cross-cutting (auth bypass, data loss, races, rollback safety) — analyzed below.
+
+## PASS 3 — Adversarial Findings
+
+### Important
+
+1. **Octal parsing bug in `stage_to_number` / `should_run`** — `cutover.sh:118-140`. `stage_to_number "T+08"` echoes `"08"`. Inside `(( cur >= resume ))` bash treats `08` as invalid octal and the arithmetic expression errors, returning nonzero. Effect: when operator sets `IAGO_CUTOVER_RESUME_FROM=T+05` (or T+07), the step at T+08 is silently skipped because `should_run` returns 1. Test #9 only covers RESUME_FROM=T+10 (cur=10, decimal — no leading zero), masking the bug. Fix: force base-10 in the arithmetic, e.g. `(( 10#$cur >= 10#$resume ))` (and harden against negative signs separately), or strip leading zeros from `num` in `stage_to_number`.
+
+2. **3-second daemon-start window contradicts the documented 30s rollback trigger** — `cutover.sh:14` documents the rollback trigger as "Daemon does not reach is-active=active within 30s of enable", but `cutover.sh:424` calls `sleep 3` and then checks `is-active` exactly once. Real `systemd` service startup commonly takes 5-15s after `systemctl enable --now`. Implementation will trigger premature rollback for any daemon needing >3s to reach active. Fix: poll `is-active` in a loop (e.g., every 2s for up to 30s) before triggering rollback.
+
+### Minor
+
+3. **`trap ... RETURN` scope mismatch** — `cutover.sh:402`. `trap 'rm -f "$local_rendered"' RETURN` is set inside the `if should_run "T+07"; then` block but the RETURN trap fires when the enclosing function (`main`) returns, not when the if-block ends. Temp file lingers through T+08…T+60 then cleans up at function return. Not harmful but the intent ("clean up at end of T+07") is not what the code does.
+
+4. **Dead import `readdirSync`** — `test-cutover.mjs:31`. Imported, never referenced. Remove.
+
+5. **`flock` and `find` in `NOOP_BINARIES`** are not called locally by either script — the local flock would run remotely via `vssh bash -s` and is intercepted by the tailscale stub's `*"bash -s"*` case. Harmless but unused.
+
+6. **chmod inconsistency on remote patch script** — `rollback.sh:224-229`. Primary `tailscale file cp` path doesn't set permissions; the `cat | vssh "cat >..."` fallback does `chmod 700`. Invocation is `bash ${remote_patch}` so exec bit isn't required, but the asymmetry is a minor inconsistency.
+
+7. **Test 8 verifies patch logic in JS, not the actual jq invocation** — `test-cutover.mjs:362-369`. The harness asserts an equivalent JS transformation matches `openclaw.expected.json` rather than asserting the bash script's jq output produced that. Acceptable for a stub harness but worth noting that the actual remote `jq --arg t` invocation is not end-to-end exercised.
+
+8. **No test for `IAGO_CUTOVER_SKIP_TMINUS5_BASELINE`** — opt-out flag implemented (line 335) but not exercised by any test case. M1 carry-over is otherwise satisfied.
+
+### Cross-cutting verdict
+
+- **Auth bypass:** `FRESH_TOKEN` correctly forwarded via `SendEnv` (line 234), never on argv, never logged (NDJSON records `result:"ok"` only). `read -rs` for silent token entry. Good.
+- **Data loss:** `.pre-rollback` backup created before openclaw.json patch (rollback.sh:217). Idempotency guards prevent redundant overwrites. Good.
+- **Race conditions:** flock-then-pid-file pattern is correctly designed; the flock is released as soon as the heredoc subshell exits (acknowledged in comments) and the `.pid` sidecar is the durable lock identity, re-verified by `verify_lock_still_ours` before each major remote operation. TOCTOU window between consecutive vssh calls is tolerated by re-checking the marker.
+- **Rollback safety:** `trigger_rollback` releases the local lock before invoking rollback.sh so rollback can acquire it; sets LOCK_MARKER="" so the EXIT trap doesn't double-release. `set -euo pipefail` propagates rollback's exit code if it fails. Good.
+
+Build verification: `bash -n` passes for both scripts; harness passes all 10 tests. shellcheck unavailable on host (Windows bash) — plan's verify command tolerates this with `||` fallback.
+
+Verdict: PASS_WITH_CONCERNS
+[20:26:39] Findings detected — dispatching fix session (round 1)
+[20:31:09] Fix output (exit 0):
+All 12 tests pass (10 original + 2 new). All findings fixed:
+
+**Important**
+- `stage_to_number`: forces base-10 via `$((10#$num))` — `should_run` no longer errors at T+08/T+09 with leading zero
+- T+07 daemon-start: replaced single `sleep 3` + check with 30s poll loop matching the documented rollback trigger
+
+**Minor**
+- Removed mis-scoped `trap … RETURN`; explicit `rm -f` at end of T+07 block
+- Removed dead `readdirSync` import
+- Pruned unused `flock`/`find` from `NOOP_BINARIES` (jq retained — patch-script-internal but kept defensively)
+- Rollback patch script: both transport paths now leave default perms (no chmod asymmetry); comment explains why
+- Added test 11 (`SKIP_TMINUS5_BASELINE` coverage) and test 12 (octal-regression at `RESUME_FROM=T+05` reaching T+08)
+
+Finding #7 (test 8 verifies JS patch logic instead of jq) was an acknowledged-acceptable note — no code fix.
+warning: in the working copy of '.iago/runs/round-3-dispatch/03a.log', LF will be replaced by CRLF the next time Git touches it
+[20:31:10]   review-checks: all modules loaded (209 lines)
+[20:34:42] Re-review output:
+All round-1 findings verified against current source:
+
+**Important #1 (octal in stage_to_number)** — FIXED. `cutover.sh:126` uses `num=$((10#$num))` to strip leading zeros; regression test #12 (`test-cutover.mjs:458`) exercises `RESUME_FROM=T+05` reaching T+08.
+
+**Important #2 (3s daemon-start window)** — FIXED. `cutover.sh:431-440` polls `is-active` every 2s up to 30s before triggering rollback, matching the documented 30s rollback trigger.
+
+**Minor #3 (trap RETURN scope)** — FIXED. `cutover.sh:446-449` uses explicit `rm -f "$local_rendered"` at end of T+07 block; no trap RETURN.
+
+**Minor #4 (dead `readdirSync` import)** — FIXED. `test-cutover.mjs:22-31` no longer imports `readdirSync`.
+
+**Minor #5 (flock/find unused in NOOP_BINARIES)** — FIXED. NOOP_BINARIES now contains only [systemd-creds, age, tar, curl, jq, shred]; comment explains `flock`, `find` run remotely via `vssh bash -s`.
+
+**Minor #6 (chmod asymmetry)** — FIXED. `rollback.sh:223-232` removes the `chmod 700` from the fallback path; explanatory comment documents that no exec bit is needed since invocation is `bash ${remote_patch}`.
+
+**Minor #7 (test 8 verifies JS, not jq)** — Original review explicitly flagged as "Acceptable for a stub harness but worth noting"; plan authorizes byte-for-byte JS verification. Not a fix-required finding.
+
+**Minor #8 (no SKIP_TMINUS5_BASELINE test)** — FIXED. Test #11 (`test-cutover.mjs:430`) added.
+
+Cross-cutting (auth bypass / data loss / races / rollback safety) all confirmed sound per round-1 analysis: SendEnv-forwarded token, `.pre-rollback` backup, flock+pid-marker pattern with `verify_lock_still_ours`, lock released before invoking rollback.sh in `trigger_rollback`.
+
+No new findings introduced by fix round.
+
+Verdict: PASS
+[20:34:42] Review passed
+[20:34:43] CODEX REVIEW — 03a-cutover-rollback-executables
+[20:34:43] Running codex-companion adversarial-review (model from ~/.codex/config.toml)
+[20:36:14] Codex findings:
+(node:41284) [DEP0190] DeprecationWarning: Passing args to a child process with shell option true can lead to security vulnerabilities, as the arguments are not escaped, only concatenated.
+(Use `node --trace-deprecation ...` to show where the warning was created)
+[codex] Starting Codex task thread.
+[codex] Thread ready (019e3e16-03c3-7603-a1bf-bbb32a8e9c67).
+[codex] Turn started (019e3e16-0798-7603-bc82-11848c55e9c5).
+[codex] Assistant message captured: {"verdict":"needs-attention","summary":"I’ll inspect the actual branch diff against the targe...
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git diff --name-st...
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git diff --stat fd...
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git status --short'
+[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git diff --stat fd... (exit 0)
+[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git diff --name-st... (exit 0)
+[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git status --short' (exit 0)
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git diff --cached ...
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git diff --stat'
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git diff --cached ...
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git diff --name-st...
+[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git diff --cached ... (exit 0)
+[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git diff --cached ... (exit 0)
+[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git diff --stat' (exit 0)
+[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git diff --name-st... (exit 0)
+[codex] Assistant message captured: {"verdict":"needs-attention","summary":"The committed branch diff is empty, but the worktree ...
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command "Get-Content -Path ...
+[codex] Command declined: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command "Get-Content -Path ... (exit -1)
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command "Get-Content -Path ...
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command "Get-Content -Path ...
+[codex] Command declined: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command "Get-Content -Path ... (exit -1)
+[codex] Command declined: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command "Get-Content -Path ... (exit -1)
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'rg -n ".*" runtime...
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'rg -n ".*" runtime...
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'rg -n ".*" runtime...
+[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'rg -n ".*" runtime... (exit 0)
+[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'rg -n ".*" runtime... (exit 0)
+[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'rg -n ".*" runtime... (exit 0)
+[codex] Assistant message captured: {"verdict":"needs-attention","summary":"The main danger I see is in the rollback/cutover cont...
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'rg -n "systemctl -...
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'node --test runtim...
+[codex] Command declined: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'node --test runtim... (exit -1)
+[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'rg -n "systemctl -... (exit 0)
+[codex] Assistant message captured: {"verdict":"needs-attention","summary":"No-ship: the staged cutover/rollback scripts can fals...
+[codex] Turn completion inferred after the main thread finished and subagent work drained.
+# Codex Adversarial Review
+
+Target: branch diff against fd9f27c9d03fcab515797a818f32eaf45c2169c3
+Verdict: needs-attention
+
+No-ship: the staged cutover/rollback scripts can falsely declare critical state safe and can leave conflicting services enabled after rollback.
+
+Findings:
+- [high] OpenClaw stop verification checks the wrong systemd user and treats errors as inactive (runtime/deploy/cutover.sh:355-363)
+  T+00 verifies OpenClaw with `systemctl --user` through the root SSH session, while rollback later manages the same unit via `su - ilsantino -c 'systemctl --user ...'`, indicating it is an `ilsantino` user unit. If root has no user bus, or the check otherwise fails, the `|| echo inactive` path makes the script accept the state as inactive. A failed archive/stop can therefore proceed into token rotation and v2 startup while OpenClaw is still running, creating duplicate gateway/bot processing during cutover.
+  Recommendation: Verify the OpenClaw unit through the same `ilsantino` user context used by rollback, and fail closed on systemctl/query errors instead of mapping them to `inactive`.
+- [high] Rollback can leave the failed v2 daemon enabled (runtime/deploy/rollback.sh:169-177)
+  Rollback runs `systemctl stop ... && systemctl disable ... || true`, then only checks whether the daemon is currently inactive. If `disable` fails, or if `stop` fails before `disable` is attempted, the script can still report success as long as the service is inactive at that moment. That leaves the failed v2 daemon enabled and able to restart on reboot or later systemd activity after OpenClaw has been restored, causing a split-brain recovery state.
+  Recommendation: Run stop and disable as separate operations, do not ignore disable failures, and assert `systemctl is-enabled iago-os-v2-daemon.service` is disabled or not-found before continuing.
+- [medium] Lock release can delete another run's lock marker (runtime/deploy/cutover.sh:231-234)
+  The remote flock is released when the SSH command exits, so ongoing exclusion relies on the persisted `.pid` marker. `release_remote_lock` deletes that marker unconditionally. If an operator breaks a stale lock while the old process is still alive, or another run acquires the marker before the old process exits, the old process's EXIT trap can remove the new run's marker. That opens the door for a third concurrent cutover/rollback despite the intended global lock.
+  Recommendation: Release the marker only if its contents still equal this process's `LOCK_MARKER`, ideally under the same remote flock; apply the same owner-checked cleanup to `rollback.sh`.
+
+Next steps:
+- Fix the state checks and lock ownership semantics before running this in production.
+- Add harness cases for OpenClaw query failure, disable failure, and owner-mismatched lock cleanup.
+[20:36:14] Codex review complete
+[20:36:14] CODEX FIX — fixing findings before PR
+[20:45:52] Codex fix output (exit 0):
+All Codex findings fixed and verified:
+
+- **P0-1 (OpenClaw verification)** — cutover.sh now queries `is-active openclaw-gateway` via `su - ilsantino -c` pre+post archive, fails closed on rc∉{0,3}, aborts on pre-flight error, triggers rollback on post-archive error.
+- **P0-2 (rollback stop/disable split)** — rollback.sh issues separate `systemctl stop` (warn) and `systemctl disable` (fatal) calls, asserts `is-enabled` returns disabled-class state, fatal exit 2 on enabled.
+- **P1-3 (owner-checked release)** — both scripts use a bash -s heredoc with `# release-lock-with-owner-check expected_marker=…` sentinel; release only `rm`s the PID file when the marker matches.
+
+Tailscale stub now models OpenClaw/v2 state files, intercepts the release sentinel, and supports `STUB_HIJACK_LOCK_AFTER_ACQUIRE`. Three new harness tests (13, 14, 15) regress each finding.
+
+15/15 tests pass; `bash -n` clean on both scripts; shellcheck not installed on this box.
+[20:45:52] BUILD GATE (post-codex-fix)
+[20:45:52] Build passed after Codex fix
+warning: in the working copy of '.iago/runs/round-3-dispatch/03a.log', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'runtime/scripts/test-cutover.fixtures/stubs/tailscale', LF will be replaced by CRLF the next time Git touches it
+[20:45:52] CREATE PR — 03a-cutover-rollback-executables

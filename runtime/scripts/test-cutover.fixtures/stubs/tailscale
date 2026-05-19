@@ -1,0 +1,241 @@
+#!/usr/bin/env bash
+# Stub: tailscale — simulates a remote VPS by:
+#   * logging every invocation to $STUB_LOG
+#   * persisting the cutover/rollback lock pid marker into $STUB_STATE_DIR
+#     so verify_lock_still_ours reads back the same value it stored
+#   * tracking openclaw-gateway state (active|inactive) in a state file so
+#     the cutover post-archive query returns "inactive" while the rollback
+#     post-enable query returns "active" (Codex P0 finding 1 regression)
+#   * dispatching on $* to produce the stdout each call site expects
+#   * honoring STUB_FAIL_TAILSCALE_PATTERN to inject a failure on every
+#     command matching that substring
+#   * honoring STUB_HIJACK_LOCK_AFTER_ACQUIRE to overwrite the lock pid
+#     marker with a foreign value right after acquire — used to verify
+#     the owner-checked release does NOT delete a marker it doesn't own
+#     (Codex P1 finding 3 regression)
+#   * honoring STUB_FAIL_STOP_V2 to fail the v2 stop without flipping
+#     V2_STATE_FILE (used by split-brain rollback regression test)
+#   * honoring STUB_INJECT_DAEMON_FAILURE to make the T+08 failure-pattern
+#     grep "find" a stack trace (regression test for journal trigger gap)
+#   * honoring STUB_INJECT_T50_ERRORS=N to make the T+50 journalctl wc -l
+#     report N error lines (regression test for journal trigger gap)
+#   * honoring STUB_FAIL_JOURNALCTL_PATTERN to fail the remote journalctl
+#     pipeline (regression test for C-1 round-3 pipefail wrap — verifies
+#     the bash -c 'set -o pipefail; journalctl | wc -l' or
+#     bash -c 'set -o pipefail; journalctl | grep' shape propagates the
+#     journalctl failure through wc/grep and back to the script)
+
+set +e
+
+STUB_LOG="${STUB_LOG:-}"
+STUB_STATE_DIR="${STUB_STATE_DIR:-/tmp/stub-state-default}"
+mkdir -p "$STUB_STATE_DIR" 2>/dev/null
+
+OPENCLAW_STATE_FILE="$STUB_STATE_DIR/openclaw.state"
+if [[ ! -f "$OPENCLAW_STATE_FILE" ]]; then
+  # Cutover's pre-archive query expects openclaw "active" as the baseline;
+  # rollback's post-start query expects "active" after enable+now. Tests
+  # that need a different starting point can pre-write this file.
+  echo "active" > "$OPENCLAW_STATE_FILE"
+fi
+
+V2_STATE_FILE="$STUB_STATE_DIR/v2.state"
+if [[ ! -f "$V2_STATE_FILE" ]]; then
+  # Default "active" reflects post-T+07 state in cutover. Rollback's stop
+  # flips this back to "inactive", which the post-disable is-active check
+  # in rollback then reads to confirm clean teardown.
+  echo "active" > "$V2_STATE_FILE"
+fi
+
+ARGS="$*"
+
+if [[ -n "$STUB_LOG" ]]; then
+  printf 'tailscale %s\n' "$ARGS" >> "$STUB_LOG"
+fi
+
+FAIL_PATTERN="${STUB_FAIL_TAILSCALE_PATTERN:-}"
+if [[ -n "$FAIL_PATTERN" && "$ARGS" == *"$FAIL_PATTERN"* ]]; then
+  printf 'STUB-INJECT-FAIL pattern=%s\n' "$FAIL_PATTERN" >&2
+  exit 1
+fi
+
+case "$ARGS" in
+  *"bash -s"*)
+    # Two distinct bash -s heredoc shapes pass through here:
+    #   (a) acquire — `echo "${LOCK_MARKER}" > "$LOCKFILE.pid"` to claim
+    #   (b) release — `# release-lock-with-owner-check expected_marker=...`
+    #       reads + conditionally rms the marker only if ownership matches
+    INPUT=$(cat)
+    if [[ -n "$STUB_LOG" ]]; then
+      printf 'STDIN_BEGIN\n%s\nSTDIN_END\n' "$INPUT" >> "$STUB_LOG"
+    fi
+    if [[ "$INPUT" == *"# release-lock-with-owner-check"* ]]; then
+      EXPECTED=$(printf '%s\n' "$INPUT" | sed -n 's/^# release-lock-with-owner-check expected_marker=\(.*\)$/\1/p' | head -1)
+      CURRENT=""
+      if [[ -f "$STUB_STATE_DIR/lock.pid" ]]; then
+        CURRENT=$(cat "$STUB_STATE_DIR/lock.pid")
+      fi
+      if [[ -n "$EXPECTED" ]] && [[ "$EXPECTED" == "$CURRENT" ]]; then
+        rm -f "$STUB_STATE_DIR/lock.pid"
+      fi
+      echo "OK"
+      exit 0
+    fi
+    MARKER=$(printf '%s\n' "$INPUT" | sed -n 's/^echo "\([^"]*\)" > "\$LOCKFILE.pid"$/\1/p' | head -1)
+    if [[ -n "$MARKER" ]]; then
+      printf '%s\n' "$MARKER" > "$STUB_STATE_DIR/lock.pid"
+      if [[ -n "${STUB_HIJACK_LOCK_AFTER_ACQUIRE:-}" ]]; then
+        # Simulate an operator (or concurrent run) breaking + re-acquiring
+        # the lock while our script is mid-flight. Subsequent
+        # verify_lock_still_ours calls will read this foreign marker,
+        # detect mismatch, and abort. The EXIT trap then runs
+        # release_remote_lock — owner-checked, MUST NOT delete this.
+        printf '%s\n' "$STUB_HIJACK_LOCK_AFTER_ACQUIRE" > "$STUB_STATE_DIR/lock.pid"
+      fi
+    fi
+    echo "OK"
+    exit 0
+    ;;
+  *"cat /var/lock/iago-cutover.lock.pid"*)
+    if [[ -f "$STUB_STATE_DIR/lock.pid" ]]; then
+      cat "$STUB_STATE_DIR/lock.pid"
+    else
+      echo "MISSING"
+    fi
+    exit 0
+    ;;
+  *"rm -f /var/lock/iago-cutover.lock.pid"*)
+    # Legacy plain-rm path (pre-owner-checked release). Kept for
+    # backward compat if a future change reverts the release function.
+    rm -f "$STUB_STATE_DIR/lock.pid"
+    exit 0
+    ;;
+  *"file cp"*)
+    exit 0
+    ;;
+  *"systemd-creds decrypt"*)
+    # Round-3 I-1A threshold floor: production code requires len >= 40
+    # (telegram tokens are 46+ chars, gh tokens 40+ chars). Emit a 46-byte
+    # equivalent so the happy-path tests pass through verification. Tests
+    # that exercise the empty/short failure path use STUB_FAIL_TAILSCALE_PATTERN
+    # to short-circuit this case with exit 1 (which makes wc read empty
+    # stdin → "0" with pipefail off, OR with pipefail on the whole pipe
+    # exits non-zero → `if !` capture flips to rollback).
+    echo "46"
+    exit 0
+    ;;
+  *"bash /opt/iago-os/runtime/deploy/archive-openclaw.sh"*)
+    # Archive script transitions openclaw to inactive on the (simulated) VPS.
+    echo "inactive" > "$OPENCLAW_STATE_FILE"
+    exit 0
+    ;;
+  *"systemctl --user enable --now openclaw-gateway"*)
+    # Rollback T+R+2:30 restores openclaw → flips state back to active.
+    echo "active" > "$OPENCLAW_STATE_FILE"
+    exit 0
+    ;;
+  *"systemctl is-enabled iago-os-v2-daemon"*)
+    # is-enabled "disabled" returns exit 1 per systemd convention.
+    echo "disabled"
+    exit 1
+    ;;
+  *"systemctl is-active iago-os-v2-daemon"*)
+    state=$(cat "$V2_STATE_FILE" 2>/dev/null || echo active)
+    echo "$state"
+    if [[ "$state" == "active" ]]; then
+      exit 0
+    else
+      exit 3
+    fi
+    ;;
+  *"systemctl stop iago-os-v2-daemon"*)
+    if [[ "${STUB_FAIL_STOP_V2:-0}" == "1" ]]; then
+      # Simulate `systemctl stop` timing out / failing without taking the
+      # daemon down. V2_STATE_FILE stays "active" so the subsequent
+      # is-active check reads "active" → fatal split-brain abort.
+      echo "Job for iago-os-v2-daemon.service canceled (stub-injected fail)" >&2
+      exit 1
+    fi
+    echo "inactive" > "$V2_STATE_FILE"
+    echo "Stopped iago-os-v2-daemon.service"
+    exit 0
+    ;;
+  *"systemctl disable iago-os-v2-daemon"*)
+    echo "Removed /etc/systemd/system/multi-user.target.wants/iago-os-v2-daemon.service."
+    exit 0
+    ;;
+  *"is-active openclaw-gateway"*|*"is-active openclaw"*)
+    # Cutover queries pre+post via `su - ilsantino -c 'systemctl --user
+    # is-active openclaw-gateway'` (Codex P0 fix). Rollback queries the
+    # same way post-enable. Reflect the state file so both flows see the
+    # transition driven by archive-openclaw.sh / enable-now.
+    state=$(cat "$OPENCLAW_STATE_FILE" 2>/dev/null || echo "active")
+    echo "$state"
+    # is-active exit codes: 0=active, 3=inactive|failed.
+    if [[ "$state" == "active" ]]; then
+      exit 0
+    else
+      exit 3
+    fi
+    ;;
+  *"journalctl"*"daemon-start"*)
+    echo "daemon-start observed"
+    exit 0
+    ;;
+  *"journalctl"*"panic"*)
+    # T+08 failure-pattern grep: production code is
+    #   bash -c 'set -o pipefail; journalctl ... | grep -qE "panic|..."'
+    # (C-1 round-3 fix wraps the remote pipe in bash -c + pipefail.)
+    # Default behavior: pretend grep found nothing (exit 1 = no match).
+    # When STUB_INJECT_DAEMON_FAILURE=1, pretend grep matched (exit 0)
+    # so trigger_rollback fires — regression test for journal trigger gap.
+    # C-1 round-3 regression: when STUB_FAIL_JOURNALCTL_PATTERN is set, exit
+    # non-zero to simulate journalctl failing on the remote side. With
+    # pipefail on, the whole pipe inherits the failure; without pipefail
+    # (pre-fix) the failure would be masked by grep exiting 1 on empty stdin.
+    if [[ -n "${STUB_FAIL_JOURNALCTL_PATTERN:-}" ]]; then
+      exit 1
+    fi
+    if [[ "${STUB_INJECT_DAEMON_FAILURE:-0}" == "1" ]]; then
+      exit 0
+    fi
+    exit 1
+    ;;
+  *"journalctl"*"wc -l"*)
+    # T+50 error-count: production code is
+    #   bash -c 'set -o pipefail; journalctl ... | wc -l'
+    # (C-1 round-3 fix wraps the remote pipe in bash -c + pipefail.)
+    # C-1 round-3 regression: STUB_FAIL_JOURNALCTL_PATTERN exits non-zero
+    # so wc reads empty stdin → "0" (without pipefail this would silently
+    # pass as 0 errors). With pipefail on, the whole pipe inherits exit 1
+    # and the script's `if !` capture triggers rollback. Tested via test 22.
+    if [[ -n "${STUB_FAIL_JOURNALCTL_PATTERN:-}" ]]; then
+      exit 1
+    fi
+    if [[ -n "${STUB_INJECT_T50_ERRORS:-}" ]]; then
+      # Report N error lines for T+50; production code now triggers
+      # rollback when N > 0 (no `|| echo 0` masking).
+      echo "${STUB_INJECT_T50_ERRORS}"
+    else
+      echo "0"
+    fi
+    exit 0
+    ;;
+  *"sha256sum"*)
+    # Pretend the remote unit file is absent / different so cutover
+    # falls through to the copy + daemon-reload branch.
+    echo "0000000000000000000000000000000000000000000000000000000000000000  missing"
+    exit 0
+    ;;
+  *"-o SendEnv=FRESH_TOKEN"*)
+    # Pre-flight SendEnv probe (cutover.sh preflight check 13). The real
+    # tailscale forwards the env var to the VPS sshd via SendEnv; the stub
+    # echoes FRESH_TOKEN directly from its own env (inherited from the
+    # FRESH_TOKEN=probe prefix on the caller's command line).
+    echo "${FRESH_TOKEN:-}"
+    exit 0
+    ;;
+  *)
+    exit 0
+    ;;
+esac
