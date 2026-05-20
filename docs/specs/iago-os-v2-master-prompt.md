@@ -158,7 +158,7 @@ Already specified in `docs/specs/iago-os-v2-vision.md`. Summary for executors:
 | `codex-companion.mjs` | Cross-model adversarial review is the moat |
 | `scripts/review-checks/*.md` | Domain-routing review modules |
 | Skill routing (`/iago-fast`, `/iago-quick`, `/iago-execute`) | Real workflow decisions |
-| 5-layer memory (MEMORY.md + Obsidian + Graphify + MemPalace + MarkItDown) | Working, well-documented |
+| 5-layer memory (MEMORY.md + Obsidian + Graphify + MemPalace + MarkItDown) **+ SQLite session state as 6th layer** (per `.iago/decisions/2026-05-20-posthog-sentry-split-and-memory.md`) | Layers 1–5 carry forward unchanged; SQLite is the formalized name for the per-agent session resumption / cost ledger / event-dedupe store already planned in this spec (§ "Cost ledger" + § "session.jsonl two-phase replay"). Lands in Phase 3 alongside Layer A Sentry init. |
 
 ---
 
