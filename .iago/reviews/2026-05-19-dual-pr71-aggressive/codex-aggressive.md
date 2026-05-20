@@ -1,0 +1,37 @@
+# Codex Adversarial Review
+
+Target: branch diff against origin/main
+Verdict: needs-attention
+
+No-ship: the docs do more than clarify strategy; they conflict with canonical execution boundaries and leave the Sentry autofix trust gates underspecified.
+
+Findings:
+- [high] ADR turns the pipeline into a daemon-agent consumer, contradicting the canonical runtime contract (.iago/decisions/2026-05-19-three-invocation-modes.md:15)
+  This says the daemon hosts named agents such as `claude-implement` and that the pipeline is one consumer of those agents. The canonical v2 vision explicitly says the pipeline is not `AgentRuntime` polymorphism: `execute-pipeline.sh` is spawned as a script runner via `child_process`, with its own stage isolation, not as an agent (`docs/specs/iago-os-v2-vision.md:257`, `:385`). If implementers follow this ADR, Mode 1 can be routed through long-lived named agents and silently lose fresh `claude -p` isolation, self-freeze semantics, and pipeline telemetry contracts.
+  Recommendation: Rewrite Mode 1 as “skill/daemon launches `scripts/execute-pipeline.sh` as a script runner,” not “pipeline invokes named daemon agents.” Remove or qualify the `claude-implement` all-modes example unless the canonical v2 vision is amended in the same PR.
+- [high] Mode 2 creates a subjective bypass around mandatory skill routing (.iago/decisions/2026-05-19-three-invocation-modes.md:67-68)
+  The ADR tells the orchestrator to use Mode 2, or even direct edits, when work is “small / internal / exploratory,” and narrows the skill rule to cases where a plan already exists. That conflicts with root `CLAUDE.md:56` and `:65`, which require all implementation to go through a matching skill when the user says “implement this,” plus `.claude/rules/execution-pipeline.md:12` and `:30-34`, where only `/iago-fast` skips review. The boundary is a judgment call, so production-affecting code can skip `/iago-quick`, Codex review, PR creation, and summaries by being labeled “internal.”
+  Recommendation: Add an enforceable decision table aligned with `CLAUDE.md`: repo code changes still use `/iago-fast` or `/iago-quick` unless the canonical execution rule is updated. Mode 2 should be limited to daemon runtime invocations and explicitly not override skill routing for implementation work.
+- [high] Sentry auto-commit path bypasses the canonical Auto-PR loop and has no enforceable repo gate (docs/specs/sentry-integration.md:128-138)
+  Layer D offers a “High-confidence auto-commit on iago-os internal repo ONLY” route. Canonical docs define this feature as an Auto-PR loop: Sentry → daemon → agent → pipeline → PR, then human merge (`docs/specs/iago-os-v2-vision.md:447`, `docs/specs/iago-os-v2-master-prompt.md:319`), and the master prompt says manual commits outside a skill are never equivalent (`:342`). The spec also never defines where the `iago-os` gate lives: no immutable Sentry project-ID to repo-root allowlist, realpath check, git-remote verification, token-scope restriction, or branch-protection requirement. A misconfigured project mapping or checkout path can turn a safety slogan into an agent-trusted convention.
+  Recommendation: Remove the auto-commit route or redefine it as “commit only to a pipeline-created PR branch after checks.” Specify a daemon-enforced allowlist keyed by Sentry org/project IDs, resolved repo realpath, expected git remote, and a GitHub token that cannot write client repos or protected branches.
+- [high] Webhook dedupe/rate-limit flow is race-prone and omits Shape 4 replay safety (docs/specs/sentry-integration.md:116-120)
+  The flow checks `tasks/sentry-fixer/last-attempt/<issue_id>.json` and then spawns the fixer. There is no atomic claim or unique insert before spawn, so duplicate or concurrent Sentry deliveries for the same issue can all observe “no attempt” and launch multiple fixers. This also omits canonical Shape 4 requirements: durable event IDs, `event_dedupe` SQLite table, bounded queues, per-source concurrency limits, dead-letter handling, and idempotency keys for side-effecting operations (`docs/specs/iago-os-v2-vision.md:210`, `:259`). Impact is duplicate PRs, repeated GitHub side effects, and unbounded spend despite the 24h prose rate limit.
+  Recommendation: Move dedupe before agent spawn. Require an atomic SQLite `INSERT ... UNIQUE(source,event_id)` or O_EXCL claim keyed by Sentry event ID plus issue ID, write the attempt ledger before dispatch, route overflow to dead-letter, and attach idempotency keys to PR/comment/write operations.
+- [medium] Phase 2 language smuggles Sentry into a locked cutover despite later saying Phase 3 only (docs/specs/sentry-integration.md:13-47)
+  The spec says this is not Phase 2 scope, then says Sentry is slotted across “Phase 2 tail” and allows Layer A as a Phase 2 tail add-on. Later the same file says Layer A lands Phase 3 head and “No Sentry SDK in Phase 2 scope.” Against the canonical v2 vision, Phase 2 is VPS install alongside OpenClaw and cutover is Phase 7 (`docs/specs/iago-os-v2-vision.md:439`, `:444`). This creates an easy path for Phase 2 scope creep during a locked cutover window.
+  Recommendation: Delete the Phase 2 tail option and state Layer A is Phase 3 head only, or explicitly amend `docs/specs/iago-os-v2-vision.md` to move that work into Phase 2 with acceptance criteria.
+- [low] Layer A points future implementers at a nonexistent daemon entrypoint (docs/specs/sentry-integration.md:40-45)
+  The implementation section says to initialize Sentry in `runtime/daemon/index.ts` and repeats that the PR modifies `runtime/daemon/index.ts`. That file does not exist in the repo; the daemon entrypoint is `runtime/daemon/main.ts` with `startDaemon()` and `main()`. This is a concrete path error in an implementation spec and will create churn or misplaced init code when Layer A is planned.
+  Recommendation: Replace `runtime/daemon/index.ts` with `runtime/daemon/main.ts` / `startDaemon()` and name the exact init location after config and credential loading are available.
+
+Next steps:
+- Fix the ADR so Mode 1 preserves the script-runner pipeline contract.
+- Remove or strictly define Sentry auto-commit; make every autofix path end in a reviewed PR unless canonical docs are deliberately amended.
+- Add enforceable Layer D dedupe, repo-identity, token-scope, and idempotency requirements before accepting the spec.
+- Clean up Phase 2/3 language and the daemon entrypoint path.
+
+Codex session ID: 019e42c5-51f4-7851-8b4a-eb08a9ef611a
+Resume in Codex: codex resume 019e42c5-51f4-7851-8b4a-eb08a9ef611a
+(node:23056) [DEP0190] DeprecationWarning: Passing args to a child process with shell option true can lead to security vulnerabilities, as the arguments are not escaped, only concatenated.
+(Use `node --trace-deprecation ...` to show where the warning was created)

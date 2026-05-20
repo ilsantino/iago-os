@@ -1,0 +1,28 @@
+Aggressive adversarial review of doc-only PR #71 on branch docs/strategy-sync-2026-05-19.
+
+CONTEXT:
+PR #71 adds two new strategy documents:
+1. .iago/decisions/2026-05-19-three-invocation-modes.md — ADR locking three modes of agent invocation (pipeline-wrapped via /iago-execute, direct via Telegram, headless/scheduled via cron/webhooks). Claims pipeline is one mode among three, not the only mode.
+2. docs/specs/sentry-integration.md — 4-layer Sentry integration spec. Layer A (daemon SDK Phase 3), Layer B (per-client app SDK Phase 3), Layer C (Sentry MCP, requires one-time setup), Layer D (auto-fix dispatch Phase 10 after Webhook/event shape lands Phase 9).
+
+The async @claude review loop already ran 2 rounds and fixed: Phase 4→10 for Layer D, Sentry MCP "available NOW"→"requires setup", non-existent ADR reference replaced with 5-shape registry cite.
+
+THIS REVIEW IS AGGRESSIVE — find what the async loop missed. Specifically hunt:
+
+1. FACTUAL ERRORS: file paths, ADR refs, Phase numbers, line:cite references. Verify every cited file exists. Verify every cited Phase number matches docs/specs/iago-os-v2-vision.md.
+
+2. INTERNAL CONTRADICTIONS within each doc and BETWEEN the two docs.
+
+3. DRIFT FROM CANONICAL SPEC: does any claim contradict docs/specs/iago-os-v2-vision.md or .claude/rules/execution-pipeline.md?
+
+4. SAFETY GAPS in Sentry Layer D auto-fix flow. Look at the 5 safety constraints — what's missing? What can be bypassed? Critically scrutinize "Auto-commit only on iago-os repo itself" — is the gate enforceable? Where does the gate live? Can the gate be tricked?
+
+5. AMBIGUITY in the three-mode definitions. Where does Mode 1 end and Mode 2 begin? Is the boundary enforceable or a judgment call?
+
+6. PHASE-NUMBER DRIFT: every Phase reference (1, 2, 3, 4, 5, 6, 8, 9, 10, 11) must match docs/specs/iago-os-v2-vision.md.
+
+7. SCOPE-CREEP: do either doc smuggle in scope changes that should be in the canonical spec instead?
+
+8. ASSUMPTIONS: what does each doc assume that isn't stated? E.g., "claude-implement" agent name — is that canonical?
+
+Report findings with severity (Critical / Important / Minor) and actionable fix recommendations. Be paranoid. Be specific. Cite file:line.
