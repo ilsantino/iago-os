@@ -334,7 +334,7 @@ What stays unchanged:
 - Review check modules (`scripts/review-checks/*.md`)
 - Skill routing (`/iago-fast`, `/iago-quick`, `/iago-execute`)
 - Severity floors, secret-exclusion staging patterns
-- 5-layer memory architecture (MEMORY.md, Obsidian, Graphify, MemPalace, MarkItDown)
+- 5-layer memory architecture (MEMORY.md, Obsidian, Graphify, MemPalace, MarkItDown) + SQLite session state as 6th layer (formalized 2026-05-20 — per-agent resume + cost ledger + event-dedupe; already planned in this doc §§ 132, 472, now named explicitly as a memory layer; see `.iago/decisions/2026-05-20-posthog-sentry-split-and-memory.md`)
 
 What changes:
 
