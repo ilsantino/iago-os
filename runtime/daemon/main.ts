@@ -27,6 +27,11 @@
  *   8. If `config.telegram` is non-null, construct + start `TelegramBot`.
  *   9. Install SIGINT/SIGTERM handlers calling `shutdown()` — BEFORE the
  *      auto-start loop so the EC1 guard can observe the flag.
+ *   9b. Install SIGHUP credential-reload handler via
+ *      `registerSighupHandler` (Plan 06). Re-invokes
+ *      `loadSystemdCredentials` and emits `cred-reload-fired` telemetry.
+ *      Reads the `shuttingDown` flag through a closure so a SIGHUP
+ *      arriving after SIGTERM/SIGINT is ignored (C1 shutdown-race fix).
  *   10. Auto-start every `agents[]` with `autoStart: true`.
  *   11. Emit `daemon-start` telemetry.
  *
@@ -88,7 +93,7 @@ import {
 import { HeartbeatController } from "./heartbeat.js";
 import { IpcServer } from "./ipc-server.js";
 import { ensureStateDirsSync, pathFor } from "./state-paths.js";
-import { emit } from "./telemetry.js";
+import { type DaemonEvent, emit } from "./telemetry.js";
 
 /**
  * Per-stage shutdown timeout (ms). Opus I4: the daemon shutdown path
@@ -235,6 +240,163 @@ export function computeRunUnder(
 		(credDir !== undefined && credDir.length > 0) ||
 		(invocationId !== undefined && invocationId.length > 0);
 	return isSystemd ? "systemd" : "local";
+}
+
+/**
+ * Plan 06 — SIGHUP credential-reload handler.
+ *
+ * SIGHUP triggers re-load of systemd-creds files into `process.env`.
+ * Send via `systemctl kill -s SIGHUP iago-os-v2-daemon.service`. The
+ * handler re-invokes `loadSystemdCredentials()` (which already enforces
+ * the "external env-var override beats credstore" precedence so
+ * re-invocation is safe) and emits a `cred-reload-fired` NDJSON
+ * telemetry event listing env-var NAMES that changed, were re-read but
+ * unchanged, or failed. Names only — NEVER values, matching Plan 01
+ * Task 4 C2 posture.
+ *
+ * Does NOT auto-restart in-flight agents. SIGHUP updates the DAEMON's
+ * `process.env` ONLY; spawned children inherited env at spawn time and
+ * continue with old credentials until restarted per-agent. Operators
+ * decide per agent — the daemon does not interpret SIGHUP as an agent-
+ * recycle signal because credential rotations on the same logical
+ * account (Telegram, GH PAT) usually do not warrant interrupting
+ * long-running PTY sessions.
+ *
+ * Failure posture: any throw from inside the handler (including a
+ * `loadSystemdCredentials` failure) is caught and surfaced as
+ * `cred-reload-failed` telemetry. The daemon is NEVER killed by a
+ * failed reload — leaving the daemon running with the old credentials
+ * is safer than crashing it on an informational signal.
+ *
+ * Concurrency: if a SIGHUP arrives while a prior reload is still in
+ * flight, the second is dropped with a `cred-reload-debounced`
+ * telemetry event. Drop chosen over queue-based debouncing for Phase 2
+ * simplicity per plan I1; operator-driven SIGHUPs are not rapid.
+ *
+ * Shutdown race (C1): SIGHUP arriving after the SIGTERM/SIGINT path
+ * has set `shuttingDown` is ignored — a partially-torn-down telemetry
+ * pipeline would otherwise silently swallow the reload event.
+ *
+ * Windows note (I3): SIGHUP is Linux-only at the OS level. Phase 2
+ * production VPS is Debian 13, so production is fine. Tests exercise
+ * the handler by invoking the `listener` returned from
+ * `registerSighupHandler` directly, bypassing the OS signal layer.
+ */
+export interface SighupHandlerDeps {
+	readonly loadCredentials: () => { failed: readonly string[] } | void;
+	readonly emit: (event: DaemonEvent) => Promise<void>;
+	readonly envVars: readonly string[];
+	readonly isShuttingDown: () => boolean;
+}
+
+/**
+ * Returned by `registerSighupHandler`. `removeListener` is the production
+ * cleanup hook, added to `shutdownHandlers`. `listener` is exposed so unit
+ * tests can invoke the handler synchronously without `process.emit("SIGHUP")`
+ * (avoids cross-test leakage on Linux CI, removes the need for an `as` cast
+ * over `process.listeners("SIGHUP")` reflection).
+ */
+export interface SighupHandlerRegistration {
+	readonly removeListener: () => void;
+	readonly listener: () => void;
+}
+
+export function registerSighupHandler(
+	deps: SighupHandlerDeps,
+): SighupHandlerRegistration {
+	let inFlight = false;
+
+	const handler = async (): Promise<void> => {
+		if (deps.isShuttingDown()) {
+			console.error("[daemon] SIGHUP ignored: daemon is shutting down");
+			return;
+		}
+		if (inFlight) {
+			try {
+				await deps.emit({ kind: "cred-reload-debounced" });
+			} catch (err) {
+				console.error(
+					`[daemon] telemetry emit(cred-reload-debounced) failed: ${err instanceof Error ? err.message : String(err)}`,
+				);
+			}
+			return;
+		}
+
+		inFlight = true;
+		try {
+			const before = new Map<string, string | undefined>();
+			for (const k of deps.envVars) before.set(k, process.env[k]);
+
+			let failed: readonly string[] = [];
+			try {
+				const result = deps.loadCredentials();
+				if (result !== undefined) failed = result.failed;
+			} catch (err) {
+				const message = err instanceof Error ? err.message : String(err);
+				try {
+					await deps.emit({ kind: "cred-reload-failed", error: message });
+				} catch (emitErr) {
+					console.error(
+						`[daemon] telemetry emit(cred-reload-failed) failed: ${emitErr instanceof Error ? emitErr.message : String(emitErr)}`,
+					);
+				}
+				return;
+			}
+
+			const credentialsReloaded: string[] = [];
+			const unchanged: string[] = [];
+			const failedSet = new Set(failed);
+			for (const k of deps.envVars) {
+				if (failedSet.has(k)) continue;
+				const beforeVal = before.get(k);
+				const afterVal = process.env[k];
+				if (beforeVal !== afterVal) {
+					credentialsReloaded.push(k);
+				} else if (afterVal !== undefined && afterVal.length > 0) {
+					unchanged.push(k);
+				}
+			}
+
+			try {
+				await deps.emit({
+					kind: "cred-reload-fired",
+					credentialsReloaded,
+					unchanged,
+					errors: [...failed],
+				});
+			} catch (err) {
+				console.error(
+					`[daemon] telemetry emit(cred-reload-fired) failed: ${err instanceof Error ? err.message : String(err)}`,
+				);
+			}
+
+			if (credentialsReloaded.length > 0) {
+				console.error(
+					`[daemon] SIGHUP reload: ${credentialsReloaded.length} credential(s) updated. Restart in-flight agents to pick up new values.`,
+				);
+			}
+		} catch (err) {
+			const message = err instanceof Error ? err.message : String(err);
+			try {
+				await deps.emit({ kind: "cred-reload-failed", error: message });
+			} catch (emitErr) {
+				console.error(
+					`[daemon] telemetry emit(cred-reload-failed) failed: ${emitErr instanceof Error ? emitErr.message : String(emitErr)}`,
+				);
+			}
+		} finally {
+			inFlight = false;
+		}
+	};
+
+	const listener = (): void => {
+		void handler();
+	};
+	process.on("SIGHUP", listener);
+	return {
+		removeListener: () => process.removeListener("SIGHUP", listener),
+		listener,
+	};
 }
 
 export interface DaemonHandle {
@@ -537,6 +699,18 @@ export async function startDaemon(
 	process.on("SIGTERM", sigtermHandler);
 	shutdownHandlers.add(() => process.removeListener("SIGINT", sigintHandler));
 	shutdownHandlers.add(() => process.removeListener("SIGTERM", sigtermHandler));
+
+	// Plan 06: SIGHUP credential-reload. Registered AFTER the shutdown
+	// signal handlers and AFTER the initial `loadSystemdCredentials()` call
+	// so the helper's last-written tracking is primed before any reload.
+	// Operator invokes via `systemctl kill -s SIGHUP iago-os-v2-daemon.service`.
+	const sighup = registerSighupHandler({
+		loadCredentials: loadSystemdCredentials,
+		emit,
+		envVars: getCredentialEnvVars(),
+		isShuttingDown: () => shuttingDown,
+	});
+	shutdownHandlers.add(sighup.removeListener);
 
 	for (const cfg of config.agents) {
 		if (!cfg.autoStart) continue;

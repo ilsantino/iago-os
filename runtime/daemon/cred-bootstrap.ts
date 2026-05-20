@@ -103,9 +103,19 @@ const CREDENTIALS: CredMap[] = [
  */
 const lastWrittenByCredstore = new Map<string, string>();
 
-export function loadSystemdCredentials(): void {
+/**
+ * Loads credstore files into `process.env`. Returns `{ failed }` — env-var
+ * NAMES (NEVER values) whose credstore read failed with a non-ENOENT error
+ * (e.g., EACCES). ENOENT is intentionally NOT treated as failure: a missing
+ * credstore file means the credential is not provisioned on this host, which
+ * is a valid state during phased rollout. The returned `failed` array lets
+ * Plan 06's SIGHUP handler populate `cred-reload-fired.errors` with the
+ * actual env-var names that failed to read, rather than always-empty `[]`.
+ */
+export function loadSystemdCredentials(): { failed: readonly string[] } {
+	const failed: string[] = [];
 	const dir = process.env.CREDENTIALS_DIRECTORY;
-	if (dir === undefined || dir.length === 0) return;
+	if (dir === undefined || dir.length === 0) return { failed };
 
 	for (const entry of CREDENTIALS) {
 		const credPath = path.join(dir, entry.fileName);
@@ -120,6 +130,7 @@ export function loadSystemdCredentials(): void {
 			console.error(
 				`[cred-bootstrap] failed to read ${entry.fileName}: ${code ?? String(err)}`,
 			);
+			failed.push(entry.envVar);
 			continue;
 		}
 		const value = raw.trim();
@@ -135,6 +146,7 @@ export function loadSystemdCredentials(): void {
 		process.env[entry.envVar] = value;
 		lastWrittenByCredstore.set(entry.envVar, value);
 	}
+	return { failed };
 }
 
 /**

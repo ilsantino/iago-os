@@ -320,6 +320,126 @@ Resolution order for `<state-root>`:
 2. `<cwd>/runtime/state` if `path.basename(cwd) === "iago-os"`
 3. `<homedir>/.iago-os/daemon-state`
 
+## Reloading credentials without restart (SIGHUP)
+
+Plan 06 ships a SIGHUP handler that re-reads systemd credstore files into
+`process.env` without taking the daemon down. Use it after rotating a
+secret in 1Password + running `provision-credentials.sh <name>` (which
+updates the on-disk credstore file but does NOT touch the running
+daemon's `process.env`). Sending SIGHUP causes the daemon to re-invoke
+`loadSystemdCredentials()` so the new value is visible to any code that
+reads through `process.env`.
+
+Safer than `systemctl restart` because it preserves in-flight Claude
+PTY sessions, the IPC socket binding, and the 30-minute post-cutover
+stay-at-keyboard monitoring window.
+
+### When to use
+
+- After `bash runtime/deploy/provision-credentials.sh iago-telegram-token`
+  rotates the Telegram bot token via BotFather `/revoke`.
+- After `bash runtime/deploy/provision-credentials.sh iago-gh-token`
+  rotates the GitHub PAT.
+- (Phase 3+) After any Anthropic credstore file rotation, once the
+  three Anthropic-profile entries are uncommented in `cred-bootstrap.ts`.
+
+### Invocation
+
+On the VPS, send SIGHUP to the daemon's systemd unit:
+
+```bash
+systemctl kill -s SIGHUP iago-os-v2-daemon.service
+```
+
+From Santiago's Windows box via Tailscale:
+
+```bash
+tailscale ssh root@srv1456441 -- 'systemctl kill -s SIGHUP iago-os-v2-daemon.service'
+```
+
+### Verification
+
+A successful reload emits a `cred-reload-fired` NDJSON record to the
+daemon's telemetry stream. Check the journal:
+
+```bash
+tailscale ssh root@srv1456441 -- \
+  'journalctl -u iago-os-v2-daemon.service --since "1 minute ago" --no-pager | grep cred-reload-fired'
+```
+
+Expected: one line with `credentialsReloaded: [<env-var names that
+changed>]`. The `unchanged` array carries env-var names that were
+re-read but kept the same value. NAMES only — credential values are
+NEVER written to telemetry, stdout, or stderr (matches the Plan 01
+Task 4 C2 posture enforced by `cred-bootstrap.test.ts` case 10).
+
+### Behavior
+
+- **Names only in telemetry.** The reload event carries env-var NAMES
+  in `credentialsReloaded`, `unchanged`, and `errors`. Values never
+  appear in any telemetry field, log line, or stderr message.
+- **External env overrides win.** Env vars that were set explicitly
+  before daemon start (or mutated externally after the first load)
+  take precedence over credstore files per the Plan 01 Task 4
+  precedence contract. SIGHUP reload preserves the override.
+- **In-flight agents keep their old credentials.** SIGHUP updates the
+  DAEMON's `process.env` ONLY. Spawned agents inherited env at spawn
+  time; they continue with their old (now-stale) credentials until
+  restarted per-agent. The daemon does NOT auto-restart agents on
+  SIGHUP — that is an operational decision the operator makes per
+  agent. Phase 2 does not ship a generic agent-restart command; use
+  the existing per-shape restart paths (e.g., for a long-running
+  claude-pty agent, send the agent a graceful shutdown via the
+  IPC/Telegram surface and rely on the standard restart loop).
+  Phase 3 agent-restart command will land when the Anthropic-adapter
+  wiring activates the multi-profile path.
+- **Debounce strategy: drop.** If a second SIGHUP arrives while a
+  prior reload is still in flight, the second is dropped and a
+  `cred-reload-debounced` telemetry event is recorded. Queue-based
+  debouncing was rejected for Phase 2 (operator-driven SIGHUPs are
+  not rapid); reconsider in Phase 3+ if a credential-rotator daemon
+  emerges that fires SIGHUP on every rotate.
+- **Linux-only signal.** SIGHUP is a POSIX signal; Windows local-dev
+  cannot send it through the OS layer. The handler is still unit-
+  tested on Windows by invoking the `listener` reference returned
+  from `registerSighupHandler` (see `runtime/daemon/sighup.test.ts`)
+  which bypasses the OS layer and invokes the handler directly.
+  Production runs on Debian 13, so this restriction is invisible
+  in deployment.
+
+### Failure modes
+
+- **`cred-reload-failed`** — `loadSystemdCredentials()` threw. Most
+  likely cause: a credstore file became unreadable mid-rotation (race
+  between `provision-credentials.sh` writing and the daemon reading)
+  or the file's permissions are wrong (EACCES). The daemon continues
+  running with the previously-loaded credentials — failed reload is
+  safer than crashing the daemon on an informational signal. Inspect
+  the journal for the structured error message and re-run
+  `provision-credentials.sh` once the file is stable.
+- **`cred-reload-debounced`** — a rapid second SIGHUP arrived while
+  the first was in flight. The second is dropped; the first will
+  complete and emit its own `cred-reload-fired` (or `cred-reload-failed`)
+  event. If you intended both to take effect, re-send SIGHUP after the
+  first completes (`journalctl | grep cred-reload-fired` shows the
+  completion record).
+- **SIGHUP during daemon shutdown.** A SIGHUP arriving after the
+  SIGTERM/SIGINT path has set the internal `shuttingDown` flag is
+  ignored and logs `[daemon] SIGHUP ignored: daemon is shutting down`
+  to stderr. No telemetry event is emitted. This prevents a race
+  where a partially-torn-down telemetry pipeline would silently
+  swallow the reload event (C1 stress-test fix).
+- **SIGHUP during daemon startup.** Node's default action for SIGHUP
+  is to terminate the process. The handler is installed by
+  `startDaemon()` AFTER the initial `loadSystemdCredentials()` call,
+  so a SIGHUP arriving in the sub-second window before installation
+  will kill the daemon (same behavior as pre-Plan 06; the handler
+  cannot register earlier because it depends on the credstore being
+  primed). Operators rotating credentials should wait for systemd to
+  report the service as `active (running)` before sending SIGHUP —
+  in practice this is the natural workflow because `systemctl kill
+  -s SIGHUP` already requires an active unit.
+
 ## Class-usage rationale
 
 `AgentManager` and `HeartbeatController` are classes, not factory functions.

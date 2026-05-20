@@ -151,6 +151,49 @@ export type DaemonEvent =
 	  }
 	| {
 			/**
+			 * Plan 06 (SIGHUP credential reload): emitted by the SIGHUP
+			 * handler after `loadSystemdCredentials()` re-reads the
+			 * credstore files. `credentialsReloaded` carries env-var NAMES
+			 * whose value changed across the reload; `unchanged` carries
+			 * env-var NAMES that were re-read but kept the same value;
+			 * `errors` carries env-var NAMES that failed to read.
+			 * NEVER carries credential values (matches Plan 01 Task 4 C2
+			 * posture). Operators consume via `journalctl ... | grep
+			 * cred-reload-fired` to confirm a credential rotation took
+			 * effect without a daemon restart.
+			 */
+			readonly kind: "cred-reload-fired";
+			readonly credentialsReloaded: string[];
+			readonly unchanged: string[];
+			readonly errors: string[];
+	  }
+	| {
+			/**
+			 * Plan 06 (SIGHUP credential reload): emitted when
+			 * `loadSystemdCredentials()` itself threw (e.g., a credstore
+			 * file became unreadable mid-rotation). The daemon continues
+			 * running with the old credentials in memory — SIGHUP is
+			 * informational and a failed reload is safer than killing
+			 * the daemon. `error` is a stringified error message; NEVER
+			 * carries credential values.
+			 */
+			readonly kind: "cred-reload-failed";
+			readonly error: string;
+	  }
+	| {
+			/**
+			 * Plan 06 (SIGHUP credential reload): emitted when a second
+			 * SIGHUP arrives while a prior reload is still in flight.
+			 * The second SIGHUP is dropped (queue-based debouncing was
+			 * rejected for Phase 2 simplicity per plan I1). Operator-
+			 * driven SIGHUPs are not expected to be rapid; if Phase 3+
+			 * surfaces a credential-rotator daemon that fires SIGHUP on
+			 * every rotate, reconsider with queue-based debouncing.
+			 */
+			readonly kind: "cred-reload-debounced";
+	  }
+	| {
+			/**
 			 * Plan 07a (CronScheduler): a registered cron expression matched
 			 * the current tick, wake-check (if any) passed, and the task
 			 * file was written to `tasks/pending/`. `runningCount` is the
