@@ -201,3 +201,24 @@ Verdict: PROCEED. Confidence 90% on the observability split; 95% on the memory v
 - `memory:project_iago_v2_vision` — v2 architecture lock 2026-05-13
 - `memory:project_red_sun_farms` — trigger for future data warehouse evaluation
 - Research subagents (2026-05-20): PostHog vs Sentry (`agentId: ad8e77f2ea6f89199`), memory patterns (`agentId: a7b91aaf7cdbc4184`)
+
+---
+
+## Addendum — 2026-05-20 (same-day): Retire local Layer E install; VPS-only
+
+**Context.** While provisioning the PostHog account and attempting `claude plugin install posthog` from Santiago's Windows laptop, two facts surfaced that change the Layer E deployment shape recorded above:
+
+1. **The PostHog Claude Code plugin is not in any default marketplace.** `claude plugin install posthog` fails with `Plugin "posthog" not found in any configured marketplace`. PostHog's own docs at `posthog.com/docs/llm-analytics/installation/claude-code` skip the marketplace registration step. Probed `posthog/posthog-claude-code`, `posthog/claude-code-plugin`, `posthog/claude-plugin` — all GitHub 404s. Whatever marketplace hosts the plugin is undocumented today; resolving the gap is a PostHog-side action, not an iago-os action.
+
+2. **Post-cutover (2026-05-25), the iago-os-v2 pipeline runs on the Hostinger VPS, not Santiago's laptop.** The original ADR text "lands on Santiago's machine today" (Decision 1, Layer E row) optimized for capturing 5 days of pre-cutover pipeline telemetry from the laptop. Combined with the marketplace blocker in (1), that 5-day window is no longer realistic — by the time the plugin install is unblocked, the pipeline has moved off the laptop.
+
+**Amendment.** Layer E is **VPS-only**. The "E local" credential row in the ops table below the original decision (`POSTHOG_PROJECT_API_KEY` → `~/.bashrc` on Santiago's machine) is **canceled**. Layer E credentials live only in `runtime/daemon/cred-bootstrap.ts` once Phase 3 ships.
+
+**What stays unchanged:**
+
+- Layer C (PostHog MCP) **does** run on Santiago's laptop — that's how the orchestrator queries telemetry from session. Endpoint already registered (`claude mcp add --transport http posthog https://mcp.posthog.com/mcp`); personal API key holds at `~/.claude/secrets/posthog.env` until OAuth completes on first MCP call.
+- Layer E (PostHog Claude Code plugin) **still ships in Phase 3** — installed on the VPS once the marketplace blocker is resolved, with env vars provisioned by `cred-bootstrap.ts`.
+
+**Confidence:** 95%. The dissenting 5% is the small chance that the v2 cutover slips past 2026-05-25, in which case a few weeks of laptop-side pipeline telemetry would be measurable value. If cutover slips past 2026-06-15 AND the PostHog marketplace gap is resolved by then, revisit this addendum.
+
+**Trigger to re-amend:** v2 cutover slip past 2026-06-15 with the marketplace gap closed, OR PostHog publishes a non-marketplace install path (npm package, direct download) that works without account-side onboarding.

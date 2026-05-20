@@ -82,7 +82,7 @@ Every Layer D fix path terminates in a **PR**, not an auto-commit. There is no "
 
 **Implementation per client:**
 - Frontend: `posthog-js` SDK initialized at app boot. Wrap router in `PostHogErrorBoundary` (or React error boundary that calls `posthog.captureException`). Source maps uploaded via PostHog Vite plugin.
-- Backend: `posthog-node` SDK inside Lambda handlers; `captureException(err, { ... })` in catch blocks; flush before handler return (Lambda doesn't keep the process alive between invocations, so explicit `await posthog.shutdown()` or `posthog.flush()` is required — document in per-client setup).
+- Backend: `posthog-node` SDK inside Lambda handlers; `captureException(err, { ... })` in catch blocks; flush before handler return. **Use `await posthog.flush()` inside the handler before `return`/`throw`** — it drains the queue without disconnecting the module-level client, so subsequent warm invocations on the same container keep working. **Reserve `await posthog.shutdown()` for `process.on('SIGTERM')` hooks only** (Amplify Gen 2 emits SIGTERM on function destroy); calling `shutdown()` inside the handler permanently disconnects the client and breaks every subsequent warm invocation on that container. Document the distinction in per-client setup.
 - Project API key per project provisioned via Amplify env var pipeline (Layer B's per-client PR adds the env var; not amended into Plan 01b which is cutover-locked).
 
 **Honest gap vs Sentry:** the Layer B implementer must explicitly wire `posthog-node` `captureException` into Lambda handlers — `@sentry/aws-serverless` auto-wraps the handler, `posthog-node` does not. Expect ~10 lines of glue per Lambda. Worth it for the free-tier ceiling.
@@ -243,7 +243,9 @@ On agent exit (success/failure/timeout): write attempt-end to claim file
 
 ### Layer E — LLM telemetry via PostHog Claude Code plugin
 
-**Surface:** every `claude -p` session spawned by the iaGO pipeline (Mode 1) — implementation, review, fix, codex-fallback, PR creation, @claude tag — plus interactive sessions on Santiago's machine. Also covers HTTP/SDK adapter Claude SDK calls in Phase 3+.
+> **AMENDED 2026-05-20 — VPS-only deployment.** The "On Santiago's machine" install path described below is **canceled** per ADR addendum 2026-05-20 (`.iago/decisions/2026-05-20-posthog-sentry-split-and-memory.md`). Layer E installs on the Hostinger VPS during Phase 3 cred-bootstrap PR; the laptop-side install is dropped because (a) the v2 pipeline moves off the laptop at cutover 2026-05-25, and (b) `claude plugin install posthog` is blocked on an undocumented marketplace as of 2026-05-20. The original implementation steps below stay for reference until Phase 3 author rewrites them against the VPS target.
+
+**Surface:** every `claude -p` session spawned by the iaGO pipeline (Mode 1) on the VPS — implementation, review, fix, codex-fallback, PR creation, @claude tag. Also covers HTTP/SDK adapter Claude SDK calls in Phase 3+. Laptop-side interactive sessions are out of scope for Layer E (telemetry-wise they are noise compared to pipeline runs).
 
 **Tool: PostHog Claude Code plugin** (`claude plugin install posthog`). Documented at [posthog.com/docs/llm-analytics/installation/claude-code](https://posthog.com/docs/llm-analytics/installation/claude-code).
 
@@ -288,7 +290,7 @@ On agent exit (success/failure/timeout): write attempt-end to claim file
 | **D-1** | Sentry *(default; re-evaluate at impl)* | One-off webhook → fixer-agent loop on iago-os repo itself | **Phase 10** (requires Phase 9) |
 | **D-2** | Sentry *(default; re-evaluate at impl)* | Generalize to one client (FullData first) | **Phase 10+** (post-Phase-10) |
 | **D-3** | source-agnostic | Webhook/event shape (prerequisite for all D-N) | **Phase 9** (per v2 vision) |
-| **E** | **PostHog Claude Code plugin** *(new 2026-05-20)* | LLM telemetry: $ai_generation, $ai_span, $ai_trace per pipeline session | **Available today** (zero VPS infra; VPS-side wiring queued for Phase 3 cred-bootstrap) |
+| **E** | **PostHog Claude Code plugin** *(new 2026-05-20; amended same-day to VPS-only)* | LLM telemetry: $ai_generation, $ai_span, $ai_trace per pipeline session | **Phase 3** (VPS install via cred-bootstrap PR; laptop install canceled per ADR addendum 2026-05-20) |
 
 ---
 
@@ -317,7 +319,7 @@ On agent exit (success/failure/timeout): write attempt-end to claim file
 - **OQ-5 (from review):** Per-client PII denylist storage — in the client repo as `.sentry-pii-denylist.json`, in the Sentry project config UI, or in the daemon config? Defer to Layer B per-client setup; revisit if we hit a real PII leak.
 - **OQ-6 (2026-05-20):** PostHog region — `us.i.posthog.com` vs `eu.i.posthog.com`. Defaults to the region of Santiago's account at signup; verify before provisioning the iago-os-llm-telemetry project. Affects `POSTHOG_HOST` env var across Layers B + E.
 - **OQ-7 (2026-05-20):** Plugin-vs-manual instrumentation in long-lived daemon `claude -p` sessions. The PostHog Claude Code plugin hooks `SessionEnd` — short-lived `claude -p` pipeline stages flush correctly. Pipeline stages spawned by the v2 daemon (Phase 3+) are also short-lived (one per stage). But if Phase 3 introduces persistent daemon-side `claude -p` workers, a session may run for hours and never trigger `SessionEnd` — losing telemetry. Defer to Phase 3 when the first long-lived daemon claude-pty agent ships; if it's a real gap, add explicit `posthog-node` `captureEvent` calls in the adapter as a backup.
-- **OQ-8 (2026-05-20):** Layer D re-evaluation trigger at Phase 10. The amendment says "Sentry default, re-evaluate at impl." Make the re-evaluation concrete: at Phase 10 kickoff, the implementer runs a 2-page comparison of (a) PostHog error grouping quality over 3+ months of Layer B data vs (b) Sentry's grouping in the same period. If PostHog grouping passes a defined bar (false-positive rate <X%, dedup accuracy >Y%), flip Layer D to PostHog and decommission the Sentry surface. Bar values to be set when the comparison runs (don't pre-commit to numbers without data).
+- **OQ-8 (2026-05-20):** Layer D re-evaluation trigger at Phase 10. The amendment says "Sentry default, re-evaluate at impl." Make the re-evaluation concrete: at Phase 10 kickoff, the implementer runs a 2-page comparison of (a) PostHog error grouping quality over 3+ months of Layer B data vs (b) Sentry's grouping in the same period. If PostHog grouping passes a defined bar (false-positive rate <X%, dedup accuracy >Y%), flip Layer D to PostHog and decommission the Sentry surface. Bar values to be set when the comparison runs (don't pre-commit to numbers without data). **Directional tiebreaker (qualitative gate, applied if numeric bars cannot be cleanly set):** if a single reviewer scanning both tools side-by-side on the same Layer B corpus cannot reliably distinguish grouping quality, consolidate on PostHog (one tool wins on simplicity). If PostHog grouping is clearly inferior on inspection (noisy dedup, missing fingerprints, harder root-cause traversal), keep Sentry for Layer D. This guarantees the re-evaluation produces a decision rather than a reopened question.
 
 ---
 
