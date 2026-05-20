@@ -169,8 +169,8 @@ before wiping.
 | **Total** | **4:00** |
 
 Within Santiago's 5-min spec. The most variable step is the BotFather
-re-rotate — if it's a pre-T+05 rollback (token not yet revoked) the
-total drops to ~2:30. The post-T+05 case is the worst case and still
+re-rotate — if it's a pre-T+02 rollback (token not yet revoked) the
+total drops to ~2:30. The post-T+02 case is the worst case and still
 clears the spec ceiling with ~60s of margin.
 
 ---
@@ -196,7 +196,7 @@ After T+R+5:00, before stepping away:
    infra patterns. Telegram for non-urgent comms (OpenClaw is back up
    and serving); Signal/phone for ambiguous CTO-side issues that
    need a same-day eyes-on response.
-6. **Sync 1Password after a post-T+05 rollback.** After T+R+1:30 you
+6. **Sync 1Password after a post-T+02 rollback.** After T+R+1:30 you
    pasted a second fresh token into OpenClaw. The 1Password vault item
    `v2-daemon-telegram-bot::token` still holds the **first** rotation
    token (set at T+02), which is now dead (BotFather revocations are
