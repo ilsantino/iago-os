@@ -1,6 +1,6 @@
 # State — iaGO-OS
 
-> **Phase:** v2-phase-2-vps-bootstrap | **Status:** Phase 2 execution in flight. PR #62/#63/#64/#65/#67/#68/#66 merged — VPS deploy unit, WhatsApp deauth + Telegram rotation, AgentManager polling, credential bootstrap + authProfile config schema, PR-triage agent artifacts (04a), cutover/rollback executables + dry-run harness (03a), Round 1+2 dual-review artifact preservation. Remaining: 04b wiring/test, 05a/05b evidence checker, 06 SIGHUP reload, 07a cron scheduler. Cutover scheduled Sunday 2026-05-25 20:00 US/Mexico.
+> **Phase:** v2-phase-2-vps-bootstrap | **Status:** Phase 2 execution in flight. PR #60-#68 merged — OpenClaw archive (02a), CronScheduler (07a), VPS deploy unit (01a), WhatsApp deauth + Telegram rotation (02b), AgentManager polling (07b), credential bootstrap + authProfile (01b), Round 1+2 dual-review artifact preservation (#66), PR-triage agent artifacts (04a), cutover/rollback executables + dry-run harness (03a). Remaining: 03b cutover/rollback runbooks, 04b PR-triage wiring/test, 05a/05b evidence template+checker+e2e, 06 SIGHUP credential reload. Cutover scheduled Sunday 2026-05-25 20:00 US/Mexico.
 > **Tag:** v0.1.0 | **Updated:** 2026-05-19
 
 ## Active
