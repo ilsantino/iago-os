@@ -208,9 +208,9 @@ the cutover window.
 - [ ] Phase 1 hello-world acceptance gate green on Santiago's local box (commit `4ee40ee`)
 - [ ] v2 daemon code deployed to VPS at `/opt/iago-os` (git clone + `npm install` + `npm run build` inside `runtime/`)
 - [ ] systemd unit file installed at `/etc/systemd/system/iago-os-v2-daemon.service` (§ 1 of spec)
-- [ ] `iago` user provisioned on VPS via `useradd --system` (Day -1 step ii)
-- [ ] `/var/lib/iago-os/daemon-state` created, owned `iago:iago`, mode 0700 (Day -1 step i)
-- [ ] `/var/log/iago-os` created, owned `iago:iago`, mode 0750 (Day -1 step i)
+- [ ] `iago` user provisioned on VPS via `useradd --system` (Day -1 step i)
+- [ ] `/var/lib/iago-os/daemon-state` created, owned `iago:iago`, mode 0700 (Day -1 step ii)
+- [ ] `/var/log/iago-os` created, owned `iago:iago`, mode 0750 (Day -1 step ii)
 - [ ] `/etc/credstore.encrypted/` exists, owned `root:root`, mode 0700
 - [ ] `/etc/iago-os/santiago-age.pub` deployed (Day -1 step iii)
 - [ ] Throwaway test bot validated against v2 daemon locally (spec § 3 pre-cutover test)
