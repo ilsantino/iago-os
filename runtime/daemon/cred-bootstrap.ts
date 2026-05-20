@@ -103,9 +103,28 @@ const CREDENTIALS: CredMap[] = [
  */
 const lastWrittenByCredstore = new Map<string, string>();
 
-export function loadSystemdCredentials(): void {
+/**
+ * Loads credstore files into `process.env`. Returns `{ read, failed }`:
+ * - `read` — env-var NAMES (NEVER values) that this call ACTUALLY READ from
+ *   the credstore (regardless of whether the value changed or an external
+ *   override caused the helper to leave `process.env` untouched). Plan 06's
+ *   SIGHUP handler uses this set to scope its `credentialsReloaded` /
+ *   `unchanged` partition — a name that was never read this invocation
+ *   MUST NOT appear in either partition (Codex F8 fix).
+ * - `failed` — env-var NAMES (NEVER values) whose credstore read failed with
+ *   a non-ENOENT error (e.g., EACCES). ENOENT is intentionally NOT treated
+ *   as failure: a missing credstore file means the credential is not
+ *   provisioned on this host, which is a valid state during phased rollout.
+ *   Plan 06's SIGHUP handler populates `cred-reload-fired.errors` from this.
+ */
+export function loadSystemdCredentials(): {
+	read: readonly string[];
+	failed: readonly string[];
+} {
+	const read: string[] = [];
+	const failed: string[] = [];
 	const dir = process.env.CREDENTIALS_DIRECTORY;
-	if (dir === undefined || dir.length === 0) return;
+	if (dir === undefined || dir.length === 0) return { read, failed };
 
 	for (const entry of CREDENTIALS) {
 		const credPath = path.join(dir, entry.fileName);
@@ -120,10 +139,17 @@ export function loadSystemdCredentials(): void {
 			console.error(
 				`[cred-bootstrap] failed to read ${entry.fileName}: ${code ?? String(err)}`,
 			);
+			failed.push(entry.envVar);
 			continue;
 		}
 		const value = raw.trim();
 		if (value.length === 0) continue;
+
+		// File was readable and non-empty — record this envVar as actually read
+		// this invocation, even if external-override precedence below prevents
+		// us from writing to `process.env`. The SIGHUP handler needs to know
+		// which names were genuinely consulted to scope `unchanged`.
+		read.push(entry.envVar);
 
 		const existing = process.env[entry.envVar];
 		if (existing !== undefined && existing.length > 0) {
@@ -135,6 +161,7 @@ export function loadSystemdCredentials(): void {
 		process.env[entry.envVar] = value;
 		lastWrittenByCredstore.set(entry.envVar, value);
 	}
+	return { read, failed };
 }
 
 /**

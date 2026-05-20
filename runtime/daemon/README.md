@@ -320,6 +320,152 @@ Resolution order for `<state-root>`:
 2. `<cwd>/runtime/state` if `path.basename(cwd) === "iago-os"`
 3. `<homedir>/.iago-os/daemon-state`
 
+## Reloading credentials without restart (SIGHUP)
+
+Plan 06 ships a SIGHUP handler that re-reads systemd credstore files into
+`process.env` without taking the daemon down. Use it after rotating a
+secret in 1Password + running `provision-credentials.sh <name>` (which
+updates the on-disk credstore file but does NOT touch the running
+daemon's `process.env`). Sending SIGHUP causes the daemon to re-invoke
+`loadSystemdCredentials()` so the new value is visible to any code that
+reads through `process.env`.
+
+Safer than `systemctl restart` because it preserves in-flight Claude
+PTY sessions, the IPC socket binding, and the 30-minute post-cutover
+stay-at-keyboard monitoring window.
+
+### When to use
+
+- After `bash runtime/deploy/provision-credentials.sh iago-telegram-token`
+  rotates the Telegram bot token via BotFather `/revoke`.
+- After `bash runtime/deploy/provision-credentials.sh iago-gh-token`
+  rotates the GitHub PAT.
+- (Phase 3+) After any Anthropic credstore file rotation, once the
+  three Anthropic-profile entries are uncommented in `cred-bootstrap.ts`.
+  The SIGHUP handler reads `getCredentialEnvVars()` fresh on every
+  invocation (F6 fix), so adding entries to the `CREDENTIALS` table in
+  `cred-bootstrap.ts` makes them reload-able on the next SIGHUP without
+  a daemon restart. Workflow: uncomment the entry → redeploy via
+  `runtime/deploy/deploy-daemon.sh` → rotate via
+  `provision-credentials.sh <name>` → `systemctl kill -s SIGHUP
+  iago-os-v2-daemon.service`.
+
+### Invocation
+
+On the VPS, send SIGHUP to the daemon's systemd unit:
+
+```bash
+systemctl kill -s SIGHUP iago-os-v2-daemon.service
+```
+
+From Santiago's Windows box via Tailscale:
+
+```bash
+tailscale ssh root@srv1456441 -- 'systemctl kill -s SIGHUP iago-os-v2-daemon.service'
+```
+
+### Verification
+
+A successful reload emits a `cred-reload-fired` NDJSON record to the
+daemon's telemetry stream. Check the journal:
+
+```bash
+tailscale ssh root@srv1456441 -- \
+  'journalctl -u iago-os-v2-daemon.service --since "1 minute ago" --no-pager | grep cred-reload-fired'
+```
+
+Expected: one line with `credentialsReloaded: [<env-var names that
+changed>]`. The `unchanged` array carries env-var names that were
+re-read but kept the same value. NAMES only — credential values are
+NEVER written to telemetry, stdout, or stderr (matches the Plan 01
+Task 4 C2 posture enforced by `cred-bootstrap.test.ts` case 10).
+
+### Behavior
+
+- **Names only in telemetry.** The reload event carries env-var NAMES
+  in `credentialsReloaded`, `unchanged`, and `errors`. Values never
+  appear in any telemetry field, log line, or stderr message.
+- **External env overrides win.** Env vars that were set explicitly
+  before daemon start (or mutated externally after the first load)
+  take precedence over credstore files per the Plan 01 Task 4
+  precedence contract. SIGHUP reload preserves the override.
+- **In-flight agents keep their old credentials.** SIGHUP updates the
+  DAEMON's `process.env` ONLY. Spawned agents inherited env at spawn
+  time; they continue with their old (now-stale) credentials until
+  restarted per-agent. The daemon does NOT auto-restart agents on
+  SIGHUP — that is an operational decision the operator makes per
+  agent. Phase 2 does not ship a generic agent-restart command; use
+  the existing per-shape restart paths (e.g., for a long-running
+  claude-pty agent, send the agent a graceful shutdown via the
+  IPC/Telegram surface and rely on the standard restart loop).
+  Phase 3 agent-restart command will land when the Anthropic-adapter
+  wiring activates the multi-profile path.
+- **Concurrency strategy: coalesce.** If one or more SIGHUPs arrive
+  while a prior reload is still in flight, the handler emits a
+  `cred-reload-coalesced` telemetry event (one per arrival) AND sets
+  an internal `reloadPending` flag. When the in-flight reload finishes,
+  the handler runs exactly ONE trailing reload (regardless of how many
+  SIGHUPs piled up during the window) so the latest rotation is always
+  visible. The previous "drop on conflict" semantics (F3 dual-review
+  finding) would silently lose a rotation if the credstore file changed
+  during the await window of the prior reload. Queue-based debouncing
+  with arbitrary fan-in was rejected for Phase 2 because operator-driven
+  SIGHUPs are not rapid; reconsider in Phase 3+ if a credential-rotator
+  daemon emerges that fires SIGHUP on every rotate.
+- **Drain at shutdown.** When the daemon receives SIGTERM/SIGINT during
+  an in-flight SIGHUP reload, the shutdown sequence awaits the reload's
+  completion (bounded by `stageTimeoutMs`, default 10s) BEFORE emitting
+  `daemon-stop` and exiting. Without this `drainInFlight()` wait, the
+  process would exit while the in-flight reload's
+  `cred-reload-fired` `appendFile` is still pending — operators
+  inspecting the journal would see the SIGHUP arrived but not whether
+  it took effect (F2 dual-review fix). The drain runs AFTER the
+  internal `shuttingDown` flag is set, so any SIGHUP arriving during
+  the drain is ignored (no recursive re-arming of the drain promise).
+- **Linux-only signal.** SIGHUP is a POSIX signal; Windows local-dev
+  cannot send it through the OS layer. The handler is still unit-
+  tested on Windows by invoking the `listener` reference returned
+  from `registerSighupHandler` (see `runtime/daemon/sighup.test.ts`)
+  which bypasses the OS layer and invokes the handler directly.
+  Production runs on Debian 13, so this restriction is invisible
+  in deployment.
+
+### Failure modes
+
+- **`cred-reload-failed`** — `loadSystemdCredentials()` threw. Most
+  likely cause: a credstore file became unreadable mid-rotation (race
+  between `provision-credentials.sh` writing and the daemon reading)
+  or the file's permissions are wrong (EACCES). The daemon continues
+  running with the previously-loaded credentials — failed reload is
+  safer than crashing the daemon on an informational signal. Inspect
+  the journal for the structured error message and re-run
+  `provision-credentials.sh` once the file is stable.
+- **`cred-reload-coalesced`** — a rapid second (or third, fourth, …)
+  SIGHUP arrived while the first was in flight. The handler emits one
+  `cred-reload-coalesced` event per arrival and sets a `reloadPending`
+  flag. When the in-flight reload finishes, the handler runs exactly
+  ONE trailing reload that picks up the latest credstore state.
+  Operators do NOT need to re-send SIGHUP — the trailing reload
+  ensures the latest rotation is visible. `journalctl | grep
+  cred-reload-fired` will show TWO `cred-reload-fired` events for the
+  burst (the initial reload + the trailing reload).
+- **SIGHUP during daemon shutdown.** A SIGHUP arriving after the
+  SIGTERM/SIGINT path has set the internal `shuttingDown` flag is
+  ignored and logs `[daemon] SIGHUP ignored: daemon is shutting down`
+  to stderr. No telemetry event is emitted. This prevents a race
+  where a partially-torn-down telemetry pipeline would silently
+  swallow the reload event (C1 stress-test fix).
+- **SIGHUP during daemon startup.** Node's default action for SIGHUP
+  is to terminate the process. The handler is installed by
+  `startDaemon()` AFTER the initial `loadSystemdCredentials()` call,
+  so a SIGHUP arriving in the sub-second window before installation
+  will kill the daemon (same behavior as pre-Plan 06; the handler
+  cannot register earlier because it depends on the credstore being
+  primed). Operators rotating credentials should wait for systemd to
+  report the service as `active (running)` before sending SIGHUP —
+  in practice this is the natural workflow because `systemctl kill
+  -s SIGHUP` already requires an active unit.
+
 ## Class-usage rationale
 
 `AgentManager` and `HeartbeatController` are classes, not factory functions.

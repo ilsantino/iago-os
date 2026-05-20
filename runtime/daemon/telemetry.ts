@@ -151,6 +151,74 @@ export type DaemonEvent =
 	  }
 	| {
 			/**
+			 * Plan 06 (SIGHUP credential reload): emitted by the SIGHUP
+			 * handler after `loadSystemdCredentials()` re-reads the
+			 * credstore files. `credentialsReloaded` carries env-var NAMES
+			 * whose value changed across the reload; `unchanged` carries
+			 * env-var NAMES that were re-read but kept the same value;
+			 * `errors` carries env-var NAMES that failed to read.
+			 * NEVER carries credential values (matches Plan 01 Task 4 C2
+			 * posture). Operators consume via `journalctl ... | grep
+			 * cred-reload-fired` to confirm a credential rotation took
+			 * effect without a daemon restart.
+			 *
+			 * SCHEMA NOTE (F16): the three string arrays here carry
+			 * ENV-VAR NAMES (e.g., `IAGO_TELEGRAM_BOT_TOKEN`). The
+			 * companion `cred-bootstrap-loaded` event above carries
+			 * credstore FILE NAMES (e.g., `iago-telegram-token`). The
+			 * two axes are deliberately different — bootstrap telemetry
+			 * documents which on-disk file wrote to env; reload telemetry
+			 * documents which env-var consumers should pick up. Use
+			 * `envVarToFileName()` in `cred-bootstrap.ts` to map between
+			 * them when correlating events.
+			 */
+			readonly kind: "cred-reload-fired";
+			readonly credentialsReloaded: string[];
+			readonly unchanged: string[];
+			readonly errors: string[];
+	  }
+	| {
+			/**
+			 * Plan 06 (SIGHUP credential reload): emitted when
+			 * `loadSystemdCredentials()` itself threw (e.g., a credstore
+			 * file became unreadable mid-rotation). The daemon continues
+			 * running with the old credentials in memory — SIGHUP is
+			 * informational and a failed reload is safer than killing
+			 * the daemon.
+			 *
+			 * F1 (telemetry value-leak prohibition): `errorCode` carries
+			 * a typed error code (Node ErrnoException `code` like
+			 * `"ENOENT"` / `"EACCES"`, or the error constructor name
+			 * like `"TypeError"`, or `"unknown"` for non-Error throws).
+			 * The previous `error: string` field carried `err.message`,
+			 * which a future thrower in the credstore-read path could
+			 * use to surface bytes adjacent to the credential value via
+			 * a parse-error position context. SECURITY: do not include
+			 * value bytes — only typed codes.
+			 */
+			readonly kind: "cred-reload-failed";
+			readonly errorCode: string;
+	  }
+	| {
+			/**
+			 * Plan 06 (SIGHUP credential reload): emitted when a second
+			 * SIGHUP arrives while a prior reload is still in flight.
+			 * The handler sets a `reloadPending` flag and runs ONE
+			 * trailing reload after the current one finishes (only one,
+			 * regardless of how many SIGHUPs piled up during the
+			 * window).
+			 *
+			 * PR #74 dual-review F3: the prior "drop on conflict"
+			 * semantics would lose a rotation if the credstore changed
+			 * during the await window of the prior reload. The coalesce
+			 * variant preserves the "latest rotation is visible"
+			 * invariant while retaining the Phase 2 "no queue"
+			 * simplicity.
+			 */
+			readonly kind: "cred-reload-coalesced";
+	  }
+	| {
+			/**
 			 * Plan 07a (CronScheduler): a registered cron expression matched
 			 * the current tick, wake-check (if any) passed, and the task
 			 * file was written to `tasks/pending/`. `runningCount` is the
