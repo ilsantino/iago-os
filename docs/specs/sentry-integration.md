@@ -243,7 +243,9 @@ On agent exit (success/failure/timeout): write attempt-end to claim file
 
 ### Layer E — LLM telemetry via PostHog Claude Code plugin
 
-**Surface:** every `claude -p` session spawned by the iaGO pipeline (Mode 1) — implementation, review, fix, codex-fallback, PR creation, @claude tag — plus interactive sessions on Santiago's machine. Also covers HTTP/SDK adapter Claude SDK calls in Phase 3+.
+> **AMENDED 2026-05-20 — VPS-only deployment.** The "On Santiago's machine" install path described below is **canceled** per ADR addendum 2026-05-20 (`.iago/decisions/2026-05-20-posthog-sentry-split-and-memory.md`). Layer E installs on the Hostinger VPS during Phase 3 cred-bootstrap PR; the laptop-side install is dropped because (a) the v2 pipeline moves off the laptop at cutover 2026-05-25, and (b) `claude plugin install posthog` is blocked on an undocumented marketplace as of 2026-05-20. The original implementation steps below stay for reference until Phase 3 author rewrites them against the VPS target.
+
+**Surface:** every `claude -p` session spawned by the iaGO pipeline (Mode 1) on the VPS — implementation, review, fix, codex-fallback, PR creation, @claude tag. Also covers HTTP/SDK adapter Claude SDK calls in Phase 3+. Laptop-side interactive sessions are out of scope for Layer E (telemetry-wise they are noise compared to pipeline runs).
 
 **Tool: PostHog Claude Code plugin** (`claude plugin install posthog`). Documented at [posthog.com/docs/llm-analytics/installation/claude-code](https://posthog.com/docs/llm-analytics/installation/claude-code).
 
@@ -288,7 +290,7 @@ On agent exit (success/failure/timeout): write attempt-end to claim file
 | **D-1** | Sentry *(default; re-evaluate at impl)* | One-off webhook → fixer-agent loop on iago-os repo itself | **Phase 10** (requires Phase 9) |
 | **D-2** | Sentry *(default; re-evaluate at impl)* | Generalize to one client (FullData first) | **Phase 10+** (post-Phase-10) |
 | **D-3** | source-agnostic | Webhook/event shape (prerequisite for all D-N) | **Phase 9** (per v2 vision) |
-| **E** | **PostHog Claude Code plugin** *(new 2026-05-20)* | LLM telemetry: $ai_generation, $ai_span, $ai_trace per pipeline session | **Available today** (zero VPS infra; VPS-side wiring queued for Phase 3 cred-bootstrap) |
+| **E** | **PostHog Claude Code plugin** *(new 2026-05-20; amended same-day to VPS-only)* | LLM telemetry: $ai_generation, $ai_span, $ai_trace per pipeline session | **Phase 3** (VPS install via cred-bootstrap PR; laptop install canceled per ADR addendum 2026-05-20) |
 
 ---
 
