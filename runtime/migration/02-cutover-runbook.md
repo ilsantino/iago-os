@@ -67,32 +67,33 @@ previous attempt was interrupted.
 
 - [ ] **(ii) Create state + log directories on VPS.**
 
+  Create the state-root, the log dir, AND every daemon-state subdir
+  the T+15 canonical workflow and telemetry writes touch. Without the
+  subdirs, the daemon's first `task-claimed` / `telemetry-write` /
+  `marker-write` fails with `ENOENT` and the cutover trips the T+08
+  failure-pattern grep (Opus H2 fix).
+
   ```bash
   tailscale ssh root@srv1456441 -- '
-    mkdir -p \
-      /var/lib/iago-os/daemon-state/tasks/pending \
-      /var/lib/iago-os/daemon-state/tasks/resolved \
-      /var/lib/iago-os/daemon-state/markers \
-      /var/lib/iago-os/daemon-state/telemetry \
-      /var/lib/iago-os/daemon-state/agents \
-      /var/log/iago-os
-    chown -R iago:iago /var/lib/iago-os/daemon-state /var/log/iago-os
-    chmod 0700 /var/lib/iago-os/daemon-state
-    chmod 0750 /var/log/iago-os
+    mkdir -p /var/lib/iago-os/daemon-state/{tasks/pending,tasks/resolved,markers,telemetry,agents} /var/log/iago-os \
+      && chown -R iago:iago /var/lib/iago-os/daemon-state /var/log/iago-os \
+      && chmod 0700 /var/lib/iago-os/daemon-state \
+      && chmod 0750 /var/log/iago-os
   '
   ```
-
-  Subdirs (`tasks/pending`, `tasks/resolved`, `markers`, `telemetry`,
-  `agents`) are created here so any manual T+15 verification or debug
-  session can write into the tree before the daemon has initialized them.
 
   verify:
 
   ```bash
-  tailscale ssh root@srv1456441 -- 'stat -c "%U:%G %a" /var/lib/iago-os/daemon-state /var/log/iago-os'
+  tailscale ssh root@srv1456441 -- '
+    stat -c "%U:%G %a" /var/lib/iago-os/daemon-state /var/log/iago-os
+    echo "--- subdirs ---"
+    stat -c "%n %U:%G %a" /var/lib/iago-os/daemon-state/{tasks/pending,tasks/resolved,markers,telemetry,agents}
+  '
   # expect:
   #   iago:iago 700  (daemon-state)
   #   iago:iago 750  (log dir — matches cutover.sh pre-flight gate)
+  #   tasks/pending, tasks/resolved, markers, telemetry, agents — each iago:iago, inheriting 700 from parent
   ```
 
 - [ ] **(iii) Upload age pubkey to VPS.**
@@ -158,47 +159,46 @@ previous attempt was interrupted.
   inventory and live VPS state is a deployment hazard (Plan 07b acceptance
   gate).
 
-- [ ] **(vi-a) Deploy v2 daemon code to VPS (git clone + install + build).**
+- [ ] **(vii) Clone, pin, and build the v2 runtime on the VPS.**
 
-  If `/opt/iago-os` does not yet exist or was wiped:
-
-  ```bash
-  tailscale ssh root@srv1456441 -- '
-    git clone --branch <BRANCH-OR-SHA-TO-DEPLOY> \
-      https://github.com/ilsantino/iago-os.git /opt/iago-os
-    cd /opt/iago-os/runtime
-    npm ci
-    npm run build
-  '
-  ```
-
-  **Before running:** replace `<BRANCH-OR-SHA-TO-DEPLOY>` with the
-  exact branch or commit SHA being deployed on 2026-05-25
-  (e.g., the merge SHA of this PR). Requires VPS outbound HTTPS access
-  to github.com.
-
-  If `/opt/iago-os` already exists (previous deployment or partial run),
-  pull instead:
+  This is the deploy step the `cutover.sh` pre-flight gate at § 3
+  asserts (`/opt/iago-os/.git` exists + `runtime/dist/` built). At
+  T-24h Santiago pins the SHA to whatever main HEAD is at that
+  moment; the cutover then runs against that pinned tree, not "main
+  as-of-T-15" (which could drift between Day -1 prep and the cutover
+  window).
 
   ```bash
-  tailscale ssh root@srv1456441 -- '
-    git -C /opt/iago-os fetch origin
-    git -C /opt/iago-os checkout <BRANCH-OR-SHA-TO-DEPLOY>
-    cd /opt/iago-os/runtime && npm ci && npm run build
-  '
+  # SHA placeholder — operator pins at T-24h to the latest merged main SHA.
+  # TODO: replace <SHA-TO-PIN> with the actual commit hash before running.
+  # Do NOT use HEAD or branch names — those drift; pin to a 40-char SHA.
+  export PIN_SHA=<SHA-TO-PIN>  # e.g., 1a2b3c4d5e6f...
+
+  tailscale ssh root@srv1456441 -- "
+    set -euo pipefail
+    if [[ ! -d /opt/iago-os/.git ]]; then
+      mkdir -p /opt/iago-os && chown iago:iago /opt/iago-os
+      su - iago -s /bin/bash -c 'git clone https://github.com/ilsantino/iago-os.git /opt/iago-os'
+    fi
+    su - iago -s /bin/bash -c '
+      cd /opt/iago-os && git fetch --tags origin main
+      git checkout ${PIN_SHA}
+      cd runtime && npm ci && npm run build
+    '
+  "
   ```
 
   verify:
 
   ```bash
-  tailscale ssh root@srv1456441 -- 'test -d /opt/iago-os/.git && echo "repo ok"'
-  tailscale ssh root@srv1456441 -- 'test -d /opt/iago-os/runtime/node_modules && echo "modules ok"'
-  ```
-
-- [ ] **(vii) Confirm git checkout has `.git/`.**
-
-  ```bash
-  tailscale ssh root@srv1456441 -- 'test -d /opt/iago-os/.git'
+  tailscale ssh root@srv1456441 -- "
+    test -d /opt/iago-os/.git
+    cd /opt/iago-os && git rev-parse HEAD
+    test -f /opt/iago-os/runtime/dist/daemon/main.js
+  "
+  # expect:
+  #   <PIN_SHA> printed (matches what you exported above)
+  #   /opt/iago-os/runtime/dist/daemon/main.js exists
   ```
 
   Required for any rollback that needs to revert the checkout, and for
@@ -207,22 +207,31 @@ previous attempt was interrupted.
 
 - [ ] **(viii) SIGHUP reload verification (Plan 06 cross-ref).**
 
-  Confirm the SIGHUP credential-reload path is present in the daemon. The
-  handler is in the Node process (Plan 06 `runtime/daemon/main.ts` edit
-  + `runtime/daemon/sighup.test.ts`), not in the systemd unit. The unit
-  carries `KillSignal=SIGTERM` unchanged from Plan 01a; SIGHUP is layered
-  on top via `process.on("SIGHUP", ...)`. Two checks required:
+  Confirm the SIGHUP credential-reload path is wired into the Node
+  process. The handler is in `runtime/daemon/main.ts` via
+  `process.on("SIGHUP", ...)` (Plan 06 artifact). The systemd unit's
+  `KillSignal=SIGTERM` is unrelated — grepping the unit file proves
+  nothing about whether the daemon binary itself has a SIGHUP handler.
+
+  Verify against the SOURCE (canonical) AND the built dist (what the
+  daemon actually runs):
 
   ```bash
-  # 1. Unit config — SIGTERM kill signal present (does NOT verify SIGHUP handler):
-  tailscale ssh root@srv1456441 -- 'systemd-analyze cat-config iago-os-v2-daemon.service | grep -E "KillSignal=SIGTERM"'
-  # expect: KillSignal=SIGTERM line present
-
-  # 2. Daemon source — SIGHUP handler present (Plan 06 must have shipped):
-  tailscale ssh root@srv1456441 -- 'grep -rE "process\.on\(.SIGHUP" /opt/iago-os/runtime/daemon/main.ts'
-  # expect: at least one matching line (the process.on("SIGHUP", ...) registration)
-  # If this grep returns empty, Plan 06 has NOT been deployed — do NOT proceed.
+  tailscale ssh root@srv1456441 -- "
+    set -euo pipefail
+    echo '=== source ==='
+    grep -lE 'process\.on\(.SIGHUP' /opt/iago-os/runtime/daemon/main.ts
+    echo '=== dist ==='
+    grep -q SIGHUP /opt/iago-os/runtime/dist/daemon/main.js && echo present || (echo MISSING; exit 1)
+  "
+  # expect:
+  #   /opt/iago-os/runtime/daemon/main.ts (source path printed)
+  #   present (SIGHUP literal found in built JS)
   ```
+
+  If either check fails, Plan 06 has not landed on the pinned SHA (see
+  step (vii)). ABORT and pin a SHA that includes Plan 06 before
+  proceeding.
 
   Functional test of the SIGHUP handler itself runs at T+60 post-cutover
   (§ 6 below — `cred-reload-fired` telemetry event check).
@@ -248,7 +257,7 @@ previous attempt was interrupted.
   If forgotten, send any message to `@userinfobot` in Telegram to
   retrieve the ID (10-digit integer).
 
-These ten items together create every condition the `cutover.sh`
+These nine items together create every condition the `cutover.sh`
 pre-flight gate checks at T-15. With Day -1 prep complete, the gate at
 § 3 below collapses to a one-pass verification rather than a hunt for
 missing prerequisites.
@@ -326,20 +335,27 @@ T+02:00  Telegram rotation (per spec § 3 procedure):
          Verification: send any message to the OLD bot. Expected: no
          response (because we revoked — old token is dead).
 
-T+05:00  Terminal (a): provision both active credentials
+T+05:00  Terminal (a): provision the new Telegram credential AND gh-token
+         (Plan 04 PR-triage agent requires gh-token at first wake-check;
+         matches cutover.sh:461 verbatim)
            bash runtime/deploy/provision-credentials.sh telegram-token gh-token
          (terminal a is Santiago's Windows box — repo-relative path,
           NOT the VPS /opt/iago-os/... path)
          Expected output: "  ✓ iago-telegram-token provisioned (len=NN)"
          then "  ✓ iago-gh-token provisioned (len=NN)"
          then "Provisioning complete."
-         Verification (length-only — no token chars printed):
-           tailscale ssh root@srv1456441 -- 'bash -c "set -o pipefail; systemd-creds decrypt /etc/credstore.encrypted/iago-telegram-token.cred - | wc -c"'
-         Expected: ≥45 (Telegram bot tokens are 45+ chars; 0 means
-         decryption failed).
-           tailscale ssh root@srv1456441 -- 'bash -c "set -o pipefail; systemd-creds decrypt /etc/credstore.encrypted/iago-gh-token.cred - | wc -c"'
-         Expected: ≥40 (GitHub classic PAT minimum length; 0 means
-         decryption failed).
+         Verification (length-only — no token chars printed; mirrors
+         cutover.sh:461-484 set -o pipefail pattern so a decrypt failure
+         doesn't silently mask as wc reading empty stdin):
+           tailscale ssh root@srv1456441 -- "bash -c '
+             set -o pipefail
+             tlen=\$(systemd-creds decrypt /etc/credstore.encrypted/iago-telegram-token.cred - | wc -c)
+             glen=\$(systemd-creds decrypt /etc/credstore.encrypted/iago-gh-token.cred - | wc -c)
+             echo \"telegram=\${tlen} gh=\${glen}\"
+           '"
+         Expected: telegram=45+ (Telegram bot tokens are 45+ chars)
+                   gh=40+ (GitHub classic PAT is 40+ chars).
+         If either is 0, decryption failed — ROLLBACK TRIGGER.
 
 T+07:00  Terminal (b): start the v2 daemon
            tailscale ssh root@srv1456441 -- 'systemctl daemon-reload && systemctl enable --now iago-os-v2-daemon.service'
@@ -368,42 +384,92 @@ T+10:00  Telegram test — phone side
          allowed-user-IDs in unit env; if wrong, edit unit + reload.
          If still no reply, execute rollback.
 
-T+15:00  Canonical workflow end-to-end test — phone-side IPC (matches cutover.sh)
-         Perform the 5-step test from phone (same steps cutover.sh prints
-         and waits on operator confirmation before continuing):
-           1. Send /agents to bot → bot replies with agent list
-              (or "No agents registered." — either proves the bot path works)
-           2. Send /start hello-world → bot confirms adapter spawned
-           3. Send /sessions → session ID appears in reply
-           4. Send free-form text → adapter replies OK
-           5. Send /stop <session-id> → bot confirms graceful stop
-         These steps exercise the Telegram → IPC socket → daemon path
-         end-to-end. The file-drop approach bypasses IPC entirely and
-         does NOT validate the same code path.
-         ⏱ Mental timer: 60 seconds from sending /agents to receiving a
-           reply. If no reply in 60s → ROLLBACK. Do not wait longer;
-           a working path replies immediately.
-         ROLLBACK TRIGGER: no reply to /agents within 60s. Check
-           IAGO_TELEGRAM_ALLOWED_USER_IDS in unit env; if wrong, edit
-           unit + systemctl daemon-reload and retry once. If still no
-           reply, execute rollback.
+T+15:00  Canonical workflow end-to-end test (5-step IPC sequence —
+         mirrors cutover.sh:619-626 verbatim. Drives the daemon through
+         its real IPC interface, NOT a raw file-drop with unverified
+         JSON schema.)
 
-T+25:00  Telegram + agent path proven working. Move to WhatsApp deauth.
+         On phone, in the v2 bot chat, run these commands in order:
+           1. /agents
+              Expected: agent list includes "hello-world".
+           2. /start hello-world
+              Expected: daemon spawns the adapter; bot acks with a
+              session id.
+           3. /sessions
+              Expected: the just-started session id appears in the list.
+           4. Send free-form text (e.g., "Test from cutover — please respond OK")
+              Expected: adapter receives the message and replies.
+           5. /stop <session-id>
+              Expected: daemon SIGTERMs the adapter; a daemon-stop
+              marker is written to
+              /var/lib/iago-os/daemon-state/markers/<session-id>.daemon-stop.
 
-T+30:00  *** ONE-WAY GATE: once this step executes, any subsequent
-         rollback restores Telegram only — WhatsApp inbound is
-         permanently deauthed (Phase 6+ effort to re-enable, per
-         02-cutover-decisions.md § 8). Confirm v2 Telegram path is
-         stable before proceeding. ***
+         Verification (post-test, from terminal b):
+           tailscale ssh root@srv1456441 -- '
+             ls -la /var/lib/iago-os/daemon-state/markers/ | tail -5
+             ls -la /var/lib/iago-os/daemon-state/tasks/resolved/ | tail -5
+           '
 
-         WhatsApp deauth (per spec § 7 procedure, runbook
+         **Timer:** Set a mental 60-second timer from "send /start
+         hello-world" to "session ack arrives". If no ack within 60s,
+         this is a **ROLLBACK TRIGGER** (matches rollback runbook § 1 —
+         canonical workflow test failure).
+
+         **If you get an approval prompt but don't tap "Allow" within
+         5 minutes** (phone screen times out, distraction, etc.): the
+         daemon's approval-timeout window will expire and mark the task
+         as denied. The test result is then **INCONCLUSIVE, not failed**
+         — re-run the 5-step sequence from /agents with a fresh
+         /start hello-world. Document the timeout in the post-cutover
+         digest.
+
+         **If you accidentally tap "Deny"**: same — re-run the 5-step
+         sequence from scratch. Note in the digest.
+
+T+25:00  Telegram + agent path proven working.
+
+         *** STRUCTURAL BOUNDARY: STEPS T-15 through T+25 are covered
+         by the ≤4-minute rollback budget — every action above can be
+         reversed by `02-rollback-runbook.md`. STEP T+30 onwards is an
+         IRREVERSIBLE MIGRATION PHASE with its own acceptance gate,
+         distinct from the rollback-covered cutover.
+
+         If you trigger rollback at T+25 or earlier: Telegram is
+         restored, OpenClaw resumes, WhatsApp inbound is unaffected
+         (still authenticated against OpenClaw's old webhook URL —
+         which is dead, but the credentials and subscriptions still
+         exist; Meta retries against the dead URL until manually
+         deauthed later).
+
+         If you trigger rollback at T+30 or later: Telegram is restored
+         but WhatsApp is permanently deauthed. There is NO automated
+         path to re-authenticate WhatsApp on the rolled-back daemon
+         (Phase 6+ effort — re-run URL verification + re-subscribe
+         WABA + recreate system user token).
+
+         ACCEPTANCE GATE before proceeding to T+30:
+         - [ ] T+10 bot-reply check passed (operator confirmed `/agents`
+               reply on phone)
+         - [ ] T+15 canonical 5-step IPC sequence passed end-to-end
+         - [ ] No journal ERROR lines in T+08 through T+25 window
+         - [ ] Watchdog (rollback runbook § 2) reported `active` for the
+               full T+08-T+20 sample window
+         If ANY gate item fails, do NOT proceed to T+30 — invoke
+         rollback per 02-rollback-runbook.md and treat WhatsApp deauth
+         as deferred-to-Day-+1 work. ***
+
+T+30:00  WhatsApp deauth — IRREVERSIBLE one-way migration.
+
+         (per spec § 7 procedure, runbook
          runtime/migration/02-whatsapp-deauth.md)
            Open Meta Business Suite, gather APP_ID/WABA_ID/etc.
            Run the curl commands from § 7 steps 3-5 in terminal (a).
            Verification per § 7 step 6 + 7.
          No rollback trigger here — if WhatsApp deauth fails it's a
          security debt to fix in the next 24h, NOT a reason to roll
-         back the v2 daemon cutover.
+         back the v2 daemon cutover. (A v2-daemon rollback after this
+         point still leaves WhatsApp deauthed; the two states are
+         independent post-T+30.)
 
 T+45:00  Smoke-check observability
            tailscale ssh root@srv1456441 -- 'head -20 /var/lib/iago-os/daemon-state/telemetry/$(date +%Y-%m-%d).ndjson'
