@@ -88,7 +88,7 @@ T+R+1:30  Restore the OLD Telegram bot token
           - If § 3 revocation has NOT happened yet (rollback before
             T+02): OpenClaw token is still valid; skip this step.
 
-          For the post-T+05 path (the common case):
+          For the post-T+02 path (the common case):
             (in Telegram) Message @BotFather → /mybots → bot →
               API Token → Revoke (gives fresh token)
             Save fresh token. Edit OpenClaw config.
