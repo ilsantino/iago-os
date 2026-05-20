@@ -42,26 +42,15 @@ T-15 (§ 3 below). Doing this 24h ahead eliminates the
 "deploy-a-prerequisite-during-cutover" failure mode and surfaces any VPS
 state drift while there is still time to fix it without a rollback.
 
-Each step has its own checkbox + a `verify:` command. Run all items.
-Items gated by `if`/`getent` are idempotent — safe to re-run if a previous
-attempt was interrupted.
+Each step has its own checkbox + a `verify:` command. Run all items in
+order — step (i) creates the `iago` user, which step (ii) depends on.
+Steps gated by `if`/`getent` are idempotent — safe to re-run if a
+previous attempt was interrupted.
 
-- [ ] **(i) Create state + log directories on VPS.**
+- [ ] **(i) Create `iago` system user (skip if already exists).**
 
-  ```bash
-  tailscale ssh root@srv1456441 -- 'mkdir -p /var/lib/iago-os/daemon-state /var/log/iago-os && chown iago:iago /var/lib/iago-os/daemon-state /var/log/iago-os && chmod 0700 /var/lib/iago-os/daemon-state && chmod 0750 /var/log/iago-os'
-  ```
-
-  verify:
-
-  ```bash
-  tailscale ssh root@srv1456441 -- 'stat -c "%U:%G %a" /var/lib/iago-os/daemon-state /var/log/iago-os'
-  # expect:
-  #   iago:iago 700  (daemon-state)
-  #   iago:iago 750  (log dir — matches cutover.sh pre-flight gate)
-  ```
-
-- [ ] **(ii) Create `iago` system user (skip if already exists).**
+  Must run before step (ii) — `chown iago:iago` in step (ii) fails if
+  the user does not yet exist.
 
   ```bash
   if ! tailscale ssh root@srv1456441 -- 'getent passwd iago > /dev/null 2>&1'; then
@@ -76,12 +65,29 @@ attempt was interrupted.
   # expect: iago:x:<uid>:<gid>:...:/usr/sbin/nologin
   ```
 
+- [ ] **(ii) Create state + log directories on VPS.**
+
+  ```bash
+  tailscale ssh root@srv1456441 -- 'mkdir -p /var/lib/iago-os/daemon-state /var/log/iago-os && chown iago:iago /var/lib/iago-os/daemon-state /var/log/iago-os && chmod 0700 /var/lib/iago-os/daemon-state && chmod 0750 /var/log/iago-os'
+  ```
+
+  verify:
+
+  ```bash
+  tailscale ssh root@srv1456441 -- 'stat -c "%U:%G %a" /var/lib/iago-os/daemon-state /var/log/iago-os'
+  # expect:
+  #   iago:iago 700  (daemon-state)
+  #   iago:iago 750  (log dir — matches cutover.sh pre-flight gate)
+  ```
+
 - [ ] **(iii) Upload age pubkey to VPS.**
 
   ```bash
-  # Ensure target dir exists — scp does NOT create intermediate dirs.
+  # Ensure target dir exists — tailscale scp does NOT create intermediate dirs.
   tailscale ssh root@srv1456441 -- 'mkdir -p /etc/iago-os && chmod 0755 /etc/iago-os'
-  scp ~/.age/santiago.pub root@srv1456441:/etc/iago-os/santiago-age.pub
+  tailscale scp ~/.age/santiago.pub root@srv1456441:/etc/iago-os/santiago-age.pub
+  # Fallback if tailscale scp is unavailable:
+  # tailscale ssh root@srv1456441 -- 'cat > /etc/iago-os/santiago-age.pub' < ~/.age/santiago.pub
   tailscale ssh root@srv1456441 -- 'chmod 0644 /etc/iago-os/santiago-age.pub'
   ```
 
@@ -264,12 +270,15 @@ T+02:00  Telegram rotation (per spec § 3 procedure):
          response (because we revoked — old token is dead).
 
 T+05:00  Terminal (a): provision the new Telegram credential
-           bash /opt/iago-os/runtime/deploy/provision-credentials.sh telegram-token
+           bash runtime/deploy/provision-credentials.sh telegram-token
+         (terminal a is Santiago's Windows box — repo-relative path,
+          NOT the VPS /opt/iago-os/... path)
          Expected output: "  ✓ iago-telegram-token provisioned (len=NN)"
          then "Provisioning complete."
-         Verification:
-           tailscale ssh root@srv1456441 -- 'systemd-creds decrypt /etc/credstore.encrypted/iago-telegram-token.cred - | head -c 10 ; echo'
-         Expected: first 10 chars of new bot token.
+         Verification (length-only — no token chars printed):
+           tailscale ssh root@srv1456441 -- 'bash -c "set -o pipefail; systemd-creds decrypt /etc/credstore.encrypted/iago-telegram-token.cred - | wc -c"'
+         Expected: ≥45 (Telegram bot tokens are 45+ chars; 0 means
+         decryption failed).
 
 T+07:00  Terminal (b): start the v2 daemon
            tailscale ssh root@srv1456441 -- 'systemctl daemon-reload && systemctl enable --now iago-os-v2-daemon.service'
@@ -316,7 +325,13 @@ EOF
 
 T+25:00  Telegram + agent path proven working. Move to WhatsApp deauth.
 
-T+30:00  WhatsApp deauth (per spec § 7 procedure, runbook
+T+30:00  *** ONE-WAY GATE: once this step executes, any subsequent
+         rollback restores Telegram only — WhatsApp inbound is
+         permanently deauthed (Phase 6+ effort to re-enable, per
+         02-cutover-decisions.md § 8). Confirm v2 Telegram path is
+         stable before proceeding. ***
+
+         WhatsApp deauth (per spec § 7 procedure, runbook
          runtime/migration/02-whatsapp-deauth.md)
            Open Meta Business Suite, gather APP_ID/WABA_ID/etc.
            Run the curl commands from § 7 steps 3-5 in terminal (a).

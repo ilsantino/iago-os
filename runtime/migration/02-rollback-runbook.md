@@ -45,9 +45,9 @@ the Tailscale SSH terminal.
 ```bash
 # Run in a separate terminal at T+08; abort with Ctrl-C at T+20 if all good
 while true; do
-  STATUS=$(tailscale ssh root@srv1456441 -- 'systemctl is-active iago-os-v2-daemon.service' 2>/dev/null)
+  STATUS=$(tailscale ssh root@srv1456441 -- 'systemctl is-active iago-os-v2-daemon.service' 2>&1) || STATUS="ssh-error"
   if [[ "$STATUS" != "active" ]]; then
-    echo "*** ROLLBACK TRIGGER: daemon state = $STATUS ***"
+    echo "*** ROLLBACK TRIGGER: daemon state = $STATUS (ssh-error means VPS unreachable, not necessarily daemon down) ***"
     # Audible alert (Windows beep)
     printf '\a'
     break
@@ -93,30 +93,21 @@ T+R+1:30  Restore the OLD Telegram bot token
               API Token → Revoke (gives fresh token)
             Save fresh token. Edit OpenClaw config.
 
-            RECOMMENDED — heredoc form (no double-shell escaping; paste
-            verbatim, then type/paste the fresh token at the prompt):
+            Safe form — token never in shell history or process argv:
 
-            FRESH_TOKEN=<paste-fresh-token-here>
-            tailscale ssh root@srv1456441 'su - ilsantino' <<EOF
+            read -rs FRESH_TOKEN
+            # (paste the fresh token at the prompt above — input is
+            #  suppressed and not echoed; press Enter when done)
+            tailscale ssh -o SendEnv=FRESH_TOKEN root@srv1456441 -- 'su - ilsantino -c "
+              umask 0077
               cp ~/.openclaw/openclaw.json ~/.openclaw/openclaw.json.pre-rollback
-              jq --arg t "$FRESH_TOKEN" \
-                '.channels.telegram.botToken = \$t' \
+              chmod 0600 ~/.openclaw/openclaw.json.pre-rollback
+              jq --arg t \"$FRESH_TOKEN\" \
+                \".channels.telegram.botToken = \\\$t\" \
                 ~/.openclaw/openclaw.json > ~/.openclaw/openclaw.json.tmp \
                 && mv ~/.openclaw/openclaw.json.tmp ~/.openclaw/openclaw.json
-            EOF
-
-            ALTERNATIVE — one-line su -c form (kept for reference; has
-            tricky double-quote escaping, avoid under time pressure):
-
-            tailscale ssh root@srv1456441 -- 'su - ilsantino -c "
-              # backup current config
-              cp ~/.openclaw/openclaw.json ~/.openclaw/openclaw.json.pre-rollback
-              # patch token field — use jq to avoid escaping hazards
-              jq --arg t \"<FRESH-TOKEN>\" \
-                \".channels.telegram.botToken = \$t\" \
-                ~/.openclaw/openclaw.json > ~/.openclaw/openclaw.json.tmp \
-                && mv ~/.openclaw/openclaw.json.tmp ~/.openclaw/openclaw.json
-            "'
+              chmod 0600 ~/.openclaw/openclaw.json
+            "\'
 
 T+R+2:30  Start OpenClaw
             tailscale ssh root@srv1456441 -- 'su - ilsantino -c "systemctl --user enable --now openclaw-gateway.service"'
@@ -128,8 +119,8 @@ T+R+4:00  Telegram smoke test (phone side)
             Send "/status" or any OpenClaw command to the bot.
           Expected: OpenClaw replies as it did pre-cutover.
           IF NO REPLY: this is a second failure. Escalate to Sebas
-          via Telegram-via-some-other-channel (signal app /
-          phone call) and investigate journal:
+          via Signal or phone call (Telegram is the failure surface —
+          do not escalate via Telegram) and investigate journal:
             tailscale ssh root@srv1456441 -- 'journalctl --user-unit openclaw-gateway.service --since "5 minutes ago"'
 
 T+R+5:00  ROLLBACK COMPLETE. OpenClaw serving. v2 daemon stopped.
@@ -199,6 +190,14 @@ After T+R+5:00, before stepping away:
    infra patterns. Telegram for non-urgent comms (OpenClaw is back up
    and serving); Signal/phone for ambiguous CTO-side issues that
    need a same-day eyes-on response.
+6. **Sync 1Password after a post-T+05 rollback.** After T+R+1:30 you
+   pasted a second fresh token into OpenClaw. The 1Password vault item
+   `v2-daemon-telegram-bot::token` still holds the **first** rotation
+   token (set at T+02), which is now dead (BotFather revocations are
+   cumulative). Update `v2-daemon-telegram-bot::token` in 1Password
+   with the rollback token before stepping away — any subsequent
+   `provision-credentials.sh telegram-token` will read from 1Password,
+   and provisioning a dead token silently breaks re-cutover.
 
 ---
 
@@ -224,6 +223,18 @@ already open at rollback-decision time, the operator opens it FIRST,
 then triggers `rollback.sh`. Without this pre-step, the 4-minute
 target slips to 5+ minutes while Santiago hunts for BotFather inside
 Telegram.
+
+**Stale lock breakage.** `rollback.sh` acquires
+`/var/lock/iago-cutover.lock` (shared with `cutover.sh`). If
+`cutover.sh` crashed mid-run, `rollback.sh` will exit immediately with
+"another cutover/rollback is running" and no further output. Break the
+stale lock only when certain no other process is holding it:
+
+```bash
+tailscale ssh root@srv1456441 -- 'rm -f /var/lock/iago-cutover.lock /var/lock/iago-cutover.lock.pid'
+```
+
+Then re-run `rollback.sh`.
 
 WhatsApp deauth (cutover T+30) is **not undone on rollback** per
 `runtime/migration/02-whatsapp-deauth.md` § 7 — a successful
