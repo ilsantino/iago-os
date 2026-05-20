@@ -95,7 +95,7 @@ Async review-fix loop via GitHub Actions: `claude.yml` reviews, `claude-review-f
 
 ## Memory Architecture
 
-Five layers, each with distinct purpose and access pattern:
+Six layers, each with distinct purpose and access pattern:
 
 | Layer | What | Access | Automation |
 |-------|------|--------|------------|
@@ -104,6 +104,7 @@ Five layers, each with distinct purpose and access pattern:
 | **Graphify** | Knowledge graph + wiki over vault (incl. Drive) | MCP (`query_graph`, `get_node`) + `graphify-out/wiki/` | Auto (nightly rebuild via Task Scheduler) |
 | **MemPalace** | Conversation history, agent diary | MCP (`mempalace_search`, `mempalace_diary_read`) | Auto (stop hook writes diary every session) |
 | **MarkItDown** | Upstream document conversion (DOCX/PPTX/XLSX/EPub/YouTube/large PDFs → markdown) | MCP (`convert_to_markdown`) | Manual (producer, not storage) |
+| **SQLite** | Agent session state + cost ledger + event/replay dedupe | Direct DB queries (`/var/lib/iago-os/state/ledger.sqlite`) | Auto (daemon writes; schema ships in Phase 3) |
 
 ### Retrieval Routing
 
