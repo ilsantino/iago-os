@@ -68,8 +68,23 @@ previous attempt was interrupted.
 - [ ] **(ii) Create state + log directories on VPS.**
 
   ```bash
-  tailscale ssh root@srv1456441 -- 'mkdir -p /var/lib/iago-os/daemon-state /var/log/iago-os && chown iago:iago /var/lib/iago-os/daemon-state /var/log/iago-os && chmod 0700 /var/lib/iago-os/daemon-state && chmod 0750 /var/log/iago-os'
+  tailscale ssh root@srv1456441 -- '
+    mkdir -p \
+      /var/lib/iago-os/daemon-state/tasks/pending \
+      /var/lib/iago-os/daemon-state/tasks/resolved \
+      /var/lib/iago-os/daemon-state/markers \
+      /var/lib/iago-os/daemon-state/telemetry \
+      /var/lib/iago-os/daemon-state/agents \
+      /var/log/iago-os
+    chown -R iago:iago /var/lib/iago-os/daemon-state /var/log/iago-os
+    chmod 0700 /var/lib/iago-os/daemon-state
+    chmod 0750 /var/log/iago-os
+  '
   ```
+
+  Subdirs (`tasks/pending`, `tasks/resolved`, `markers`, `telemetry`,
+  `agents`) are created here so any manual T+15 verification or debug
+  session can write into the tree before the daemon has initialized them.
 
   verify:
 
@@ -143,6 +158,43 @@ previous attempt was interrupted.
   inventory and live VPS state is a deployment hazard (Plan 07b acceptance
   gate).
 
+- [ ] **(vi-a) Deploy v2 daemon code to VPS (git clone + install + build).**
+
+  If `/opt/iago-os` does not yet exist or was wiped:
+
+  ```bash
+  tailscale ssh root@srv1456441 -- '
+    git clone --branch <BRANCH-OR-SHA-TO-DEPLOY> \
+      https://github.com/ilsantino/iago-os.git /opt/iago-os
+    cd /opt/iago-os/runtime
+    npm ci
+    npm run build
+  '
+  ```
+
+  **Before running:** replace `<BRANCH-OR-SHA-TO-DEPLOY>` with the
+  exact branch or commit SHA being deployed on 2026-05-25
+  (e.g., the merge SHA of this PR). Requires VPS outbound HTTPS access
+  to github.com.
+
+  If `/opt/iago-os` already exists (previous deployment or partial run),
+  pull instead:
+
+  ```bash
+  tailscale ssh root@srv1456441 -- '
+    git -C /opt/iago-os fetch origin
+    git -C /opt/iago-os checkout <BRANCH-OR-SHA-TO-DEPLOY>
+    cd /opt/iago-os/runtime && npm ci && npm run build
+  '
+  ```
+
+  verify:
+
+  ```bash
+  tailscale ssh root@srv1456441 -- 'test -d /opt/iago-os/.git && echo "repo ok"'
+  tailscale ssh root@srv1456441 -- 'test -d /opt/iago-os/runtime/node_modules && echo "modules ok"'
+  ```
+
 - [ ] **(vii) Confirm git checkout has `.git/`.**
 
   ```bash
@@ -159,12 +211,17 @@ previous attempt was interrupted.
   handler is in the Node process (Plan 06 `runtime/daemon/main.ts` edit
   + `runtime/daemon/sighup.test.ts`), not in the systemd unit. The unit
   carries `KillSignal=SIGTERM` unchanged from Plan 01a; SIGHUP is layered
-  on top via `process.on("SIGHUP", ...)`. cat-config validates the final
-  unit:
+  on top via `process.on("SIGHUP", ...)`. Two checks required:
 
   ```bash
+  # 1. Unit config — SIGTERM kill signal present (does NOT verify SIGHUP handler):
   tailscale ssh root@srv1456441 -- 'systemd-analyze cat-config iago-os-v2-daemon.service | grep -E "KillSignal=SIGTERM"'
   # expect: KillSignal=SIGTERM line present
+
+  # 2. Daemon source — SIGHUP handler present (Plan 06 must have shipped):
+  tailscale ssh root@srv1456441 -- 'grep -rE "process\.on\(.SIGHUP" /opt/iago-os/runtime/daemon/main.ts'
+  # expect: at least one matching line (the process.on("SIGHUP", ...) registration)
+  # If this grep returns empty, Plan 06 has NOT been deployed — do NOT proceed.
   ```
 
   Functional test of the SIGHUP handler itself runs at T+60 post-cutover
@@ -191,7 +248,7 @@ previous attempt was interrupted.
   If forgotten, send any message to `@userinfobot` in Telegram to
   retrieve the ID (10-digit integer).
 
-These nine items together create every condition the `cutover.sh`
+These ten items together create every condition the `cutover.sh`
 pre-flight gate checks at T-15. With Day -1 prep complete, the gate at
 § 3 below collapses to a one-pass verification rather than a hunt for
 missing prerequisites.
@@ -269,15 +326,19 @@ T+02:00  Telegram rotation (per spec § 3 procedure):
          Verification: send any message to the OLD bot. Expected: no
          response (because we revoked — old token is dead).
 
-T+05:00  Terminal (a): provision the new Telegram credential
-           bash runtime/deploy/provision-credentials.sh telegram-token
+T+05:00  Terminal (a): provision both active credentials
+           bash runtime/deploy/provision-credentials.sh telegram-token gh-token
          (terminal a is Santiago's Windows box — repo-relative path,
           NOT the VPS /opt/iago-os/... path)
          Expected output: "  ✓ iago-telegram-token provisioned (len=NN)"
+         then "  ✓ iago-gh-token provisioned (len=NN)"
          then "Provisioning complete."
          Verification (length-only — no token chars printed):
            tailscale ssh root@srv1456441 -- 'bash -c "set -o pipefail; systemd-creds decrypt /etc/credstore.encrypted/iago-telegram-token.cred - | wc -c"'
          Expected: ≥45 (Telegram bot tokens are 45+ chars; 0 means
+         decryption failed).
+           tailscale ssh root@srv1456441 -- 'bash -c "set -o pipefail; systemd-creds decrypt /etc/credstore.encrypted/iago-gh-token.cred - | wc -c"'
+         Expected: ≥40 (GitHub classic PAT minimum length; 0 means
          decryption failed).
 
 T+07:00  Terminal (b): start the v2 daemon
@@ -307,21 +368,25 @@ T+10:00  Telegram test — phone side
          allowed-user-IDs in unit env; if wrong, edit unit + reload.
          If still no reply, execute rollback.
 
-T+15:00  Canonical workflow end-to-end test
-           (Manually trigger one approval flow per Phase 1 hello-world
-           pattern documented in runtime/PHASE-1-EVIDENCE.md § 4)
-         On VPS:
-           tailscale ssh root@srv1456441 -- '
-             TASK_ID=$(node -e "console.log(crypto.randomUUID())")
-             cat > /var/lib/iago-os/daemon-state/tasks/pending/claude-main__${TASK_ID}.json <<EOF
-{ "prompt": "Test prompt from cutover — please respond OK", "needsApproval": true }
-EOF
-           '
-         Expected: Telegram approval message arrives on phone.
-         Tap "Allow". Agent resumes. Result lands at:
-           /var/lib/iago-os/daemon-state/tasks/resolved/claude-main__<TASK_ID>.json
-         Verification:
-           tailscale ssh root@srv1456441 -- 'ls -la /var/lib/iago-os/daemon-state/tasks/resolved/'
+T+15:00  Canonical workflow end-to-end test — phone-side IPC (matches cutover.sh)
+         Perform the 5-step test from phone (same steps cutover.sh prints
+         and waits on operator confirmation before continuing):
+           1. Send /agents to bot → bot replies with agent list
+              (or "No agents registered." — either proves the bot path works)
+           2. Send /start hello-world → bot confirms adapter spawned
+           3. Send /sessions → session ID appears in reply
+           4. Send free-form text → adapter replies OK
+           5. Send /stop <session-id> → bot confirms graceful stop
+         These steps exercise the Telegram → IPC socket → daemon path
+         end-to-end. The file-drop approach bypasses IPC entirely and
+         does NOT validate the same code path.
+         ⏱ Mental timer: 60 seconds from sending /agents to receiving a
+           reply. If no reply in 60s → ROLLBACK. Do not wait longer;
+           a working path replies immediately.
+         ROLLBACK TRIGGER: no reply to /agents within 60s. Check
+           IAGO_TELEGRAM_ALLOWED_USER_IDS in unit env; if wrong, edit
+           unit + systemctl daemon-reload and retry once. If still no
+           reply, execute rollback.
 
 T+25:00  Telegram + agent path proven working. Move to WhatsApp deauth.
 

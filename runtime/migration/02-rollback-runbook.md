@@ -86,7 +86,7 @@ T+R+1:30  Restore the OLD Telegram bot token
             update the OPENCLAW config to use that fresh token. Old
             tokens cannot be un-revoked.
           - If § 3 revocation has NOT happened yet (rollback before
-            T+05): OpenClaw token is still valid; skip this step.
+            T+02): OpenClaw token is still valid; skip this step.
 
           For the post-T+05 path (the common case):
             (in Telegram) Message @BotFather → /mybots → bot →
@@ -98,16 +98,22 @@ T+R+1:30  Restore the OLD Telegram bot token
             read -rs FRESH_TOKEN
             # (paste the fresh token at the prompt above — input is
             #  suppressed and not echoed; press Enter when done)
-            tailscale ssh -o SendEnv=FRESH_TOKEN root@srv1456441 -- 'su - ilsantino -c "
-              umask 0077
-              cp ~/.openclaw/openclaw.json ~/.openclaw/openclaw.json.pre-rollback
-              chmod 0600 ~/.openclaw/openclaw.json.pre-rollback
-              jq --arg t \"$FRESH_TOKEN\" \
-                \".channels.telegram.botToken = \\\$t\" \
-                ~/.openclaw/openclaw.json > ~/.openclaw/openclaw.json.tmp \
-                && mv ~/.openclaw/openclaw.json.tmp ~/.openclaw/openclaw.json
-              chmod 0600 ~/.openclaw/openclaw.json
-            "\'
+
+            # Pipe a single-quoted patch script via stdin (bash -s).
+            # FRESH_TOKEN is forwarded via SendEnv — never on argv.
+            # <<'PATCH' prevents local shell expansion; $FRESH_TOKEN
+            # expands on the remote side from the forwarded env var.
+            FRESH_TOKEN="$FRESH_TOKEN" \
+              tailscale ssh -o SendEnv=FRESH_TOKEN root@srv1456441 -- 'bash -s' <<'PATCH'
+: "${FRESH_TOKEN:?FRESH_TOKEN env var not set}"
+umask 0077
+cp ~ilsantino/.openclaw/openclaw.json ~ilsantino/.openclaw/openclaw.json.pre-rollback
+jq --arg t "$FRESH_TOKEN" '.channels.telegram.botToken = $t' \
+  ~ilsantino/.openclaw/openclaw.json > ~ilsantino/.openclaw/openclaw.json.tmp \
+  && mv ~ilsantino/.openclaw/openclaw.json.tmp ~ilsantino/.openclaw/openclaw.json
+chmod 0600 ~ilsantino/.openclaw/openclaw.json ~ilsantino/.openclaw/openclaw.json.pre-rollback
+chown ilsantino:ilsantino ~ilsantino/.openclaw/openclaw.json ~ilsantino/.openclaw/openclaw.json.pre-rollback
+PATCH
 
 T+R+2:30  Start OpenClaw
             tailscale ssh root@srv1456441 -- 'su - ilsantino -c "systemctl --user enable --now openclaw-gateway.service"'
