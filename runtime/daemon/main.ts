@@ -269,9 +269,14 @@ export function computeRunUnder(
  * is safer than crashing it on an informational signal.
  *
  * Concurrency: if a SIGHUP arrives while a prior reload is still in
- * flight, the second is dropped with a `cred-reload-debounced`
- * telemetry event. Drop chosen over queue-based debouncing for Phase 2
- * simplicity per plan I1; operator-driven SIGHUPs are not rapid.
+ * flight, a `cred-reload-coalesced` telemetry event is emitted AND a
+ * `reloadPending` flag is set. When the in-flight reload finishes, the
+ * handler checks `reloadPending` and runs ONE trailing reload (only one,
+ * regardless of how many SIGHUPs piled up during the window). Codex F3
+ * fix — the previous drop-on-conflict semantics would lose a rotation
+ * if the credstore changed during the await window of the prior reload.
+ * Coalesce gives the same Phase 2 simplicity (no queue) while preserving
+ * the "latest rotation is visible" invariant.
  *
  * Shutdown race (C1): SIGHUP arriving after the SIGTERM/SIGINT path
  * has set `shuttingDown` is ignored — a partially-torn-down telemetry
@@ -282,10 +287,32 @@ export function computeRunUnder(
  * the handler by invoking the `listener` returned from
  * `registerSighupHandler` directly, bypassing the OS signal layer.
  */
+/**
+ * No-throw contract (Opus F10): every function member of this interface is
+ * expected to never throw synchronously when invoked. The handler reads
+ * `isShuttingDown()` and `envVars()` BEFORE the `inFlight` guard is set, so a
+ * synchronous throw there would surface as an unhandled promise rejection
+ * inside the fire-and-forget listener and could crash the daemon. The
+ * `loadCredentials` call IS wrapped in try/catch (it has historical reasons
+ * to throw — credstore filesystem races); a thrown `loadCredentials` surfaces
+ * as `cred-reload-failed` telemetry. The other members must remain no-throw.
+ */
 export interface SighupHandlerDeps {
-	readonly loadCredentials: () => { failed: readonly string[] } | void;
+	/** Re-reads credstore into `process.env`. May throw — surfaced as `cred-reload-failed`. */
+	readonly loadCredentials: () => {
+		read: readonly string[];
+		failed: readonly string[];
+	} | void;
+	/** Telemetry emit. No-throw via internal try/catch (telemetry.ts swallows write errors). */
 	readonly emit: (event: DaemonEvent) => Promise<void>;
-	readonly envVars: readonly string[];
+	/**
+	 * Returns the current set of credential env-var names. Called fresh on
+	 * every SIGHUP so Phase 3+ additions to `CREDENTIALS` (e.g., the commented
+	 * Anthropic entries in cred-bootstrap.ts) become reload-able without a
+	 * daemon restart (Opus F6 fix). Must be no-throw.
+	 */
+	readonly envVars: () => readonly string[];
+	/** Daemon shutdown flag check. Must be no-throw. */
 	readonly isShuttingDown: () => boolean;
 }
 
@@ -294,17 +321,110 @@ export interface SighupHandlerDeps {
  * cleanup hook, added to `shutdownHandlers`. `listener` is exposed so unit
  * tests can invoke the handler synchronously without `process.emit("SIGHUP")`
  * (avoids cross-test leakage on Linux CI, removes the need for an `as` cast
- * over `process.listeners("SIGHUP")` reflection).
+ * over `process.listeners("SIGHUP")` reflection). `drainInFlight` is awaited
+ * by `shutdown()` so an in-flight reload completes (or times out) BEFORE the
+ * daemon-stop telemetry emit (Opus + Codex F2 fix — closes the reverse race
+ * where SIGHUP starts → SIGTERM arrives → daemon exits with telemetry
+ * `appendFile` still pending).
  */
 export interface SighupHandlerRegistration {
 	readonly removeListener: () => void;
 	readonly listener: () => void;
+	readonly drainInFlight: () => Promise<void>;
 }
 
 export function registerSighupHandler(
 	deps: SighupHandlerDeps,
 ): SighupHandlerRegistration {
 	let inFlight = false;
+	let reloadPending = false;
+	// F2: tracks the currently-executing reload promise so `shutdown()` can
+	// await its completion (bounded by `withTimeout`) before emitting
+	// `daemon-stop` and exiting the process. `null` when no reload is running.
+	let activeReload: Promise<void> | null = null;
+
+	// Extracted reload body — called once on initial entry plus once per
+	// coalesced trailing iteration. Telemetry/`process.env` semantics match
+	// the prior implementation exactly; the surrounding loop is what's new.
+	const performReload = async (): Promise<void> => {
+		// F12 CONTRACT: credential env vars (entries in CREDENTIALS) MUST only
+		// be mutated by `loadSystemdCredentials`. Co-mutators from other
+		// modules would invalidate the before/after diff below and produce
+		// false-positive `credentialsReloaded` entries.
+		const envVars = deps.envVars();
+		const before = new Map<string, string | undefined>();
+		for (const k of envVars) before.set(k, process.env[k]);
+
+		let readResult: readonly string[] = [];
+		let failed: readonly string[] = [];
+		try {
+			const result = deps.loadCredentials();
+			if (result !== undefined) {
+				readResult = result.read;
+				failed = result.failed;
+			}
+		} catch (err) {
+			// F1 (telemetry value-leak prohibition): emit a typed error code,
+			// never the free-form `err.message`. A future thrower in the
+			// credstore-read path could otherwise surface bytes adjacent to
+			// the credential value via a parse-error position. SECURITY: do
+			// not include value bytes in telemetry.
+			const errInfo: { errorCode: string } =
+				err instanceof Error
+					? {
+							errorCode:
+								(err as NodeJS.ErrnoException).code ?? err.constructor.name,
+						}
+					: { errorCode: "unknown" };
+			try {
+				await deps.emit({ kind: "cred-reload-failed", ...errInfo });
+			} catch (emitErr) {
+				console.error(
+					`[daemon] telemetry emit(cred-reload-failed) failed: ${emitErr instanceof Error ? emitErr.message : String(emitErr)}`,
+				);
+			}
+			return;
+		}
+
+		// F7/F8: scope `credentialsReloaded` / `unchanged` to env-vars that
+		// the loader ACTUALLY READ this invocation. Names that were not read
+		// (no-op loader, missing credstore dir, external env override that
+		// caused the read+skip path) MUST NOT appear in either partition.
+		const credentialsReloaded: string[] = [];
+		const unchanged: string[] = [];
+		const failedSet = new Set(failed);
+		for (const k of readResult) {
+			if (failedSet.has(k)) continue;
+			const beforeVal = before.get(k);
+			const afterVal = process.env[k];
+			if (beforeVal !== afterVal) {
+				credentialsReloaded.push(k);
+			} else if (afterVal !== undefined && afterVal.length > 0) {
+				unchanged.push(k);
+			}
+		}
+
+		try {
+			await deps.emit({
+				kind: "cred-reload-fired",
+				credentialsReloaded,
+				unchanged,
+				// F14: dedupe failed at emit site — defense in depth against any
+				// future loader that double-pushes a name into its failed array.
+				errors: [...new Set(failed)],
+			});
+		} catch (err) {
+			console.error(
+				`[daemon] telemetry emit(cred-reload-fired) failed: ${err instanceof Error ? err.message : String(err)}`,
+			);
+		}
+
+		if (credentialsReloaded.length > 0) {
+			console.error(
+				`[daemon] SIGHUP reload: ${credentialsReloaded.length} credential(s) updated. Restart in-flight agents to pick up new values.`,
+			);
+		}
+	};
 
 	const handler = async (): Promise<void> => {
 		if (deps.isShuttingDown()) {
@@ -312,81 +432,53 @@ export function registerSighupHandler(
 			return;
 		}
 		if (inFlight) {
+			// F3: coalesce trailing reload instead of dropping it. Mark a
+			// reload as pending and emit the coalesce telemetry — the
+			// in-flight handler's trailing-iteration loop picks this up.
+			reloadPending = true;
 			try {
-				await deps.emit({ kind: "cred-reload-debounced" });
+				await deps.emit({ kind: "cred-reload-coalesced" });
 			} catch (err) {
 				console.error(
-					`[daemon] telemetry emit(cred-reload-debounced) failed: ${err instanceof Error ? err.message : String(err)}`,
+					`[daemon] telemetry emit(cred-reload-coalesced) failed: ${err instanceof Error ? err.message : String(err)}`,
 				);
 			}
 			return;
 		}
 
 		inFlight = true;
-		try {
-			const before = new Map<string, string | undefined>();
-			for (const k of deps.envVars) before.set(k, process.env[k]);
-
-			let failed: readonly string[] = [];
+		const reloadPromise = (async (): Promise<void> => {
 			try {
-				const result = deps.loadCredentials();
-				if (result !== undefined) failed = result.failed;
+				// F3: loop while a trailing reload was requested mid-await.
+				// Reset `reloadPending` BEFORE the reload so a SIGHUP arriving
+				// during this specific iteration's await chain queues exactly
+				// one further iteration (no busy-loop, no lost rotation).
+				do {
+					reloadPending = false;
+					await performReload();
+				} while (reloadPending);
 			} catch (err) {
-				const message = err instanceof Error ? err.message : String(err);
+				const errInfo: { errorCode: string } =
+					err instanceof Error
+						? {
+								errorCode:
+									(err as NodeJS.ErrnoException).code ?? err.constructor.name,
+							}
+						: { errorCode: "unknown" };
 				try {
-					await deps.emit({ kind: "cred-reload-failed", error: message });
+					await deps.emit({ kind: "cred-reload-failed", ...errInfo });
 				} catch (emitErr) {
 					console.error(
 						`[daemon] telemetry emit(cred-reload-failed) failed: ${emitErr instanceof Error ? emitErr.message : String(emitErr)}`,
 					);
 				}
-				return;
+			} finally {
+				inFlight = false;
+				activeReload = null;
 			}
-
-			const credentialsReloaded: string[] = [];
-			const unchanged: string[] = [];
-			const failedSet = new Set(failed);
-			for (const k of deps.envVars) {
-				if (failedSet.has(k)) continue;
-				const beforeVal = before.get(k);
-				const afterVal = process.env[k];
-				if (beforeVal !== afterVal) {
-					credentialsReloaded.push(k);
-				} else if (afterVal !== undefined && afterVal.length > 0) {
-					unchanged.push(k);
-				}
-			}
-
-			try {
-				await deps.emit({
-					kind: "cred-reload-fired",
-					credentialsReloaded,
-					unchanged,
-					errors: [...failed],
-				});
-			} catch (err) {
-				console.error(
-					`[daemon] telemetry emit(cred-reload-fired) failed: ${err instanceof Error ? err.message : String(err)}`,
-				);
-			}
-
-			if (credentialsReloaded.length > 0) {
-				console.error(
-					`[daemon] SIGHUP reload: ${credentialsReloaded.length} credential(s) updated. Restart in-flight agents to pick up new values.`,
-				);
-			}
-		} catch (err) {
-			const message = err instanceof Error ? err.message : String(err);
-			try {
-				await deps.emit({ kind: "cred-reload-failed", error: message });
-			} catch (emitErr) {
-				console.error(
-					`[daemon] telemetry emit(cred-reload-failed) failed: ${emitErr instanceof Error ? emitErr.message : String(emitErr)}`,
-				);
-			}
-		} finally {
-			inFlight = false;
-		}
+		})();
+		activeReload = reloadPromise;
+		await reloadPromise;
 	};
 
 	const listener = (): void => {
@@ -396,6 +488,10 @@ export function registerSighupHandler(
 	return {
 		removeListener: () => process.removeListener("SIGHUP", listener),
 		listener,
+		// F2: shutdown awaits this. Returns the in-flight reload promise (so
+		// shutdown blocks on its `cred-reload-fired` telemetry emit) or a
+		// resolved promise when no reload is running.
+		drainInFlight: () => activeReload ?? Promise.resolve(),
 	};
 }
 
@@ -598,6 +694,21 @@ export async function startDaemon(
 	const shutdown = async (): Promise<void> => {
 		if (shuttingDown) return;
 		shuttingDown = true;
+		// F2 (Opus + Codex convergent): drain any in-flight SIGHUP reload
+		// BEFORE tearing down the daemon. Without this, a SIGHUP that began
+		// just before SIGTERM/SIGINT would lose its `cred-reload-fired`
+		// telemetry emit because the process exits while the `appendFile`
+		// is still pending. Bounded by `stageTimeoutMs` so a hung telemetry
+		// I/O cannot block shutdown indefinitely. The drain MUST run AFTER
+		// `shuttingDown = true` so a SIGHUP arriving during the drain is
+		// ignored (does not re-arm `activeReload`); the timing window where
+		// we observe `inFlight` but a brand-new SIGHUP races in is closed
+		// because new SIGHUPs short-circuit on `isShuttingDown()` above.
+		await withTimeout(
+			"sighup.drain",
+			() => sighupRegistration.drainInFlight(),
+			stageTimeoutMs,
+		);
 		// Opus I4: bound each stage with `withTimeout`. A hung adapter
 		// (heartbeat sweep, bot polling, IPC drain, or per-handle
 		// shutdown) would otherwise block the entire daemon and the
@@ -704,13 +815,25 @@ export async function startDaemon(
 	// signal handlers and AFTER the initial `loadSystemdCredentials()` call
 	// so the helper's last-written tracking is primed before any reload.
 	// Operator invokes via `systemctl kill -s SIGHUP iago-os-v2-daemon.service`.
-	const sighup = registerSighupHandler({
+	//
+	// F15 DO NOT MOVE this registration any later in startDaemon — the window
+	// between `loadSystemdCredentials()` (above) and this call has Node's
+	// default SIGHUP behavior (terminate). Lengthening that window introduces
+	// a daemon-kill race during Phase 2 credential rotations. Adding deferred
+	// init steps below this line is fine; adding them ABOVE this line widens
+	// the kill window.
+	//
+	// F6: `envVars` is a getter (re-evaluated on every SIGHUP) so Phase 3+
+	// additions to `CREDENTIALS` in cred-bootstrap.ts become reloadable
+	// without a daemon restart. Previously captured the array at startup,
+	// freezing the credential surface for the daemon's lifetime.
+	const sighupRegistration = registerSighupHandler({
 		loadCredentials: loadSystemdCredentials,
 		emit,
-		envVars: getCredentialEnvVars(),
+		envVars: () => getCredentialEnvVars(),
 		isShuttingDown: () => shuttingDown,
 	});
-	shutdownHandlers.add(sighup.removeListener);
+	shutdownHandlers.add(sighupRegistration.removeListener);
 
 	for (const cfg of config.agents) {
 		if (!cfg.autoStart) continue;

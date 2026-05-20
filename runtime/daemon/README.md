@@ -342,6 +342,13 @@ stay-at-keyboard monitoring window.
   rotates the GitHub PAT.
 - (Phase 3+) After any Anthropic credstore file rotation, once the
   three Anthropic-profile entries are uncommented in `cred-bootstrap.ts`.
+  The SIGHUP handler reads `getCredentialEnvVars()` fresh on every
+  invocation (F6 fix), so adding entries to the `CREDENTIALS` table in
+  `cred-bootstrap.ts` makes them reload-able on the next SIGHUP without
+  a daemon restart. Workflow: uncomment the entry → redeploy via
+  `runtime/deploy/deploy-daemon.sh` → rotate via
+  `provision-credentials.sh <name>` → `systemctl kill -s SIGHUP
+  iago-os-v2-daemon.service`.
 
 ### Invocation
 
@@ -393,12 +400,28 @@ Task 4 C2 posture enforced by `cred-bootstrap.test.ts` case 10).
   IPC/Telegram surface and rely on the standard restart loop).
   Phase 3 agent-restart command will land when the Anthropic-adapter
   wiring activates the multi-profile path.
-- **Debounce strategy: drop.** If a second SIGHUP arrives while a
-  prior reload is still in flight, the second is dropped and a
-  `cred-reload-debounced` telemetry event is recorded. Queue-based
-  debouncing was rejected for Phase 2 (operator-driven SIGHUPs are
-  not rapid); reconsider in Phase 3+ if a credential-rotator daemon
-  emerges that fires SIGHUP on every rotate.
+- **Concurrency strategy: coalesce.** If one or more SIGHUPs arrive
+  while a prior reload is still in flight, the handler emits a
+  `cred-reload-coalesced` telemetry event (one per arrival) AND sets
+  an internal `reloadPending` flag. When the in-flight reload finishes,
+  the handler runs exactly ONE trailing reload (regardless of how many
+  SIGHUPs piled up during the window) so the latest rotation is always
+  visible. The previous "drop on conflict" semantics (F3 dual-review
+  finding) would silently lose a rotation if the credstore file changed
+  during the await window of the prior reload. Queue-based debouncing
+  with arbitrary fan-in was rejected for Phase 2 because operator-driven
+  SIGHUPs are not rapid; reconsider in Phase 3+ if a credential-rotator
+  daemon emerges that fires SIGHUP on every rotate.
+- **Drain at shutdown.** When the daemon receives SIGTERM/SIGINT during
+  an in-flight SIGHUP reload, the shutdown sequence awaits the reload's
+  completion (bounded by `stageTimeoutMs`, default 10s) BEFORE emitting
+  `daemon-stop` and exiting. Without this `drainInFlight()` wait, the
+  process would exit while the in-flight reload's
+  `cred-reload-fired` `appendFile` is still pending — operators
+  inspecting the journal would see the SIGHUP arrived but not whether
+  it took effect (F2 dual-review fix). The drain runs AFTER the
+  internal `shuttingDown` flag is set, so any SIGHUP arriving during
+  the drain is ignored (no recursive re-arming of the drain promise).
 - **Linux-only signal.** SIGHUP is a POSIX signal; Windows local-dev
   cannot send it through the OS layer. The handler is still unit-
   tested on Windows by invoking the `listener` reference returned
@@ -417,12 +440,15 @@ Task 4 C2 posture enforced by `cred-bootstrap.test.ts` case 10).
   safer than crashing the daemon on an informational signal. Inspect
   the journal for the structured error message and re-run
   `provision-credentials.sh` once the file is stable.
-- **`cred-reload-debounced`** — a rapid second SIGHUP arrived while
-  the first was in flight. The second is dropped; the first will
-  complete and emit its own `cred-reload-fired` (or `cred-reload-failed`)
-  event. If you intended both to take effect, re-send SIGHUP after the
-  first completes (`journalctl | grep cred-reload-fired` shows the
-  completion record).
+- **`cred-reload-coalesced`** — a rapid second (or third, fourth, …)
+  SIGHUP arrived while the first was in flight. The handler emits one
+  `cred-reload-coalesced` event per arrival and sets a `reloadPending`
+  flag. When the in-flight reload finishes, the handler runs exactly
+  ONE trailing reload that picks up the latest credstore state.
+  Operators do NOT need to re-send SIGHUP — the trailing reload
+  ensures the latest rotation is visible. `journalctl | grep
+  cred-reload-fired` will show TWO `cred-reload-fired` events for the
+  burst (the initial reload + the trailing reload).
 - **SIGHUP during daemon shutdown.** A SIGHUP arriving after the
   SIGTERM/SIGINT path has set the internal `shuttingDown` flag is
   ignored and logs `[daemon] SIGHUP ignored: daemon is shutting down`

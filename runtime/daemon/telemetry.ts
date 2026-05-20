@@ -161,6 +161,16 @@ export type DaemonEvent =
 			 * posture). Operators consume via `journalctl ... | grep
 			 * cred-reload-fired` to confirm a credential rotation took
 			 * effect without a daemon restart.
+			 *
+			 * SCHEMA NOTE (F16): the three string arrays here carry
+			 * ENV-VAR NAMES (e.g., `IAGO_TELEGRAM_BOT_TOKEN`). The
+			 * companion `cred-bootstrap-loaded` event above carries
+			 * credstore FILE NAMES (e.g., `iago-telegram-token`). The
+			 * two axes are deliberately different — bootstrap telemetry
+			 * documents which on-disk file wrote to env; reload telemetry
+			 * documents which env-var consumers should pick up. Use
+			 * `envVarToFileName()` in `cred-bootstrap.ts` to map between
+			 * them when correlating events.
 			 */
 			readonly kind: "cred-reload-fired";
 			readonly credentialsReloaded: string[];
@@ -174,23 +184,38 @@ export type DaemonEvent =
 			 * file became unreadable mid-rotation). The daemon continues
 			 * running with the old credentials in memory — SIGHUP is
 			 * informational and a failed reload is safer than killing
-			 * the daemon. `error` is a stringified error message; NEVER
-			 * carries credential values.
+			 * the daemon.
+			 *
+			 * F1 (telemetry value-leak prohibition): `errorCode` carries
+			 * a typed error code (Node ErrnoException `code` like
+			 * `"ENOENT"` / `"EACCES"`, or the error constructor name
+			 * like `"TypeError"`, or `"unknown"` for non-Error throws).
+			 * The previous `error: string` field carried `err.message`,
+			 * which a future thrower in the credstore-read path could
+			 * use to surface bytes adjacent to the credential value via
+			 * a parse-error position context. SECURITY: do not include
+			 * value bytes — only typed codes.
 			 */
 			readonly kind: "cred-reload-failed";
-			readonly error: string;
+			readonly errorCode: string;
 	  }
 	| {
 			/**
 			 * Plan 06 (SIGHUP credential reload): emitted when a second
 			 * SIGHUP arrives while a prior reload is still in flight.
-			 * The second SIGHUP is dropped (queue-based debouncing was
-			 * rejected for Phase 2 simplicity per plan I1). Operator-
-			 * driven SIGHUPs are not expected to be rapid; if Phase 3+
-			 * surfaces a credential-rotator daemon that fires SIGHUP on
-			 * every rotate, reconsider with queue-based debouncing.
+			 * The handler sets a `reloadPending` flag and runs ONE
+			 * trailing reload after the current one finishes (only one,
+			 * regardless of how many SIGHUPs piled up during the
+			 * window).
+			 *
+			 * PR #74 dual-review F3: the prior "drop on conflict"
+			 * semantics would lose a rotation if the credstore changed
+			 * during the await window of the prior reload. The coalesce
+			 * variant preserves the "latest rotation is visible"
+			 * invariant while retaining the Phase 2 "no queue"
+			 * simplicity.
 			 */
-			readonly kind: "cred-reload-debounced";
+			readonly kind: "cred-reload-coalesced";
 	  }
 	| {
 			/**

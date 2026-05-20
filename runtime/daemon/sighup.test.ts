@@ -7,20 +7,28 @@
  * and-forget (`void handler()`); tests await completion by spinning the
  * microtask queue and polling the captured-events array.
  *
- * Test cases (≥6 mandatory per plan Task 2 + C1 fix):
+ * Test cases (≥6 mandatory per plan Task 2 + C1 fix + PR #74 F2/F3 fixes):
  *   1. SIGHUP received → `loadCredentials` invoked once →
- *      `cred-reload-fired` telemetry emitted.
+ *      `cred-reload-fired` telemetry emitted with empty field arrays
+ *      (F9 field-shape assertion).
  *   2. SIGHUP changes `IAGO_TELEGRAM_BOT_TOKEN` value →
- *      `credentialsReloaded` array contains `"IAGO_TELEGRAM_BOT_TOKEN"`.
+ *      `credentialsReloaded` array contains `"IAGO_TELEGRAM_BOT_TOKEN"`
+ *      AND `unchanged` does NOT contain it (F5 mutex assertion).
  *   3. SIGHUP with no actual changes → `credentialsReloaded` empty,
- *      `unchanged` array has entries → telemetry emitted with both fields.
+ *      `unchanged` array has entries (only env-vars in `loader.read`,
+ *      F8 fix) → telemetry emitted with both fields.
  *   4. `loadCredentials` throws → `cred-reload-failed` telemetry emitted
- *      with the stringified error → process is NOT killed.
+ *      with `errorCode` (F1 fix — drops free-form `err.message`) → process
+ *      is NOT killed.
  *   5. Two SIGHUPs in rapid succession while the first is mid-await →
- *      second is dropped, `cred-reload-debounced` telemetry emitted.
+ *      handler coalesces (F3 fix): exactly 1 `cred-reload-coalesced`
+ *      event AND exactly 2 `cred-reload-fired` events (first + trailing).
  *   6. SIGHUP fired after `isShuttingDown()` returns true → handler
  *      returns without calling `loadCredentials`; no telemetry emitted
  *      (C1 shutdown-race fix).
+ *   7. `drainInFlight` (F2) — handler in-flight when shutdown begins;
+ *      `drainInFlight()` resolves only after the in-flight
+ *      `cred-reload-fired` emit completes.
  *
  * Coverage extras lift coverage on edge branches without duplicating
  * the mandatory cases.
@@ -33,11 +41,27 @@ import type { DaemonEvent } from "./telemetry.js";
 
 const TEST_ENV_VARS = ["IAGO_TELEGRAM_BOT_TOKEN", "GH_TOKEN"] as const;
 
+/**
+ * Helper: build the `{ read, failed }` shape that production
+ * `loadSystemdCredentials` now returns (F7). Most tests use this default
+ * (both env-vars actually read, none failed) so test bodies stay focused
+ * on the diff behavior, not the loader contract.
+ */
+function defaultLoadResult(): {
+	read: readonly string[];
+	failed: readonly string[];
+} {
+	return { read: TEST_ENV_VARS, failed: [] };
+}
+
 interface HarnessOpts {
-	readonly loadCredentials: () => { failed: readonly string[] } | void;
+	readonly loadCredentials: () => {
+		read: readonly string[];
+		failed: readonly string[];
+	} | void;
 	readonly isShuttingDown: () => boolean;
 	readonly emit?: (event: DaemonEvent) => Promise<void>;
-	readonly envVars?: readonly string[];
+	readonly envVars?: () => readonly string[];
 }
 
 interface Harness {
@@ -46,6 +70,7 @@ interface Harness {
 	readonly fire: () => void;
 	readonly drain: (rounds?: number) => Promise<void>;
 	readonly waitForEventCount: (n: number, timeoutMs?: number) => Promise<void>;
+	readonly drainInFlight: () => Promise<void>;
 	readonly teardown: () => void;
 }
 
@@ -70,15 +95,27 @@ function makeHarness(opts: HarnessOpts): Harness {
 		}
 	};
 
-	const wrappedLoad = (): { failed: readonly string[] } | void => {
+	const wrappedLoad = (): {
+		read: readonly string[];
+		failed: readonly string[];
+	} | void => {
 		loadCalls += 1;
-		return opts.loadCredentials();
+		const result = opts.loadCredentials();
+		if (result === undefined) {
+			// F7: production `loadSystemdCredentials` always returns the
+			// `{ read, failed }` shape. Tests that don't care about the
+			// partition default to "all env-vars read, none failed" so the
+			// before/after diff in the handler runs against the realistic
+			// envelope.
+			return defaultLoadResult();
+		}
+		return result;
 	};
 
 	const registration = registerSighupHandler({
 		loadCredentials: wrappedLoad,
 		emit: wrappingEmit,
-		envVars: opts.envVars ?? TEST_ENV_VARS,
+		envVars: opts.envVars ?? ((): readonly string[] => TEST_ENV_VARS),
 		isShuttingDown: opts.isShuttingDown,
 	});
 
@@ -112,6 +149,7 @@ function makeHarness(opts: HarnessOpts): Harness {
 		fire: () => registration.listener(),
 		drain,
 		waitForEventCount,
+		drainInFlight: () => registration.drainInFlight(),
 		teardown: () => {
 			registration.removeListener();
 		},
@@ -201,7 +239,12 @@ describe("registerSighupHandler", () => {
 		}
 	});
 
-	// Case 4
+	// Case 4 — F1: assert typed `errorCode` field, NEVER the free-form
+	// `err.message`. The handler maps `Error.constructor.name` → `errorCode`
+	// for thrown plain `Error` (so this throws "Error"), or
+	// `(err as NodeJS.ErrnoException).code` for filesystem errors. The
+	// previous `error: string` field carried `err.message` which could
+	// surface credential value bytes via a parse-error position context.
 	it("emits cred-reload-failed and keeps the process alive when loadCredentials throws", async () => {
 		const sentinelPid = process.pid;
 		const harness = makeHarness({
@@ -219,29 +262,39 @@ describe("registerSighupHandler", () => {
 			if (failed?.kind !== "cred-reload-failed") {
 				throw new Error("wrong kind");
 			}
-			expect(failed.error).toContain("credstore file went missing");
+			expect(failed.errorCode).toBe("Error");
 			expect(process.pid).toBe(sentinelPid);
 		} finally {
 			harness.teardown();
 		}
 	});
 
-	// Case 5 — rapid double-SIGHUP → second is dropped, cred-reload-debounced emitted.
-	it("drops a second SIGHUP arriving while the first is in flight", async () => {
+	// Case 5 — F3 coalesce semantics: a second SIGHUP arriving while a prior
+	// reload is in flight is COALESCED into ONE trailing reload (not dropped).
+	// The handler must emit:
+	//   * exactly 1 `cred-reload-coalesced` event (for the queued second SIGHUP)
+	//   * exactly 2 `cred-reload-fired` events (initial + trailing)
+	// AND `loadCredentials` is called twice (the initial + the trailing).
+	// Event ORDER on the wire: fired → coalesced → fired.
+	it("coalesces a second SIGHUP arriving while the first is in flight", async () => {
 		let releaseFirst: (() => void) | null = null;
 		const firstEmitGate = new Promise<void>((r) => {
 			releaseFirst = r;
 		});
-		let emitCallNumber = 0;
+		let firedEmitNumber = 0;
 		const harness = makeHarness({
 			loadCredentials: () => undefined,
 			isShuttingDown: () => false,
-			emit: async (_event: DaemonEvent): Promise<void> => {
-				emitCallNumber += 1;
-				// Block the FIRST emit until the test releases the gate so
-				// the second SIGHUP arrives while `inFlight === true`.
-				if (emitCallNumber === 1) {
-					await firstEmitGate;
+			emit: async (event: DaemonEvent): Promise<void> => {
+				// Block ONLY the first `cred-reload-fired` emit so the second
+				// SIGHUP arrives while `inFlight === true`. The coalesce emit
+				// and the trailing fired emit must not block (otherwise the
+				// trailing iteration's await never settles).
+				if (event.kind === "cred-reload-fired") {
+					firedEmitNumber += 1;
+					if (firedEmitNumber === 1) {
+						await firstEmitGate;
+					}
 				}
 			},
 		});
@@ -250,17 +303,27 @@ describe("registerSighupHandler", () => {
 			// `await deps.emit(cred-reload-fired)` which blocks.
 			harness.fire();
 			await harness.drain(2);
-			// Fire #2: handler sees inFlight === true → emits debounced.
+			// Fire #2: handler sees inFlight === true → emits coalesced
+			// and sets `reloadPending = true`.
 			harness.fire();
 			await harness.waitForEventCount(2);
-			// Release the first emit so the in-flight promise settles.
+			// Release the first emit so the in-flight promise settles. The
+			// do/while in the handler then runs ONE trailing reload, which
+			// performs a second loadCredentials call and emits a second
+			// `cred-reload-fired`.
 			releaseFirst?.();
+			await harness.waitForEventCount(3);
 			await harness.drain(4);
 			const kinds = harness.emittedEvents.map((e) => e.kind);
-			expect(kinds.filter((k) => k === "cred-reload-fired").length).toBe(1);
-			expect(
-				kinds.filter((k) => k === "cred-reload-debounced").length,
-			).toBeGreaterThanOrEqual(1);
+			expect(kinds.filter((k) => k === "cred-reload-fired").length).toBe(2);
+			expect(kinds.filter((k) => k === "cred-reload-coalesced").length).toBe(1);
+			expect(harness.loadCallCount()).toBe(2);
+			// Event order on the wire: fired → coalesced → fired.
+			expect(kinds).toEqual([
+				"cred-reload-fired",
+				"cred-reload-coalesced",
+				"cred-reload-fired",
+			]);
 		} finally {
 			releaseFirst?.();
 			harness.teardown();
@@ -363,7 +426,14 @@ describe("registerSighupHandler", () => {
 	// so a half-loaded credential is not mistaken for a successful reload.
 	it("propagates failed env-var names from loadCredentials.failed into errors", async () => {
 		const harness = makeHarness({
-			loadCredentials: () => ({ failed: ["IAGO_TELEGRAM_BOT_TOKEN"] as const }),
+			loadCredentials: () => ({
+				// `read` lists the env-vars the loader attempted to read.
+				// `failed` is a subset whose read attempt did not write to
+				// env (parse error, missing file). The handler partitions
+				// by `read` then skips anything in `failed`.
+				read: TEST_ENV_VARS,
+				failed: ["IAGO_TELEGRAM_BOT_TOKEN"] as const,
+			}),
 			isShuttingDown: () => false,
 		});
 		try {
@@ -377,6 +447,67 @@ describe("registerSighupHandler", () => {
 				"IAGO_TELEGRAM_BOT_TOKEN",
 			);
 			expect(fired.unchanged).not.toContain("IAGO_TELEGRAM_BOT_TOKEN");
+		} finally {
+			harness.teardown();
+		}
+	});
+
+	// Case F2 (Opus + Codex convergent) — `drainInFlight()` resolves only
+	// AFTER the in-flight `cred-reload-fired` emit completes. Without this,
+	// a SIGHUP that began just before SIGTERM/SIGINT would lose its
+	// telemetry emit because `shutdown()` exits while the `appendFile`
+	// is still pending.
+	it("drainInFlight resolves only after the in-flight emit completes", async () => {
+		let releaseFirstEmit: (() => void) | null = null;
+		const emitGate = new Promise<void>((r) => {
+			releaseFirstEmit = r;
+		});
+		let firstEmitCompleted = false;
+		const harness = makeHarness({
+			loadCredentials: () => undefined,
+			isShuttingDown: () => false,
+			emit: async (_event: DaemonEvent): Promise<void> => {
+				await emitGate;
+				firstEmitCompleted = true;
+			},
+		});
+		try {
+			harness.fire();
+			// Spin enough rounds to let the handler enter the awaiting state
+			// on the emit gate.
+			await harness.drain(2);
+			expect(firstEmitCompleted).toBe(false);
+
+			// drainInFlight() must be pending while the emit is blocked.
+			let drainResolved = false;
+			const drainPromise = harness.drainInFlight().then(() => {
+				drainResolved = true;
+			});
+			await harness.drain(2);
+			expect(drainResolved).toBe(false);
+			expect(firstEmitCompleted).toBe(false);
+
+			// Release the emit gate. drainInFlight() must resolve only AFTER
+			// the in-flight emit completes.
+			releaseFirstEmit?.();
+			await drainPromise;
+			expect(firstEmitCompleted).toBe(true);
+			expect(drainResolved).toBe(true);
+		} finally {
+			releaseFirstEmit?.();
+			harness.teardown();
+		}
+	});
+
+	// drainInFlight is a no-op when no reload is currently running.
+	it("drainInFlight resolves immediately when no reload is in flight", async () => {
+		const harness = makeHarness({
+			loadCredentials: () => undefined,
+			isShuttingDown: () => false,
+		});
+		try {
+			// No fire() — registration is fresh; activeReload is null.
+			await expect(harness.drainInFlight()).resolves.toBeUndefined();
 		} finally {
 			harness.teardown();
 		}
