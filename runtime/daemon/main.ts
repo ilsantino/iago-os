@@ -271,8 +271,10 @@ export function computeRunUnder(
  * Concurrency: if a SIGHUP arrives while a prior reload is still in
  * flight, a `cred-reload-coalesced` telemetry event is emitted AND a
  * `reloadPending` flag is set. When the in-flight reload finishes, the
- * handler checks `reloadPending` and runs ONE trailing reload (only one,
- * regardless of how many SIGHUPs piled up during the window). Codex F3
+ * handler checks `reloadPending` and runs ONE trailing reload per burst
+ * within a single in-flight period (N SIGHUPs arriving during one reload
+ * → exactly one trailing reload; a SIGHUP during the trailing reload itself
+ * starts another burst, also resulting in one further iteration). Codex F3
  * fix — the previous drop-on-conflict semantics would lose a rotation
  * if the credstore changed during the await window of the prior reload.
  * Coalesce gives the same Phase 2 simplicity (no queue) while preserving

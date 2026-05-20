@@ -190,7 +190,15 @@ describe("registerSighupHandler", () => {
 			await harness.waitForEventCount(1);
 			expect(harness.loadCallCount()).toBe(1);
 			expect(harness.emittedEvents).toHaveLength(1);
-			expect(harness.emittedEvents[0]?.kind).toBe("cred-reload-fired");
+			const fired = harness.emittedEvents[0];
+			expect(fired?.kind).toBe("cred-reload-fired");
+			if (fired?.kind !== "cred-reload-fired") throw new Error("wrong kind");
+			// F9: field-shape assertions — both env vars were unset before and
+			// after (beforeEach deletes them; loader is a no-op), so all three
+			// arrays are empty.
+			expect(fired.credentialsReloaded).toEqual([]);
+			expect(fired.unchanged).toEqual([]);
+			expect(fired.errors).toEqual([]);
 		} finally {
 			harness.teardown();
 		}
@@ -211,6 +219,9 @@ describe("registerSighupHandler", () => {
 			expect(fired?.kind).toBe("cred-reload-fired");
 			if (fired?.kind !== "cred-reload-fired") throw new Error("wrong kind");
 			expect(fired.credentialsReloaded).toContain("IAGO_TELEGRAM_BOT_TOKEN");
+			// F5: mutex assertion — a var that appears in credentialsReloaded
+			// must NOT appear in unchanged (they are mutually exclusive partitions).
+			expect(fired.unchanged).not.toContain("IAGO_TELEGRAM_BOT_TOKEN");
 			expect(fired.errors).toEqual([]);
 		} finally {
 			harness.teardown();
