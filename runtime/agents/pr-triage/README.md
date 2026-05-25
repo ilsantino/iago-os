@@ -6,10 +6,33 @@ CronScheduler at 14:00 UTC, runs via the Shape 1 PTY adapter
 (`claude-pty`), POSTs a single Telegram message via direct `curl`, and
 exits clean.
 
+## Wiring status (2026-05-25)
+
+Dual aggressive adversarial review of PR #76 (Codex GPT-5.5 + Opus 4.7)
+flagged that this README originally described the FULL flow as shipped
+when in fact only the cron-registration half is wired. Honest current
+state:
+
+| Step | Plan | Status in PR #76 |
+|------|------|------------------|
+| Cron tick at 14:00 UTC | 07a (shipped) | ✓ wired in main.ts |
+| Wake-check gating | 04a (shipped) + 07a | ✓ wired via CronScheduler |
+| Task file written to `tasks/pending/` | 07a → 07b | ✓ |
+| Polling loop claims task | 07b (shipped) | ✓ wired via `agentManager.startPollingLoop` |
+| **Dispatch: read agent-config + spawn claude-pty + forward prompt** | **Plan 04d (next)** | **NOT YET WIRED** |
+| Curl to Telegram, exit clean | 04a prompt-template (shipped) | gated on dispatch |
+| Polling loop reaps resolved | 07b | gated on dispatch |
+
+Until Plan 04d lands, cron-fired task files land in `tasks/pending/` and
+the polling loop emits `task-unrouted` (pr-triage agent is not yet
+registered via `AgentManager.registerAgent`). No PTY spawn, no Telegram
+message. This is intentional — splitting prevents 04b's 4-failure
+scope-explosion from recurring. See `.iago/plans/feature-phase-2-vps-bootstrap/04d-pr-triage-dispatch-handler.md`.
+
 ## 1. Purpose
 
-The pr-triage agent is the first real workflow that proves Shape 1 PTY
-adapter can run end-to-end inside the v2 daemon: cron-fired (07a) →
+The pr-triage agent is the first real workflow that — once Plan 04d lands —
+proves Shape 1 PTY adapter can run end-to-end inside the v2 daemon: cron-fired (07a) →
 wake-check gated (04a) → claude-pty spawned (Phase 1) → curl-to-Telegram
 POST (direct, agent-side) → exit clean → polling loop reaps the task
 file (07b). No new outbound message broadcasting contract on the

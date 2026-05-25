@@ -57,6 +57,7 @@
  * bypass `main()` so they can assert on the thrown error.
  */
 
+import * as fs from "node:fs";
 import * as fsp from "node:fs/promises";
 import * as path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -251,7 +252,18 @@ export async function loadCronEntries(
 		entries = await fsp.readdir(agentsDir, { withFileTypes: true });
 	} catch (err) {
 		const code = (err as NodeJS.ErrnoException).code;
-		if (code === "ENOENT") return out;
+		if (code === "ENOENT") {
+			// I2 fix (dual-review 2026-05-25): ENOENT on the agents-dir ROOT
+			// is a high-visibility config failure — production deployment
+			// is broken, not "no agents yet." Log structured WARN so it
+			// surfaces in journalctl and PostHog/Sentry telemetry layer E.
+			// Per-agent crons.json ENOENT below remains a silent skip
+			// (correct for "agent dir exists but no cron").
+			console.error(
+				`[daemon] loadCronEntries: agents directory not found at ${agentsDir} — no crons will fire. Check resolveAgentsDir resolution + agents-asset deployment.`,
+			);
+			return out;
+		}
 		console.error(
 			`[daemon] loadCronEntries readdir(${agentsDir}) failed: ${err instanceof Error ? err.message : String(err)}`,
 		);
@@ -341,19 +353,50 @@ export async function loadCronEntries(
 
 /**
  * Plan 04b Task 3 — resolve the on-disk `runtime/agents/` directory
- * relative to this module's location. Hardcoding to `process.cwd()` would
- * fail when the daemon runs via systemd with `WorkingDirectory=/opt/iago-os`
- * but the bundled JS lives somewhere else; resolving via `import.meta.url`
- * makes the discovery cwd-agnostic.
+ * relative to this module's location.
+ *
+ * C1 fix (dual-review 2026-05-25): the original implementation used
+ * `path.resolve(thisDir, "..", "agents")` which works in source-test
+ * layouts (runtime/daemon/main.ts → runtime/agents/) but FAILS in
+ * production (runtime/dist/daemon/main.js → runtime/dist/agents/ which
+ * doesn't exist because `tsconfig.json` only compiles `daemon/`,
+ * `agent-runtime/`, and `telegram/` — `agents/` is not in `include`
+ * and is not copied to dist/).
+ *
+ * Strategy: walk UP from this module's directory looking for the first
+ * ancestor containing an `agents/` subdirectory. Handles both layouts:
+ *   - source: `runtime/daemon/` → walk to `runtime/` → find `runtime/agents/`
+ *   - compiled: `runtime/dist/daemon/` → walk to `runtime/dist/` (no agents)
+ *     → walk to `runtime/` → find `runtime/agents/`
+ * Bounded at 4 levels to prevent runaway walks on unexpected layouts.
+ * Falls back to the legacy 1-up path with a structured WARN if no
+ * `agents/` directory is discovered — `loadCronEntries`'s ENOENT-on-root
+ * branch (I2 fix) then surfaces the misconfiguration loudly.
  *
  * Exported so main.test.ts can override via the `IAGO_AGENTS_DIR` env var
- * (see startDaemon below) and assert the resolved path matches the
- * compiled-out location.
+ * (see startDaemon below) and assert the resolved path matches both the
+ * compiled-out and source-test locations.
  */
 export function resolveAgentsDir(): string {
 	const override = process.env.IAGO_AGENTS_DIR;
 	if (override !== undefined && override.length > 0) return override;
 	const thisDir = path.dirname(fileURLToPath(import.meta.url));
+	let candidate = path.resolve(thisDir, "..");
+	for (let i = 0; i < 4; i++) {
+		const agentsPath = path.join(candidate, "agents");
+		try {
+			const stat = fs.statSync(agentsPath);
+			if (stat.isDirectory()) return agentsPath;
+		} catch {
+			// continue walking up
+		}
+		const parent = path.dirname(candidate);
+		if (parent === candidate) break;
+		candidate = parent;
+	}
+	console.error(
+		`[daemon] resolveAgentsDir: no agents/ directory found within 4 levels of ${thisDir} — falling back to legacy 1-up path. Production deployment may be missing agents/.`,
+	);
 	return path.resolve(thisDir, "..", "agents");
 }
 

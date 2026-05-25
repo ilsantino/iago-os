@@ -2,12 +2,13 @@
 phase: feature-phase-2-vps-bootstrap
 plan: 04c
 wave: 3
-depends_on: [04a, 04b, 07a, 07b]
+depends_on: [04a, 04b, 04d, 07a, 07b]
 context: .iago/plans/feature-phase-2-vps-bootstrap/CONTEXT.md
 created: 2026-05-25
+revised: 2026-05-25
 source: feature
 split_from: 04b-pr-triage-wiring-and-test
-split_rationale: Carved out of 04b on 2026-05-25 after three dispatch failures (API ConnectionRefused at 2h, max-turns 80 at 17min, 1800s wall-clock kill at 30min). 04b's original Task 4 alone is a 280-480 line Vitest with 9 cases plus `node-pty` + `fetch` mocking — combined with 04b's README (160-280 lines) and main.ts wiring it exceeds both pipeline ceilings (80 turns AND 30 min). Splitting Task 4 into its own dispatch lets each session fit the budgets. 04c depends on 04b (main.ts must have CronScheduler wired before the integration test can exercise the full stack).
+split_rationale: Carved out of 04b on 2026-05-25 after three dispatch failures (API ConnectionRefused at 2h, max-turns 80 at 17min, 1800s wall-clock kill at 30min). 04b's original Task 4 alone is a 280-480 line Vitest with 9 cases plus `node-pty` + `fetch` mocking — combined with 04b's README (160-280 lines) and main.ts wiring it exceeds both pipeline ceilings (80 turns AND 30 min). Splitting Task 4 into its own dispatch lets each session fit the budgets. 04c depends on 04b (main.ts must have CronScheduler wired before the integration test can exercise the full stack). 2026-05-25 update: PR #76 dual aggressive adversarial review carved the dispatch handler into new Plan 04d; 04c's `depends_on` adds 04d because the integration test cases 2, 4, 5 exercise the full cron-tick → claude-pty spawn → Telegram POST flow that 04d wires.
 ---
 
 # Plan: feature-phase-2-vps-bootstrap/04c-pr-triage-integration-test
