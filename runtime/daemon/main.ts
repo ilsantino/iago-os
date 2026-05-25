@@ -59,7 +59,7 @@
 
 import * as fsp from "node:fs/promises";
 import * as path from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 import {
 	type AgentRuntime,
@@ -90,6 +90,7 @@ import {
 	getCredentialEnvVars,
 	loadSystemdCredentials,
 } from "./cred-bootstrap.js";
+import { CronScheduler, type RegisterCronOpts } from "./cron-scheduler.js";
 import { HeartbeatController } from "./heartbeat.js";
 import { IpcServer } from "./ipc-server.js";
 import { ensureStateDirsSync, pathFor } from "./state-paths.js";
@@ -104,6 +105,47 @@ import { type DaemonEvent, emit } from "./telemetry.js";
  * (heartbeat + bot + ipc + handle loop ≈ 4 stages × 10s, fits under 30s).
  */
 export const SHUTDOWN_STAGE_TIMEOUT_MS = 10_000;
+
+/**
+ * Parse one `runtime/agents/<folder>/crons.json` body into a
+ * `RegisterCronOpts` suitable for `CronScheduler.registerCron`, or
+ * return `null` when the entry should be skipped without registering.
+ *
+ * Skip cases (each returns `null` quietly — schedulers can iterate
+ * across many agent folders and not every folder ships a cron):
+ *   - body parses but is not a non-null object
+ *   - `schedule` field is absent / not a string / empty string (also
+ *     covers the documented "set schedule:null to silence the cron"
+ *     disable knob from `pr-triage/README.md` § Operations)
+ *   - `prompt` or `outputTaskNamePrefix` field is absent / not a string
+ *
+ * Exposed at module scope (not closed inside `startDaemon`) so
+ * `pr-triage.test.ts` can exercise the schedule-null skip branch
+ * without running the whole daemon boot path.
+ */
+export function parseCronsJsonEntry(
+	raw: unknown,
+	folder: string,
+): RegisterCronOpts | null {
+	if (typeof raw !== "object" || raw === null) return null;
+	const o = raw as Record<string, unknown>;
+	if (typeof o.schedule !== "string" || o.schedule.length === 0) return null;
+	if (
+		typeof o.prompt !== "string" ||
+		typeof o.outputTaskNamePrefix !== "string"
+	) {
+		return null;
+	}
+	return {
+		agentId: folder,
+		schedule: o.schedule,
+		wakeCheck: typeof o.wakeCheck === "string" ? o.wakeCheck : undefined,
+		promptTemplatePath: o.prompt,
+		outputTaskNamePrefix: o.outputTaskNamePrefix,
+		maxConcurrent:
+			typeof o.maxConcurrent === "number" ? o.maxConcurrent : undefined,
+	};
+}
 
 export async function withTimeout<T>(
 	label: string,
@@ -577,6 +619,60 @@ export async function startDaemon(
 
 	const agentManager = new AgentManager({ heartbeat });
 
+	// Plan 04b Task 3: wire CronScheduler (07a) + AgentManager polling
+	// loop (07b). Construct scheduler AFTER agentManager so its terminal-
+	// event subscription attaches to a live EventEmitter (I1 wiring).
+	// IAGO_AGENTS_DIR overrides the auto-derived path so prod systemd can
+	// point at the real `runtime/agents/` regardless of cwd; default walks
+	// from this module's URL, adjusting for the dist/ vs src/ layout.
+	const scheduler = new CronScheduler({ agentManager });
+	const agentsModuleDir = path.dirname(fileURLToPath(import.meta.url));
+	const agentsDir =
+		process.env.IAGO_AGENTS_DIR ??
+		(agentsModuleDir.split(path.sep).includes("dist")
+			? path.resolve(agentsModuleDir, "..", "..", "agents")
+			: path.resolve(agentsModuleDir, "..", "agents"));
+	let agentFolders: string[] = [];
+	try {
+		agentFolders = await fsp.readdir(agentsDir);
+	} catch (err) {
+		const code = (err as NodeJS.ErrnoException).code;
+		if (code !== "ENOENT") {
+			console.error(
+				`[daemon] readdir(${agentsDir}) failed: ${err instanceof Error ? err.message : String(err)}`,
+			);
+		}
+	}
+	for (const folder of agentFolders) {
+		const cronsPath = path.join(agentsDir, folder, "crons.json");
+		let raw: string;
+		try {
+			raw = await fsp.readFile(cronsPath, "utf8");
+		} catch {
+			continue;
+		}
+		let parsed: unknown;
+		try {
+			parsed = JSON.parse(raw);
+		} catch (err) {
+			console.error(
+				`[daemon] parse(${cronsPath}) failed: ${err instanceof Error ? err.message : String(err)}`,
+			);
+			continue;
+		}
+		const opts = parseCronsJsonEntry(parsed, folder);
+		if (opts === null) continue;
+		try {
+			scheduler.registerCron(opts);
+		} catch (err) {
+			console.error(
+				`[daemon] scheduler.registerCron(${folder}) failed: ${err instanceof Error ? err.message : String(err)}`,
+			);
+		}
+	}
+	scheduler.start();
+	agentManager.startPollingLoop({ intervalMs: 5000 });
+
 	// Codex H1 + Opus I2: build knownConfigs from persisted agent records
 	// before bootRecovery. Without this map, the daemon-crash-without-marker
 	// recovery branch (agent-manager.ts:708 — the highest-value recovery
@@ -709,6 +805,35 @@ export async function startDaemon(
 		await withTimeout(
 			"sighup.drain",
 			() => sighupRegistration.drainInFlight(),
+			stageTimeoutMs,
+		);
+		// Plan 04b Task 3: stop producers (cron-scheduler + polling loop)
+		// BEFORE tearing down consumers (heartbeat, bot, ipc, agents) so
+		// no new tasks queue or get claimed during teardown.
+		await withTimeout(
+			"scheduler.stop",
+			async () => {
+				try {
+					await scheduler.stop();
+				} catch (err) {
+					console.error(
+						`[daemon] scheduler.stop failed: ${err instanceof Error ? err.message : String(err)}`,
+					);
+				}
+			},
+			stageTimeoutMs,
+		);
+		await withTimeout(
+			"agentManager.stopPollingLoop",
+			async () => {
+				try {
+					await agentManager.stopPollingLoop();
+				} catch (err) {
+					console.error(
+						`[daemon] agentManager.stopPollingLoop failed: ${err instanceof Error ? err.message : String(err)}`,
+					);
+				}
+			},
 			stageTimeoutMs,
 		);
 		// Opus I4: bound each stage with `withTimeout`. A hung adapter
