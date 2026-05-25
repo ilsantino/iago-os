@@ -54,7 +54,7 @@ post-mortem.
 |------------|------|-------|
 | `claude-pty` adapter | Phase 1 | Shape 1 PTY-spawned subprocess, heartbeat-supervised |
 | Telegram bot | Phase 1 | Inbound routing only — the agent emits its OWN outbound POST |
-| CronScheduler | 07a | Reads `crons.json`, fires the 14:00 UTC cron tick, gates via wake-check |
+| CronScheduler | 07a | Receives pre-parsed cron entries from `main.ts` `loadCronEntries()`; fires the 14:00 UTC cron tick, gates via wake-check |
 | AgentManager polling loop | 07b | Claims `tasks/pending/pr-triage__*.json` → emits `task-resolved` |
 | `gh` CLI on VPS | Phase 0 audit | Authenticated via `GH_TOKEN` env var |
 | `GH_TOKEN` credential | 01a + 01b | Provisioned by `provision-credentials.sh gh-token`; classic PAT, `repo` + `read:org`, 90-day expiry |

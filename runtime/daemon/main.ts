@@ -22,6 +22,12 @@
  *      prior daemon run (Codex PR48 HIGH). MUST run before the bot
  *      starts polling so stranded approvals do not absorb the user's
  *      next decision as `already-resolved`.
+ *   6c. Construct `CronScheduler({ agentManager })` (Plan 04b). MUST
+ *      run after AgentManager so its EventEmitter is live for the
+ *      scheduler's terminal-event subscriptions. Call
+ *      `loadCronEntries(agentsDir)` and `scheduler.registerCron(opts)`
+ *      for each parsed entry. Entries with `schedule: null` are skipped
+ *      and logged to telemetry as `cron-skipped-null`.
  *   7. Construct + start `IpcServer`. `IpcServer.start()` preemptively
  *      unlinks any stale socket file on POSIX (Plan 05 EC1).
  *   8. If `config.telegram` is non-null, construct + start `TelegramBot`.
@@ -33,17 +39,26 @@
  *      Reads the `shuttingDown` flag through a closure so a SIGHUP
  *      arriving after SIGTERM/SIGINT is ignored (C1 shutdown-race fix).
  *   10. Auto-start every `agents[]` with `autoStart: true`.
- *   11. Emit `daemon-start` telemetry.
+ *   11. `scheduler.start()` + `agentManager.startPollingLoop({ intervalMs: 5000 })`
+ *      — guarded by `!shuttingDown` (EC1 carry-over: a SIGINT arriving
+ *      during the auto-start loop above must not leave background
+ *      timers running).
+ *   12. Emit `daemon-start` telemetry.
  *
  * Shutdown sequence (idempotent — safe to call from both SIGINT and
  * SIGTERM handlers concurrently):
  *   1. Set the shutdown flag (EC1 — newly-spawning agents observe it
  *      and abort their own track step).
- *   2. Stop the heartbeat (waits for in-flight sweep).
- *   3. Stop the bot (stops polling).
- *   4. Stop the IPC server (drains in-flight requests).
- *   5. `shutdownAgent` every live handle — writes graceful markers.
- *   6. Emit `daemon-stop` telemetry.
+ *   2. Drain in-flight SIGHUP (`sighup.drain`).
+ *   3. `scheduler.stop()` — quiesces new cron-fires so no fresh task
+ *      files land in `tasks/pending/` during teardown.
+ *   4. `agentManager.stopPollingLoop()` — drains the in-flight claim
+ *      tick so no fresh handle work spawns.
+ *   5. Stop the heartbeat (waits for in-flight sweep).
+ *   6. Stop the bot (stops polling).
+ *   7. Stop the IPC server (drains in-flight requests).
+ *   8. `shutdownAgent` every live handle — writes graceful markers.
+ *   9. Emit `daemon-stop` telemetry.
  *
  * EC1 — SIGINT during spawn: the auto-start loop re-checks the
  * shutdown flag immediately after each `registerAgent` returns. If the
