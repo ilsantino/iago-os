@@ -5,23 +5,23 @@ wave: 3
 depends_on: [04a, 03b, 07a, 07b]
 context: .iago/plans/feature-phase-2-vps-bootstrap/CONTEXT.md
 created: 2026-05-18
+revised: 2026-05-25
 source: feature
 split_from: 04-pr-triage-agent
-split_rationale: Pre-emptive split per .iago/decisions/2026-05-18-phase-2-split-and-dispatch.md. 04b ships the README + cross-plan gh-token verification + CronScheduler wiring into startDaemon + integration test (Tasks 5, 6, 7, 8 of original 04). Depends on 04a (agent artifacts to wire), 07a (CronScheduler class to import), and 07b (AgentManager EventEmitter + claimTask emit side for the decrement chain).
+split_rationale: Pre-emptive split per .iago/decisions/2026-05-18-phase-2-split-and-dispatch.md. 04b originally shipped Tasks 1-4 (README + cross-plan gh-token verification + CronScheduler wiring + integration test). 2026-05-25 revision carves Task 4 (integration test) into new Plan 04c after three dispatch failures (API ConnectionRefused, max-turns 80, 1800s wall-clock) all bottlenecked on the 280-480 line test file at the end. 04b now ships Tasks 1-3 only. Depends on 04a (agent artifacts to wire), 07a (CronScheduler class to import), and 07b (AgentManager EventEmitter + claimTask emit side for the decrement chain).
 ---
 
 # Plan: feature-phase-2-vps-bootstrap/04b-pr-triage-wiring-and-test
 
 ## Goal
 
-Wire the PR-triage agent artifacts (04a) into the daemon and prove the whole stack works end-to-end. Four deliverables: (1) `runtime/agents/pr-triage/README.md` — purpose, dependencies, configuration, operations, acceptance criteria, cost; (2) cross-plan verification that `gh-token` shipped correctly across 01a CRED_MAP + 01a systemd unit + 01b cred-bootstrap + 03b cutover-runbook (read-only — fails build if any surface missing); (3) `runtime/daemon/main.ts` edit — readdir `runtime/agents/*/crons.json`, register each entry with CronScheduler (07a), start scheduler, wire shutdown; (4) `pr-triage.test.ts` — Vitest integration test exercising the FULL flow with mocks (wake-check stubbed, claude-pty mocked, curl-to-Telegram intercepted). Source of truth: `.iago/research/2026-05-16-v2-operational-migration-scope.md` § 1 + § 4. This plan is the closing brace for Phase 2's first-real-workflow.
+Wire the PR-triage agent artifacts (04a) into the daemon. Three deliverables: (1) `runtime/agents/pr-triage/README.md` — purpose, dependencies, configuration, operations, acceptance criteria, cost; (2) cross-plan verification that `gh-token` shipped correctly across 01a CRED_MAP + 01a systemd unit + 01b cred-bootstrap + 03b cutover-runbook (read-only — fails build if any surface missing); (3) `runtime/daemon/main.ts` edit — readdir `runtime/agents/*/crons.json`, register each entry with CronScheduler (07a), start scheduler, wire shutdown. End-to-end integration test (`pr-triage.test.ts`) carved into Plan 04c per the 2026-05-25 revision. Source of truth: `.iago/research/2026-05-16-v2-operational-migration-scope.md` § 1 + § 4.
 
 ## Files
 
 | Action | Path | Purpose |
 |--------|------|---------|
 | create | `runtime/agents/pr-triage/README.md` | Purpose / deps / config / ops / acceptance criteria / failure modes / cost |
-| create | `runtime/agents/pr-triage/pr-triage.test.ts` | Integration test: mock gh + telegram, assert end-to-end |
 | edit | `runtime/daemon/main.ts` | Wire CronScheduler (07a) into startDaemon; readdir agents/*/crons.json; register + start; shutdown hook |
 | read-only verify | `runtime/deploy/provision-credentials.sh` (01a) + `runtime/deploy/iago-os-v2-daemon.service` (01a) + `runtime/daemon/cred-bootstrap.ts` (01b) + `runtime/migration/02-cutover-runbook.md` (03b) | Cross-plan grep verification that gh-token shipped on all 4 surfaces |
 
@@ -48,18 +48,13 @@ Wire the PR-triage agent artifacts (04a) into the daemon and prove the whole sta
 - **verify:** `cd runtime && npx tsc --noEmit && npx vitest run daemon/main.test.ts daemon/agent-manager.test.ts --reporter=verbose 2>&1 | tail -20`
 - **expected:** `tsc --noEmit` exit 0. main.test.ts continues to pass with the additional wiring; agent-manager tests untouched (07b's polling-loop tests live in agent-manager.test.ts and run as part of this verification).
 
-### Task 4: pr-triage integration test
-
-- **files:** `runtime/agents/pr-triage/pr-triage.test.ts`
-- **action:** Vitest test that exercises the FULL pr-triage flow with mocks. Setup: temp state-root, mock `child_process.spawnSync` for the wake-check bash script (returns exit 0 + count > 0), mock `node-pty` for claude-pty spawn (Phase 1 pattern — copy the `vi.mock('node-pty')` block from `runtime/agent-runtime/pty/claude-pty.test.ts` for consistency per I5 carry-over from original Plan 04), mock `fetch` (or `child_process` for the curl invocation depending on how the prompt-template's curl-direct pattern is exercised) to intercept the Telegram sendMessage POST and record calls. Test cases: (1) wake-check returns 1 (zero PRs) → cron-scheduler (07a) emits `cron-skipped { reason: 'wake-check-failed' }`; no claude-pty spawned; no curl-to-Telegram invoked; (2) wake-check returns 0 (PRs exist) + claude-pty receives the prompt + agent issues the direct curl POST to `https://api.telegram.org/bot<TOKEN>/sendMessage` → assert curl was invoked exactly once with: correct chat_id (first ID from `IAGO_TELEGRAM_ALLOWED_USER_IDS`), correct bot token in URL path, `parse_mode=MarkdownV2`, and the summary markdown in the `text` field; assert HTTP-200 simulated response causes the agent to exit cleanly with no fallback task file written; (3) wake-check fails (exit code 2 — rate-limit) → cron-skipped emitted with `reason: 'wake-check-rate-limited'`; (4) claude-pty mid-run crash (mock emits "error" event) → heartbeat-driven restart per Phase 1 (assert restart called); (5) Telegram sendMessage returns HTTP 429 → agent writes fallback task file at `tasks/pending/pr-triage__<unix>.json` with `ndjsonAlert: "pr-triage-telegram-send-failed"` and HTTP-status + truncated response body in details; daemon's polling loop (07b) picks up the task and emits a `pr-triage-telegram-send-failed` telemetry event; the fallback task file is moved to `tasks/resolved/` via 07b's claimTask after telemetry emission; (6) wake-check missing GH_TOKEN env → exits 1 with stderr message → cron-skipped with `reason: "wake-check-failed"`; (7) crons.json schedule never matches in the 60s test window → no spawns; (8) crons.json with `schedule: null` → cron NOT registered; (9) **end-to-end decrement chain** (bridges 07a + 07b + 04a + 04b): two consecutive ticks with `maxConcurrent: 1`; first tick fires cron-fired, second tick before claimTask completes → `cron-overlap-prevented` emitted; after polling-loop claims first task → `task-resolved` emitted → second matching tick fires successfully without overlap-prevented. Use `vi.useFakeTimers()` to manipulate clock past 14:00 UTC for the matching tests. File 280-480 lines.
-- **verify:** `cd runtime && npx vitest run agents/pr-triage/pr-triage.test.ts --reporter=verbose 2>&1 | tail -30`
-- **expected:** All 9 test cases pass.
+> **Task 4 carve-out:** Original Task 4 (pr-triage integration test, 280-480 line Vitest with 9 cases + `node-pty` + `fetch` mocking) moved to Plan 04c per 2026-05-25 revision. See `04c-pr-triage-integration-test.md`.
 
 ## Verification
 
 ```bash
 cd runtime && npx tsc --noEmit \
-  && npx vitest run daemon/cron-scheduler.test.ts daemon/cred-bootstrap.test.ts daemon/agent-manager.test.ts daemon/main.test.ts agents/pr-triage/pr-triage.test.ts --coverage 2>&1 | tail -40 \
+  && npx vitest run daemon/cron-scheduler.test.ts daemon/cred-bootstrap.test.ts daemon/agent-manager.test.ts daemon/main.test.ts --coverage 2>&1 | tail -40 \
   && cd .. \
   && wc -l runtime/agents/pr-triage/README.md \
   && grep -E '^\[gh-token\]=' runtime/deploy/provision-credentials.sh \
@@ -70,8 +65,7 @@ cd runtime && npx tsc --noEmit \
 
 Expected:
 - `tsc --noEmit` exit 0
-- All listed test files pass; pr-triage.test.ts ≥9 tests
-- Coverage ≥80% on new TS surface (main.ts wiring delta + pr-triage test paths)
+- All listed test files pass (pr-triage.test.ts deferred to 04c)
 - README 160-280 lines
 - All 4 gh-token cross-plan surfaces verified present
 

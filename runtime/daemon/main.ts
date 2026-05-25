@@ -59,7 +59,7 @@
 
 import * as fsp from "node:fs/promises";
 import * as path from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 import {
 	type AgentRuntime,
@@ -90,6 +90,7 @@ import {
 	getCredentialEnvVars,
 	loadSystemdCredentials,
 } from "./cred-bootstrap.js";
+import { CronScheduler, type RegisterCronOpts } from "./cron-scheduler.js";
 import { HeartbeatController } from "./heartbeat.js";
 import { IpcServer } from "./ipc-server.js";
 import { ensureStateDirsSync, pathFor } from "./state-paths.js";
@@ -208,6 +209,152 @@ export async function loadPersistedConfigs(): Promise<
 		});
 	}
 	return out;
+}
+
+/**
+ * Plan 04b Task 3 — discover `runtime/agents/<agentId>/crons.json` files
+ * and translate each into a `RegisterCronOpts` for the `CronScheduler`.
+ *
+ * Discovery rules:
+ *   - Read every subdirectory under `runtime/agents/`. Skip non-directories
+ *     and dot-entries.
+ *   - For each subdirectory, attempt to read `crons.json`. ENOENT is a
+ *     silent skip (not every agent has a cron).
+ *   - Parse JSON; require: `schedule` (string OR null), `prompt` (string,
+ *     mapped to `promptTemplatePath`), `outputTaskNamePrefix` (string).
+ *     Optional: `wakeCheck` (string), `maxConcurrent` (number).
+ *   - `schedule: null` is a documented "silence" sentinel — the entry is
+ *     parsed but NOT registered. Logged to telemetry as `cron-skipped-null`
+ *     so the operator can see the agent is intentionally muted.
+ *   - `wakeCheck` is resolved relative to the repo root (parent of the
+ *     `runtime/` tree). Plan 04a's crons.json ships
+ *     `"runtime/agents/pr-triage/wake-check.sh"` — relative to repo root —
+ *     because the daemon's working directory at production runtime is
+ *     `/opt/iago-os` (the repo root on the VPS).
+ *
+ * The `agentId` is derived from the directory name (e.g., `pr-triage/`).
+ * The cron file's content does not need its own `agentId` field — the
+ * directory IS the identity.
+ *
+ * Errors per agent (parse, missing field, bad type) are logged to stderr
+ * and skip that entry without throwing; other agents continue to load.
+ *
+ * Exported for unit testability — main.test.ts asserts the discovery
+ * contract directly (file shape, null-schedule sentinel, error paths).
+ */
+export async function loadCronEntries(
+	agentsDir: string,
+): Promise<RegisterCronOpts[]> {
+	const out: RegisterCronOpts[] = [];
+	let entries: import("node:fs").Dirent[];
+	try {
+		entries = await fsp.readdir(agentsDir, { withFileTypes: true });
+	} catch (err) {
+		const code = (err as NodeJS.ErrnoException).code;
+		if (code === "ENOENT") return out;
+		console.error(
+			`[daemon] loadCronEntries readdir(${agentsDir}) failed: ${err instanceof Error ? err.message : String(err)}`,
+		);
+		return out;
+	}
+	for (const entry of entries) {
+		if (!entry.isDirectory()) continue;
+		if (entry.name.startsWith(".")) continue;
+		const agentId = entry.name;
+		const cronPath = path.join(agentsDir, agentId, "crons.json");
+		let raw: string;
+		try {
+			raw = await fsp.readFile(cronPath, "utf8");
+		} catch (err) {
+			const code = (err as NodeJS.ErrnoException).code;
+			if (code === "ENOENT") continue;
+			console.error(
+				`[daemon] loadCronEntries read(${cronPath}) failed: ${err instanceof Error ? err.message : String(err)}`,
+			);
+			continue;
+		}
+		let parsed: unknown;
+		try {
+			parsed = JSON.parse(raw);
+		} catch (err) {
+			console.error(
+				`[daemon] loadCronEntries parse(${cronPath}) failed: ${err instanceof Error ? err.message : String(err)}`,
+			);
+			continue;
+		}
+		if (typeof parsed !== "object" || parsed === null) {
+			console.error(
+				`[daemon] loadCronEntries skipping ${cronPath}: not an object`,
+			);
+			continue;
+		}
+		const obj = parsed as Record<string, unknown>;
+		const scheduleRaw = obj.schedule;
+		if (scheduleRaw === null) {
+			console.error(
+				`[daemon] loadCronEntries skipping ${agentId}: schedule is null (intentionally muted)`,
+			);
+			continue;
+		}
+		if (typeof scheduleRaw !== "string" || scheduleRaw.length === 0) {
+			console.error(
+				`[daemon] loadCronEntries skipping ${cronPath}: missing or invalid schedule`,
+			);
+			continue;
+		}
+		const promptRaw = obj.prompt;
+		if (typeof promptRaw !== "string" || promptRaw.length === 0) {
+			console.error(
+				`[daemon] loadCronEntries skipping ${cronPath}: missing or invalid prompt`,
+			);
+			continue;
+		}
+		const prefixRaw = obj.outputTaskNamePrefix;
+		if (typeof prefixRaw !== "string" || prefixRaw.length === 0) {
+			console.error(
+				`[daemon] loadCronEntries skipping ${cronPath}: missing or invalid outputTaskNamePrefix`,
+			);
+			continue;
+		}
+		const wakeCheckRaw = obj.wakeCheck;
+		const wakeCheck =
+			typeof wakeCheckRaw === "string" && wakeCheckRaw.length > 0
+				? wakeCheckRaw
+				: undefined;
+		const maxConcurrentRaw = obj.maxConcurrent;
+		const maxConcurrent =
+			typeof maxConcurrentRaw === "number" && maxConcurrentRaw > 0
+				? maxConcurrentRaw
+				: undefined;
+		const opts: RegisterCronOpts = {
+			agentId,
+			schedule: scheduleRaw,
+			promptTemplatePath: promptRaw,
+			outputTaskNamePrefix: prefixRaw,
+			...(wakeCheck !== undefined ? { wakeCheck } : {}),
+			...(maxConcurrent !== undefined ? { maxConcurrent } : {}),
+		};
+		out.push(opts);
+	}
+	return out;
+}
+
+/**
+ * Plan 04b Task 3 — resolve the on-disk `runtime/agents/` directory
+ * relative to this module's location. Hardcoding to `process.cwd()` would
+ * fail when the daemon runs via systemd with `WorkingDirectory=/opt/iago-os`
+ * but the bundled JS lives somewhere else; resolving via `import.meta.url`
+ * makes the discovery cwd-agnostic.
+ *
+ * Exported so main.test.ts can override via the `IAGO_AGENTS_DIR` env var
+ * (see startDaemon below) and assert the resolved path matches the
+ * compiled-out location.
+ */
+export function resolveAgentsDir(): string {
+	const override = process.env.IAGO_AGENTS_DIR;
+	if (override !== undefined && override.length > 0) return override;
+	const thisDir = path.dirname(fileURLToPath(import.meta.url));
+	return path.resolve(thisDir, "..", "agents");
 }
 
 /**
@@ -625,6 +772,35 @@ export async function startDaemon(
 		);
 	}
 
+	// Plan 04b Task 3 — construct CronScheduler AFTER AgentManager (07b's
+	// EventEmitter + claimTask are alive for the scheduler's constructor
+	// terminal-event subscriptions) and BEFORE the auto-start loop (so the
+	// decrement chain is ready when the first cron-fired task lands).
+	// Defensive runtime guards: surface "07a or 07b not landed" at boot if
+	// the class shape lost a required method between compile and run.
+	if (typeof CronScheduler !== "function") {
+		throw new Error(
+			"Plan 07a or 07b not landed: CronScheduler or AgentManager polling loop missing",
+		);
+	}
+	if (typeof agentManager.startPollingLoop !== "function") {
+		throw new Error(
+			"Plan 07a or 07b not landed: CronScheduler or AgentManager polling loop missing",
+		);
+	}
+	const scheduler = new CronScheduler({ agentManager });
+	const agentsDir = resolveAgentsDir();
+	const cronEntries = await loadCronEntries(agentsDir);
+	for (const opts of cronEntries) {
+		try {
+			scheduler.registerCron(opts);
+		} catch (err) {
+			console.error(
+				`[daemon] registerCron(${opts.agentId}) failed: ${err instanceof Error ? err.message : String(err)}`,
+			);
+		}
+	}
+
 	const ipcServer = new IpcServer({
 		socketPath: config.ipc.socketPath,
 		cacheTtlMs: config.ipc.cacheTtlMs,
@@ -709,6 +885,39 @@ export async function startDaemon(
 		await withTimeout(
 			"sighup.drain",
 			() => sighupRegistration.drainInFlight(),
+			stageTimeoutMs,
+		);
+		// Plan 04b Task 3 — stop scheduler + polling loop BEFORE heartbeat /
+		// bot / IPC teardown. Order matters: scheduler.stop quiesces new
+		// cron-fires so no fresh task files land in `tasks/pending/`; then
+		// agentManager.stopPollingLoop drains the in-flight claim tick so no
+		// fresh handle work spawns; then the existing per-stage teardowns
+		// run. Reverse order would let an in-flight tick claim a task and
+		// spawn an agent while we're already mid-handle-shutdown.
+		await withTimeout(
+			"scheduler.stop",
+			async () => {
+				try {
+					await scheduler.stop();
+				} catch (err) {
+					console.error(
+						`[daemon] scheduler.stop failed: ${err instanceof Error ? err.message : String(err)}`,
+					);
+				}
+			},
+			stageTimeoutMs,
+		);
+		await withTimeout(
+			"agentManager.stopPollingLoop",
+			async () => {
+				try {
+					await agentManager.stopPollingLoop();
+				} catch (err) {
+					console.error(
+						`[daemon] agentManager.stopPollingLoop failed: ${err instanceof Error ? err.message : String(err)}`,
+					);
+				}
+			},
 			stageTimeoutMs,
 		);
 		// Opus I4: bound each stage with `withTimeout`. A hung adapter
@@ -880,6 +1089,18 @@ export async function startDaemon(
 	}
 
 	heartbeat.start();
+
+	// Plan 04b Task 3 — start the cron-scheduler interval + the AgentManager
+	// polling loop AFTER the synchronous auto-start loop drains and AFTER
+	// `heartbeat.start()`. EC1 carry-over: guard against `shuttingDown` so a
+	// SIGINT arriving during the auto-start loop above does not leave new
+	// background timers running. The polling interval is 5000ms — short
+	// enough to give cron-fires a sub-tick reaction time, long enough to
+	// avoid burning CPU on an idle daemon. Documented in Plan 04b Task 3.
+	if (!shuttingDown) {
+		scheduler.start();
+		agentManager.startPollingLoop({ intervalMs: 5000 });
+	}
 
 	// Plan 01b Task 4 (C1 carry-over): determine `runUnder` for the
 	// `daemon-start` event via the exported `computeRunUnder` helper so
