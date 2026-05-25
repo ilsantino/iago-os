@@ -1,9 +1,18 @@
 ---
 description: >-
-  React 19 + Vite + ShadCN/UI + TanStack Query patterns.
+  React 19 + Vite + ShadCN/UI + TanStack Query patterns + Code Standards.
 globs:
   - "src/**/*.{tsx,jsx,css}"
 ---
+
+## Code Standards
+
+- TypeScript strict — no `any`, no `as` casts (except type guards), no `@ts-ignore`
+- Named exports only — no default exports
+- Functional components only — no class components (error boundaries are the sole exception)
+- Naming: kebab-case files, PascalCase components, camelCase utilities
+- Barrel files (`index.ts`) only at public API boundaries
+- Imports: external first, then internal with `@/` aliases
 
 ## React 19
 
