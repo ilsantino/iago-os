@@ -22,6 +22,12 @@
  *      prior daemon run (Codex PR48 HIGH). MUST run before the bot
  *      starts polling so stranded approvals do not absorb the user's
  *      next decision as `already-resolved`.
+ *   6c. Construct `CronScheduler({ agentManager })` (Plan 04b). MUST
+ *      run after AgentManager so its EventEmitter is live for the
+ *      scheduler's terminal-event subscriptions. Call
+ *      `loadCronEntries(agentsDir)` and `scheduler.registerCron(opts)`
+ *      for each parsed entry. Entries with `schedule: null` are skipped
+ *      and logged to telemetry as `cron-skipped-null`.
  *   7. Construct + start `IpcServer`. `IpcServer.start()` preemptively
  *      unlinks any stale socket file on POSIX (Plan 05 EC1).
  *   8. If `config.telegram` is non-null, construct + start `TelegramBot`.
@@ -33,17 +39,26 @@
  *      Reads the `shuttingDown` flag through a closure so a SIGHUP
  *      arriving after SIGTERM/SIGINT is ignored (C1 shutdown-race fix).
  *   10. Auto-start every `agents[]` with `autoStart: true`.
- *   11. Emit `daemon-start` telemetry.
+ *   11. `scheduler.start()` + `agentManager.startPollingLoop({ intervalMs: 5000 })`
+ *      — guarded by `!shuttingDown` (EC1 carry-over: a SIGINT arriving
+ *      during the auto-start loop above must not leave background
+ *      timers running).
+ *   12. Emit `daemon-start` telemetry.
  *
  * Shutdown sequence (idempotent — safe to call from both SIGINT and
  * SIGTERM handlers concurrently):
  *   1. Set the shutdown flag (EC1 — newly-spawning agents observe it
  *      and abort their own track step).
- *   2. Stop the heartbeat (waits for in-flight sweep).
- *   3. Stop the bot (stops polling).
- *   4. Stop the IPC server (drains in-flight requests).
- *   5. `shutdownAgent` every live handle — writes graceful markers.
- *   6. Emit `daemon-stop` telemetry.
+ *   2. Drain in-flight SIGHUP (`sighup.drain`).
+ *   3. `scheduler.stop()` — quiesces new cron-fires so no fresh task
+ *      files land in `tasks/pending/` during teardown.
+ *   4. `agentManager.stopPollingLoop()` — drains the in-flight claim
+ *      tick so no fresh handle work spawns.
+ *   5. Stop the heartbeat (waits for in-flight sweep).
+ *   6. Stop the bot (stops polling).
+ *   7. Stop the IPC server (drains in-flight requests).
+ *   8. `shutdownAgent` every live handle — writes graceful markers.
+ *   9. Emit `daemon-stop` telemetry.
  *
  * EC1 — SIGINT during spawn: the auto-start loop re-checks the
  * shutdown flag immediately after each `registerAgent` returns. If the
@@ -57,9 +72,10 @@
  * bypass `main()` so they can assert on the thrown error.
  */
 
+import * as fs from "node:fs";
 import * as fsp from "node:fs/promises";
 import * as path from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 import {
 	type AgentRuntime,
@@ -90,6 +106,7 @@ import {
 	getCredentialEnvVars,
 	loadSystemdCredentials,
 } from "./cred-bootstrap.js";
+import { CronScheduler, type RegisterCronOpts } from "./cron-scheduler.js";
 import { HeartbeatController } from "./heartbeat.js";
 import { IpcServer } from "./ipc-server.js";
 import { ensureStateDirsSync, pathFor } from "./state-paths.js";
@@ -208,6 +225,195 @@ export async function loadPersistedConfigs(): Promise<
 		});
 	}
 	return out;
+}
+
+/**
+ * Plan 04b Task 3 — discover `runtime/agents/<agentId>/crons.json` files
+ * and translate each into a `RegisterCronOpts` for the `CronScheduler`.
+ *
+ * Discovery rules:
+ *   - Read every subdirectory under `runtime/agents/`. Skip non-directories
+ *     and dot-entries.
+ *   - For each subdirectory, attempt to read `crons.json`. ENOENT is a
+ *     silent skip (not every agent has a cron).
+ *   - Parse JSON; require: `schedule` (string OR null), `prompt` (string,
+ *     mapped to `promptTemplatePath`), `outputTaskNamePrefix` (string).
+ *     Optional: `wakeCheck` (string), `maxConcurrent` (number).
+ *   - `schedule: null` is a documented "silence" sentinel — the entry is
+ *     parsed but NOT registered. Logged to telemetry as `cron-skipped-null`
+ *     so the operator can see the agent is intentionally muted.
+ *   - `wakeCheck` is resolved relative to the repo root (parent of the
+ *     `runtime/` tree). Plan 04a's crons.json ships
+ *     `"runtime/agents/pr-triage/wake-check.sh"` — relative to repo root —
+ *     because the daemon's working directory at production runtime is
+ *     `/opt/iago-os` (the repo root on the VPS).
+ *
+ * The `agentId` is derived from the directory name (e.g., `pr-triage/`).
+ * The cron file's content does not need its own `agentId` field — the
+ * directory IS the identity.
+ *
+ * Errors per agent (parse, missing field, bad type) are logged to stderr
+ * and skip that entry without throwing; other agents continue to load.
+ *
+ * Exported for unit testability — main.test.ts asserts the discovery
+ * contract directly (file shape, null-schedule sentinel, error paths).
+ */
+export async function loadCronEntries(
+	agentsDir: string,
+): Promise<RegisterCronOpts[]> {
+	const out: RegisterCronOpts[] = [];
+	let entries: import("node:fs").Dirent[];
+	try {
+		entries = await fsp.readdir(agentsDir, { withFileTypes: true });
+	} catch (err) {
+		const code = (err as NodeJS.ErrnoException).code;
+		if (code === "ENOENT") {
+			// I2 fix (dual-review 2026-05-25): ENOENT on the agents-dir ROOT
+			// is a high-visibility config failure — production deployment
+			// is broken, not "no agents yet." Log structured WARN so it
+			// surfaces in journalctl and PostHog/Sentry telemetry layer E.
+			// Per-agent crons.json ENOENT below remains a silent skip
+			// (correct for "agent dir exists but no cron").
+			console.error(
+				`[daemon] loadCronEntries: agents directory not found at ${agentsDir} — no crons will fire. Check resolveAgentsDir resolution + agents-asset deployment.`,
+			);
+			return out;
+		}
+		console.error(
+			`[daemon] loadCronEntries readdir(${agentsDir}) failed: ${err instanceof Error ? err.message : String(err)}`,
+		);
+		return out;
+	}
+	for (const entry of entries) {
+		if (!entry.isDirectory()) continue;
+		if (entry.name.startsWith(".")) continue;
+		const agentId = entry.name;
+		const cronPath = path.join(agentsDir, agentId, "crons.json");
+		let raw: string;
+		try {
+			raw = await fsp.readFile(cronPath, "utf8");
+		} catch (err) {
+			const code = (err as NodeJS.ErrnoException).code;
+			if (code === "ENOENT") continue;
+			console.error(
+				`[daemon] loadCronEntries read(${cronPath}) failed: ${err instanceof Error ? err.message : String(err)}`,
+			);
+			continue;
+		}
+		let parsed: unknown;
+		try {
+			parsed = JSON.parse(raw);
+		} catch (err) {
+			console.error(
+				`[daemon] loadCronEntries parse(${cronPath}) failed: ${err instanceof Error ? err.message : String(err)}`,
+			);
+			continue;
+		}
+		if (typeof parsed !== "object" || parsed === null) {
+			console.error(
+				`[daemon] loadCronEntries skipping ${cronPath}: not an object`,
+			);
+			continue;
+		}
+		const obj = parsed as Record<string, unknown>;
+		const scheduleRaw = obj.schedule;
+		if (scheduleRaw === null) {
+			console.error(
+				`[daemon] loadCronEntries skipping ${agentId}: schedule is null (intentionally muted)`,
+			);
+			await emit({ kind: "cron-skipped-null", agentId });
+			continue;
+		}
+		if (typeof scheduleRaw !== "string" || scheduleRaw.length === 0) {
+			console.error(
+				`[daemon] loadCronEntries skipping ${cronPath}: missing or invalid schedule`,
+			);
+			continue;
+		}
+		const promptRaw = obj.prompt;
+		if (typeof promptRaw !== "string" || promptRaw.length === 0) {
+			console.error(
+				`[daemon] loadCronEntries skipping ${cronPath}: missing or invalid prompt`,
+			);
+			continue;
+		}
+		const prefixRaw = obj.outputTaskNamePrefix;
+		if (typeof prefixRaw !== "string" || prefixRaw.length === 0) {
+			console.error(
+				`[daemon] loadCronEntries skipping ${cronPath}: missing or invalid outputTaskNamePrefix`,
+			);
+			continue;
+		}
+		const wakeCheckRaw = obj.wakeCheck;
+		const wakeCheck =
+			typeof wakeCheckRaw === "string" && wakeCheckRaw.length > 0
+				? wakeCheckRaw
+				: undefined;
+		const maxConcurrentRaw = obj.maxConcurrent;
+		const maxConcurrent =
+			typeof maxConcurrentRaw === "number" && maxConcurrentRaw > 0
+				? maxConcurrentRaw
+				: undefined;
+		const opts: RegisterCronOpts = {
+			agentId,
+			schedule: scheduleRaw,
+			promptTemplatePath: promptRaw,
+			outputTaskNamePrefix: prefixRaw,
+			...(wakeCheck !== undefined ? { wakeCheck } : {}),
+			...(maxConcurrent !== undefined ? { maxConcurrent } : {}),
+		};
+		out.push(opts);
+	}
+	return out;
+}
+
+/**
+ * Plan 04b Task 3 — resolve the on-disk `runtime/agents/` directory
+ * relative to this module's location.
+ *
+ * C1 fix (dual-review 2026-05-25): the original implementation used
+ * `path.resolve(thisDir, "..", "agents")` which works in source-test
+ * layouts (runtime/daemon/main.ts → runtime/agents/) but FAILS in
+ * production (runtime/dist/daemon/main.js → runtime/dist/agents/ which
+ * doesn't exist because `tsconfig.json` only compiles `daemon/`,
+ * `agent-runtime/`, and `telegram/` — `agents/` is not in `include`
+ * and is not copied to dist/).
+ *
+ * Strategy: walk UP from this module's directory looking for the first
+ * ancestor containing an `agents/` subdirectory. Handles both layouts:
+ *   - source: `runtime/daemon/` → walk to `runtime/` → find `runtime/agents/`
+ *   - compiled: `runtime/dist/daemon/` → walk to `runtime/dist/` (no agents)
+ *     → walk to `runtime/` → find `runtime/agents/`
+ * Bounded at 4 levels to prevent runaway walks on unexpected layouts.
+ * Falls back to the legacy 1-up path with a structured WARN if no
+ * `agents/` directory is discovered — `loadCronEntries`'s ENOENT-on-root
+ * branch (I2 fix) then surfaces the misconfiguration loudly.
+ *
+ * Exported so main.test.ts can override via the `IAGO_AGENTS_DIR` env var
+ * (see startDaemon below) and assert the resolved path matches both the
+ * compiled-out and source-test locations.
+ */
+export function resolveAgentsDir(): string {
+	const override = process.env.IAGO_AGENTS_DIR;
+	if (override !== undefined && override.length > 0) return override;
+	const thisDir = path.dirname(fileURLToPath(import.meta.url));
+	let candidate = path.resolve(thisDir, "..");
+	for (let i = 0; i < 4; i++) {
+		const agentsPath = path.join(candidate, "agents");
+		try {
+			const stat = fs.statSync(agentsPath);
+			if (stat.isDirectory()) return agentsPath;
+		} catch {
+			// continue walking up
+		}
+		const parent = path.dirname(candidate);
+		if (parent === candidate) break;
+		candidate = parent;
+	}
+	console.error(
+		`[daemon] resolveAgentsDir: no agents/ directory found within 4 levels of ${thisDir} — falling back to legacy 1-up path. Production deployment may be missing agents/.`,
+	);
+	return path.resolve(thisDir, "..", "agents");
 }
 
 /**
@@ -625,6 +831,30 @@ export async function startDaemon(
 		);
 	}
 
+	// Plan 04b Task 3 — construct CronScheduler AFTER AgentManager (07b's
+	// EventEmitter + claimTask are alive for the scheduler's constructor
+	// terminal-event subscriptions) and BEFORE the auto-start loop (so the
+	// decrement chain is ready when the first cron-fired task lands).
+	// Defensive runtime guard: surface "07b not landed" at boot if
+	// AgentManager's class shape lost startPollingLoop between compile and run.
+	if (typeof agentManager.startPollingLoop !== "function") {
+		throw new Error(
+			"AgentManager.startPollingLoop not found — 07b not landed or class shape changed post-compile",
+		);
+	}
+	const scheduler = new CronScheduler({ agentManager });
+	const agentsDir = resolveAgentsDir();
+	const cronEntries = await loadCronEntries(agentsDir);
+	for (const opts of cronEntries) {
+		try {
+			scheduler.registerCron(opts);
+		} catch (err) {
+			console.error(
+				`[daemon] registerCron(${opts.agentId}) failed: ${err instanceof Error ? err.message : String(err)}`,
+			);
+		}
+	}
+
 	const ipcServer = new IpcServer({
 		socketPath: config.ipc.socketPath,
 		cacheTtlMs: config.ipc.cacheTtlMs,
@@ -709,6 +939,39 @@ export async function startDaemon(
 		await withTimeout(
 			"sighup.drain",
 			() => sighupRegistration.drainInFlight(),
+			stageTimeoutMs,
+		);
+		// Plan 04b Task 3 — stop scheduler + polling loop BEFORE heartbeat /
+		// bot / IPC teardown. Order matters: scheduler.stop quiesces new
+		// cron-fires so no fresh task files land in `tasks/pending/`; then
+		// agentManager.stopPollingLoop drains the in-flight claim tick so no
+		// fresh handle work spawns; then the existing per-stage teardowns
+		// run. Reverse order would let an in-flight tick claim a task and
+		// spawn an agent while we're already mid-handle-shutdown.
+		await withTimeout(
+			"scheduler.stop",
+			async () => {
+				try {
+					await scheduler.stop();
+				} catch (err) {
+					console.error(
+						`[daemon] scheduler.stop failed: ${err instanceof Error ? err.message : String(err)}`,
+					);
+				}
+			},
+			stageTimeoutMs,
+		);
+		await withTimeout(
+			"agentManager.stopPollingLoop",
+			async () => {
+				try {
+					await agentManager.stopPollingLoop();
+				} catch (err) {
+					console.error(
+						`[daemon] agentManager.stopPollingLoop failed: ${err instanceof Error ? err.message : String(err)}`,
+					);
+				}
+			},
 			stageTimeoutMs,
 		);
 		// Opus I4: bound each stage with `withTimeout`. A hung adapter
@@ -880,6 +1143,18 @@ export async function startDaemon(
 	}
 
 	heartbeat.start();
+
+	// Plan 04b Task 3 — start the cron-scheduler interval + the AgentManager
+	// polling loop AFTER the synchronous auto-start loop drains and AFTER
+	// `heartbeat.start()`. EC1 carry-over: guard against `shuttingDown` so a
+	// SIGINT arriving during the auto-start loop above does not leave new
+	// background timers running. The polling interval is 5000ms — short
+	// enough to give cron-fires a sub-tick reaction time, long enough to
+	// avoid burning CPU on an idle daemon. Documented in Plan 04b Task 3.
+	if (!shuttingDown) {
+		scheduler.start();
+		agentManager.startPollingLoop({ intervalMs: 5000 });
+	}
 
 	// Plan 01b Task 4 (C1 carry-over): determine `runUnder` for the
 	// `daemon-start` event via the exported `computeRunUnder` helper so
