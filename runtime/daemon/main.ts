@@ -59,7 +59,7 @@
 
 import * as fsp from "node:fs/promises";
 import * as path from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 import {
 	type AgentRuntime,
@@ -90,6 +90,7 @@ import {
 	getCredentialEnvVars,
 	loadSystemdCredentials,
 } from "./cred-bootstrap.js";
+import { CronScheduler, type RegisterCronOpts } from "./cron-scheduler.js";
 import { HeartbeatController } from "./heartbeat.js";
 import { IpcServer } from "./ipc-server.js";
 import { ensureStateDirsSync, pathFor } from "./state-paths.js";
@@ -205,6 +206,120 @@ export async function loadPersistedConfigs(): Promise<
 			cwd,
 			env,
 			sessionId,
+		});
+	}
+	return out;
+}
+
+/**
+ * Plan 04b Task 3 — discover `crons.json` entries under
+ * `runtime/agents/<name>/`. Returns the parsed cron specs ready to pass to
+ * `CronScheduler.registerCron`. The agentId is taken from
+ * `agent-config.json` when present, falling back to the folder name.
+ *
+ * Skips silently when:
+ *   - the agents root directory is missing (ENOENT)
+ *   - a per-agent folder has no `crons.json` (missing or ENOTDIR)
+ *   - `schedule` is explicitly `null` (operator-disabled per README § 4)
+ *
+ * Logs (does not throw) on malformed JSON, non-object payloads, or missing
+ * required fields — bad agents must never crash the daemon at boot.
+ *
+ * Exported so tests can drive discovery against a temp fixture tree without
+ * standing up the full daemon. `agentsDir` defaults to the source-tree
+ * `runtime/agents/` resolved from this file's location, but `IAGO_AGENTS_DIR`
+ * can override for tests + alternate install layouts.
+ */
+export async function discoverCronEntries(opts?: {
+	readonly agentsDir?: string;
+}): Promise<RegisterCronOpts[]> {
+	const agentsDir =
+		opts?.agentsDir ??
+		process.env.IAGO_AGENTS_DIR ??
+		path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "agents");
+	let entries: string[];
+	try {
+		entries = await fsp.readdir(agentsDir);
+	} catch (err) {
+		const code = (err as NodeJS.ErrnoException).code;
+		if (code === "ENOENT") return [];
+		console.error(
+			`[daemon] discoverCronEntries readdir(${agentsDir}) failed: ${err instanceof Error ? err.message : String(err)}`,
+		);
+		return [];
+	}
+	const out: RegisterCronOpts[] = [];
+	for (const entry of entries) {
+		const cronsPath = path.join(agentsDir, entry, "crons.json");
+		let raw: string;
+		try {
+			raw = await fsp.readFile(cronsPath, "utf8");
+		} catch (err) {
+			const code = (err as NodeJS.ErrnoException).code;
+			if (code === "ENOENT" || code === "ENOTDIR") continue;
+			console.error(
+				`[daemon] discoverCronEntries read(${cronsPath}) failed: ${err instanceof Error ? err.message : String(err)}`,
+			);
+			continue;
+		}
+		let parsed: unknown;
+		try {
+			parsed = JSON.parse(raw);
+		} catch (err) {
+			console.error(
+				`[daemon] discoverCronEntries parse(${cronsPath}) failed: ${err instanceof Error ? err.message : String(err)}`,
+			);
+			continue;
+		}
+		if (typeof parsed !== "object" || parsed === null) continue;
+		const obj = parsed as Record<string, unknown>;
+		// Explicit "do not register" — operator path for temporary disable
+		// (README § 4 option 1). Distinguished from missing crons.json so
+		// the operator gets durable behavior without renaming the file.
+		if (obj.schedule === null) continue;
+		if (typeof obj.schedule !== "string" || obj.schedule.length === 0) {
+			continue;
+		}
+		const promptTemplatePath =
+			typeof obj.prompt === "string" ? obj.prompt : undefined;
+		if (promptTemplatePath === undefined) {
+			console.error(
+				`[daemon] discoverCronEntries skipping ${entry}: missing "prompt" field`,
+			);
+			continue;
+		}
+		const wakeCheck =
+			typeof obj.wakeCheck === "string" ? obj.wakeCheck : undefined;
+		const outputTaskNamePrefix =
+			typeof obj.outputTaskNamePrefix === "string"
+				? obj.outputTaskNamePrefix
+				: entry;
+		const maxConcurrent =
+			typeof obj.maxConcurrent === "number" ? obj.maxConcurrent : undefined;
+		let agentId = entry;
+		try {
+			const cfgRaw = await fsp.readFile(
+				path.join(agentsDir, entry, "agent-config.json"),
+				"utf8",
+			);
+			const cfg: unknown = JSON.parse(cfgRaw);
+			if (
+				typeof cfg === "object" &&
+				cfg !== null &&
+				typeof (cfg as { agentId?: unknown }).agentId === "string"
+			) {
+				agentId = (cfg as { agentId: string }).agentId;
+			}
+		} catch {
+			// Missing/invalid agent-config.json — folder name is the fallback.
+		}
+		out.push({
+			agentId,
+			schedule: obj.schedule,
+			wakeCheck,
+			promptTemplatePath,
+			outputTaskNamePrefix,
+			maxConcurrent,
 		});
 	}
 	return out;
@@ -577,6 +692,14 @@ export async function startDaemon(
 
 	const agentManager = new AgentManager({ heartbeat });
 
+	// Plan 04b Task 3: CronScheduler is constructed AFTER AgentManager so the
+	// constructor's terminal-event subscriptions (task-resolved /
+	// task-poisoned / task-unrouted, all wired by AgentManager.claimTask in
+	// 07b) attach to a live emitter. `start()` is deferred until after
+	// `registerCron` discovery + the auto-start loop completes — see further
+	// below.
+	const scheduler = new CronScheduler({ agentManager });
+
 	// Codex H1 + Opus I2: build knownConfigs from persisted agent records
 	// before bootRecovery. Without this map, the daemon-crash-without-marker
 	// recovery branch (agent-manager.ts:708 — the highest-value recovery
@@ -696,6 +819,37 @@ export async function startDaemon(
 	const shutdown = async (): Promise<void> => {
 		if (shuttingDown) return;
 		shuttingDown = true;
+		// Plan 04b Task 3: stop the cron tick + polling loop BEFORE everything
+		// else. Both are async setInterval-driven sources of new work; stopping
+		// them first guarantees no `cron-fired` task or new claimTask races
+		// the rest of the teardown. Both await any in-flight tick internally
+		// so the existing `withTimeout` stage budget bounds the wait.
+		await withTimeout(
+			"scheduler.stop",
+			async () => {
+				try {
+					await scheduler.stop();
+				} catch (err) {
+					console.error(
+						`[daemon] scheduler.stop failed: ${err instanceof Error ? err.message : String(err)}`,
+					);
+				}
+			},
+			stageTimeoutMs,
+		);
+		await withTimeout(
+			"agentManager.stopPollingLoop",
+			async () => {
+				try {
+					await agentManager.stopPollingLoop();
+				} catch (err) {
+					console.error(
+						`[daemon] agentManager.stopPollingLoop failed: ${err instanceof Error ? err.message : String(err)}`,
+					);
+				}
+			},
+			stageTimeoutMs,
+		);
 		// F2 (Opus + Codex convergent): drain any in-flight SIGHUP reload
 		// BEFORE tearing down the daemon. Without this, a SIGHUP that began
 		// just before SIGTERM/SIGINT would lose its `cred-reload-fired`
@@ -878,6 +1032,25 @@ export async function startDaemon(
 			);
 		}
 	}
+
+	// Plan 04b Task 3: discover `runtime/agents/<name>/crons.json` entries,
+	// register each with the scheduler (the constructor already subscribed
+	// to AgentManager's terminal events), then start both the cron tick
+	// and the file-bus polling loop. Registration errors (bad schedule,
+	// duplicate prefix) are logged but never block daemon startup — bad
+	// agent configs must not crash the daemon.
+	const cronEntries = await discoverCronEntries();
+	for (const entry of cronEntries) {
+		try {
+			scheduler.registerCron(entry);
+		} catch (err) {
+			console.error(
+				`[daemon] registerCron(${entry.agentId}) failed: ${err instanceof Error ? err.message : String(err)}`,
+			);
+		}
+	}
+	scheduler.start();
+	agentManager.startPollingLoop({ intervalMs: 5_000 });
 
 	heartbeat.start();
 
