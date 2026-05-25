@@ -245,6 +245,17 @@ export type DaemonEvent =
 	  }
 	| {
 			/**
+			 * Plan 04b (loadCronEntries): a crons.json entry had
+			 * `schedule: null` (intentionally muted). The agent is visible in
+			 * the agents directory but its cron is not registered. Emitted so
+			 * operators watching the NDJSON stream can see which agents are
+			 * silenced without grepping for absence of cron-fired events.
+			 */
+			readonly kind: "cron-skipped-null";
+			readonly agentId: string;
+	  }
+	| {
+			/**
 			 * Plan 07a (CronScheduler): a cron-tick matched but was skipped
 			 * because the agent's in-flight task count
 			 * (`runningCount.get(agentId)`) already equals `maxConcurrent`.

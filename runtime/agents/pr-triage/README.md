@@ -133,7 +133,7 @@ Three escalation levels, weakest to strongest:
 
 1. **Pause the cron only.** Edit `crons.json` and set `schedule: null`.
    The cron-scheduler skips registration for null-schedule entries.
-   Daemon must be SIGHUP'd or restarted to pick up the change.
+   Daemon must be restarted to pick up the change (SIGHUP only reloads credentials, not cron entries).
 2. **Disable the agent fully.** `agent-config.json` already has
    `autoStart: false`, so the manual write path still works but the
    daily cron silences. Combine with (1) for both surfaces.

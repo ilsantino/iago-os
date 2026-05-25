@@ -306,6 +306,7 @@ export async function loadCronEntries(
 			console.error(
 				`[daemon] loadCronEntries skipping ${agentId}: schedule is null (intentionally muted)`,
 			);
+			await emit({ kind: "cron-skipped-null", agentId });
 			continue;
 		}
 		if (typeof scheduleRaw !== "string" || scheduleRaw.length === 0) {
@@ -819,16 +820,11 @@ export async function startDaemon(
 	// EventEmitter + claimTask are alive for the scheduler's constructor
 	// terminal-event subscriptions) and BEFORE the auto-start loop (so the
 	// decrement chain is ready when the first cron-fired task lands).
-	// Defensive runtime guards: surface "07a or 07b not landed" at boot if
-	// the class shape lost a required method between compile and run.
-	if (typeof CronScheduler !== "function") {
-		throw new Error(
-			"Plan 07a or 07b not landed: CronScheduler or AgentManager polling loop missing",
-		);
-	}
+	// Defensive runtime guard: surface "07b not landed" at boot if
+	// AgentManager's class shape lost startPollingLoop between compile and run.
 	if (typeof agentManager.startPollingLoop !== "function") {
 		throw new Error(
-			"Plan 07a or 07b not landed: CronScheduler or AgentManager polling loop missing",
+			"AgentManager.startPollingLoop not found — 07b not landed or class shape changed post-compile",
 		);
 	}
 	const scheduler = new CronScheduler({ agentManager });
