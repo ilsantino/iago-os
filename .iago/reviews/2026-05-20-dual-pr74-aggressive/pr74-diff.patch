@@ -1,0 +1,825 @@
+diff --git a/runtime/daemon/README.md b/runtime/daemon/README.md
+index 5d5d9a8..bb28136 100644
+--- a/runtime/daemon/README.md
++++ b/runtime/daemon/README.md
+@@ -320,6 +320,126 @@ Resolution order for `<state-root>`:
+ 2. `<cwd>/runtime/state` if `path.basename(cwd) === "iago-os"`
+ 3. `<homedir>/.iago-os/daemon-state`
+ 
++## Reloading credentials without restart (SIGHUP)
++
++Plan 06 ships a SIGHUP handler that re-reads systemd credstore files into
++`process.env` without taking the daemon down. Use it after rotating a
++secret in 1Password + running `provision-credentials.sh <name>` (which
++updates the on-disk credstore file but does NOT touch the running
++daemon's `process.env`). Sending SIGHUP causes the daemon to re-invoke
++`loadSystemdCredentials()` so the new value is visible to any code that
++reads through `process.env`.
++
++Safer than `systemctl restart` because it preserves in-flight Claude
++PTY sessions, the IPC socket binding, and the 30-minute post-cutover
++stay-at-keyboard monitoring window.
++
++### When to use
++
++- After `bash runtime/deploy/provision-credentials.sh iago-telegram-token`
++  rotates the Telegram bot token via BotFather `/revoke`.
++- After `bash runtime/deploy/provision-credentials.sh iago-gh-token`
++  rotates the GitHub PAT.
++- (Phase 3+) After any Anthropic credstore file rotation, once the
++  three Anthropic-profile entries are uncommented in `cred-bootstrap.ts`.
++
++### Invocation
++
++On the VPS, send SIGHUP to the daemon's systemd unit:
++
++```bash
++systemctl kill -s SIGHUP iago-os-v2-daemon.service
++```
++
++From Santiago's Windows box via Tailscale:
++
++```bash
++tailscale ssh root@srv1456441 -- 'systemctl kill -s SIGHUP iago-os-v2-daemon.service'
++```
++
++### Verification
++
++A successful reload emits a `cred-reload-fired` NDJSON record to the
++daemon's telemetry stream. Check the journal:
++
++```bash
++tailscale ssh root@srv1456441 -- \
++  'journalctl -u iago-os-v2-daemon.service --since "1 minute ago" --no-pager | grep cred-reload-fired'
++```
++
++Expected: one line with `credentialsReloaded: [<env-var names that
++changed>]`. The `unchanged` array carries env-var names that were
++re-read but kept the same value. NAMES only — credential values are
++NEVER written to telemetry, stdout, or stderr (matches the Plan 01
++Task 4 C2 posture enforced by `cred-bootstrap.test.ts` case 10).
++
++### Behavior
++
++- **Names only in telemetry.** The reload event carries env-var NAMES
++  in `credentialsReloaded`, `unchanged`, and `errors`. Values never
++  appear in any telemetry field, log line, or stderr message.
++- **External env overrides win.** Env vars that were set explicitly
++  before daemon start (or mutated externally after the first load)
++  take precedence over credstore files per the Plan 01 Task 4
++  precedence contract. SIGHUP reload preserves the override.
++- **In-flight agents keep their old credentials.** SIGHUP updates the
++  DAEMON's `process.env` ONLY. Spawned agents inherited env at spawn
++  time; they continue with their old (now-stale) credentials until
++  restarted per-agent. The daemon does NOT auto-restart agents on
++  SIGHUP — that is an operational decision the operator makes per
++  agent. Phase 2 does not ship a generic agent-restart command; use
++  the existing per-shape restart paths (e.g., for a long-running
++  claude-pty agent, send the agent a graceful shutdown via the
++  IPC/Telegram surface and rely on the standard restart loop).
++  Phase 3 agent-restart command will land when the Anthropic-adapter
++  wiring activates the multi-profile path.
++- **Debounce strategy: drop.** If a second SIGHUP arrives while a
++  prior reload is still in flight, the second is dropped and a
++  `cred-reload-debounced` telemetry event is recorded. Queue-based
++  debouncing was rejected for Phase 2 (operator-driven SIGHUPs are
++  not rapid); reconsider in Phase 3+ if a credential-rotator daemon
++  emerges that fires SIGHUP on every rotate.
++- **Linux-only signal.** SIGHUP is a POSIX signal; Windows local-dev
++  cannot send it through the OS layer. The handler is still unit-
++  tested on Windows by invoking the `listener` reference returned
++  from `registerSighupHandler` (see `runtime/daemon/sighup.test.ts`)
++  which bypasses the OS layer and invokes the handler directly.
++  Production runs on Debian 13, so this restriction is invisible
++  in deployment.
++
++### Failure modes
++
++- **`cred-reload-failed`** — `loadSystemdCredentials()` threw. Most
++  likely cause: a credstore file became unreadable mid-rotation (race
++  between `provision-credentials.sh` writing and the daemon reading)
++  or the file's permissions are wrong (EACCES). The daemon continues
++  running with the previously-loaded credentials — failed reload is
++  safer than crashing the daemon on an informational signal. Inspect
++  the journal for the structured error message and re-run
++  `provision-credentials.sh` once the file is stable.
++- **`cred-reload-debounced`** — a rapid second SIGHUP arrived while
++  the first was in flight. The second is dropped; the first will
++  complete and emit its own `cred-reload-fired` (or `cred-reload-failed`)
++  event. If you intended both to take effect, re-send SIGHUP after the
++  first completes (`journalctl | grep cred-reload-fired` shows the
++  completion record).
++- **SIGHUP during daemon shutdown.** A SIGHUP arriving after the
++  SIGTERM/SIGINT path has set the internal `shuttingDown` flag is
++  ignored and logs `[daemon] SIGHUP ignored: daemon is shutting down`
++  to stderr. No telemetry event is emitted. This prevents a race
++  where a partially-torn-down telemetry pipeline would silently
++  swallow the reload event (C1 stress-test fix).
++- **SIGHUP during daemon startup.** Node's default action for SIGHUP
++  is to terminate the process. The handler is installed by
++  `startDaemon()` AFTER the initial `loadSystemdCredentials()` call,
++  so a SIGHUP arriving in the sub-second window before installation
++  will kill the daemon (same behavior as pre-Plan 06; the handler
++  cannot register earlier because it depends on the credstore being
++  primed). Operators rotating credentials should wait for systemd to
++  report the service as `active (running)` before sending SIGHUP —
++  in practice this is the natural workflow because `systemctl kill
++  -s SIGHUP` already requires an active unit.
++
+ ## Class-usage rationale
+ 
+ `AgentManager` and `HeartbeatController` are classes, not factory functions.
+diff --git a/runtime/daemon/cred-bootstrap.ts b/runtime/daemon/cred-bootstrap.ts
+index a0ad04c..69c3566 100644
+--- a/runtime/daemon/cred-bootstrap.ts
++++ b/runtime/daemon/cred-bootstrap.ts
+@@ -103,9 +103,19 @@ const CREDENTIALS: CredMap[] = [
+  */
+ const lastWrittenByCredstore = new Map<string, string>();
+ 
+-export function loadSystemdCredentials(): void {
++/**
++ * Loads credstore files into `process.env`. Returns `{ failed }` — env-var
++ * NAMES (NEVER values) whose credstore read failed with a non-ENOENT error
++ * (e.g., EACCES). ENOENT is intentionally NOT treated as failure: a missing
++ * credstore file means the credential is not provisioned on this host, which
++ * is a valid state during phased rollout. The returned `failed` array lets
++ * Plan 06's SIGHUP handler populate `cred-reload-fired.errors` with the
++ * actual env-var names that failed to read, rather than always-empty `[]`.
++ */
++export function loadSystemdCredentials(): { failed: readonly string[] } {
++	const failed: string[] = [];
+ 	const dir = process.env.CREDENTIALS_DIRECTORY;
+-	if (dir === undefined || dir.length === 0) return;
++	if (dir === undefined || dir.length === 0) return { failed };
+ 
+ 	for (const entry of CREDENTIALS) {
+ 		const credPath = path.join(dir, entry.fileName);
+@@ -120,6 +130,7 @@ export function loadSystemdCredentials(): void {
+ 			console.error(
+ 				`[cred-bootstrap] failed to read ${entry.fileName}: ${code ?? String(err)}`,
+ 			);
++			failed.push(entry.envVar);
+ 			continue;
+ 		}
+ 		const value = raw.trim();
+@@ -135,6 +146,7 @@ export function loadSystemdCredentials(): void {
+ 		process.env[entry.envVar] = value;
+ 		lastWrittenByCredstore.set(entry.envVar, value);
+ 	}
++	return { failed };
+ }
+ 
+ /**
+diff --git a/runtime/daemon/main.ts b/runtime/daemon/main.ts
+index 9b7b107..6aa846c 100644
+--- a/runtime/daemon/main.ts
++++ b/runtime/daemon/main.ts
+@@ -27,6 +27,11 @@
+  *   8. If `config.telegram` is non-null, construct + start `TelegramBot`.
+  *   9. Install SIGINT/SIGTERM handlers calling `shutdown()` — BEFORE the
+  *      auto-start loop so the EC1 guard can observe the flag.
++ *   9b. Install SIGHUP credential-reload handler via
++ *      `registerSighupHandler` (Plan 06). Re-invokes
++ *      `loadSystemdCredentials` and emits `cred-reload-fired` telemetry.
++ *      Reads the `shuttingDown` flag through a closure so a SIGHUP
++ *      arriving after SIGTERM/SIGINT is ignored (C1 shutdown-race fix).
+  *   10. Auto-start every `agents[]` with `autoStart: true`.
+  *   11. Emit `daemon-start` telemetry.
+  *
+@@ -88,7 +93,7 @@ import {
+ import { HeartbeatController } from "./heartbeat.js";
+ import { IpcServer } from "./ipc-server.js";
+ import { ensureStateDirsSync, pathFor } from "./state-paths.js";
+-import { emit } from "./telemetry.js";
++import { type DaemonEvent, emit } from "./telemetry.js";
+ 
+ /**
+  * Per-stage shutdown timeout (ms). Opus I4: the daemon shutdown path
+@@ -237,6 +242,163 @@ export function computeRunUnder(
+ 	return isSystemd ? "systemd" : "local";
+ }
+ 
++/**
++ * Plan 06 — SIGHUP credential-reload handler.
++ *
++ * SIGHUP triggers re-load of systemd-creds files into `process.env`.
++ * Send via `systemctl kill -s SIGHUP iago-os-v2-daemon.service`. The
++ * handler re-invokes `loadSystemdCredentials()` (which already enforces
++ * the "external env-var override beats credstore" precedence so
++ * re-invocation is safe) and emits a `cred-reload-fired` NDJSON
++ * telemetry event listing env-var NAMES that changed, were re-read but
++ * unchanged, or failed. Names only — NEVER values, matching Plan 01
++ * Task 4 C2 posture.
++ *
++ * Does NOT auto-restart in-flight agents. SIGHUP updates the DAEMON's
++ * `process.env` ONLY; spawned children inherited env at spawn time and
++ * continue with old credentials until restarted per-agent. Operators
++ * decide per agent — the daemon does not interpret SIGHUP as an agent-
++ * recycle signal because credential rotations on the same logical
++ * account (Telegram, GH PAT) usually do not warrant interrupting
++ * long-running PTY sessions.
++ *
++ * Failure posture: any throw from inside the handler (including a
++ * `loadSystemdCredentials` failure) is caught and surfaced as
++ * `cred-reload-failed` telemetry. The daemon is NEVER killed by a
++ * failed reload — leaving the daemon running with the old credentials
++ * is safer than crashing it on an informational signal.
++ *
++ * Concurrency: if a SIGHUP arrives while a prior reload is still in
++ * flight, the second is dropped with a `cred-reload-debounced`
++ * telemetry event. Drop chosen over queue-based debouncing for Phase 2
++ * simplicity per plan I1; operator-driven SIGHUPs are not rapid.
++ *
++ * Shutdown race (C1): SIGHUP arriving after the SIGTERM/SIGINT path
++ * has set `shuttingDown` is ignored — a partially-torn-down telemetry
++ * pipeline would otherwise silently swallow the reload event.
++ *
++ * Windows note (I3): SIGHUP is Linux-only at the OS level. Phase 2
++ * production VPS is Debian 13, so production is fine. Tests exercise
++ * the handler by invoking the `listener` returned from
++ * `registerSighupHandler` directly, bypassing the OS signal layer.
++ */
++export interface SighupHandlerDeps {
++	readonly loadCredentials: () => { failed: readonly string[] } | void;
++	readonly emit: (event: DaemonEvent) => Promise<void>;
++	readonly envVars: readonly string[];
++	readonly isShuttingDown: () => boolean;
++}
++
++/**
++ * Returned by `registerSighupHandler`. `removeListener` is the production
++ * cleanup hook, added to `shutdownHandlers`. `listener` is exposed so unit
++ * tests can invoke the handler synchronously without `process.emit("SIGHUP")`
++ * (avoids cross-test leakage on Linux CI, removes the need for an `as` cast
++ * over `process.listeners("SIGHUP")` reflection).
++ */
++export interface SighupHandlerRegistration {
++	readonly removeListener: () => void;
++	readonly listener: () => void;
++}
++
++export function registerSighupHandler(
++	deps: SighupHandlerDeps,
++): SighupHandlerRegistration {
++	let inFlight = false;
++
++	const handler = async (): Promise<void> => {
++		if (deps.isShuttingDown()) {
++			console.error("[daemon] SIGHUP ignored: daemon is shutting down");
++			return;
++		}
++		if (inFlight) {
++			try {
++				await deps.emit({ kind: "cred-reload-debounced" });
++			} catch (err) {
++				console.error(
++					`[daemon] telemetry emit(cred-reload-debounced) failed: ${err instanceof Error ? err.message : String(err)}`,
++				);
++			}
++			return;
++		}
++
++		inFlight = true;
++		try {
++			const before = new Map<string, string | undefined>();
++			for (const k of deps.envVars) before.set(k, process.env[k]);
++
++			let failed: readonly string[] = [];
++			try {
++				const result = deps.loadCredentials();
++				if (result !== undefined) failed = result.failed;
++			} catch (err) {
++				const message = err instanceof Error ? err.message : String(err);
++				try {
++					await deps.emit({ kind: "cred-reload-failed", error: message });
++				} catch (emitErr) {
++					console.error(
++						`[daemon] telemetry emit(cred-reload-failed) failed: ${emitErr instanceof Error ? emitErr.message : String(emitErr)}`,
++					);
++				}
++				return;
++			}
++
++			const credentialsReloaded: string[] = [];
++			const unchanged: string[] = [];
++			const failedSet = new Set(failed);
++			for (const k of deps.envVars) {
++				if (failedSet.has(k)) continue;
++				const beforeVal = before.get(k);
++				const afterVal = process.env[k];
++				if (beforeVal !== afterVal) {
++					credentialsReloaded.push(k);
++				} else if (afterVal !== undefined && afterVal.length > 0) {
++					unchanged.push(k);
++				}
++			}
++
++			try {
++				await deps.emit({
++					kind: "cred-reload-fired",
++					credentialsReloaded,
++					unchanged,
++					errors: [...failed],
++				});
++			} catch (err) {
++				console.error(
++					`[daemon] telemetry emit(cred-reload-fired) failed: ${err instanceof Error ? err.message : String(err)}`,
++				);
++			}
++
++			if (credentialsReloaded.length > 0) {
++				console.error(
++					`[daemon] SIGHUP reload: ${credentialsReloaded.length} credential(s) updated. Restart in-flight agents to pick up new values.`,
++				);
++			}
++		} catch (err) {
++			const message = err instanceof Error ? err.message : String(err);
++			try {
++				await deps.emit({ kind: "cred-reload-failed", error: message });
++			} catch (emitErr) {
++				console.error(
++					`[daemon] telemetry emit(cred-reload-failed) failed: ${emitErr instanceof Error ? emitErr.message : String(emitErr)}`,
++				);
++			}
++		} finally {
++			inFlight = false;
++		}
++	};
++
++	const listener = (): void => {
++		void handler();
++	};
++	process.on("SIGHUP", listener);
++	return {
++		removeListener: () => process.removeListener("SIGHUP", listener),
++		listener,
++	};
++}
++
+ export interface DaemonHandle {
+ 	readonly shutdown: () => Promise<void>;
+ 	/** Resolves when shutdown() completes. Await this to block until teardown is done. */
+@@ -538,6 +700,18 @@ export async function startDaemon(
+ 	shutdownHandlers.add(() => process.removeListener("SIGINT", sigintHandler));
+ 	shutdownHandlers.add(() => process.removeListener("SIGTERM", sigtermHandler));
+ 
++	// Plan 06: SIGHUP credential-reload. Registered AFTER the shutdown
++	// signal handlers and AFTER the initial `loadSystemdCredentials()` call
++	// so the helper's last-written tracking is primed before any reload.
++	// Operator invokes via `systemctl kill -s SIGHUP iago-os-v2-daemon.service`.
++	const sighup = registerSighupHandler({
++		loadCredentials: loadSystemdCredentials,
++		emit,
++		envVars: getCredentialEnvVars(),
++		isShuttingDown: () => shuttingDown,
++	});
++	shutdownHandlers.add(sighup.removeListener);
++
+ 	for (const cfg of config.agents) {
+ 		if (!cfg.autoStart) continue;
+ 		try {
+diff --git a/runtime/daemon/sighup.test.ts b/runtime/daemon/sighup.test.ts
+new file mode 100644
+index 0000000..e9c4a0d
+--- /dev/null
++++ b/runtime/daemon/sighup.test.ts
+@@ -0,0 +1,384 @@
++/**
++ * Plan 06 Task 2: Unit tests for `registerSighupHandler`.
++ *
++ * The handler is exposed as a named export from `main.ts` so these tests
++ * import it directly without spinning up a full daemon. The handler
++ * registers a `process.on("SIGHUP", listener)` whose body is async-fire-
++ * and-forget (`void handler()`); tests await completion by spinning the
++ * microtask queue and polling the captured-events array.
++ *
++ * Test cases (≥6 mandatory per plan Task 2 + C1 fix):
++ *   1. SIGHUP received → `loadCredentials` invoked once →
++ *      `cred-reload-fired` telemetry emitted.
++ *   2. SIGHUP changes `IAGO_TELEGRAM_BOT_TOKEN` value →
++ *      `credentialsReloaded` array contains `"IAGO_TELEGRAM_BOT_TOKEN"`.
++ *   3. SIGHUP with no actual changes → `credentialsReloaded` empty,
++ *      `unchanged` array has entries → telemetry emitted with both fields.
++ *   4. `loadCredentials` throws → `cred-reload-failed` telemetry emitted
++ *      with the stringified error → process is NOT killed.
++ *   5. Two SIGHUPs in rapid succession while the first is mid-await →
++ *      second is dropped, `cred-reload-debounced` telemetry emitted.
++ *   6. SIGHUP fired after `isShuttingDown()` returns true → handler
++ *      returns without calling `loadCredentials`; no telemetry emitted
++ *      (C1 shutdown-race fix).
++ *
++ * Coverage extras lift coverage on edge branches without duplicating
++ * the mandatory cases.
++ */
++
++import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
++
++import { registerSighupHandler } from "./main.js";
++import type { DaemonEvent } from "./telemetry.js";
++
++const TEST_ENV_VARS = ["IAGO_TELEGRAM_BOT_TOKEN", "GH_TOKEN"] as const;
++
++interface HarnessOpts {
++	readonly loadCredentials: () => { failed: readonly string[] } | void;
++	readonly isShuttingDown: () => boolean;
++	readonly emit?: (event: DaemonEvent) => Promise<void>;
++	readonly envVars?: readonly string[];
++}
++
++interface Harness {
++	readonly emittedEvents: DaemonEvent[];
++	readonly loadCallCount: () => number;
++	readonly fire: () => void;
++	readonly drain: (rounds?: number) => Promise<void>;
++	readonly waitForEventCount: (n: number, timeoutMs?: number) => Promise<void>;
++	readonly teardown: () => void;
++}
++
++/**
++ * Register the SIGHUP handler with instrumented deps. The handler is
++ * invoked deterministically via the `listener` returned by
++ * `registerSighupHandler` (rather than `process.emit("SIGHUP")` which
++ * would also fire any other tests' leaked listeners on Linux CI).
++ */
++function makeHarness(opts: HarnessOpts): Harness {
++	const emittedEvents: DaemonEvent[] = [];
++	let loadCalls = 0;
++
++	// Always record into `emittedEvents`. If the caller supplied a custom
++	// emit (for blocking-promise scenarios), invoke it AFTER recording so
++	// the event is observable to `waitForEventCount` regardless of what
++	// the custom emit does (block, reject, etc.).
++	const wrappingEmit = async (event: DaemonEvent): Promise<void> => {
++		emittedEvents.push(event);
++		if (opts.emit !== undefined) {
++			await opts.emit(event);
++		}
++	};
++
++	const wrappedLoad = (): { failed: readonly string[] } | void => {
++		loadCalls += 1;
++		return opts.loadCredentials();
++	};
++
++	const registration = registerSighupHandler({
++		loadCredentials: wrappedLoad,
++		emit: wrappingEmit,
++		envVars: opts.envVars ?? TEST_ENV_VARS,
++		isShuttingDown: opts.isShuttingDown,
++	});
++
++	const drain = async (rounds = 8): Promise<void> => {
++		for (let i = 0; i < rounds; i++) {
++			// setImmediate yields macrotask + microtasks; alternating
++			// `Promise.resolve()` keeps microtask-only awaits draining too.
++			await new Promise<void>((r) => setImmediate(r));
++			await Promise.resolve();
++		}
++	};
++
++	const waitForEventCount = async (
++		n: number,
++		timeoutMs = 1000,
++	): Promise<void> => {
++		const start = Date.now();
++		while (emittedEvents.length < n) {
++			if (Date.now() - start > timeoutMs) {
++				throw new Error(
++					`timeout: expected ${n} events, got ${emittedEvents.length} (kinds=${emittedEvents.map((e) => e.kind).join(",")})`,
++				);
++			}
++			await new Promise<void>((r) => setImmediate(r));
++		}
++	};
++
++	return {
++		emittedEvents,
++		loadCallCount: () => loadCalls,
++		fire: () => registration.listener(),
++		drain,
++		waitForEventCount,
++		teardown: () => {
++			registration.removeListener();
++		},
++	};
++}
++
++describe("registerSighupHandler", () => {
++	let originalEnv: Record<string, string | undefined>;
++
++	beforeEach(() => {
++		originalEnv = {
++			IAGO_TELEGRAM_BOT_TOKEN: process.env.IAGO_TELEGRAM_BOT_TOKEN,
++			GH_TOKEN: process.env.GH_TOKEN,
++		};
++		delete process.env.IAGO_TELEGRAM_BOT_TOKEN;
++		delete process.env.GH_TOKEN;
++	});
++
++	afterEach(() => {
++		for (const [k, v] of Object.entries(originalEnv)) {
++			if (v === undefined) {
++				delete process.env[k];
++			} else {
++				process.env[k] = v;
++			}
++		}
++		vi.restoreAllMocks();
++	});
++
++	// Case 1
++	it("invokes loadCredentials and emits cred-reload-fired on SIGHUP", async () => {
++		const harness = makeHarness({
++			loadCredentials: () => undefined,
++			isShuttingDown: () => false,
++		});
++		try {
++			harness.fire();
++			await harness.waitForEventCount(1);
++			expect(harness.loadCallCount()).toBe(1);
++			expect(harness.emittedEvents).toHaveLength(1);
++			expect(harness.emittedEvents[0]?.kind).toBe("cred-reload-fired");
++		} finally {
++			harness.teardown();
++		}
++	});
++
++	// Case 2
++	it("lists changed env vars in credentialsReloaded", async () => {
++		const harness = makeHarness({
++			loadCredentials: () => {
++				process.env.IAGO_TELEGRAM_BOT_TOKEN = "newly-rotated-token";
++			},
++			isShuttingDown: () => false,
++		});
++		try {
++			harness.fire();
++			await harness.waitForEventCount(1);
++			const fired = harness.emittedEvents[0];
++			expect(fired?.kind).toBe("cred-reload-fired");
++			if (fired?.kind !== "cred-reload-fired") throw new Error("wrong kind");
++			expect(fired.credentialsReloaded).toContain("IAGO_TELEGRAM_BOT_TOKEN");
++			expect(fired.errors).toEqual([]);
++		} finally {
++			harness.teardown();
++		}
++	});
++
++	// Case 3
++	it("populates unchanged array when nothing changes", async () => {
++		process.env.IAGO_TELEGRAM_BOT_TOKEN = "stable-token";
++		process.env.GH_TOKEN = "stable-gh";
++		const harness = makeHarness({
++			loadCredentials: () => undefined,
++			isShuttingDown: () => false,
++		});
++		try {
++			harness.fire();
++			await harness.waitForEventCount(1);
++			const fired = harness.emittedEvents[0];
++			expect(fired?.kind).toBe("cred-reload-fired");
++			if (fired?.kind !== "cred-reload-fired") throw new Error("wrong kind");
++			expect(fired.credentialsReloaded).toEqual([]);
++			expect(fired.unchanged).toContain("IAGO_TELEGRAM_BOT_TOKEN");
++			expect(fired.unchanged).toContain("GH_TOKEN");
++		} finally {
++			harness.teardown();
++		}
++	});
++
++	// Case 4
++	it("emits cred-reload-failed and keeps the process alive when loadCredentials throws", async () => {
++		const sentinelPid = process.pid;
++		const harness = makeHarness({
++			loadCredentials: () => {
++				throw new Error("credstore file went missing mid-rotation");
++			},
++			isShuttingDown: () => false,
++		});
++		try {
++			harness.fire();
++			await harness.waitForEventCount(1);
++			expect(harness.emittedEvents).toHaveLength(1);
++			const failed = harness.emittedEvents[0];
++			expect(failed?.kind).toBe("cred-reload-failed");
++			if (failed?.kind !== "cred-reload-failed") {
++				throw new Error("wrong kind");
++			}
++			expect(failed.error).toContain("credstore file went missing");
++			expect(process.pid).toBe(sentinelPid);
++		} finally {
++			harness.teardown();
++		}
++	});
++
++	// Case 5 — rapid double-SIGHUP → second is dropped, cred-reload-debounced emitted.
++	it("drops a second SIGHUP arriving while the first is in flight", async () => {
++		let releaseFirst: (() => void) | null = null;
++		const firstEmitGate = new Promise<void>((r) => {
++			releaseFirst = r;
++		});
++		let emitCallNumber = 0;
++		const harness = makeHarness({
++			loadCredentials: () => undefined,
++			isShuttingDown: () => false,
++			emit: async (_event: DaemonEvent): Promise<void> => {
++				emitCallNumber += 1;
++				// Block the FIRST emit until the test releases the gate so
++				// the second SIGHUP arrives while `inFlight === true`.
++				if (emitCallNumber === 1) {
++					await firstEmitGate;
++				}
++			},
++		});
++		try {
++			// Fire #1: handler enters loadCredentials (sync), then enters
++			// `await deps.emit(cred-reload-fired)` which blocks.
++			harness.fire();
++			await harness.drain(2);
++			// Fire #2: handler sees inFlight === true → emits debounced.
++			harness.fire();
++			await harness.waitForEventCount(2);
++			// Release the first emit so the in-flight promise settles.
++			releaseFirst?.();
++			await harness.drain(4);
++			const kinds = harness.emittedEvents.map((e) => e.kind);
++			expect(kinds.filter((k) => k === "cred-reload-fired").length).toBe(1);
++			expect(
++				kinds.filter((k) => k === "cred-reload-debounced").length,
++			).toBeGreaterThanOrEqual(1);
++		} finally {
++			releaseFirst?.();
++			harness.teardown();
++		}
++	});
++
++	// Case 6 (C1 fix) — SIGHUP after shutdown flag set → handler returns silently.
++	it("ignores SIGHUP and emits nothing when isShuttingDown returns true", async () => {
++		const harness = makeHarness({
++			loadCredentials: () => undefined,
++			isShuttingDown: () => true,
++		});
++		try {
++			const errSpy = vi
++				.spyOn(console, "error")
++				.mockImplementation(() => undefined);
++			harness.fire();
++			await harness.drain(4);
++			expect(harness.loadCallCount()).toBe(0);
++			expect(harness.emittedEvents).toEqual([]);
++			expect(errSpy).toHaveBeenCalled();
++			const messages = errSpy.mock.calls
++				.map((args) => args.join(" "))
++				.join("\n");
++			expect(messages).toContain("SIGHUP ignored");
++			errSpy.mockRestore();
++		} finally {
++			harness.teardown();
++		}
++	});
++
++	// Coverage extra — telemetry emit failure on the success path is
++	// caught and logged; the handler does not crash and `inFlight` clears.
++	it("survives a telemetry emit() rejection on the success path", async () => {
++		let emitCalls = 0;
++		const harness = makeHarness({
++			loadCredentials: () => undefined,
++			isShuttingDown: () => false,
++			emit: async (_event: DaemonEvent): Promise<void> => {
++				emitCalls += 1;
++				throw new Error("telemetry write failed");
++			},
++		});
++		try {
++			const errSpy = vi
++				.spyOn(console, "error")
++				.mockImplementation(() => undefined);
++			harness.fire();
++			await harness.drain(4);
++			expect(emitCalls).toBeGreaterThanOrEqual(1);
++			// Fire a second SIGHUP — inFlight must have cleared so this runs.
++			harness.fire();
++			await harness.drain(4);
++			expect(emitCalls).toBeGreaterThanOrEqual(2);
++			expect(errSpy).toHaveBeenCalled();
++			errSpy.mockRestore();
++		} finally {
++			harness.teardown();
++		}
++	});
++
++	// Coverage extra — the teardown function removes the SIGHUP listener.
++	it("teardown removes the SIGHUP listener", () => {
++		const before = process.listenerCount("SIGHUP");
++		const harness = makeHarness({
++			loadCredentials: () => undefined,
++			isShuttingDown: () => false,
++		});
++		expect(process.listenerCount("SIGHUP")).toBe(before + 1);
++		harness.teardown();
++		expect(process.listenerCount("SIGHUP")).toBe(before);
++	});
++
++	// Coverage extra — when an env var was unset before AND remains unset
++	// after the reload (file missing), it appears in neither `credentialsReloaded`
++	// nor `unchanged`. Confirms the diff logic's empty-state behavior.
++	it("does NOT list env vars that were unset before and after the reload", async () => {
++		// Both env vars are deleted in beforeEach. loadCredentials is a no-op.
++		const harness = makeHarness({
++			loadCredentials: () => undefined,
++			isShuttingDown: () => false,
++		});
++		try {
++			harness.fire();
++			await harness.waitForEventCount(1);
++			const fired = harness.emittedEvents[0];
++			expect(fired?.kind).toBe("cred-reload-fired");
++			if (fired?.kind !== "cred-reload-fired") throw new Error("wrong kind");
++			expect(fired.credentialsReloaded).toEqual([]);
++			expect(fired.unchanged).toEqual([]);
++		} finally {
++			harness.teardown();
++		}
++	});
++
++	// Review M1 regression — when `loadCredentials` returns
++	// `{ failed: [<envVar>] }`, the env-var names are propagated into
++	// `cred-reload-fired.errors` (NEVER values), and those env vars are
++	// excluded from the `credentialsReloaded` / `unchanged` partitions
++	// so a half-loaded credential is not mistaken for a successful reload.
++	it("propagates failed env-var names from loadCredentials.failed into errors", async () => {
++		const harness = makeHarness({
++			loadCredentials: () => ({ failed: ["IAGO_TELEGRAM_BOT_TOKEN"] as const }),
++			isShuttingDown: () => false,
++		});
++		try {
++			harness.fire();
++			await harness.waitForEventCount(1);
++			const fired = harness.emittedEvents[0];
++			expect(fired?.kind).toBe("cred-reload-fired");
++			if (fired?.kind !== "cred-reload-fired") throw new Error("wrong kind");
++			expect(fired.errors).toEqual(["IAGO_TELEGRAM_BOT_TOKEN"]);
++			expect(fired.credentialsReloaded).not.toContain(
++				"IAGO_TELEGRAM_BOT_TOKEN",
++			);
++			expect(fired.unchanged).not.toContain("IAGO_TELEGRAM_BOT_TOKEN");
++		} finally {
++			harness.teardown();
++		}
++	});
++});
+diff --git a/runtime/daemon/telemetry.ts b/runtime/daemon/telemetry.ts
+index aa77820..9878c5e 100644
+--- a/runtime/daemon/telemetry.ts
++++ b/runtime/daemon/telemetry.ts
+@@ -149,6 +149,49 @@ export type DaemonEvent =
+ 			readonly kind: "cred-bootstrap-loaded";
+ 			readonly credentialsLoaded: string[];
+ 	  }
++	| {
++			/**
++			 * Plan 06 (SIGHUP credential reload): emitted by the SIGHUP
++			 * handler after `loadSystemdCredentials()` re-reads the
++			 * credstore files. `credentialsReloaded` carries env-var NAMES
++			 * whose value changed across the reload; `unchanged` carries
++			 * env-var NAMES that were re-read but kept the same value;
++			 * `errors` carries env-var NAMES that failed to read.
++			 * NEVER carries credential values (matches Plan 01 Task 4 C2
++			 * posture). Operators consume via `journalctl ... | grep
++			 * cred-reload-fired` to confirm a credential rotation took
++			 * effect without a daemon restart.
++			 */
++			readonly kind: "cred-reload-fired";
++			readonly credentialsReloaded: string[];
++			readonly unchanged: string[];
++			readonly errors: string[];
++	  }
++	| {
++			/**
++			 * Plan 06 (SIGHUP credential reload): emitted when
++			 * `loadSystemdCredentials()` itself threw (e.g., a credstore
++			 * file became unreadable mid-rotation). The daemon continues
++			 * running with the old credentials in memory — SIGHUP is
++			 * informational and a failed reload is safer than killing
++			 * the daemon. `error` is a stringified error message; NEVER
++			 * carries credential values.
++			 */
++			readonly kind: "cred-reload-failed";
++			readonly error: string;
++	  }
++	| {
++			/**
++			 * Plan 06 (SIGHUP credential reload): emitted when a second
++			 * SIGHUP arrives while a prior reload is still in flight.
++			 * The second SIGHUP is dropped (queue-based debouncing was
++			 * rejected for Phase 2 simplicity per plan I1). Operator-
++			 * driven SIGHUPs are not expected to be rapid; if Phase 3+
++			 * surfaces a credential-rotator daemon that fires SIGHUP on
++			 * every rotate, reconsider with queue-based debouncing.
++			 */
++			readonly kind: "cred-reload-debounced";
++	  }
+ 	| {
+ 			/**
+ 			 * Plan 07a (CronScheduler): a registered cron expression matched

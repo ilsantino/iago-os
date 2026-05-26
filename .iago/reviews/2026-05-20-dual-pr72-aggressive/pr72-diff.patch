@@ -1,0 +1,1061 @@
+diff --git a/runtime/migration/02-cutover-decisions.md b/runtime/migration/02-cutover-decisions.md
+new file mode 100644
+index 0000000..e6d988a
+--- /dev/null
++++ b/runtime/migration/02-cutover-decisions.md
+@@ -0,0 +1,296 @@
++# 02 — Cutover Decisions Log (Phase 2)
++
++**Plan:** `.iago/plans/feature-phase-2-vps-bootstrap/03b-cutover-rollback-runbooks.md`
++**Spec source:** `.iago/research/2026-05-16-phase-2-vps-bootstrap-spec.md` §§ 1, 3, 6, 7 + Santiago overrides 2026-05-13 + 2026-05-16
++
++---
++
++## 1. Purpose
++
++Locked decisions made for Phase 2 cutover. Re-litigating these without
++new evidence wastes cycles. **New evidence = explicit ADR overriding.**
++If you reach for one of these decisions and find yourself wanting to
++revisit it without a written-down argument that goes beyond what's in
++this log, stop. The wanting-to-revisit is the bias; the entry below is
++the considered position.
++
++Each section ends with a **Reversibility** line stating what would need
++to be true to revisit the decision. Reversibility is the explicit
++escape hatch — it tells future-Santiago when the entry's reasoning has
++genuinely expired vs. when re-litigation is just fatigue.
++
++---
++
++## 2. LanceDB drop (spec § 6)
++
++**Verdict:** Option (b) — drop LanceDB, commit to MemPalace canonical.
++
++| Option | Pros | Cons | Verdict |
++|---|---|---|---|
++| (a) Move data dir to `runtime/memory/lancedb/` at cutover | Preserves continuity; OpenClaw's 72 KiB of facts not lost | LanceDB plugin adapter must land in v2 Phase 2 (out of scope per master prompt — adapters are Phase 3); creates a memory layer that competes with canonical MemPalace; carries forward Santiago's stated discomfort with "having a daemon and a memory store and a vector DB and..." complexity creep | REJECT |
++| **(b) Drop LanceDB, commit to MemPalace canonical** | Single canonical memory layer (`memory:project_mempalace` already says this); ZERO v2 adapter work for memory in Phase 2; v2 daemon can call MemPalace MCP from Santiago's local box via Tailscale when memory recall is needed; the 72 KiB OpenClaw LanceDB content survives in the encrypted archive for 30 days if Santiago ever needs to extract a specific fact | LanceDB content needs explicit fact-extraction-to-MemPalace migration if any facts are load-bearing — but at 72 KiB this is one afternoon of work, not a Phase | **ACCEPT** |
++| (c) Defer — keep LanceDB reading from old path during Phase 2, decide canonical store in Phase 6 | Lowest immediate change | Forces Phase 2 to wire a LanceDB adapter (out of scope); two memory systems coexist for 6+ weeks burning Santiago's cognitive load on a decision that's already made (MemPalace is canonical per memory) | REJECT |
++
++**Action at cutover:** the 72 KiB of LanceDB data is preserved inside
++the encrypted OpenClaw archive (Plan 02a `archive-openclaw.sh`). No
++active migration. If Santiago wants to extract facts from it later, he
++decrypts the archive (`age -d`), inspects `~/.openclaw/memory/`, and
++either re-stores into MemPalace by hand or writes a small extraction
++script — but this is **post-Phase 2 housekeeping**, not a cutover
++blocker.
++
++**Post-Phase 2 housekeeping path:** if/when Santiago decides any
++LanceDB content is load-bearing, the extract path is
++`age -d -i ~/.age/santiago.key -o openclaw.tar.gz openclaw-pre-cutover-*.tar.gz.age`
+++ tar extract + `~/.openclaw/memory/` inspection + manual
++MemPalace ingest. The 30-day archive retention (Plan 02a retention
++timer) is the time-bounded budget for this decision. Past 30 days,
++the archive is gone.
++
++**Reversibility:** Re-add a LanceDB adapter to v2 (Phase 3+ work) only
++if (a) MemPalace proves insufficient for a specific use case the
++daemon cannot service via MCP-over-Tailscale, AND (b) the use case
++requires sub-100ms vector recall (the only thing LanceDB-on-VPS would
++buy vs. MemPalace-via-Tailscale). Until both conditions hold, the
++decision stands.
++
++---
++
++## 3. User=iago system user (spec § 1)
++
++**Verdict:** dedicated `iago` system user — NOT `ilsantino`, NOT `root`.
++
++| Option | Pros | Cons | Verdict |
++|---|---|---|---|
++| `User=ilsantino` (current OpenClaw user) | Zero new user provisioning; existing SSH access | `ProtectHome=true` becomes useless (daemon would need /home/ilsantino access); daemon can read ilsantino's interactive-session data; daemon's state under /home/ilsantino is mixed with ilsantino's personal files | REJECT — fights ProtectHome= and leaks blast radius |
++| `User=root` | No permission gymnastics | Daemon never needs root; violates least privilege; one Node CVE = root compromise | REJECT — Garry standard fails on day one |
++| `User=iago` (new system user) | Clean isolation, `ProtectHome=true` meaningful, future multi-tenant cleanup trivial | One-time provisioning (5 lines in bootstrap script) | **ACCEPT** |
++
++Provisioning command (lands in `runtime/deploy/cutover.sh` Day -1 prep
+++ pre-flight gate):
++
++```bash
++useradd --system --no-create-home --shell /usr/sbin/nologin --comment "iaGO-OS v2 daemon" iago
++```
++
++The `--system` flag assigns a UID below 1000 (system range), keeping
++the user out of the interactive-login range and visually distinct in
++`getent passwd` listings. `--no-create-home` is critical:
++`ProtectHome=true` blocks `/home` access; if the iago user had a home
++dir, it would be there too, defeating the sandboxing.
++
++**Reversibility:** Switch to a different system user only if a specific
++multi-tenant deployment shape (Phase 6 Sebas-joins-as-second-user)
++proves that `iago` collides with another v2 system identity. No such
++collision is currently anticipated.
++
++---
++
++## 4. Telegram Option A — rotate, don't replace (spec § 3)
++
++**Verdict:** Option A — revoke + reissue same bot via BotFather at
++cutover.
++
++| Option | Pros | Cons | Verdict |
++|---|---|---|---|
++| **A. Same bot, rotate token via BotFather** | Same `@bot_handle` (zero Santiago-side reconfiguration); same chat IDs (no allowed-user-ID migration); BotFather revocation is atomic (old token dies instantly when new is issued) | Requires interactive BotFather session at cutover-time (no scripted rotation API) | **ACCEPT** |
++| B. New bot, new handle | Clean break; old bot remains for sentimental rollback test | Santiago must re-`/start` the new bot on phone; allowed-user-ID rebuild; chat ID changes invalidate any saved approval chat references; rollback requires reverting Santiago's phone session too | REJECT — friction for zero benefit |
++| C. Keep same token (no rotation) | Zero work | OpenClaw process retained the token for 30 days while archive sits; if archive leaks, token leaks | REJECT — security carry-over violates Garry standard |
++
++The atomic moment: at BotFather's "Revoke current token" tap, the old
++token dies; the new token is shown immediately. Santiago copies it
++into the 1Password vault item `v2-daemon-telegram-bot::token`, then
++runs `provision-credentials.sh telegram-token` (Plan 01a artifact).
++Total wall clock: ~3 minutes.
++
++**Reversibility:** Switch to Option B (new bot, new handle) only if a
++specific Phase 3+ requirement makes the old `@handle` unusable
++(spam-classification blacklist, BotFather rate-limit on the handle,
++trademark complaint, etc.). No such reason is currently in scope.
++
++---
++
++## 5. FAST cutover (Santiago override 2026-05-16)
++
++**Verdict:** FAST single-hour cutover. NOT "alongside OpenClaw"
++parallel-run.
++
++The original v2 vision spec
++(`docs/specs/iago-os-v2-vision.md` § Phase Sequencing) framed Phase 2
++as a parallel-run period during which OpenClaw and the v2 daemon both
++handle traffic, with a progressive cutover over days. **Santiago
++overrode this 2026-05-16** to a FAST single-hour cutover. Reasoning:
++
++- Parallel-run requires two Telegram bots (or two tokens against the
++  same bot, which Telegram doesn't permit) — friction for zero gain
++  since the v2 daemon's job is to *replace* OpenClaw, not *coexist
++  with* it.
++- OpenClaw's state and v2 daemon's state are in different directories
++  (`~/.openclaw/` vs `/var/lib/iago-os/daemon-state/`); coexistence
++  doesn't share state, it just runs two daemons. Two daemons → two
++  failure surfaces.
++- The Garry standard says ship done, not ship gradually. A
++  one-hour cutover with a four-minute rollback is the right shape; a
++  multi-day parallel-run with no clean revert point is not.
++
++**Rollback path:** stop v2 daemon, restart OpenClaw from archive,
++re-rotate Telegram token. Documented in
++`runtime/migration/02-rollback-runbook.md`. Tested locally via
++`runtime/scripts/test-cutover.mjs` (Plan 03a Task 3).
++
++**Reversibility:** Revisit only if a specific Phase 3+ adapter (HTTP
++shape, Sentry webhook) lands that genuinely requires a coexistence
++period for traffic-warm-up. No such case is in v2's near-term
++roadmap.
++
++---
++
++## 6. No staging VPS — Santiago override (I3 carry-over)
++
++**Verdict:** NO staging VPS. Cutover dry-run runs locally via
++`runtime/scripts/test-cutover.mjs` (Plan 03a Task 3).
++
++Spec § 10 criterion 3 (Integration test) proposed provisioning a
++second Hostinger KVM 2 for staging at $9/mo for ~1 week of testing.
++**Santiago overrode this** in favor of a local Vitest harness that
++stubs every external command (`systemctl`, `systemd-creds`,
++`tailscale`, `age`, `tar`, `op`) and exercises the exact invocation
++order + every documented failure path of `cutover.sh` and
++`rollback.sh`.
++
++**Trade-off:**
++
++| Path | Cost | Coverage |
++|---|---|---|
++| Staging VPS ($9/mo Hostinger KVM 2) | $9 + ~1 week of dual-host setup overhead | Catches Tailscale ACL differences, real systemd behavior, real network-side surprises |
++| Local `test-cutover.mjs` harness | ~5 min CI run; ~0 ongoing cost | Catches every command-order regression, every documented exit code, every prompt-handling bug; CANNOT catch network/ACL/distro-version surprises that exist only in real-VPS-state |
++
++**Risk:** the harness cannot catch a production-only issue — e.g., a
++Tailscale ACL difference between Santiago's home network and the VPS,
++or a Debian 13 package drift after the audit was taken.
++
++**Mitigation:**
++
++- `cutover.sh` pre-flight gate (Plan 03a Task 1) has 12 real-VPS
++  checks that run against the actual production VPS state at T-15.
++  These checks catch the production-vs-local-harness gap as the gate
++  for whether cutover proceeds.
++- The 30-min stay-at-keyboard monitoring window after T+60
++  (cutover-runbook § 6) catches most in-flight surprises while
++  rollback is still cheap.
++- Plan 05b ships `phase-2-vps.test.ts` with opt-in Tailscale-SSH
++  e2e checks (`IAGO_VPS_E2E=1`) for routine + post-handoff
++  verification against the live VPS.
++
++The combination of `test-cutover.mjs` (locally) + the pre-flight gate
++(against real VPS) + the monitoring window (after cutover) + the e2e
++suite (post-handoff) provides equivalent confidence to a staging KVM
++without the $9/mo + 1-week overhead.
++
++**Reversibility:** Provision a staging KVM only if (a) a production
++cutover failure mode is traced to a difference the local harness
++could not have caught, AND (b) that class of failure is likely to
++recur in future v2 phases. Single-incident learning belongs in an
++incident note + harness extension, not a permanent staging spend.
++
++---
++
++## 7. Anthropic profiles — provisioned-not-activated (spec § 5)
++
++**Verdict:** all 3 Anthropic profiles (`default`, `ilsantino`,
++`iaguito`) PROVISIONED at Phase 2 (credentials land on the VPS in
++`/etc/credstore.encrypted/`). **Activated at Phase 3** (when the
++claude-pty adapter and HTTP-SDK adapter wire the env-var resolution).
++
++Plan 01b ships the schema slot (the `authProfile?: "default" |
++"ilsantino" | "iaguito"` field on `AgentConfig` in
++`runtime/daemon/config.ts`) AND the credential-bootstrap helper that
++reads `$CREDENTIALS_DIRECTORY/iago-anthropic-*` into env vars. The
++adapter changes that **resolve** the profile to an env var at spawn
++time and **pass** the resolved env var to the spawned process are
++Phase 3 work.
++
++**Why provision now, activate later:**
++
++- Provisioning is the high-coordination step (requires extracting
++  tokens from the OpenClaw archive + 1Password staging + Tailscale
++  push). Doing it at Phase 2 takes advantage of the cutover window
++  when Santiago is already at keyboard with all 3 tools open. Phase
++  3 then just needs adapter-code changes — no credential dance.
++- Credentials sitting unused on disk for ~2 weeks until Phase 3
++  ships are encrypted at rest under TPM/host-key combo;
++  unused-but-present is acceptable; alternative
++  (provision-then-revoke-then-reprovision) burns ops cycles for no
++  security gain.
++
++Phase 2 hello-world + PR-triage agent (Plan 04) use the `default`
++profile only — no multi-profile behavior is in scope.
++
++**Reversibility:** Revoke any of the 3 profiles before Phase 3 ships
++only if Santiago needs to rotate the source Anthropic API key (e.g.,
++suspected exposure). Rotation re-runs the provisioning step against
++the same systemd-creds path — no schema or adapter changes needed.
++
++---
++
++## 8. WhatsApp deauth at cutover (Santiago decision 2026-05-13)
++
++**Verdict:** WhatsApp deauthed at T+30 of the cutover window. v2 is
++Telegram-only.
++
++WhatsApp was an OpenClaw inbound channel (Cloud API webhook to
++OpenClaw's HTTP endpoint). When OpenClaw stops, the webhook URL goes
++dead, but Meta will retry indefinitely and the long-lived access
++token remains valid. **Both must be revoked at Meta's side** —
++otherwise:
++
++- Meta retries the webhook indefinitely against a dead endpoint
++  (wastes Meta-side resources, eventually triggers webhook
++  health-check disabling, but only after days).
++- The long-lived access token remains valid → if leaked, an attacker
++  can send messages from Santiago's business phone number.
++
++The deauth procedure lives in
++`runtime/migration/02-whatsapp-deauth.md` (Plan 02b artifact) — a
++runbook executed manually at T+30 of cutover. **NOT scripted in CI**
++because (a) the credentials are Meta-side-only (not in 1Password),
++and (b) running it is a one-time operation, not idempotent
++automation. A thin script wrapper at
++`runtime/deploy/revoke-whatsapp.sh` (Plan 02b) takes the IDs as args
++for the deterministic Graph API calls; the click-path through Meta
++Business Suite remains operator-driven.
++
++**Not undone on rollback** — per `02-rollback-runbook.md` § 7. A
++successful WhatsApp deauth is intentionally one-way. Re-enabling
++WhatsApp on the rolled-back daemon would require:
++
++1. Re-running URL verification handshake (`hub.challenge` round-trip),
++   which requires the OpenClaw webhook URL to be reachable and
++   responsive.
++2. Re-subscribing the WABA to the app via `POST /<WABA_ID>/subscribed_apps`.
++3. Re-creating the system user token (the prior one was revoked).
++
++This is a Phase 6+ effort. Acceptable because WhatsApp is **out of
++scope** for v2 (Telegram-only); the deauth standing across the
++rollback is the correct end state. OpenClaw on the rolled-back path
++continues to serve Telegram; WhatsApp inbound is permanently dead.
++
++**Reversibility:** Re-enable WhatsApp only if a future phase (Phase
++6+) re-introduces it as an inbound channel for the v2 daemon. No
++such phase is currently planned.
++
++---
++
++## References
++
++- Spec: `.iago/research/2026-05-16-phase-2-vps-bootstrap-spec.md`
++  §§ 1, 3, 5, 6, 7
++- Migration scope: `.iago/research/2026-05-16-v2-operational-migration-scope.md`
++- Cutover runbook: `runtime/migration/02-cutover-runbook.md`
++- Rollback runbook: `runtime/migration/02-rollback-runbook.md`
++- WhatsApp deauth procedure: `runtime/migration/02-whatsapp-deauth.md`
++- Telegram bot rotation procedure: `runtime/migration/02-telegram-bot-rotation.md`
++- ADR (HTTP-shape adapter auth): `.iago/decisions/2026-05-15-agent-shape-taxonomy.md`
++- v2 vision (FAST cutover supersedes): `docs/specs/iago-os-v2-vision.md`
++- Memory references: `feedback_garry_impressed_standard`, `project_iago_v2_vision`,
++  `project_mempalace`, `reference_iago_v2_vps`
+diff --git a/runtime/migration/02-cutover-runbook.md b/runtime/migration/02-cutover-runbook.md
+new file mode 100644
+index 0000000..f265a38
+--- /dev/null
++++ b/runtime/migration/02-cutover-runbook.md
+@@ -0,0 +1,502 @@
++# 02 — Cutover Runbook (Phase 2 FAST cutover, T-15 → T+60)
++
++**Owner:** Santiago
++**Wall-clock target:** 60 minutes (T-15 → T+60)
++**Plan:** `.iago/plans/feature-phase-2-vps-bootstrap/03b-cutover-rollback-runbooks.md`
++**Spec source:** `.iago/research/2026-05-16-phase-2-vps-bootstrap-spec.md` § 8
++**Executable companion:** `runtime/deploy/cutover.sh` (Plan 03a artifact)
++**Rollback companion:** `runtime/migration/02-rollback-runbook.md` (≤4-min rollback)
++
++The executable in `runtime/deploy/cutover.sh` automates the deterministic
++parts of the sequence below. Manual steps (BotFather UI, Telegram phone
++testing, WhatsApp deauth click-path) remain operator-driven and are clearly
++marked in the script with `MANUAL` prompts. This runbook is the
++human-readable counterpart Santiago opens on a second screen while the
++script runs.
++
++---
++
++## 1. Owner
++
++Santiago. At keyboard for the full 60-minute window and for 30 additional
++minutes of stay-at-keyboard monitoring after T+60. Phone (Telegram) and
++Windows box (Git Bash + Tailscale SSH) both required.
++
++---
++
++## 2. Wall-clock target
++
++60 minutes from T-15 to T+60, with a hard rollback ceiling of ≤4 minutes
++(see `02-rollback-runbook.md` for the reverse path). The sequence is
++front-loaded: by T+25 the v2 daemon is proven on Telegram; T+25 → T+60 is
++WhatsApp deauth + observability smoke-checks + retention-timer
++verification.
++
++---
++
++## 3a. Day -1: Pre-cutover prep (T-24h)
++
++These steps run THE DAY BEFORE the cutover window. Their purpose is to
++create every condition that the `cutover.sh` pre-flight gate checks at
++T-15 (§ 3 below). Doing this 24h ahead eliminates the
++"deploy-a-prerequisite-during-cutover" failure mode and surfaces any VPS
++state drift while there is still time to fix it without a rollback.
++
++Each step has its own checkbox + a `verify:` command. Run all items.
++Items gated by `if`/`getent` are idempotent — safe to re-run if a previous
++attempt was interrupted.
++
++- [ ] **(i) Create state + log directories on VPS.**
++
++  ```bash
++  tailscale ssh root@srv1456441 -- 'mkdir -p /var/lib/iago-os/daemon-state /var/log/iago-os && chown iago:iago /var/lib/iago-os/daemon-state /var/log/iago-os && chmod 0700 /var/lib/iago-os/daemon-state && chmod 0750 /var/log/iago-os'
++  ```
++
++  verify:
++
++  ```bash
++  tailscale ssh root@srv1456441 -- 'stat -c "%U:%G %a" /var/lib/iago-os/daemon-state /var/log/iago-os'
++  # expect:
++  #   iago:iago 700  (daemon-state)
++  #   iago:iago 750  (log dir — matches cutover.sh pre-flight gate)
++  ```
++
++- [ ] **(ii) Create `iago` system user (skip if already exists).**
++
++  ```bash
++  if ! tailscale ssh root@srv1456441 -- 'getent passwd iago > /dev/null 2>&1'; then
++    tailscale ssh root@srv1456441 -- 'useradd --system --no-create-home --shell /usr/sbin/nologin iago'
++  fi
++  ```
++
++  verify:
++
++  ```bash
++  tailscale ssh root@srv1456441 -- 'getent passwd iago'
++  # expect: iago:x:<uid>:<gid>:...:/usr/sbin/nologin
++  ```
++
++- [ ] **(iii) Upload age pubkey to VPS.**
++
++  ```bash
++  # Ensure target dir exists — scp does NOT create intermediate dirs.
++  tailscale ssh root@srv1456441 -- 'mkdir -p /etc/iago-os && chmod 0755 /etc/iago-os'
++  scp ~/.age/santiago.pub root@srv1456441:/etc/iago-os/santiago-age.pub
++  tailscale ssh root@srv1456441 -- 'chmod 0644 /etc/iago-os/santiago-age.pub'
++  ```
++
++  verify:
++
++  ```bash
++  tailscale ssh root@srv1456441 -- 'test -f /etc/iago-os/santiago-age.pub && wc -c /etc/iago-os/santiago-age.pub'
++  # expect: positive byte count
++  ```
++
++- [ ] **(iv) Confirm 1Password items exist for ALL Phase 2 credentials.**
++
++  ```bash
++  op item list --vault iago-os | grep -E 'v2-'
++  # expect 5 items: v2-daemon-telegram-bot, v2-gh-token, v2-anthropic-default,
++  #                 v2-anthropic-ilsantino, v2-anthropic-iaguito
++  ```
++
++  The `v2-gh-token` item MUST be a GitHub classic PAT scoped to
++  `repo + read:org` (Plan 04 wake-check requires `read:org`) with 90-day
++  expiry. Regenerate quarterly via
++  `runtime/deploy/provision-credentials.sh gh-token`.
++
++  If any of the 5 items are missing, create them and paste their values
++  into 1Password **before** proceeding. Do NOT proceed to step (v) until
++  all five are present.
++
++- [ ] **(v) Provision Phase 2 active credentials onto VPS.**
++
++  ```bash
++  bash runtime/deploy/provision-credentials.sh telegram-token gh-token
++  ```
++
++  verify:
++
++  ```bash
++  tailscale ssh root@srv1456441 -- 'ls -la /etc/credstore.encrypted/'
++  # expect: iago-telegram-token.cred + iago-gh-token.cred, both 0600 root:root
++  ```
++
++- [ ] **(vi) Re-verify OpenClaw cron inventory matches `runtime/migration/openclaw-cron-inventory.json`.**
++
++  ```bash
++  tailscale ssh ilsantino@srv1456441 -- 'crontab -l 2>&1 | grep -v "no crontab" | head'
++  tailscale ssh root@srv1456441 -- 'systemctl --user --machine=ilsantino@.host list-timers --all --no-pager | grep -iE "openclaw|claw" | head'
++  ```
++
++  Expected: **empty output** for both. The inventory file
++  (`runtime/migration/openclaw-cron-inventory.json`) records the state of
++  cron + user-timer surfaces at audit time; if the re-verify surfaces a
++  forgotten entry, **update the inventory file with the new entries +
++  commit BEFORE proceeding** with cutover. Drift between the recorded
++  inventory and live VPS state is a deployment hazard (Plan 07b acceptance
++  gate).
++
++- [ ] **(vii) Confirm git checkout has `.git/`.**
++
++  ```bash
++  tailscale ssh root@srv1456441 -- 'test -d /opt/iago-os/.git'
++  ```
++
++  Required for any rollback that needs to revert the checkout, and for
++  the post-cutover Anthropic provisioning step that pulls fresh secrets
++  during Phase 3.
++
++- [ ] **(viii) SIGHUP reload verification (Plan 06 cross-ref).**
++
++  Confirm the SIGHUP credential-reload path is present in the daemon. The
++  handler is in the Node process (Plan 06 `runtime/daemon/main.ts` edit
++  + `runtime/daemon/sighup.test.ts`), not in the systemd unit. The unit
++  carries `KillSignal=SIGTERM` unchanged from Plan 01a; SIGHUP is layered
++  on top via `process.on("SIGHUP", ...)`. cat-config validates the final
++  unit:
++
++  ```bash
++  tailscale ssh root@srv1456441 -- 'systemd-analyze cat-config iago-os-v2-daemon.service | grep -E "KillSignal=SIGTERM"'
++  # expect: KillSignal=SIGTERM line present
++  ```
++
++  Functional test of the SIGHUP handler itself runs at T+60 post-cutover
++  (§ 6 below — `cred-reload-fired` telemetry event check).
++
++- [ ] **(ix) Export Santiago's Telegram user ID in the cutover shell.**
++
++  Required by the systemd unit
++  (`Environment=IAGO_TELEGRAM_ALLOWED_USER_IDS=...`) and by the
++  provisioning script substitution. Run in the SAME shell session as the
++  cutover commands at T+05:
++
++  ```bash
++  export IAGO_TELEGRAM_USER_ID=<your numeric Telegram user ID>
++  ```
++
++  verify:
++
++  ```bash
++  echo $IAGO_TELEGRAM_USER_ID
++  # expect: numeric, e.g., 123456789
++  ```
++
++  If forgotten, send any message to `@userinfobot` in Telegram to
++  retrieve the ID (10-digit integer).
++
++These nine items together create every condition the `cutover.sh`
++pre-flight gate checks at T-15. With Day -1 prep complete, the gate at
++§ 3 below collapses to a one-pass verification rather than a hunt for
++missing prerequisites.
++
++---
++
++## 3. Pre-cutover gate (cannot cut over if any of these fail)
++
++These checkboxes are the GATE the `cutover.sh` script enforces at T-15.
++§ 3a (Day -1) is the PREP that creates the conditions the gate verifies.
++If ANY pre-flight item is unchecked, ABORT and resolve before scheduling
++the cutover window.
++
++- [ ] Phase 1 hello-world acceptance gate green on Santiago's local box (commit `4ee40ee`)
++- [ ] v2 daemon code deployed to VPS at `/opt/iago-os` (git clone + `npm install` + `npm run build` inside `runtime/`)
++- [ ] systemd unit file installed at `/etc/systemd/system/iago-os-v2-daemon.service` (§ 1 of spec)
++- [ ] `iago` user provisioned on VPS via `useradd --system` (Day -1 step ii)
++- [ ] `/var/lib/iago-os/daemon-state` created, owned `iago:iago`, mode 0700 (Day -1 step i)
++- [ ] `/var/log/iago-os` created, owned `iago:iago`, mode 0750 (Day -1 step i)
++- [ ] `/etc/credstore.encrypted/` exists, owned `root:root`, mode 0700
++- [ ] `/etc/iago-os/santiago-age.pub` deployed (Day -1 step iii)
++- [ ] Throwaway test bot validated against v2 daemon locally (spec § 3 pre-cutover test)
++- [ ] OpenClaw archive script dry-run executed (read-only check: confirms it can su to ilsantino, can write to /var/lib/iago-os, age binary present)
++- [ ] 1Password CLI signed in on Santiago's Windows box
++- [ ] WhatsApp APP_ID, WABA_ID, PHONE_NUMBER_ID, SYSTEM_USER_TOKEN noted down
++
++If ANY pre-flight item is unchecked, ABORT and resolve before scheduling
++cutover window.
++
++---
++
++## 4. Cutover sequence
++
++The block below mirrors spec § 8 verbatim with the canonical
++`/opt/iago-os/runtime/deploy/<name>.sh` path applied throughout (path
++translation per CONTEXT.md, Codex P0-2 fix). Each `T+...` entry is a
++single shell step + its verify command + any inline ROLLBACK TRIGGER.
++
++```
++T-15:00  Santiago at keyboard. Tailscale up (verify: `tailscale status`
++         shows srv1456441 online). VPS reachable
++         (`tailscale ssh root@srv1456441 -- date` returns).
++         All pre-flight items checked.
++
++T-10:00  Open three terminal windows:
++           (a) Git Bash on Santiago's Windows box (for provisioning)
++           (b) Tailscale SSH to root@srv1456441 (for archive + systemctl)
++           (c) Telegram on phone (for handshake verification)
++         Also open: Meta Business Suite in browser, 1Password app.
++
++T-05:00  Send goodbye message via OpenClaw bot (use the existing bot
++         that's about to be revoked):
++           (in Telegram) "/start" or just send "v2 cutover starting"
++         Confirm OpenClaw responds — proves baseline path works
++         BEFORE we touch anything.
++
++T-00:00  CUTOVER START.
++
++T+00:00  Terminal (b): run archive-openclaw.sh
++           tailscale ssh root@srv1456441 -- 'bash /opt/iago-os/runtime/deploy/archive-openclaw.sh'
++         Expected output: 6 numbered steps, ends with "OpenClaw
++         archive complete" + the tarball path + SHA256.
++         Verification:
++           tailscale ssh root@srv1456441 -- 'su - ilsantino -c "systemctl --user is-active openclaw-gateway"'
++         Expected: "inactive"
++         ROLLBACK TRIGGER: if archive script fails mid-flight,
++         restart OpenClaw and abort:
++           tailscale ssh root@srv1456441 -- 'su - ilsantino -c "systemctl --user start openclaw-gateway"'
++
++T+02:00  Telegram rotation (per spec § 3 procedure):
++           - Open @BotFather in Telegram
++           - /mybots → select bot → API Token → Revoke current token
++           - Copy new token
++           - 1Password app: edit v2-daemon-telegram-bot, paste, save
++         Verification: send any message to the OLD bot. Expected: no
++         response (because we revoked — old token is dead).
++
++T+05:00  Terminal (a): provision the new Telegram credential
++           bash /opt/iago-os/runtime/deploy/provision-credentials.sh telegram-token
++         Expected output: "  ✓ iago-telegram-token provisioned (len=NN)"
++         then "Provisioning complete."
++         Verification:
++           tailscale ssh root@srv1456441 -- 'systemd-creds decrypt /etc/credstore.encrypted/iago-telegram-token.cred - | head -c 10 ; echo'
++         Expected: first 10 chars of new bot token.
++
++T+07:00  Terminal (b): start the v2 daemon
++           tailscale ssh root@srv1456441 -- 'systemctl daemon-reload && systemctl enable --now iago-os-v2-daemon.service'
++         Verification:
++           tailscale ssh root@srv1456441 -- 'systemctl status iago-os-v2-daemon.service'
++         Expected: "active (running)", PID present, no error in last 5 lines.
++
++T+08:00  Verify daemon is listening
++           tailscale ssh root@srv1456441 -- 'journalctl -u iago-os-v2-daemon.service --since "2 minutes ago" | tail -30'
++         Expected: log lines from runtime/daemon/main.ts startDaemon flow.
++         Look for: "daemon-start" NDJSON event.
++         Also verify IPC server is up:
++           tailscale ssh root@srv1456441 -- 'ls -la /var/lib/iago-os/daemon-state/ipc.sock'
++         Expected: socket file exists, owned iago:iago.
++         ROLLBACK TRIGGER: daemon refuses to start, journal shows
++         "error: <message>" line. Capture journal output, then
++         execute rollback (02-rollback-runbook.md).
++
++T+10:00  Telegram test — phone side
++           Send "/agents" to the (newly-rotated) bot from phone.
++         Expected: bot replies with agent list (Phase 1 hello-world
++         registers a "claude-main" agent if configured for auto-start,
++         OR replies "No agents registered." which is also success
++         — the bot replies at all, proving end-to-end path works).
++         ROLLBACK TRIGGER: bot doesn't reply within 60s. Check
++         allowed-user-IDs in unit env; if wrong, edit unit + reload.
++         If still no reply, execute rollback.
++
++T+15:00  Canonical workflow end-to-end test
++           (Manually trigger one approval flow per Phase 1 hello-world
++           pattern documented in runtime/PHASE-1-EVIDENCE.md § 4)
++         On VPS:
++           tailscale ssh root@srv1456441 -- '
++             TASK_ID=$(node -e "console.log(crypto.randomUUID())")
++             cat > /var/lib/iago-os/daemon-state/tasks/pending/claude-main__${TASK_ID}.json <<EOF
++{ "prompt": "Test prompt from cutover — please respond OK", "needsApproval": true }
++EOF
++           '
++         Expected: Telegram approval message arrives on phone.
++         Tap "Allow". Agent resumes. Result lands at:
++           /var/lib/iago-os/daemon-state/tasks/resolved/claude-main__<TASK_ID>.json
++         Verification:
++           tailscale ssh root@srv1456441 -- 'ls -la /var/lib/iago-os/daemon-state/tasks/resolved/'
++
++T+25:00  Telegram + agent path proven working. Move to WhatsApp deauth.
++
++T+30:00  WhatsApp deauth (per spec § 7 procedure, runbook
++         runtime/migration/02-whatsapp-deauth.md)
++           Open Meta Business Suite, gather APP_ID/WABA_ID/etc.
++           Run the curl commands from § 7 steps 3-5 in terminal (a).
++           Verification per § 7 step 6 + 7.
++         No rollback trigger here — if WhatsApp deauth fails it's a
++         security debt to fix in the next 24h, NOT a reason to roll
++         back the v2 daemon cutover.
++
++T+45:00  Smoke-check observability
++           tailscale ssh root@srv1456441 -- 'head -20 /var/lib/iago-os/daemon-state/telemetry/$(date +%Y-%m-%d).ndjson'
++         Expected: NDJSON lines including kinds: daemon-start,
++         agent-registered (if auto-start configured), agent-spawned,
++         task-claimed, approval-requested, approval-resolved.
++
++T+50:00  Verify retention timer is scheduled
++           tailscale ssh root@srv1456441 -- 'systemctl list-timers iago-archive-prune.timer'
++         Expected: next run scheduled within 24h.
++
++T+55:00  Smoke-check no orphaned processes
++           tailscale ssh root@srv1456441 -- 'pgrep -fa openclaw'
++         Expected: no output.
++           tailscale ssh root@srv1456441 -- 'pgrep -fa iago-os-v2-daemon'
++         Expected: exactly one Node process owned by uid of `iago` user.
++
++T+60:00  CUTOVER COMPLETE.
++
++         Santiago's tasks before stepping away — see § 6 below.
++```
++
++---
++
++## 5. Verification command summary (single block for runbook execution)
++
++Run this block at T+08, T+15, T+45, T+55 for sanity. The block lives
++verbatim in spec § 8.
++
++```bash
++# Status block — run at T+08, T+15, T+45, T+55 for sanity
++tailscale ssh root@srv1456441 -- '
++  echo "=== systemctl status ==="
++  systemctl is-active iago-os-v2-daemon.service
++  echo "=== open agents ==="
++  ls -la /var/lib/iago-os/daemon-state/agents/ 2>/dev/null
++  echo "=== pending tasks ==="
++  ls -la /var/lib/iago-os/daemon-state/tasks/pending/ 2>/dev/null
++  echo "=== last 10 telemetry events ==="
++  tail -10 /var/lib/iago-os/daemon-state/telemetry/$(date +%Y-%m-%d).ndjson 2>/dev/null
++  echo "=== heartbeat status (last 60s) ==="
++  journalctl -u iago-os-v2-daemon.service --since "60 seconds ago" | grep -E "heartbeat|error|warn" | tail -10
++'
++```
++
++The four checkpoints (T+08, T+15, T+45, T+55) span the cutover at
++~15-minute intervals; the block is one Tailscale SSH invocation so the
++operator can paste it directly without retyping host coordinates.
++
++---
++
++## 6. Post-cutover required actions
++
++After T+60, before stepping away:
++
++- [ ] Write session digest to Obsidian: `sessions/<YYYY-MM-DD>-iago-os-v2-cutover.md` per
++      `~/.claude/rules/obsidian.md`. Include the four verification block
++      outputs (T+08, T+15, T+45, T+55) and any anomalies observed.
++- [ ] Update `.iago/STATE.md` Active table with cutover row (per
++      `.claude/rules/git-workflow.md` STATE.md discipline).
++- [ ] Stay at keyboard for 30 more minutes monitoring `journalctl -fu iago-os-v2-daemon.service`
++      and Telegram. If anything regresses, execute rollback per
++      `runtime/migration/02-rollback-runbook.md`.
++- [ ] **Confirm SIGHUP reload path works.** Rotate a benign credential
++      (or simulate by re-running `provision-credentials.sh`) +
++      `tailscale ssh root@srv1456441 -- 'systemctl kill -s SIGHUP iago-os-v2-daemon.service'`
++      + `journalctl -u iago-os-v2-daemon.service --since "60 seconds ago" | grep cred-reload-fired`.
++      Expected: a `cred-reload-fired` NDJSON record appears in the
++      telemetry stream within 5 seconds. Documented in
++      `runtime/daemon/README.md` § Reloading credentials without restart
++      (SIGHUP). Plan 06 ships the handler; this is the post-cutover
++      functional test confirming the path works in production.
++
++The SIGHUP reload check is intentionally in the post-cutover list
++rather than the cutover sequence — credential rotation under SIGHUP is
++a Phase 3+ operational concern (Anthropic key rotation when adapters
++land), and a failed SIGHUP test is **not** a rollback trigger. Capture
++the failure in an incident note and debug post-window.
++
++---
++
++## 7. Failure escalation
++
++When in doubt during the cutover window:
++
++1. **Invoke rollback.** See `runtime/migration/02-rollback-runbook.md`
++   for the ≤4-minute reverse path. The executable is
++   `runtime/deploy/rollback.sh` (Plan 03a artifact). Decision rule per
++   spec § 9: any of the 6 trigger signals → roll back without
++   hesitation.
++2. **If rollback also fails** (OpenClaw refuses to restart, Telegram
++   smoke test no-reply after rollback), escalate to Sebas via Signal
++   or phone call. Telegram is the failure surface; do NOT escalate
++   through Telegram. Telegram messages from a different phone won't
++   reach Sebas if the failure is bot-side; Signal/phone is the
++   out-of-band channel.
++3. **State preservation rule (per spec § 9):** Do NOT delete
++   `/var/lib/iago-os/daemon-state` after rollback. The failed run's
++   `session.jsonl`, `markers/*.daemon-stop`, and `telemetry/*.ndjson`
++   are diagnostic.
++
++---
++
++## 8. Reference to `cutover.sh`
++
++The executable in `runtime/deploy/cutover.sh` (Plan 03a artifact)
++automates the deterministic parts of this runbook:
++
++- Pre-flight gate checks (§ 3 — 12 checkboxes) run as automated
++  assertions that abort if any condition is missing.
++- T+00 archive invocation
++  (`bash /opt/iago-os/runtime/deploy/archive-openclaw.sh`).
++- T+05 credential provisioning invocation.
++- T+07 daemon enable/start.
++- T+08, T+15, T+45, T+55 verification block runs (the verification
++  summary in § 5).
++- T+55 orphan-process smoke check.
++
++Manual steps remain operator-driven and are marked in the script
++with `MANUAL:` prompts. They are:
++
++- T+02 BotFather UI revocation + 1Password paste.
++- T+10 Telegram phone testing (send `/agents`, observe reply).
++- T+15 phone-side approval tap on the canonical workflow test.
++- T+30 WhatsApp deauth click-path in Meta Business Suite.
++
++The script never proceeds past a `MANUAL:` prompt without operator
++confirmation. This keeps Santiago in the loop for every interactive
++step while letting the script handle the deterministic surface.
++
++---
++
++## 9. Coupling note (M2 carry-over)
++
++**This runbook and `runtime/deploy/cutover.sh` (Plan 03a artifact) both
++derive from spec § 8.** They are intentional duplicates: the script is
++the deterministic execution surface, this runbook is the
++operator-readable surface that explains intent + verifies the script's
++output at every step.
++
++**Any future spec amendment MUST update both files together.** Drift
++between runbook commands and script behavior is a deployment hazard:
++the operator copy-pastes the runbook's command, the script silently
++runs a slightly different command (or vice versa), and the cutover
++fails in a way that's hard to root-cause because the documentation
++and the automation disagree.
++
++Pre-PR review on any plan touching spec § 8 must grep both files and
++assert content alignment — specifically the T+00, T+05, T+07, T+08,
++T+15, T+45, T+50, T+55 commands. The verify command at the top of this
++file's plan (Task 1) checks the line count + cross-reference strings;
++future audits should extend to command-by-command parity.
++
++---
++
++## References
++
++- Spec: `.iago/research/2026-05-16-phase-2-vps-bootstrap-spec.md` § 8
++- Rollback: `runtime/migration/02-rollback-runbook.md`
++- Decisions: `runtime/migration/02-cutover-decisions.md`
++- Telegram bot rotation detail: `runtime/migration/02-telegram-bot-rotation.md`
++- WhatsApp deauth detail: `runtime/migration/02-whatsapp-deauth.md`
++- OpenClaw cron inventory: `runtime/migration/openclaw-cron-inventory.json`
++- Executable: `runtime/deploy/cutover.sh` (Plan 03a)
++- Rollback executable: `runtime/deploy/rollback.sh` (Plan 03a)
++- SIGHUP handler: `runtime/daemon/main.ts` + `runtime/daemon/sighup.test.ts` (Plan 06)
++- Credential provisioning: `runtime/deploy/provision-credentials.sh` (Plan 01a)
++- Phase 0 VPS audit: `runtime/migration/00-vps-audit.md`
++- Plan 01a (systemd unit + credentials)
++- Plan 01b (cred-bootstrap.ts + authProfile schema)
++- Plan 02a (archive-openclaw.sh + retention timer)
++- Plan 02b (Telegram rotation + WhatsApp deauth wrappers)
++- Plan 03a (cutover.sh + rollback.sh + test-cutover.mjs)
++- Plan 04 (PR-triage agent — uses `v2-gh-token` with `read:org`)
++- Plan 06 (SIGHUP credential-reload handler — `cred-reload-fired` telemetry kind)
++- Plan 07b (cron-migration inventory — `openclaw-cron-inventory.json`)
+diff --git a/runtime/migration/02-rollback-runbook.md b/runtime/migration/02-rollback-runbook.md
+new file mode 100644
+index 0000000..3fed385
+--- /dev/null
++++ b/runtime/migration/02-rollback-runbook.md
+@@ -0,0 +1,245 @@
++# 02 — Rollback Runbook (Phase 2 cutover, ≤4-min reverse path)
++
++**Owner:** Santiago
++**Wall-clock target:** ≤4 minutes (meets ≤5-min spec)
++**Plan:** `.iago/plans/feature-phase-2-vps-bootstrap/03b-cutover-rollback-runbooks.md`
++**Spec source:** `.iago/research/2026-05-16-phase-2-vps-bootstrap-spec.md` § 9
++**Executable companion:** `runtime/deploy/rollback.sh` (Plan 03a artifact)
++**Forward path:** `runtime/migration/02-cutover-runbook.md` (the runbook this reverses)
++
++When in doubt during the cutover window, **invoke rollback without
++hesitation**. The forward path (`02-cutover-runbook.md`) is engineered
++so that any of the 6 detection signals below means the right move is
++rollback, not heroics-mode debugging in production.
++
++---
++
++## 1. Detection
++
++Detection triggers (any of these → execute rollback):
++
++| Signal | Where to see it | Threshold |
++|---|---|---|
++| journal ERROR | `journalctl -u iago-os-v2-daemon.service` | ≥3 ERROR lines in 60s |
++| Daemon refuses to start | `systemctl status iago-os-v2-daemon.service` | "failed" state OR start-limit-hit |
++| Telegram /agents no reply | Santiago's phone | No response within 60s of sending |
++| IPC socket missing | `ls /var/lib/iago-os/daemon-state/ipc.sock` | File absent >30s after start |
++| Approval handshake breaks | T+15 canonical workflow test | No approval message arrives within 60s |
++| Santiago command | `"rollback"` typed in any terminal | Immediate, no question |
++
++The Santiago-command trigger is intentional: any gut-level "this is
++going wrong" beats waiting for a measurable threshold. The forward
++runbook is deliberately conservative on rollback triggers because the
++rollback path is fast (≤4 min) and reversible. Erring toward rollback
++is the right default.
++
++---
++
++## 2. Automated watchdog (T+10 only — discontinue after T+20 of successful operation)
++
++Run this in a separate terminal at T+08; abort with Ctrl-C at T+20 if
++all good. The watchdog covers the highest-risk early-cutover window
++when Santiago's attention is split between the phone (Telegram) and
++the Tailscale SSH terminal.
++
++```bash
++# Run in a separate terminal at T+08; abort with Ctrl-C at T+20 if all good
++while true; do
++  STATUS=$(tailscale ssh root@srv1456441 -- 'systemctl is-active iago-os-v2-daemon.service' 2>/dev/null)
++  if [[ "$STATUS" != "active" ]]; then
++    echo "*** ROLLBACK TRIGGER: daemon state = $STATUS ***"
++    # Audible alert (Windows beep)
++    printf '\a'
++    break
++  fi
++  sleep 15
++done
++```
++
++Polling cadence (15s) is the right tradeoff: fast enough to catch a
++crash inside the watchdog window, slow enough that Tailscale SSH
++overhead doesn't burn the operator's bandwidth or pile up on the
++journal.
++
++---
++
++## 3. Rollback steps
++
++The block below mirrors spec § 9 verbatim — DO NOT summarize or
++re-paraphrase. In a crisis, the operator opens this file and runs the
++exact commands; any drift from spec is a hazard.
++
++```
++T+R+0:00  ROLLBACK START. Decision is made; execute without hesitation.
++
++T+R+0:30  Stop the v2 daemon
++            tailscale ssh root@srv1456441 -- 'systemctl stop iago-os-v2-daemon.service && systemctl disable iago-os-v2-daemon.service'
++          Expected: clean stop (TimeoutStopSec=30s ceiling).
++          Verification:
++            tailscale ssh root@srv1456441 -- 'systemctl is-active iago-os-v2-daemon.service'
++          Expected: "inactive"
++
++T+R+1:30  Restore the OLD Telegram bot token
++          Two paths depending on what was actually rotated:
++          - If § 3 BotFather revocation already happened: must issue
++            another /revoke on BotFather to get a fresh token, then
++            update the OPENCLAW config to use that fresh token. Old
++            tokens cannot be un-revoked.
++          - If § 3 revocation has NOT happened yet (rollback before
++            T+05): OpenClaw token is still valid; skip this step.
++
++          For the post-T+05 path (the common case):
++            (in Telegram) Message @BotFather → /mybots → bot →
++              API Token → Revoke (gives fresh token)
++            Save fresh token. Edit OpenClaw config.
++
++            RECOMMENDED — heredoc form (no double-shell escaping; paste
++            verbatim, then type/paste the fresh token at the prompt):
++
++            FRESH_TOKEN=<paste-fresh-token-here>
++            tailscale ssh root@srv1456441 'su - ilsantino' <<EOF
++              cp ~/.openclaw/openclaw.json ~/.openclaw/openclaw.json.pre-rollback
++              jq --arg t "$FRESH_TOKEN" \
++                '.channels.telegram.botToken = \$t' \
++                ~/.openclaw/openclaw.json > ~/.openclaw/openclaw.json.tmp \
++                && mv ~/.openclaw/openclaw.json.tmp ~/.openclaw/openclaw.json
++            EOF
++
++            ALTERNATIVE — one-line su -c form (kept for reference; has
++            tricky double-quote escaping, avoid under time pressure):
++
++            tailscale ssh root@srv1456441 -- 'su - ilsantino -c "
++              # backup current config
++              cp ~/.openclaw/openclaw.json ~/.openclaw/openclaw.json.pre-rollback
++              # patch token field — use jq to avoid escaping hazards
++              jq --arg t \"<FRESH-TOKEN>\" \
++                \".channels.telegram.botToken = \$t\" \
++                ~/.openclaw/openclaw.json > ~/.openclaw/openclaw.json.tmp \
++                && mv ~/.openclaw/openclaw.json.tmp ~/.openclaw/openclaw.json
++            "'
++
++T+R+2:30  Start OpenClaw
++            tailscale ssh root@srv1456441 -- 'su - ilsantino -c "systemctl --user enable --now openclaw-gateway.service"'
++          Verification:
++            tailscale ssh root@srv1456441 -- 'su - ilsantino -c "systemctl --user is-active openclaw-gateway.service"'
++          Expected: "active"
++
++T+R+4:00  Telegram smoke test (phone side)
++            Send "/status" or any OpenClaw command to the bot.
++          Expected: OpenClaw replies as it did pre-cutover.
++          IF NO REPLY: this is a second failure. Escalate to Sebas
++          via Telegram-via-some-other-channel (signal app /
++          phone call) and investigate journal:
++            tailscale ssh root@srv1456441 -- 'journalctl --user-unit openclaw-gateway.service --since "5 minutes ago"'
++
++T+R+5:00  ROLLBACK COMPLETE. OpenClaw serving. v2 daemon stopped.
++```
++
++---
++
++## 4. State preservation
++
++**Keep `/var/lib/iago-os/daemon-state` intact after rollback.**
++Reasoning (verbatim from spec § 9):
++
++- The failed run's `session.jsonl` event logs are the primary forensic
++  surface for debugging.
++- `markers/*.daemon-stop` reveal what graceful-vs-crash state the
++  agents were in when the failure hit.
++- `telemetry/<date>.ndjson` captures every stage event.
++- Disk cost: <50 MiB even after weeks of dev — preservation cost is
++  zero.
++- If state corruption WAS the failure mode, rollback to OpenClaw is
++  unaffected (OpenClaw reads its own dir under
++  `/home/ilsantino/.openclaw/`).
++
++Only wipe state-root if a subsequent debug session conclusively
++determines the state files themselves caused the failure AND a fresh
++re-cutover is being attempted. Even then: tar the state-root first
++before wiping.
++
++---
++
++## 5. Target wall clock
++
++| Step | Wall clock |
++|---|---|
++| Stop v2 daemon | 0:30 |
++| BotFather re-rotate (if needed) | 1:00 |
++| Patch OpenClaw config | 0:30 |
++| Start OpenClaw | 0:30 |
++| Telegram smoke test | 1:30 |
++| **Total** | **4:00** |
++
++Within Santiago's 5-min spec. The most variable step is the BotFather
++re-rotate — if it's a pre-T+05 rollback (token not yet revoked) the
++total drops to ~2:30. The post-T+05 case is the worst case and still
++clears the spec ceiling with ~60s of margin.
++
++---
++
++## 6. Post-rollback required actions
++
++After T+R+5:00, before stepping away:
++
++1. **Do NOT delete `/var/lib/iago-os/daemon-state`** — preserve for
++   root-cause analysis. The failed run's session-logs, markers, and
++   telemetry are diagnostic.
++2. **Do NOT re-attempt cutover today.** Schedule a debug session in
++   the next 24h. The rollback succeeded; the productive next move is
++   a deliberate post-mortem, not a same-day retry that compounds
++   fatigue.
++3. **Write incident note:**
++   `.iago/incidents/<YYYY-MM-DD>-v2-cutover-failure.md`. Include:
++   failure signal, journal capture, what was tried, what was rolled
++   back.
++4. **Update `.iago/STATE.md` Open row** with the incident (per
++   `.claude/rules/git-workflow.md` STATE.md discipline).
++5. **Notify Sebas** if the failure mode is unclear or touches CTO
++   infra patterns. Telegram for non-urgent comms (OpenClaw is back up
++   and serving); Signal/phone for ambiguous CTO-side issues that
++   need a same-day eyes-on response.
++
++---
++
++## 7. Reference to `rollback.sh`
++
++The executable in `runtime/deploy/rollback.sh` (Plan 03a artifact)
++automates the deterministic parts of this runbook:
++
++- T+R+0:30 v2 daemon stop + disable.
++- T+R+2:30 OpenClaw re-enable + start.
++- T+R+4:00 OpenClaw `is-active` verification.
++
++**The BotFather re-rotate at T+R+1:30 is manual + interactive.**
++BotFather has no API for token rotation; the operator must use the
++Telegram UI. The script PAUSES at T+R+1:30 with a `MANUAL:` prompt
++that explicitly asks Santiago to confirm whether the original § 3
++revocation happened (common case YES → re-rotate required; rare case
++NO → skip to T+R+2:30).
++
++**Operator MUST have BotFather UI open BEFORE triggering rollback.**
++This compresses the manual step to ~60 seconds. If BotFather is not
++already open at rollback-decision time, the operator opens it FIRST,
++then triggers `rollback.sh`. Without this pre-step, the 4-minute
++target slips to 5+ minutes while Santiago hunts for BotFather inside
++Telegram.
++
++WhatsApp deauth (cutover T+30) is **not undone on rollback** per
++`runtime/migration/02-whatsapp-deauth.md` § 7 — a successful
++WhatsApp deauth is intentionally one-way: re-enabling WhatsApp on
++the rolled-back daemon would require re-running URL verification +
++re-subscribing webhooks, which is a Phase 6+ effort. Acceptable
++because WhatsApp is **out of scope** for v2 (Telegram-only); the
++deauth standing across the rollback is the correct end state.
++
++---
++
++## References
++
++- Spec: `.iago/research/2026-05-16-phase-2-vps-bootstrap-spec.md` § 9
++- Forward path: `runtime/migration/02-cutover-runbook.md`
++- Decisions: `runtime/migration/02-cutover-decisions.md`
++- WhatsApp deauth (not undone): `runtime/migration/02-whatsapp-deauth.md`
++- Executable: `runtime/deploy/rollback.sh` (Plan 03a)
++- Phase 1 rollback pattern: `runtime/migration/phase-1-rollback.md`
