@@ -125,7 +125,7 @@ test -d .iago/_config/runbooks/automations                   # exit 0
 test -d .claude/rules/patterns                               # exit 0
 ls .claude/rules/patterns/*.md | wc -l                       # 8
 test -f .iago/_config/runbooks/dashboard.md                  # exit 0
-! grep -rln "docs/patterns\|docs/IAGO-DASHBOARD\|docs/automations\|docs/archive\|docs/research\|docs/SETUP\|docs/MANUAL\|docs/WORKFLOW\|docs/GITHUB-PIPELINE" --include="*.md" --exclude-dir=_archive --exclude-dir=.worktrees .  # exit 0 (no stale refs to any deleted/moved doc)
+! grep -rln "docs/patterns\|docs/IAGO-DASHBOARD\|docs/automations\|docs/archive\|docs/research\|docs/SETUP\|docs/MANUAL\|docs/WORKFLOW\|docs/GITHUB-PIPELINE" --include="*.md" --exclude-dir=_archive --exclude-dir=.worktrees --exclude-dir=.iago --exclude-dir=specs .  # exit 0 (no live routing refs to any deleted/moved doc; .iago frozen artifacts + docs/specs historical refs excluded)
 ! test -d docs/archive && ! test -d docs/research && ! test -d docs/automations && ! test -d docs/patterns         # exit 0
 ```
 

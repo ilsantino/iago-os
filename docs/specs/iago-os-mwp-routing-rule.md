@@ -50,7 +50,7 @@ Auto-loads with this file. Consult before any Write to a `.md` path.
 | Execution summary | `.iago/summaries/{plan-slug}.md` |
 | Phase decision artifact | `.iago/context/{YYYY-MM-DD}-{slug}.md` |
 | Research / brainstorm / audit | `.iago/research/{YYYY-MM-DD}-{slug}.md` |
-| Ops runbook (repeatable how-to) | `.iago/runbooks/{slug}.md` |
+| Ops runbook (repeatable how-to) | `.iago/_config/runbooks/{slug}.md` |
 | Recurring review pattern | `.iago/learnings/patterns.md` (append) |
 | Client-specific (any of the above) | `clients/{name}/.iago/{same-taxonomy}/` |
 | Public-facing iaGO-OS docs | `README.md` (canonical entry); historical `docs/` content folded into README + rules + runbooks |
