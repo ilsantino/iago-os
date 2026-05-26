@@ -192,7 +192,7 @@ The `usage-report.sh` script aggregates this data across projects:
 ./scripts/usage-report.sh ../acme-dashboard ../beta-api
 ```
 
-This data feeds into the future iaGO Dashboard (see `docs/IAGO-DASHBOARD.md`) — a web UI that makes the system observable without opening a terminal.
+This data feeds into the future iaGO Dashboard (see `.iago/_config/runbooks/dashboard.md`) — a web UI that makes the system observable without opening a terminal.
 
 ## Model Routing
 

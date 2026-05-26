@@ -33,7 +33,7 @@ real implementation patterns, not just advisory schemas).
 
 ### 1. Load domain patterns
 
-Read `docs/patterns/{domain}.md` (mapped from the `--domain` flag).
+Read `.claude/rules/patterns/{domain}.md` (mapped from the `--domain` flag).
 
 If the file doesn't exist, STOP: "Pattern file not found for domain '{domain}'.
 Available: logistics, inventory, customs, energy, carrier, production, quality, returns."

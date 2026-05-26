@@ -194,7 +194,7 @@ Source: canonical synthesis at `.iago/research/2026-05-13-mwp-source-synthesis.m
 | L0 | CLAUDE.md — workspace identity, routing table | ~800 tok | Workspace root |
 | L1 | CONTEXT.md — workspace entry routing | ~300 tok | Workspace-level |
 | L2 | Stage contract — `Inputs / Process / Outputs` | 200–500 tok | Per-stage CONTEXT.md |
-| L3 | Reference/factory — rules, voice, conventions, skills | 500–2k tok | `.claude/rules/`, `docs/specs/`, `docs/patterns/` (iaGO canon); `_config/`, `references/` (vault-toolkit naming, optional) |
+| L3 | Reference/factory — rules, voice, conventions, skills | 500–2k tok | `.claude/rules/`, `docs/specs/`, `.claude/rules/patterns/` (iaGO canon); `_config/`, `references/` (vault-toolkit naming, optional) |
 | L4 | Working/product — per-run artifacts, source material | Varies | Stage `output/`, plan files |
 
 ### L3 vs L4 distinction (critical — was missing from prior docs)

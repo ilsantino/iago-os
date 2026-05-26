@@ -2,7 +2,7 @@
 
 **Status:** Wedge A shipping in this PR; Wedges B–I queued
 **Date:** 2026-04-27
-**Source research:** `docs/research/hermes-agent.md`
+**Source research:** `.iago/_archive/research/2026-04-research/hermes-agent.md`
 **Decision history:** Council 1 (top-3 wedges), Council 2 (architecture choice
 on B), v2/v3 stress tests on the conservative version. CEO chose to expand
 scope from 3 → 9 wedges.

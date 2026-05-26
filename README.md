@@ -107,7 +107,7 @@ Bypass modes:
 > /iago-prfix                                      # Auto-fix PR review comments
 ```
 
-See [docs/SETUP.md](docs/SETUP.md) for the full Windows + macOS install.
+See the [Prerequisites](#prerequisites) section below for tools to install. After cloning, run `./scripts/sync-skills.sh --global` (Linux/macOS/Git Bash) or `.\scripts\sync-skills.ps1 -Global` (PowerShell) to make all iaGO-OS skills available in every Claude Code session. Authenticate Claude (`claude`), AWS (`aws configure`), and GitHub (`gh auth login`) before scaffolding your first project.
 
 ---
 
@@ -152,7 +152,7 @@ iago-os/
   .claude/            # settings.json, skills/, agents/, rules/
   .iago/              # plans/, summaries/, reviews/, STATE.md, hooks/
   scripts/            # execute-pipeline.sh, review-checks/, new-client, sync-skills, setup-memory
-  docs/               # ARCHITECTURE, SETUP, MANUAL, WORKFLOW, specs/
+  docs/               # specs/ (canonical specs only — other historical docs in .iago/_archive/)
 ```
 
 ---
@@ -205,10 +205,10 @@ iaGO-OS synthesizes patterns from upstream Claude Code configurations and v2 ado
 | Doc | Covers |
 |---|---|
 | [docs/specs/iago-os-v2-vision.md](docs/specs/iago-os-v2-vision.md) | **Canonical v2 vision** — 5-shape agent taxonomy, phase sequencing, primitive provenance |
-| [docs/MANUAL.md](docs/MANUAL.md) | Complete how-to: workflow walkthrough, every mode, multi-client |
-| [docs/SETUP.md](docs/SETUP.md) | First-time installation (Windows + macOS) |
-| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | How iaGO-OS works under the hood |
-| [docs/WORKFLOW.md](docs/WORKFLOW.md) | Phase flow, state transitions, artifact locations |
+| [.iago/_config/architecture.md](.iago/_config/architecture.md) | How iaGO-OS works under the hood (v1 delivery layer architecture) |
+| [.claude/rules/execution-pipeline.md](.claude/rules/execution-pipeline.md) | Pipeline stages, workflow phases, async review-fix loop |
+| [.iago/_config/runbooks/github-pipeline-setup.md](.iago/_config/runbooks/github-pipeline-setup.md) | Step-by-step GitHub PAT + Claude OAuth setup for the review-fix loop |
+| [.iago/_config/runbooks/dashboard.md](.iago/_config/runbooks/dashboard.md) | iaGO Dashboard runbook |
 | [runtime/README.md](runtime/README.md) | v2 daemon adapter authoring guide |
 | [.claude/rules/available-skills.md](.claude/rules/available-skills.md) | Skill + agent catalog with triggers, args, examples |
 | [.iago/STATE.md](.iago/STATE.md) | Live digest — what shipped, what's in flight, known issues |

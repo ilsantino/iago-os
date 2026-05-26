@@ -22,7 +22,7 @@ and trend identification.
 Optional flags:
 - `--sources {codebase|docs|web|all}` — limit source types (default: all)
 - `--focus {technical|market|competitive}` — research lens (default: technical). `market` adds TAM/SAM/SOM, competitive landscape, and trend identification. `competitive` focuses on alternatives and differentiation.
-- `--output {path}` — custom output path (default: `docs/research/`)
+- `--output {path}` — custom output path (default: `.iago/research/`)
 
 ## Steps
 
@@ -73,7 +73,7 @@ your recommendation.
 
 ### 5. Write research artifact
 
-Save to `docs/research/{topic-slug}.md`:
+Save to `.iago/research/{topic-slug}.md`:
 
 ```markdown
 # Research: {Topic}
@@ -97,7 +97,7 @@ Save to `docs/research/{topic-slug}.md`:
 {As above}
 ```
 
-Create `docs/research/` if it doesn't exist.
+Create `.iago/research/` if it doesn't exist.
 
 ## Output
 

@@ -33,7 +33,7 @@ If RemoteTrigger auth fails, fall back to listing session cron jobs via `/schedu
 
 ### `{template-name}`
 
-1. Read `docs/automations/trigger-templates.md` — find the matching template by name
+1. Read `.iago/_config/runbooks/automations/trigger-templates.md` — find the matching template by name
 2. Resolve `$PROJECT_DIR` to the current working directory (absolute path)
 3. Adapt any relative paths in the prompt to absolute paths for the project
 4. Call RemoteTrigger create with the template's cron expression, prompt, and resolved project directory
