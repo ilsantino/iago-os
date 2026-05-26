@@ -20,14 +20,14 @@ Auto-loads with this file. Consult before any Write to a `.md` path.
 | Execution summary | `.iago/summaries/{plan-slug}.md` |
 | Phase decision artifact | `.iago/context/{YYYY-MM-DD}-{slug}.md` |
 | Research / brainstorm / audit | `.iago/research/{YYYY-MM-DD}-{slug}.md` |
-| Ops runbook (repeatable how-to) | `.iago/_config/runbooks/{slug}.md` |
+| Ops runbook (repeatable how-to) | `.iago/runbooks/{slug}.md` |
 | Recurring review pattern | `.iago/learnings/patterns.md` (append) |
 | Client-specific (any of the above) | `clients/{name}/.iago/{same-taxonomy}/` |
-| Public-facing iaGO-OS docs | `README.md` (canonical entry); historical `docs/` content folded into README + rules + runbooks |
-| Domain-skill reference (industry pattern) | `.claude/rules/patterns/{domain}.md` |
+| Public-facing iaGO-OS docs | `docs/` (ARCHITECTURE, MANUAL, SETUP, etc.) |
+| Domain-skill reference (industry pattern) | `docs/patterns/{domain}.md` |
 | Phase-cycle artifact (vision / canonical roadmap) | `docs/specs/` (paired with `.iago/research/`) |
 | Stale / superseded plan | `.iago/plans/_archive/{YYYY-MM-{slug}}/` (with roadmap pointer) |
-| Stale / superseded doc (decision-bearing) | `.iago/_archive/` |
+| Stale / superseded doc (decision-bearing) | `docs/archive/` |
 | Stale / superseded doc (no future value) | DELETE |
 
 **Heuristic.** Name the doc's primary reader (Claude in this repo / Claude in a client subtree / human via GitHub) — that names the location. <!-- paths reflect Phase 1 (Wave 1 docs) layout; update after feature-mwp-restructure-code/01 physical split ships -->

@@ -18,7 +18,7 @@ flow diagrams — ready for implementation in n8n's visual editor.
 
 Optional flags:
 - `--triggers {webhook|schedule|dynamo|ses|manual}` — comma-separated trigger types
-- `--output {path}` — custom output path (default: `.iago/_config/runbooks/automations/`)
+- `--output {path}` — custom output path (default: `docs/automations/`)
 
 ## Preconditions
 
@@ -95,8 +95,8 @@ For DynamoDB stream triggers:
 
 ### 6. Write specification
 
-Save to `.iago/_config/runbooks/automations/{workflow-slug}.md`.
-Create `.iago/_config/runbooks/automations/` directory if it doesn't exist.
+Save to `docs/automations/{workflow-slug}.md`.
+Create `docs/automations/` directory if it doesn't exist.
 
 ## Output
 
