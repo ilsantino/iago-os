@@ -22,6 +22,9 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 . "$SCRIPT_DIR/lib/build-gate.sh"
 # Plan 02 Task 6 — sentinel verdict parser for the Claude adversarial fallback.
 . "$SCRIPT_DIR/lib/adversarial-verdict.sh"
+# PR #78 dual-review C-1 fix — guard env-configurable timeouts before they
+# reach bash arithmetic in run_claude.
+. "$SCRIPT_DIR/lib/env-validation.sh"
 PIPELINE_STARTED=false
 
 # Snapshot args before the while loop consumes them via shift, so the
@@ -42,6 +45,15 @@ if [[ -z "$PLAN_PATH" || -z "$PROJECT_DIR" ]]; then
   echo "Usage: execute-pipeline.sh --plan <plan-path> --project-dir <dir>"
   exit 1
 fi
+
+# Validate every env-configurable timeout BEFORE it can reach the bash
+# arithmetic context in run_claude (`(( waited < timeout_secs ))`). A
+# non-numeric or bash-injection value would either crash the pipeline late
+# or evaluate hostile input. Validate ALL such vars up front so the failure
+# is at startup, not deep into a multi-stage run. See
+# scripts/lib/env-validation.sh.
+validate_positive_int_env IAGO_IMPL_TIMEOUT_SECS 1800 || exit 1
+validate_positive_int_env IAGO_PR_TIMEOUT 600 || exit 1
 
 # Resolve PLAN_FULL — accept absolute (POSIX `/...` or Windows `C:/...`) as-is,
 # otherwise prepend PROJECT_DIR. Prevents path doubling when caller passes an
@@ -308,6 +320,9 @@ fi
 
 # ─── Step 1: Implement ───────────────────────────────────────────────
 stage_start implement
+# Record the configured budget so post-hoc NDJSON analysis can verify the
+# override was active on plans that requested elevated headroom.
+stage_extra impl_timeout_budget_secs "${IAGO_IMPL_TIMEOUT_SECS:-1800}"
 log "IMPLEMENT — $PLAN_NAME"
 
 PRE_IMPL_SHA=$(cd "$PROJECT_DIR" && git rev-parse HEAD) || {
@@ -327,6 +342,13 @@ Do not silently ignore any finding. The reviewer will check each one."
 fi
 
 IMPL_EXIT=0
+# IAGO_IMPL_TIMEOUT_SECS: override the implementation stage wall-clock budget.
+# Only the impl stage (here) and the PR-create stage (line ~974, IAGO_PR_TIMEOUT)
+# are env-configurable. Impl duration scales with plan complexity — depends_on
+# depth drives context-loading time before any Write. Other stages (review 900s,
+# stress 600s, build-fix 600s, codex 600s, etc.) have stable upper bounds and
+# stay hardcoded until a second pressure point justifies systematizing.
+# Validated as a positive integer at startup; default 1800s.
 IMPL_OUTPUT=$(cd "$PROJECT_DIR" && run_claude "${IAGO_IMPL_TIMEOUT_SECS:-1800}" -p "You are a PIPELINE IMPLEMENTATION session spawned by execute-pipeline.sh.
 The rule in CLAUDE.md that says 'NEVER implement a plan directly' does NOT apply to you — you ARE the pipeline. Your job is to write the code specified in the plan below. Use Edit/Write tools to create and modify files. Do not invoke any /iago- skills. Do not defer to another agent.
 
