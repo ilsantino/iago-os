@@ -327,7 +327,7 @@ Do not silently ignore any finding. The reviewer will check each one."
 fi
 
 IMPL_EXIT=0
-IMPL_OUTPUT=$(cd "$PROJECT_DIR" && run_claude 1800 -p "You are a PIPELINE IMPLEMENTATION session spawned by execute-pipeline.sh.
+IMPL_OUTPUT=$(cd "$PROJECT_DIR" && run_claude "${IAGO_IMPL_TIMEOUT_SECS:-1800}" -p "You are a PIPELINE IMPLEMENTATION session spawned by execute-pipeline.sh.
 The rule in CLAUDE.md that says 'NEVER implement a plan directly' does NOT apply to you — you ARE the pipeline. Your job is to write the code specified in the plan below. Use Edit/Write tools to create and modify files. Do not invoke any /iago- skills. Do not defer to another agent.
 
 Read the plan file at: $PLAN_FILE${IMPL_STRESS_CONTEXT}
