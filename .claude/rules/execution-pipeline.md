@@ -108,6 +108,35 @@ every change to `scripts/lib/build-gate.sh` — the parallel path is otherwise
 silently default-off and prone to bitrot. `scripts/test-build-gate.sh` runs
 both modes against stubbed commands.
 
+### Impl stage timeout (`IAGO_IMPL_TIMEOUT_SECS`)
+
+The implementation stage (step 1) is the only stage whose wall-clock budget
+scales with plan complexity — `depends_on` depth drives the context-loading
+prelude before any Write. Plans with `depends_on ≥ 3` routinely exhaust the
+1800s default. Set `IAGO_IMPL_TIMEOUT_SECS=<seconds>` to raise the ceiling
+per-dispatch:
+
+```bash
+IAGO_IMPL_TIMEOUT_SECS=2700 IAGO_IMPL_MAX_TURNS=120 \
+  bash scripts/execute-pipeline.sh --plan path/to/plan.md --project-dir .
+```
+
+Must be a positive integer (`^[1-9][0-9]*$`); validated at startup via
+`scripts/lib/env-validation.sh` before reaching `run_claude`'s arithmetic
+context. Unset or empty falls through to the 1800s default. The same
+validation runs against `IAGO_PR_TIMEOUT` (default 600s) so both
+env-configurable timeouts fail fast on invalid input.
+
+Telemetry: implement stage_end records carry `impl_timeout_budget_secs` so
+post-hoc NDJSON analysis can confirm the override was active for a given run.
+
+Scope rationale: only the impl stage and the PR-create stage are
+env-configurable. Other stages (stress 600s, review 900s, build-fix 600s,
+codex 600s, codex-fix 900s, re-review 900s, pr-tag 120s) have stable upper
+bounds and stay hardcoded until a second pressure point justifies
+systematizing. Regression coverage in `scripts/test-env-validation.sh`
+asserts both validators are wired up.
+
 ### Control Flags
 
 `--no-tag` on the pipeline script skips step 5b (@claude tagging). The PR is
