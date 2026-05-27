@@ -107,9 +107,9 @@ The JSONL schema is designed to be forward-compatible with DynamoDB items.
 
 ## Entry point when ready
 
-Start with `docs/ARCHITECTURE.md` and `.claude/rules/available-skills.md` in iaGO-OS —
+Start with `.iago/_config/architecture.md` and `.claude/rules/available-skills.md` in iaGO-OS —
 the dashboard is a UI layer on top of what's already documented there.
 
 First prompt to Claude Code when starting: read those two docs plus
-research/CHERRY-PICK-PLAN.md §10 to understand the full system
+`.iago/_archive/research/2026-04-historical/CHERRY-PICK-PLAN.md` §10 to understand the full system
 before designing any component.

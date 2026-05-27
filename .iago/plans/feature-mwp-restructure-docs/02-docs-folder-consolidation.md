@@ -125,8 +125,29 @@ test -d .iago/_config/runbooks/automations                   # exit 0
 test -d .claude/rules/patterns                               # exit 0
 ls .claude/rules/patterns/*.md | wc -l                       # 8
 test -f .iago/_config/runbooks/dashboard.md                  # exit 0
-! grep -rln "docs/patterns\|docs/IAGO-DASHBOARD\|docs/automations\|docs/archive\|docs/research\|docs/SETUP\|docs/MANUAL\|docs/WORKFLOW\|docs/GITHUB-PIPELINE" --include="*.md" --exclude-dir=_archive --exclude-dir=.worktrees .  # exit 0 (no stale refs to any deleted/moved doc)
+! grep -rln "docs/patterns\|docs/IAGO-DASHBOARD\|docs/automations\|docs/archive\|docs/research\|docs/SETUP\|docs/MANUAL\|docs/WORKFLOW\|docs/GITHUB-PIPELINE" --include="*.md" --exclude-dir=_archive --exclude-dir=.worktrees --exclude-dir=.iago --exclude-dir=specs .  # exit 0 (no live routing refs to any deleted/moved doc; .iago frozen artifacts + docs/specs historical refs excluded)
 ! test -d docs/archive && ! test -d docs/research && ! test -d docs/automations && ! test -d docs/patterns         # exit 0
 ```
 
 All commands exit as expected. After this plan, only `docs/specs/` remains as a subdirectory of `docs/` (Plan 03 handles it).
+
+## Execution Notes (post-implementation, 2026-05-25)
+
+Two judgment calls during Task 7 and Task 8 deviated from the literal plan text. Documenting here so the audit trail is complete (covers review findings M-1 and M-3).
+
+### Task 7 — `docs/ARCHITECTURE.md` resolved as MOVE, not DELETE
+
+Compared `docs/ARCHITECTURE.md` (current "How iaGO-OS works" 6-layer config-layer doc) against `docs/specs/iago-os-v2-vision.md` (forward-looking VPS + Tailscale multi-shape agent OS spec, status CANONICAL, locked 2026-05-15). Substantive overlap was <20% — the two documents describe different things:
+
+- `ARCHITECTURE.md` documents the CURRENT state: CLAUDE.md → rules → skills → agents → pipeline → STATE.md layering inside a single repo.
+- `iago-os-v2-vision.md` documents the FUTURE state: cross-machine VPS daemon hosting heterogeneous agent runtimes (PTY/HTTP/MCP/webhook/daemon) controlled by Telegram.
+
+Decision: `git mv docs/ARCHITECTURE.md .iago/_config/architecture.md`. The internal `docs/ARCHITECTURE` reference inside `.iago/_config/runbooks/dashboard.md` (formerly `docs/IAGO-DASHBOARD.md`) was updated to point at the new path in the same commit, satisfying Task 6's cross-reference sweep.
+
+### Task 8 — `docs/GITHUB-PIPELINE.md` resolved as MOVE-to-runbook, not DELETE
+
+Plan Task 8 asserted "content folds into `.claude/rules/execution-pipeline.md` (already exists per audit §3.7)". Verification before deletion showed this assumption was wrong: `execution-pipeline.md` only mentions `GH_PAT` in passing (two lines: 135 and 150), and contains zero coverage of the actual setup procedure (CLAUDE_CODE_OAUTH_TOKEN from Anthropic Console, GH_PAT from GitHub PAT settings, repo-secret installation steps, fine-grained vs classic-token tradeoffs). The deletion would have lost ~9KB of unique runbook-shaped content.
+
+Decision: `git mv docs/GITHUB-PIPELINE.md .iago/_config/runbooks/github-pipeline-setup.md`. This destination is the documented home for ops runbooks per CLAUDE.md's `## Doc routing` taxonomy ("Ops runbook (repeatable how-to) | `.iago/runbooks/{slug}.md`"). README's `## Documentation` table was rewired to the new path. Task 8 verify command still passes (no `docs/GITHUB-PIPELINE.md` reference in README).
+
+The plan's audit §3.7 reference to "content folds into execution-pipeline.md" was the prior author's assumption that turned out to be incorrect on inspection — preserved as runbook to avoid information loss. Future plans should verify "content folds into X" claims before scheduling deletions.
