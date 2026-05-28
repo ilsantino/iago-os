@@ -21,6 +21,7 @@ import type {
 import {
 	AgentIdAlreadyRegisteredError,
 	AgentManager,
+	TASK_PAYLOAD_MAX_BYTES,
 } from "./agent-manager.js";
 import { CronScheduler } from "./cron-scheduler.js";
 import { HeartbeatController } from "./heartbeat.js";
@@ -1796,7 +1797,11 @@ describe("AgentManager / polling-loop (Plan 07b)", () => {
 
 		const promptPath = path.join(tempDir, "pr-triage-prompt-pl7.md");
 		// eslint-disable-next-line @typescript-eslint/no-require-imports
-		require("node:fs").writeFileSync(promptPath, "do the daily pr-triage", "utf8");
+		require("node:fs").writeFileSync(
+			promptPath,
+			"do the daily pr-triage",
+			"utf8",
+		);
 
 		const fixedNow = new Date(Date.UTC(2026, 4, 18, 15, 0, 0));
 		const scheduler = new CronScheduler({
@@ -1940,5 +1945,222 @@ describe("AgentManager / polling-loop (Plan 07b)", () => {
 		await expect(
 			fsp.access(path.join(pathFor("tasks/resolved"), filename)),
 		).rejects.toThrow();
+	});
+});
+
+// ============================================================
+// Plan 04d: task-dispatch-needed event tests (DN-1 through DN-5)
+// ============================================================
+
+describe("AgentManager / task-dispatch-needed event (Plan 04d)", () => {
+	it("(DN-1) emits 'task-dispatch-needed' when listeners subscribed; does NOT auto-claim", async () => {
+		const ctrl = makeMockRuntime("mock-pty-dn1");
+		registerRuntime(ctrl.runtime);
+		const mgr = new AgentManager();
+		await mgr.registerAgent({
+			agentId: "pr-triage",
+			runtimeId: "mock-pty-dn1",
+			cwd: "/tmp/w",
+			env: {},
+			sessionId: "sess-dn1",
+		});
+
+		const filename = "pr-triage__1700000100.json";
+		writePendingTask(filename, {
+			prompt: "do the triage",
+			agentId: "pr-triage",
+			needsApproval: false,
+		});
+
+		const dispatchEvents: Array<{
+			filename: string;
+			agentId: string;
+			taskContent: Record<string, unknown>;
+		}> = [];
+		mgr.on(
+			"task-dispatch-needed",
+			(e: {
+				filename: string;
+				agentId: string;
+				taskContent: Record<string, unknown>;
+			}) => {
+				dispatchEvents.push(e);
+			},
+		);
+
+		await mgr._pollingTickForTests();
+
+		// Dispatch event fired exactly once for the file.
+		expect(dispatchEvents).toHaveLength(1);
+		expect(dispatchEvents[0]).toMatchObject({
+			filename,
+			agentId: "pr-triage",
+		});
+
+		// File NOT moved to resolved (listener owns claim timing).
+		await fsp.access(path.join(pathFor("tasks/pending"), filename));
+		await expect(
+			fsp.access(path.join(pathFor("tasks/resolved"), filename)),
+		).rejects.toThrow();
+
+		// No task-resolved telemetry either — claim has not happened.
+		expect(emittedEventsOfKind("task-resolved")).toHaveLength(0);
+	});
+
+	it("(DN-2) falls through to claimTask when no listener is subscribed (backwards-compat)", async () => {
+		const ctrl = makeMockRuntime("mock-pty-dn2");
+		registerRuntime(ctrl.runtime);
+		const mgr = new AgentManager();
+		await mgr.registerAgent({
+			agentId: "pr-triage",
+			runtimeId: "mock-pty-dn2",
+			cwd: "/tmp/w",
+			env: {},
+			sessionId: "sess-dn2",
+		});
+
+		const filename = "pr-triage__1700000101.json";
+		writePendingTask(filename, {
+			prompt: "do the triage",
+			agentId: "pr-triage",
+			needsApproval: false,
+		});
+
+		// No 'task-dispatch-needed' listener subscribed.
+		await mgr._pollingTickForTests();
+
+		// Legacy decrement-only path: file moved to resolved + task-resolved
+		// telemetry fired.
+		await fsp.access(path.join(pathFor("tasks/resolved"), filename));
+		const resolved = emittedEventsOfKind("task-resolved");
+		expect(resolved).toHaveLength(1);
+		expect(resolved[0]).toMatchObject({
+			kind: "task-resolved",
+			agentId: "pr-triage",
+			filename,
+		});
+	});
+
+	it("(DN-3) payload includes parsed taskContent with prompt + agentId", async () => {
+		const ctrl = makeMockRuntime("mock-pty-dn3");
+		registerRuntime(ctrl.runtime);
+		const mgr = new AgentManager();
+		await mgr.registerAgent({
+			agentId: "pr-triage",
+			runtimeId: "mock-pty-dn3",
+			cwd: "/tmp/w",
+			env: {},
+			sessionId: "sess-dn3",
+		});
+
+		const filename = "pr-triage__1700000102.json";
+		const body = {
+			prompt: "review PR #42",
+			agentId: "pr-triage",
+			needsApproval: false,
+			extraField: "carry-through",
+		};
+		writePendingTask(filename, body);
+
+		const captured: Array<Record<string, unknown>> = [];
+		mgr.on(
+			"task-dispatch-needed",
+			(e: { taskContent: Record<string, unknown> }) => {
+				captured.push(e.taskContent);
+			},
+		);
+
+		await mgr._pollingTickForTests();
+
+		expect(captured).toHaveLength(1);
+		expect(captured[0]).toEqual(body);
+	});
+
+	it("(DN-4) listener exception is caught by polling tick wrapper; no double-claim, claimTask NOT called", async () => {
+		const ctrl = makeMockRuntime("mock-pty-dn4");
+		registerRuntime(ctrl.runtime);
+		const mgr = new AgentManager();
+		await mgr.registerAgent({
+			agentId: "pr-triage",
+			runtimeId: "mock-pty-dn4",
+			cwd: "/tmp/w",
+			env: {},
+			sessionId: "sess-dn4",
+		});
+
+		const filename = "pr-triage__1700000103.json";
+		writePendingTask(filename, {
+			prompt: "do the triage",
+			agentId: "pr-triage",
+			needsApproval: false,
+		});
+
+		mgr.on("task-dispatch-needed", () => {
+			throw new Error("simulated listener crash");
+		});
+
+		// runPollingTickGuarded surfaces uncaught exceptions as
+		// polling-loop-error telemetry. The key invariants under test:
+		// (i) processPendingTask does NOT call claimTask after emit, even
+		//     when the listener throws.
+		// (ii) the file stays in tasks/pending/ for the next tick.
+		await mgr._pollingTickForTests().catch(() => {
+			// Swallow — we already assert via telemetry below.
+		});
+
+		// File NOT moved to resolved — listener crash does not cause an
+		// accidental decrement.
+		await fsp.access(path.join(pathFor("tasks/pending"), filename));
+		await expect(
+			fsp.access(path.join(pathFor("tasks/resolved"), filename)),
+		).rejects.toThrow();
+
+		// task-resolved NEVER fired (the C1 invariant — listener crashes
+		// must not silently advance the file to resolved).
+		expect(emittedEventsOfKind("task-resolved")).toHaveLength(0);
+	});
+
+	it("(DN-5) oversized task payload is rejected as task-poisoned (oversized-task) BEFORE emit", async () => {
+		const ctrl = makeMockRuntime("mock-pty-dn5");
+		registerRuntime(ctrl.runtime);
+		const mgr = new AgentManager();
+		await mgr.registerAgent({
+			agentId: "pr-triage",
+			runtimeId: "mock-pty-dn5",
+			cwd: "/tmp/w",
+			env: {},
+			sessionId: "sess-dn5",
+		});
+
+		const filename = "pr-triage__1700000104.json";
+		// Write a payload that exceeds the cap with valid JSON structure
+		// (the size check must run BEFORE JSON.parse so the file is
+		// poisoned before AgentManager spends CPU parsing 1MB+ of input).
+		const pad = "x".repeat(TASK_PAYLOAD_MAX_BYTES + 1024);
+		writePendingTask(filename, {
+			prompt: "huge",
+			agentId: "pr-triage",
+			needsApproval: false,
+			pad,
+		});
+
+		const dispatchEvents: unknown[] = [];
+		mgr.on("task-dispatch-needed", (e: unknown) => {
+			dispatchEvents.push(e);
+		});
+
+		await mgr._pollingTickForTests();
+
+		// File moved to poisoned/, not emitted to dispatch listeners.
+		await fsp.access(path.join(pathFor("tasks/poisoned"), filename));
+		expect(dispatchEvents).toHaveLength(0);
+
+		const poisoned = emittedEventsOfKind("task-poisoned");
+		expect(poisoned).toHaveLength(1);
+		expect(poisoned[0]).toMatchObject({
+			kind: "task-poisoned",
+			filename,
+			reason: "oversized-task",
+		});
 	});
 });

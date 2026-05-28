@@ -35,14 +35,19 @@ import type { AgentConfig } from "./config.js";
 import { ensureStateDirsSync, pathFor } from "./state-paths.js";
 
 import {
+	type AgentConfigShape,
 	SHUTDOWN_STAGE_TIMEOUT_MS,
+	type TaskDispatchEvent,
 	buildFleetHealth,
 	computeRunUnder,
 	findHandleForAgent,
 	getShapeForAgent,
 	injectIntoAgent,
 	isDirectlyExecuted,
+	loadAgentConfig,
 	loadPersistedConfigs,
+	makeDaemonStartupSessionId,
+	makeTaskDispatchHandler,
 	resolveSessionId,
 	withTimeout,
 } from "./main.js";
@@ -668,5 +673,399 @@ describe("computeRunUnder", () => {
 
 	it('returns "local" when INVOCATION_ID is the empty string (matches Phase 2 spec)', () => {
 		expect(computeRunUnder({ INVOCATION_ID: "" })).toBe("local");
+	});
+});
+
+// ---------------------------------------------------------------------------
+// loadAgentConfig (Plan 04d Task 2)
+// ---------------------------------------------------------------------------
+
+describe("loadAgentConfig (Plan 04d)", () => {
+	async function writeAgentConfig(
+		agentsDir: string,
+		agentId: string,
+		body: unknown,
+	): Promise<void> {
+		await fsp.mkdir(path.join(agentsDir, agentId), { recursive: true });
+		const file = path.join(agentsDir, agentId, "agent-config.json");
+		await fsp.writeFile(
+			file,
+			typeof body === "string" ? body : JSON.stringify(body),
+			"utf8",
+		);
+	}
+
+	it("(LC-1) happy path: returns typed config with all required fields", async () => {
+		const agentsDir = path.join(tempDir, "agents");
+		await writeAgentConfig(agentsDir, "pr-triage", {
+			agentId: "pr-triage",
+			runtimeId: "claude-pty",
+			org: "internal",
+			cwd: "/opt/iago-os",
+			env: { IAGO_DAEMON_STATE_ROOT: "/var/lib/iago-os/daemon-state" },
+			autoStart: false,
+			authProfile: "default",
+		});
+
+		const config: AgentConfigShape = await loadAgentConfig(
+			agentsDir,
+			"pr-triage",
+		);
+
+		expect(config.runtimeId).toBe("claude-pty");
+		expect(config.cwd).toBe("/opt/iago-os");
+		expect(config.env).toEqual({
+			IAGO_DAEMON_STATE_ROOT: "/var/lib/iago-os/daemon-state",
+		});
+		expect(config.authProfile).toBe("default");
+		expect(config.org).toBe("internal");
+	});
+
+	it("(LC-2) ENOENT throws with file + code in message", async () => {
+		const agentsDir = path.join(tempDir, "agents");
+		await fsp.mkdir(agentsDir, { recursive: true });
+		await expect(loadAgentConfig(agentsDir, "missing-agent")).rejects.toThrow(
+			/loadAgentConfig\(missing-agent\).*cannot read.*agent-config\.json.*ENOENT/i,
+		);
+	});
+
+	it("(LC-3) invalid JSON throws with file + parse-error context", async () => {
+		const agentsDir = path.join(tempDir, "agents");
+		await writeAgentConfig(agentsDir, "pr-triage", "{ not valid json");
+		await expect(loadAgentConfig(agentsDir, "pr-triage")).rejects.toThrow(
+			/loadAgentConfig\(pr-triage\).*invalid JSON/,
+		);
+	});
+
+	it("(LC-4) missing required field 'runtimeId' throws naming the field", async () => {
+		const agentsDir = path.join(tempDir, "agents");
+		await writeAgentConfig(agentsDir, "pr-triage", {
+			agentId: "pr-triage",
+			cwd: "/opt/iago-os",
+			env: {},
+			authProfile: "default",
+		});
+		await expect(loadAgentConfig(agentsDir, "pr-triage")).rejects.toThrow(
+			/missing or invalid required field 'runtimeId'/,
+		);
+	});
+
+	it("(LC-5) missing required field 'authProfile' throws naming the field", async () => {
+		const agentsDir = path.join(tempDir, "agents");
+		await writeAgentConfig(agentsDir, "pr-triage", {
+			agentId: "pr-triage",
+			runtimeId: "claude-pty",
+			cwd: "/opt/iago-os",
+			env: {},
+		});
+		await expect(loadAgentConfig(agentsDir, "pr-triage")).rejects.toThrow(
+			/missing or invalid required field 'authProfile'/,
+		);
+	});
+
+	it("(LC-6) non-string env value throws with the offending key", async () => {
+		const agentsDir = path.join(tempDir, "agents");
+		await writeAgentConfig(agentsDir, "pr-triage", {
+			runtimeId: "claude-pty",
+			cwd: "/opt/iago-os",
+			env: { OK_VAR: "ok", BAD_VAR: 123 },
+			authProfile: "default",
+		});
+		await expect(loadAgentConfig(agentsDir, "pr-triage")).rejects.toThrow(
+			/'env\.BAD_VAR' is not a string/,
+		);
+	});
+
+	it("(LC-7) optional org omitted is fine; result lacks org key", async () => {
+		const agentsDir = path.join(tempDir, "agents");
+		await writeAgentConfig(agentsDir, "pr-triage", {
+			runtimeId: "claude-pty",
+			cwd: "/opt/iago-os",
+			env: {},
+			authProfile: "default",
+		});
+		const config = await loadAgentConfig(agentsDir, "pr-triage");
+		expect(config.org).toBeUndefined();
+	});
+});
+
+// ---------------------------------------------------------------------------
+// makeDaemonStartupSessionId (Plan 04d Task 3)
+// ---------------------------------------------------------------------------
+
+describe("makeDaemonStartupSessionId (Plan 04d)", () => {
+	it("(SID-1) returns a safe-identifier-compliant string carrying the daemon-startup prefix and the agentId", () => {
+		const sid = makeDaemonStartupSessionId("pr-triage");
+		expect(sid).toMatch(/^daemon-startup-[0-9a-f]{32}-pr-triage$/);
+		// Safe-identifier invariants (matches assertSafeIdentifier rules).
+		expect(sid).not.toContain("/");
+		expect(sid).not.toContain("\\");
+		expect(sid).not.toContain("..");
+		expect(sid).not.toContain("\0");
+		expect(sid.length).toBeGreaterThan(0);
+		expect(sid.length).toBeLessThan(255);
+	});
+
+	it("(SID-2) returns a fresh suffix on every call (collision-resistant)", () => {
+		const seen = new Set<string>();
+		for (let i = 0; i < 32; i++) {
+			seen.add(makeDaemonStartupSessionId("pr-triage"));
+		}
+		// 32 random UUID4-derived suffixes — collision is astronomically
+		// unlikely. Assertion catches an accidental cached/constant suffix.
+		expect(seen.size).toBe(32);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// makeTaskDispatchHandler (Plan 04d Task 3)
+// ---------------------------------------------------------------------------
+
+describe("makeTaskDispatchHandler (Plan 04d)", () => {
+	function makeStubManager(opts: {
+		handle: AgentHandle | null;
+		claimTask?: (filename: string, agentId: string) => Promise<void>;
+	}): AgentManager {
+		const calls: Array<{ filename: string; agentId: string }> = [];
+		const mgr = {
+			listHandles: () => (opts.handle === null ? [] : [opts.handle]),
+			claimTask:
+				opts.claimTask ??
+				(async (filename: string, agentId: string) => {
+					calls.push({ filename, agentId });
+				}),
+			_claimCalls: calls,
+		} as unknown as AgentManager;
+		return mgr;
+	}
+
+	function makeStubRuntime(
+		runtimeId: string,
+		sendImpl: (
+			handle: AgentHandle,
+			message: AgentMessage,
+		) => Promise<void> = async () => {},
+	): { runtime: AgentRuntime; sendCalls: AgentMessage[] } {
+		const sendCalls: AgentMessage[] = [];
+		const runtime: AgentRuntime = {
+			shape: "pty",
+			id: runtimeId,
+			version: "test-0.0.1",
+			interfaceVersion: "v1",
+			spawn: async () => {
+				throw new Error("not used in handler tests");
+			},
+			send: async (handle: AgentHandle, message: AgentMessage) => {
+				sendCalls.push(message);
+				await sendImpl(handle, message);
+			},
+			onStatusChanged: () => () => {},
+			isAlive: async () => true,
+			getStatus: async () => ({ alive: true }),
+			shutdown: async () => {},
+			restoreFromMarker: async () => null,
+			costTap: () => ({
+				[Symbol.asyncIterator]: () => ({
+					next: async () => ({ value: undefined, done: true }) as const,
+				}),
+			}),
+		};
+		return { runtime, sendCalls };
+	}
+
+	function makeHandleFixture(agentId: string, runtimeId: string): AgentHandle {
+		return {
+			id: `${agentId}-handle-1`,
+			runtime: runtimeId,
+			shape: "pty",
+			agentId,
+			sessionId: "sess-stub",
+			generationToken: 0,
+			spawnedAt: 1000,
+			markerPath: "/tmp/marker",
+		};
+	}
+
+	it("(DH-1) happy path: sends prompt and calls claimTask after send resolves", async () => {
+		const { runtime, sendCalls } = makeStubRuntime("dh1-runtime");
+		registerRuntime(runtime);
+		const handle = makeHandleFixture("pr-triage", "dh1-runtime");
+		const mgr = makeStubManager({ handle });
+		const emitMock = vi.fn().mockResolvedValue(undefined);
+
+		const handler = makeTaskDispatchHandler({
+			agentManager: mgr,
+			emit: emitMock,
+		});
+
+		const evt: TaskDispatchEvent = {
+			filename: "pr-triage__1700000200.json",
+			agentId: "pr-triage",
+			taskContent: { prompt: "do the daily triage", agentId: "pr-triage" },
+		};
+
+		await handler(evt);
+
+		expect(sendCalls).toHaveLength(1);
+		expect(sendCalls[0]).toEqual({
+			kind: "prompt",
+			payload: { text: "do the daily triage" },
+		});
+		expect((mgr as unknown as { _claimCalls: unknown[] })._claimCalls).toEqual([
+			{ filename: evt.filename, agentId: "pr-triage" },
+		]);
+		// No pr-triage-dispatch-failed telemetry on happy path.
+		const failedCalls = emitMock.mock.calls.filter(
+			(c) => (c[0] as { kind: string }).kind === "pr-triage-dispatch-failed",
+		);
+		expect(failedCalls).toHaveLength(0);
+	});
+
+	it("(DH-2) no live handle: emits pr-triage-dispatch-failed(unregistered) and does NOT call claimTask", async () => {
+		const mgr = makeStubManager({ handle: null });
+		const emitMock = vi.fn().mockResolvedValue(undefined);
+		const handler = makeTaskDispatchHandler({
+			agentManager: mgr,
+			emit: emitMock,
+		});
+
+		const evt: TaskDispatchEvent = {
+			filename: "pr-triage__1700000201.json",
+			agentId: "pr-triage",
+			taskContent: { prompt: "x", agentId: "pr-triage" },
+		};
+
+		await handler(evt);
+
+		const failedCalls = emitMock.mock.calls
+			.map((c) => c[0])
+			.filter(
+				(e) => (e as { kind: string }).kind === "pr-triage-dispatch-failed",
+			);
+		expect(failedCalls).toHaveLength(1);
+		expect(failedCalls[0]).toMatchObject({
+			kind: "pr-triage-dispatch-failed",
+			agentId: "pr-triage",
+			filename: evt.filename,
+			reason: "unregistered",
+		});
+		expect((mgr as unknown as { _claimCalls: unknown[] })._claimCalls).toEqual(
+			[],
+		);
+	});
+
+	it("(DH-3) runtime.send rejection: emits pr-triage-dispatch-failed(send-failed) and does NOT call claimTask", async () => {
+		const { runtime } = makeStubRuntime("dh3-runtime", async () => {
+			throw new Error("PTY closed unexpectedly");
+		});
+		registerRuntime(runtime);
+		const handle = makeHandleFixture("pr-triage", "dh3-runtime");
+		const mgr = makeStubManager({ handle });
+		const emitMock = vi.fn().mockResolvedValue(undefined);
+
+		const handler = makeTaskDispatchHandler({
+			agentManager: mgr,
+			emit: emitMock,
+		});
+
+		const evt: TaskDispatchEvent = {
+			filename: "pr-triage__1700000202.json",
+			agentId: "pr-triage",
+			taskContent: { prompt: "x", agentId: "pr-triage" },
+		};
+
+		await handler(evt);
+
+		const failedCalls = emitMock.mock.calls
+			.map((c) => c[0])
+			.filter(
+				(e) => (e as { kind: string }).kind === "pr-triage-dispatch-failed",
+			);
+		expect(failedCalls).toHaveLength(1);
+		expect(failedCalls[0]).toMatchObject({
+			kind: "pr-triage-dispatch-failed",
+			agentId: "pr-triage",
+			filename: evt.filename,
+			reason: "send-failed",
+		});
+		expect((failedCalls[0] as { message: string }).message).toContain(
+			"PTY closed unexpectedly",
+		);
+		expect((mgr as unknown as { _claimCalls: unknown[] })._claimCalls).toEqual(
+			[],
+		);
+	});
+
+	it("(DH-4) unexpected throw (resolveRuntime miss): wrapped as listener-exception, no claimTask", async () => {
+		// Do NOT register the runtime — resolveRuntime will throw, hitting
+		// the outermost catch block.
+		const handle = makeHandleFixture("pr-triage", "dh4-missing-runtime");
+		const mgr = makeStubManager({ handle });
+		const emitMock = vi.fn().mockResolvedValue(undefined);
+
+		const handler = makeTaskDispatchHandler({
+			agentManager: mgr,
+			emit: emitMock,
+		});
+
+		const evt: TaskDispatchEvent = {
+			filename: "pr-triage__1700000203.json",
+			agentId: "pr-triage",
+			taskContent: { prompt: "x", agentId: "pr-triage" },
+		};
+
+		// The handler MUST resolve (not reject) — uncaught exceptions in
+		// EventEmitter listeners would otherwise crash the polling tick.
+		await expect(handler(evt)).resolves.toBeUndefined();
+
+		const failedCalls = emitMock.mock.calls
+			.map((c) => c[0])
+			.filter(
+				(e) => (e as { kind: string }).kind === "pr-triage-dispatch-failed",
+			);
+		expect(failedCalls).toHaveLength(1);
+		expect(failedCalls[0]).toMatchObject({
+			kind: "pr-triage-dispatch-failed",
+			agentId: "pr-triage",
+			filename: evt.filename,
+			reason: "listener-exception",
+		});
+		expect((mgr as unknown as { _claimCalls: unknown[] })._claimCalls).toEqual(
+			[],
+		);
+	});
+
+	it("(DH-5) malformed taskContent (no prompt) sends empty-string prompt and still claims (degraded but accountable)", async () => {
+		const { runtime, sendCalls } = makeStubRuntime("dh5-runtime");
+		registerRuntime(runtime);
+		const handle = makeHandleFixture("pr-triage", "dh5-runtime");
+		const mgr = makeStubManager({ handle });
+		const emitMock = vi.fn().mockResolvedValue(undefined);
+
+		const handler = makeTaskDispatchHandler({
+			agentManager: mgr,
+			emit: emitMock,
+		});
+
+		const evt: TaskDispatchEvent = {
+			filename: "pr-triage__1700000204.json",
+			agentId: "pr-triage",
+			taskContent: { agentId: "pr-triage" }, // no prompt field
+		};
+
+		await handler(evt);
+
+		expect(sendCalls).toHaveLength(1);
+		expect(sendCalls[0]).toEqual({
+			kind: "prompt",
+			payload: { text: "" },
+		});
+		// Empty prompt is observable to the agent (which can decide to no-op)
+		// and the task is claimed so the cron slot releases — the polling
+		// loop is not the place to enforce prompt-shape (that's the upstream
+		// task-writer's job).
+		expect((mgr as unknown as { _claimCalls: unknown[] })._claimCalls).toEqual([
+			{ filename: evt.filename, agentId: "pr-triage" },
+		]);
 	});
 });

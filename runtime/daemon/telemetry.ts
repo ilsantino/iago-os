@@ -315,8 +315,47 @@ export type DaemonEvent =
 			 */
 			readonly kind: "task-poisoned";
 			readonly filename: string;
-			readonly reason: "json-parse-error" | "missing-agent-id";
+			readonly reason:
+				| "json-parse-error"
+				| "missing-agent-id"
+				| "oversized-task";
 			readonly errno?: string;
+	  }
+	| {
+			/**
+			 * Plan 04d (pr-triage dispatch handler): the dispatch handler
+			 * subscribed to `task-dispatch-needed` failed to execute the
+			 * task. The task file is LEFT in `tasks/pending/` so the next
+			 * polling tick retries; `claimTask` is NOT called, so the cron
+			 * `runningCount` stays elevated until a retry succeeds or
+			 * `cron-overlap-prevented` surfaces the stall to the operator.
+			 *
+			 * Reasons currently emitted by `makeTaskDispatchHandler`:
+			 *   - `unregistered`: no live `AgentHandle` resolved at
+			 *     dispatch time (pre-registration failed or was
+			 *     deregistered).
+			 *   - `send-failed`: `runtime.send(handle, promptMessage)`
+			 *     threw (PTY closed, stdin write error, etc.).
+			 *   - `listener-exception`: any other unexpected throw caught
+			 *     by the outermost try/catch (e.g., runtime resolution
+			 *     miss, malformed payload, `claimTask` failure).
+			 *
+			 * NOTE on `exit-*` / `spawn-failed` (Plan 04d review #2):
+			 * earlier drafts of the plan included an "await clean exit"
+			 * step which would have emitted `spawn-failed`, `exit-nonzero`,
+			 * and `exit-timeout`. The Shape 1 PTY runtime is persistent
+			 * (registered once at daemon startup, never per-task respawned)
+			 * so those reasons have no live code path and would be dead
+			 * union members. They are intentionally omitted from this
+			 * union until a runtime adapter ships a per-task completion
+			 * signal. See `makeTaskDispatchHandler` JSDoc for the full
+			 * persistent-PTY claim-on-send rationale.
+			 */
+			readonly kind: "pr-triage-dispatch-failed";
+			readonly agentId: string;
+			readonly filename: string;
+			readonly reason: "send-failed" | "listener-exception" | "unregistered";
+			readonly message: string;
 	  }
 	| {
 			/**

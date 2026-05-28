@@ -140,6 +140,33 @@ export class AgentIdAlreadyRegisteredError extends Error {
 	}
 }
 
+/**
+ * Plan 04d I3: cap task-file payload size emitted in the
+ * `'task-dispatch-needed'` event payload. Oversize files are rejected via
+ * `poisonTask` with reason `oversized-task` BEFORE JSON.parse and BEFORE
+ * the EventEmitter emit, so a malicious or buggy upstream cannot blow up
+ * AgentManager memory by writing a 1GB task. Exported for test access.
+ */
+export const TASK_PAYLOAD_MAX_BYTES = 1_048_576;
+
+/**
+ * Plan 04d Task 1 — typed shape of the `taskContent` payload carried on
+ * the `'task-dispatch-needed'` event. `agentId` is guaranteed to be a
+ * non-empty string at emit time (validated by `processPendingTask` via
+ * the `missing-agent-id` poison path before the listener fires). The
+ * index signature captures the rest of the task-file's free-form
+ * fields (e.g., `prompt`, `needsApproval`, downstream-defined extras).
+ *
+ * Review #5 (Plan 04d, minor): preserves the `agentId: string` property
+ * type on the payload instead of widening to a bare
+ * `Record<string, unknown>` — so upstream drift on the `agentId` field
+ * fails the type check at the emit site rather than at the listener.
+ */
+export interface TaskDispatchPayload {
+	readonly agentId: string;
+	readonly [key: string]: unknown;
+}
+
 interface TrackedHandle {
 	handle: AgentHandle;
 	runtime: AgentRuntime;
@@ -1586,6 +1613,30 @@ export class AgentManager extends EventEmitter {
 		}
 	}
 
+	/**
+	 * Process a single task file from `tasks/pending/`.
+	 *
+	 * Plan 04d contract change: between the `isAgentRegistered(agentId)`
+	 * check and the `claimTask(filename, agentId)` call, the polling loop
+	 * emits a `'task-dispatch-needed'` EventEmitter event when one or more
+	 * listeners are subscribed. The listener owns the dispatch lifecycle
+	 * (forward prompt to the persistent runtime, optionally await
+	 * completion if the runtime adapter exposes a signal) and is
+	 * responsible for calling `claimTask` itself. The current Shape 1
+	 * PTY adapter is persistent (pre-registered at daemon startup) and
+	 * has no per-task completion signal, so the live handler claims on
+	 * send-return — see `makeTaskDispatchHandler` JSDoc for the full
+	 * claim-on-send rationale and the conditions under which await-exit
+	 * semantics would reappear. When no listener is subscribed (e.g.,
+	 * Plan 07b tests and any deployment without a wired dispatcher), the
+	 * loop falls through to `claimTask` immediately for backwards-compat
+	 * (C1 stress-test fix).
+	 *
+	 * I3 stress-test fix: oversized task payloads (>`TASK_PAYLOAD_MAX_BYTES`)
+	 * are rejected as `task-poisoned` with reason `oversized-task` before
+	 * parsing, to prevent EventEmitter memory blow-up on the
+	 * `'task-dispatch-needed'` payload.
+	 */
 	private async processPendingTask(filename: string): Promise<void> {
 		const pendingDir = pathFor("tasks/pending");
 		const src = path.join(pendingDir, filename);
@@ -1599,6 +1650,10 @@ export class AgentManager extends EventEmitter {
 				return;
 			}
 			throw err;
+		}
+		if (Buffer.byteLength(raw, "utf8") > TASK_PAYLOAD_MAX_BYTES) {
+			await this.poisonTask(filename, "oversized-task");
+			return;
 		}
 		let parsed: unknown;
 		try {
@@ -1620,12 +1675,26 @@ export class AgentManager extends EventEmitter {
 			await this.emitUnrouted(filename, agentId);
 			return;
 		}
+		if (this.listenerCount("task-dispatch-needed") > 0) {
+			// Plan 04d: hand off to dispatch listener — listener owns
+			// claimTask timing (after runtime exits).
+			const taskContent: TaskDispatchPayload = {
+				...(parsed as Record<string, unknown>),
+				agentId,
+			};
+			this.emit("task-dispatch-needed", {
+				filename,
+				agentId,
+				taskContent,
+			});
+			return;
+		}
 		await this.claimTask(filename, agentId);
 	}
 
 	private async poisonTask(
 		filename: string,
-		reason: "json-parse-error" | "missing-agent-id",
+		reason: "json-parse-error" | "missing-agent-id" | "oversized-task",
 		errno?: string,
 	): Promise<void> {
 		const src = path.join(pathFor("tasks/pending"), filename);
