@@ -215,10 +215,16 @@ beforeEach(async () => {
 		IAGO_TELEGRAM_BOT_TOKEN: process.env.IAGO_TELEGRAM_BOT_TOKEN,
 		IAGO_TELEGRAM_ALLOWED_USER_IDS: process.env.IAGO_TELEGRAM_ALLOWED_USER_IDS,
 		CLAUDE_CODE_SESSION_ID: process.env.CLAUDE_CODE_SESSION_ID,
+		IAGO_AGENTS_DIR: process.env.IAGO_AGENTS_DIR,
 	};
 	stateRoot = await fs.mkdtemp(path.join(tmpdir(), "iago-hello-world-"));
 	process.env.IAGO_DAEMON_STATE_ROOT = stateRoot;
 	process.env.CLAUDE_CODE_SESSION_ID = "hello-world-session";
+	// Point to an empty agents dir so cron pre-registration does not bleed
+	// real pr-triage handles into tests that use buildDaemon({ agents: [] }).
+	const emptyAgentsDir = path.join(stateRoot, "empty-agents");
+	await fs.mkdir(emptyAgentsDir);
+	process.env.IAGO_AGENTS_DIR = emptyAgentsDir;
 	delete process.env.IAGO_TELEGRAM_BOT_TOKEN;
 	delete process.env.IAGO_TELEGRAM_ALLOWED_USER_IDS;
 	_resetRegistryForTests();
@@ -843,6 +849,32 @@ describe("Phase 1 hello-world end-to-end (mocked PTY + Telegram)", () => {
 	});
 
 	it("(DW-2 Plan 04d) pr-triage agent is pre-registered before polling starts", async () => {
+		// Use a synthetic agents dir with a minimal pr-triage fixture so this
+		// test exercises the real cron-discovery → loadAgentConfig → registerAgent
+		// path without depending on the repo's live agents/ tree.
+		const syntheticAgentsDir = path.join(stateRoot, "synthetic-agents");
+		const prTriageDir = path.join(syntheticAgentsDir, "pr-triage");
+		await fs.mkdir(prTriageDir, { recursive: true });
+		await fs.writeFile(
+			path.join(prTriageDir, "crons.json"),
+			JSON.stringify({
+				schedule: "0 14 * * *",
+				prompt: "runtime/agents/pr-triage/prompt-template.md",
+				outputTaskNamePrefix: "pr-triage",
+				maxConcurrent: 1,
+			}),
+		);
+		await fs.writeFile(
+			path.join(prTriageDir, "agent-config.json"),
+			JSON.stringify({
+				agentId: "pr-triage",
+				runtimeId: "claude-pty",
+				cwd: stateRoot,
+				env: {},
+				authProfile: "default",
+			}),
+		);
+		process.env.IAGO_AGENTS_DIR = syntheticAgentsDir;
 		const daemon = await buildDaemon({ withBot: false, agents: [] });
 		const handles = daemon.agentManager.listHandles();
 		expect(handles.some((h) => h.agentId === "pr-triage")).toBe(true);
