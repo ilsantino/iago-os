@@ -828,4 +828,24 @@ describe("Phase 1 hello-world end-to-end (mocked PTY + Telegram)", () => {
 		expect(daemon).toBeDefined();
 		await daemon.shutdown();
 	});
+
+	// Plan 04d Task 3 tests (a) and (b): verify the dispatch listener and
+	// pr-triage pre-registration wiring that startDaemon owns.
+	// These live here (not main.test.ts) because startDaemon integration
+	// requires the node-pty and telegram mocks that this file already wires.
+
+	it("(DW-1 Plan 04d) task-dispatch-needed listener is subscribed before polling starts", async () => {
+		const daemon = await buildDaemon({ withBot: false, agents: [] });
+		expect(
+			daemon.agentManager.listenerCount("task-dispatch-needed"),
+		).toBeGreaterThan(0);
+		await daemon.shutdown();
+	});
+
+	it("(DW-2 Plan 04d) pr-triage agent is pre-registered before polling starts", async () => {
+		const daemon = await buildDaemon({ withBot: false, agents: [] });
+		const handles = daemon.agentManager.listHandles();
+		expect(handles.some((h) => h.agentId === "pr-triage")).toBe(true);
+		await daemon.shutdown();
+	});
 });

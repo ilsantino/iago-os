@@ -2105,7 +2105,8 @@ describe("AgentManager / task-dispatch-needed event (Plan 04d)", () => {
 		//     when the listener throws.
 		// (ii) the file stays in tasks/pending/ for the next tick.
 		await mgr._pollingTickForTests().catch(() => {
-			// Swallow — we already assert via telemetry below.
+			// Swallow — polling tick surfaces the listener crash as
+			// polling-loop-error telemetry; assertions below check filesystem state.
 		});
 
 		// File NOT moved to resolved — listener crash does not cause an

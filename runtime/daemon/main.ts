@@ -591,7 +591,15 @@ export function makeTaskDispatchHandler(deps: {
 				return;
 			}
 			const promptRaw = evt.taskContent.prompt;
-			const promptText = typeof promptRaw === "string" ? promptRaw : "";
+			let promptText: string;
+			if (typeof promptRaw === "string") {
+				promptText = promptRaw;
+			} else {
+				console.error(
+					`[daemon] dispatch: malformed task ${evt.filename} — prompt field is ${typeof promptRaw === "undefined" ? "absent" : `type ${typeof promptRaw}`}; sending empty-string prompt`,
+				);
+				promptText = "";
+			}
 			const runtime: AgentRuntime = resolveRuntime(handle.runtime);
 			const message: AgentMessage = {
 				kind: "prompt",
@@ -1307,10 +1315,10 @@ export async function startDaemon(
 		// path — wrong direction of the race, because the cron-fired task
 		// would silently advance to resolved without ever being dispatched.
 		try {
-			agentManager.removeAllListeners("task-dispatch-needed");
+			agentManager.removeListener("task-dispatch-needed", taskDispatchListener);
 		} catch (err) {
 			console.error(
-				`[daemon] removeAllListeners(task-dispatch-needed) failed: ${err instanceof Error ? err.message : String(err)}`,
+				`[daemon] removeListener(task-dispatch-needed) failed: ${err instanceof Error ? err.message : String(err)}`,
 			);
 		}
 		await withTimeout(
