@@ -140,6 +140,33 @@ export class AgentIdAlreadyRegisteredError extends Error {
 	}
 }
 
+/**
+ * Plan 04d I3: cap task-file payload size emitted in the
+ * `'task-dispatch-needed'` event payload. Oversize files are rejected via
+ * `poisonTask` with reason `oversized-task` BEFORE JSON.parse and BEFORE
+ * the EventEmitter emit, so a malicious or buggy upstream cannot blow up
+ * AgentManager memory by writing a 1GB task. Exported for test access.
+ */
+export const TASK_PAYLOAD_MAX_BYTES = 1_048_576;
+
+/**
+ * Plan 04d Task 1 — typed shape of the `taskContent` payload carried on
+ * the `'task-dispatch-needed'` event. `agentId` is guaranteed to be a
+ * non-empty string at emit time (validated by `processPendingTask` via
+ * the `missing-agent-id` poison path before the listener fires). The
+ * index signature captures the rest of the task-file's free-form
+ * fields (e.g., `prompt`, `needsApproval`, downstream-defined extras).
+ *
+ * Review #5 (Plan 04d, minor): preserves the `agentId: string` property
+ * type on the payload instead of widening to a bare
+ * `Record<string, unknown>` — so upstream drift on the `agentId` field
+ * fails the type check at the emit site rather than at the listener.
+ */
+export interface TaskDispatchPayload {
+	readonly agentId: string;
+	readonly [key: string]: unknown;
+}
+
 interface TrackedHandle {
 	handle: AgentHandle;
 	runtime: AgentRuntime;
@@ -248,6 +275,15 @@ export class AgentManager extends EventEmitter {
 	private readonly unroutedSet = new Set<string>();
 	private unroutedSetOverflowed = false;
 	private unroutedSetCap = 1000;
+	/**
+	 * Plan 04d dual-adversarial C-1 fix: per-filename guard preventing
+	 * duplicate `'task-dispatch-needed'` emits when a polling tick fires
+	 * before the prior tick's handler has resolved. Population is in
+	 * `processPendingTask` just before `this.emit(...)`; clearing is the
+	 * dispatch listener's responsibility via `releaseDispatchSlot`,
+	 * called from the listener's `finally` block.
+	 */
+	private readonly dispatchInFlight = new Set<string>();
 
 	constructor(opts?: AgentManagerOpts) {
 		super();
@@ -1586,16 +1622,76 @@ export class AgentManager extends EventEmitter {
 		}
 	}
 
+	/**
+	 * Process a single task file from `tasks/pending/`.
+	 *
+	 * Plan 04d contract change: between the `isAgentRegistered(agentId)`
+	 * check and the `claimTask(filename, agentId)` call, the polling loop
+	 * emits a `'task-dispatch-needed'` EventEmitter event when one or more
+	 * listeners are subscribed. The listener owns the dispatch lifecycle
+	 * (forward prompt to the persistent runtime, optionally await
+	 * completion if the runtime adapter exposes a signal) and is
+	 * responsible for calling `claimTask` itself. The current Shape 1
+	 * PTY adapter is persistent (pre-registered at daemon startup) and
+	 * has no per-task completion signal, so the live handler claims on
+	 * send-return — see `makeTaskDispatchHandler` JSDoc for the full
+	 * claim-on-send rationale and the conditions under which await-exit
+	 * semantics would reappear.
+	 *
+	 * Dual-adversarial C-2 fix: when NO listener is subscribed,
+	 * `processPendingTask` no longer falls through to `claimTask`. It
+	 * emits `pr-triage-dispatch-failed { reason: "no-listener" }` and
+	 * leaves the file in `tasks/pending/` for the next tick. The
+	 * previous fallback was a Phase 2 stress-test artifact and silently
+	 * advanced cron-fired tasks to `resolved/` during the shutdown
+	 * removeListener→stopPollingLoop window — a real data-loss path on
+	 * every deploy that coincided with an in-flight task.
+	 *
+	 * Dual-adversarial C-1 fix: per-filename `dispatchInFlight` guard
+	 * suppresses duplicate emits when a polling tick fires before the
+	 * prior tick's listener resolved. The listener clears the slot via
+	 * `releaseDispatchSlot` from its `finally` block.
+	 *
+	 * Dual-adversarial I-B fix: size-check via `fsp.stat` BEFORE
+	 * `readFile` so a 10MB adversarial task does not allocate 10MB of
+	 * string heap per polling tick.
+	 *
+	 * Dual-adversarial M-A fix: cap `agentId` at 255 chars to prevent
+	 * a path-length DoS via crafted task files.
+	 *
+	 * I3 stress-test fix: oversized task payloads (>`TASK_PAYLOAD_MAX_BYTES`)
+	 * are rejected as `task-poisoned` with reason `oversized-task` before
+	 * parsing.
+	 */
 	private async processPendingTask(filename: string): Promise<void> {
 		const pendingDir = pathFor("tasks/pending");
 		const src = path.join(pendingDir, filename);
+		// Dual-adversarial I-B fix: size-check via fsp.stat BEFORE readFile
+		// so a 10MB+ adversarial file does not allocate 10MB+ of string
+		// heap per polling tick. The original Buffer.byteLength check fired
+		// AFTER the allocation, defeating the bound the cap is meant to
+		// enforce.
+		let stats: import("node:fs").Stats;
+		try {
+			stats = await fsp.stat(src);
+		} catch (err) {
+			const errno = getErrnoCode(err);
+			if (errno === "ENOENT") {
+				// Concurrent claim moved it out from under us — fine.
+				return;
+			}
+			throw err;
+		}
+		if (stats.size > TASK_PAYLOAD_MAX_BYTES) {
+			await this.poisonTask(filename, "oversized-task");
+			return;
+		}
 		let raw: string;
 		try {
 			raw = await fsp.readFile(src, "utf8");
 		} catch (err) {
 			const errno = getErrnoCode(err);
 			if (errno === "ENOENT") {
-				// Concurrent claim moved it out from under us — fine.
 				return;
 			}
 			throw err;
@@ -1616,16 +1712,83 @@ export class AgentManager extends EventEmitter {
 			return;
 		}
 		const agentId = (parsed as { agentId: string }).agentId;
+		// Dual-adversarial M-A fix: cap agentId length BEFORE
+		// `isAgentRegistered` to prevent a path-length DoS via crafted
+		// task files. The map lookup is bounded but downstream consumers
+		// (filenames, log lines, telemetry) are not.
+		if (agentId.length > 255) {
+			await this.poisonTask(filename, "missing-agent-id");
+			return;
+		}
 		if (!this.isAgentRegistered(agentId)) {
 			await this.emitUnrouted(filename, agentId);
 			return;
 		}
-		await this.claimTask(filename, agentId);
+		// Dual-adversarial C-2 fix: REMOVED the listener-less fallback
+		// that previously called `claimTask` directly when
+		// `listenerCount("task-dispatch-needed") === 0`. The fallback was
+		// a Plan 04d stress-test artifact (C1 backwards-compat) and
+		// became a data-loss path during shutdown: when `removeListener`
+		// ran before `stopPollingLoop`, an in-flight tick would observe
+		// zero listeners, claim the task, and advance the file to
+		// `resolved/` WITHOUT EVER DISPATCHING IT to the runtime. The
+		// fix is two-pronged — drop the fallback here AND reorder
+		// shutdown in `startDaemon` to drain the polling loop BEFORE
+		// removing listeners. Either alone would be sufficient; both
+		// together close the foot-gun for Phase 3 callers.
+		if (this.listenerCount("task-dispatch-needed") === 0) {
+			await emitTelemetry({
+				kind: "pr-triage-dispatch-failed",
+				agentId,
+				filename,
+				reason: "no-listener",
+				message:
+					"processPendingTask: no 'task-dispatch-needed' listener subscribed; task left in pending/ for retry",
+			});
+			return;
+		}
+		// Dual-adversarial C-1 fix: per-filename in-flight guard. If a
+		// previous polling tick emitted dispatch for this filename and
+		// the listener has not yet released its slot, suppress the
+		// duplicate emit. The listener clears the slot in its `finally`
+		// block via `releaseDispatchSlot`. Without this guard, a polling
+		// interval shorter than the listener's runtime.send + claimTask
+		// latency would emit the same prompt twice and both handlers
+		// would race on `claimTask`.
+		if (this.dispatchInFlight.has(filename)) {
+			return;
+		}
+		this.dispatchInFlight.add(filename);
+		// Plan 04d: hand off to dispatch listener — listener owns
+		// claimTask timing.
+		const taskContent: TaskDispatchPayload = {
+			...(parsed as Record<string, unknown>),
+			agentId,
+		};
+		this.emit("task-dispatch-needed", {
+			filename,
+			agentId,
+			taskContent,
+		});
+	}
+
+	/**
+	 * Dual-adversarial C-1 fix: clear the per-filename in-flight guard
+	 * after the dispatch handler resolves (success OR failure). MUST be
+	 * called from the handler's `finally` block — otherwise the slot
+	 * leaks and the next polling tick suppresses every subsequent
+	 * dispatch for that filename.
+	 *
+	 * Public so `makeTaskDispatchHandler` (which lives in `main.ts`) can
+	 * release without circular-import.
+	 */
+	releaseDispatchSlot(filename: string): void {
+		this.dispatchInFlight.delete(filename);
 	}
 
 	private async poisonTask(
 		filename: string,
-		reason: "json-parse-error" | "missing-agent-id",
+		reason: "json-parse-error" | "missing-agent-id" | "oversized-task",
 		errno?: string,
 	): Promise<void> {
 		const src = path.join(pathFor("tasks/pending"), filename);

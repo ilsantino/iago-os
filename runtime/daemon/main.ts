@@ -72,6 +72,7 @@
  * bypass `main()` so they can assert on the thrown error.
  */
 
+import { randomUUID } from "node:crypto";
 import * as fs from "node:fs";
 import * as fsp from "node:fs/promises";
 import * as path from "node:path";
@@ -99,7 +100,11 @@ import {
 } from "../telegram/approval-bus.js";
 import { TelegramBot } from "../telegram/bot.js";
 
-import { AgentManager, type RegisterAgentConfig } from "./agent-manager.js";
+import {
+	AgentManager,
+	type RegisterAgentConfig,
+	type TaskDispatchPayload,
+} from "./agent-manager.js";
 import { type AgentConfig, type DaemonConfig, loadConfig } from "./config.js";
 import {
 	envVarToFileName,
@@ -365,6 +370,450 @@ export async function loadCronEntries(
 		out.push(opts);
 	}
 	return out;
+}
+
+/**
+ * Plan 04d Task 2 — per-agent dispatch configuration loaded from
+ * `<agentsDir>/<agentId>/agent-config.json`.
+ *
+ * Fields:
+ *   - `runtimeId`: registry key for the runtime adapter that dispatches
+ *     this agent's tasks (e.g., `"claude-pty"`).
+ *   - `cwd`: working directory the adapter spawns the agent in (the repo
+ *     root on the VPS — `/opt/iago-os`).
+ *   - `env`: env-var map merged into the spawned process's environment.
+ *     Values are plain strings (no secret-bytes referenced here — secrets
+ *     ride in via `loadSystemdCredentials` ahead of spawn).
+ *   - `authProfile`: profile name selecting an auth credential bundle
+ *     for the adapter (`"default"` in Phase 2; reserved for multi-profile
+ *     work in Phase 3+). REQUIRED IN THE CONFIG FILE BUT INTENTIONALLY
+ *     UNUSED at runtime in Phase 2 — `startDaemon` does NOT forward
+ *     `authProfile` to `registerAgent`. Validation here exists so a
+ *     malformed config fails loud at startup rather than surfacing as a
+ *     silent miss when Phase 3 wires actual profile routing. Review #3
+ *     (Plan 04d, minor): future readers should NOT assume this field
+ *     gates auth selection in Phase 2.
+ *   - `org`: optional organization slug; passed through to `registerAgent`
+ *     so multi-org isolation (Plan 03 PR4) works for cron-driven agents
+ *     the same way it works for human-spawned ones.
+ */
+export interface AgentConfigShape {
+	readonly runtimeId: string;
+	readonly cwd: string;
+	readonly env: Record<string, string>;
+	readonly authProfile: string;
+	readonly org?: string;
+}
+
+/**
+ * Plan 04d Task 2 — read and validate `<agentsDir>/<agentId>/agent-config.json`.
+ *
+ * Required fields: `runtimeId: string`, `cwd: string`, `env: object`,
+ * `authProfile: string`. Optional: `org: string`.
+ *
+ * Failure modes (all throw with a message naming the file + field):
+ *   - ENOENT → throw (every cron-fired agent MUST have a config; a missing
+ *     file is a deployment bug, not "no config yet").
+ *   - JSON parse error → throw.
+ *   - Wrong type / missing required field → throw.
+ *
+ * Caller (`startDaemon`) catches and logs PER-AGENT so one bad config
+ * does not prevent the rest of the fleet from registering.
+ *
+ * Exported for unit testability (main.test.ts).
+ */
+export async function loadAgentConfig(
+	agentsDir: string,
+	agentId: string,
+): Promise<AgentConfigShape> {
+	const file = path.join(agentsDir, agentId, "agent-config.json");
+	let raw: string;
+	try {
+		raw = await fsp.readFile(file, "utf8");
+	} catch (err) {
+		const code = (err as NodeJS.ErrnoException).code;
+		const message = err instanceof Error ? err.message : String(err);
+		throw new Error(
+			`loadAgentConfig(${agentId}): cannot read ${file} (code=${code ?? "unknown"}): ${message}`,
+		);
+	}
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(raw);
+	} catch (err) {
+		const message = err instanceof Error ? err.message : String(err);
+		throw new Error(
+			`loadAgentConfig(${agentId}): invalid JSON in ${file}: ${message}`,
+		);
+	}
+	if (typeof parsed !== "object" || parsed === null) {
+		throw new Error(
+			`loadAgentConfig(${agentId}): ${file} did not parse to an object`,
+		);
+	}
+	const obj = parsed as Record<string, unknown>;
+	if (typeof obj.runtimeId !== "string" || obj.runtimeId.length === 0) {
+		throw new Error(
+			`loadAgentConfig(${agentId}): ${file} missing or invalid required field 'runtimeId' (string)`,
+		);
+	}
+	if (typeof obj.cwd !== "string" || obj.cwd.length === 0) {
+		throw new Error(
+			`loadAgentConfig(${agentId}): ${file} missing or invalid required field 'cwd' (string)`,
+		);
+	}
+	if (
+		typeof obj.env !== "object" ||
+		obj.env === null ||
+		Array.isArray(obj.env)
+	) {
+		throw new Error(
+			`loadAgentConfig(${agentId}): ${file} missing or invalid required field 'env' (object of string→string)`,
+		);
+	}
+	const env: Record<string, string> = {};
+	for (const [k, v] of Object.entries(obj.env as Record<string, unknown>)) {
+		if (typeof v !== "string") {
+			throw new Error(
+				`loadAgentConfig(${agentId}): ${file} 'env.${k}' is not a string`,
+			);
+		}
+		env[k] = v;
+	}
+	if (typeof obj.authProfile !== "string" || obj.authProfile.length === 0) {
+		throw new Error(
+			`loadAgentConfig(${agentId}): ${file} missing or invalid required field 'authProfile' (string)`,
+		);
+	}
+	const org =
+		typeof obj.org === "string" && obj.org.length > 0 ? obj.org : undefined;
+	return {
+		runtimeId: obj.runtimeId,
+		cwd: obj.cwd,
+		env,
+		authProfile: obj.authProfile,
+		...(org !== undefined ? { org } : {}),
+	};
+}
+
+/**
+ * Plan 04d Task 3 — payload of the `'task-dispatch-needed'` event the
+ * polling loop emits between `isAgentRegistered` and `claimTask`.
+ * Exported so the dispatch handler factory below is independently
+ * unit-testable (main.test.ts simulates the polling loop by invoking
+ * the handler directly with a synthetic payload).
+ *
+ * `taskContent` carries the parsed task-file body via the typed
+ * `TaskDispatchPayload` shape from agent-manager.ts — `agentId` is
+ * guaranteed `string` (validated by `processPendingTask` ahead of emit);
+ * other task-file fields ride along under the index signature.
+ */
+export interface TaskDispatchEvent {
+	readonly filename: string;
+	readonly agentId: string;
+	readonly taskContent: TaskDispatchPayload;
+}
+
+/**
+ * Plan 04d Task 3 — build the dispatch handler the daemon subscribes to
+ * `AgentManager`'s `'task-dispatch-needed'` event. Extracted into a
+ * factory so main.test.ts can exercise the handler directly without
+ * standing up `startDaemon`.
+ *
+ * Behavior per event:
+ *   1. Resolve the live `AgentHandle` for `agentId`. Missing → emit
+ *      `pr-triage-dispatch-failed { reason: "unregistered" }` and leave
+ *      the file in `tasks/pending/` (NO `claimTask` call) so the next
+ *      polling tick retries after registration completes.
+ *   2. Resolve the runtime adapter and send a `PromptMessage` with the
+ *      `taskContent.prompt` string. Adapter failure → emit
+ *      `pr-triage-dispatch-failed { reason: "send-failed" }` and leave
+ *      the file in pending.
+ *   3. On send success → `agentManager.claimTask(filename, agentId)`.
+ *      The cron slot decrements via the existing `'task-resolved'` chain.
+ *
+ * I1 stress fix: the outermost try/catch swallows any unexpected throw
+ * (including `resolveRuntime` lookup failures, malformed payloads, etc.)
+ * and surfaces them as `pr-triage-dispatch-failed { reason:
+ * "listener-exception" }` so a buggy adapter cannot crash the polling
+ * tick. `claimTask` is NOT called on this branch.
+ *
+ * The handler returns a `Promise<void>`. The subscription site wraps the
+ * call in `void` (EventEmitter listeners are synchronous; we explicitly
+ * disclaim the returned promise rather than letting it surface as an
+ * UnhandledPromiseRejection).
+ *
+ * ARCHITECTURE NOTE (Plan 04d review #1, claim-on-send semantics):
+ *
+ * Plan 04d Task 3 step 3 says "await clean exit (with timeout — bound at
+ * `stageTimeoutMs`) → `agentManager.claimTask(...)`". The actual
+ * implementation calls `claimTask` immediately after `runtime.send`
+ * resolves. The plan's wording presumed a per-task spawn-then-exit
+ * lifecycle, but the Shape 1 PTY runtime — the only runtime pr-triage
+ * uses in Phase 2 — is registered ONCE at daemon startup
+ * (`startDaemon` pre-register loop) and stays alive across many task
+ * dispatches. There is no "exit" between tasks: `runtime.send` returns
+ * when the prompt has entered the PTY's stdin buffer, not when the
+ * agent finishes processing.
+ *
+ * Consequence: the cron `runningCount` decrements at send-time rather
+ * than completion-time. A rapidly-firing cron (sub-minute cadence)
+ * could fire a second task while the first is still processing. For
+ * pr-triage's daily cadence this is a non-issue. When a future runtime
+ * adapter ships a per-task completion signal (e.g.,
+ * `runtime.awaitIdle(handle)` returning when stdout quiesces, or a
+ * structured "task-done" message back from the agent), this handler
+ * should `await` that signal between `runtime.send` and
+ * `agentManager.claimTask`. At that point the matching
+ * `pr-triage-dispatch-failed` reasons `spawn-failed`, `exit-nonzero`,
+ * and `exit-timeout` get reinstated in `telemetry.ts`.
+ *
+ * The persistent-PTY claim-on-send model is the load-bearing choice for
+ * Phase 2 — do not reintroduce per-task spawn semantics without
+ * coordinating with the runtime adapter contract.
+ */
+export function makeTaskDispatchHandler(deps: {
+	agentManager: AgentManager;
+	emit: (event: DaemonEvent) => Promise<void>;
+}): (evt: TaskDispatchEvent) => Promise<void> {
+	const { agentManager, emit } = deps;
+	return async (evt: TaskDispatchEvent): Promise<void> => {
+		try {
+			const handle = findHandleForAgent(agentManager, evt.agentId);
+			if (handle === null) {
+				await emit({
+					kind: "pr-triage-dispatch-failed",
+					agentId: evt.agentId,
+					filename: evt.filename,
+					reason: "unregistered",
+					message: "no live handle at dispatch time",
+				});
+				return;
+			}
+			// Dual-adversarial I-E fix (extends async-bot M-3): validate
+			// `prompt` is a non-empty string BEFORE `runtime.send`. Empty
+			// or missing prompts no longer silently advance to `resolved/`
+			// — the file is LEFT in `tasks/pending/` for human inspection
+			// and the cron slot stays elevated until the operator drains
+			// it. Async-bot M-3 only logged the malformed shape; this fix
+			// stops the dispatch+claim path entirely.
+			const promptRaw = evt.taskContent.prompt;
+			if (typeof promptRaw !== "string" || promptRaw.length === 0) {
+				await emit({
+					kind: "pr-triage-dispatch-failed",
+					agentId: evt.agentId,
+					filename: evt.filename,
+					reason: "malformed-task",
+					message: `prompt field is ${
+						typeof promptRaw === "undefined"
+							? "absent"
+							: typeof promptRaw !== "string"
+								? `type ${typeof promptRaw}`
+								: "empty string"
+					}; task left in tasks/pending/ for operator inspection`,
+				});
+				return;
+			}
+			const promptText = promptRaw;
+			const runtime: AgentRuntime = resolveRuntime(handle.runtime);
+			const message: AgentMessage = {
+				kind: "prompt",
+				payload: { text: promptText },
+			};
+			try {
+				await runtime.send(handle, message);
+			} catch (err) {
+				await emit({
+					kind: "pr-triage-dispatch-failed",
+					agentId: evt.agentId,
+					filename: evt.filename,
+					reason: "send-failed",
+					message: err instanceof Error ? err.message : String(err),
+				});
+				return;
+			}
+			try {
+				await agentManager.claimTask(evt.filename, evt.agentId);
+			} catch (err) {
+				// claimTask itself surfaces `claim-task-failed` telemetry on
+				// fs.rename errors and resolves — a throw here is unexpected
+				// (e.g., assertSafeIdentifier on the filename). Promote it to
+				// listener-exception so the operator sees ONE dispatch event
+				// per task rather than mixed signal across taxonomies.
+				await emit({
+					kind: "pr-triage-dispatch-failed",
+					agentId: evt.agentId,
+					filename: evt.filename,
+					reason: "listener-exception",
+					message: err instanceof Error ? err.message : String(err),
+				});
+			}
+		} catch (err) {
+			await emit({
+				kind: "pr-triage-dispatch-failed",
+				agentId: evt.agentId,
+				filename: evt.filename,
+				reason: "listener-exception",
+				message: err instanceof Error ? err.message : String(err),
+			});
+		} finally {
+			// Dual-adversarial C-1 fix: ALWAYS release the per-filename
+			// in-flight guard, regardless of dispatch outcome. Without
+			// this, the next polling tick would suppress every subsequent
+			// dispatch for this filename and operators would see the
+			// cron-fired task wedged in `pending/` until daemon restart.
+			agentManager.releaseDispatchSlot(evt.filename);
+		}
+	};
+}
+
+/**
+ * Plan 04d Task 3 — build the safe-identifier-compliant sessionId for
+ * a daemon-startup-time pre-registered agent. Format:
+ *   `daemon-startup-<32 hex chars from UUID4>-<agentId>`
+ *
+ * The prefix marks startup-time registrations distinctly from runtime
+ * spawn sessionIds (which are typically `<agentId>-session`). The full
+ * 32-hex (~2^128) suffix makes birthday-paradox collisions astronomically
+ * negligible at Phase-3 scale (dozens of agents per daemon × many daemon
+ * restarts). Earlier drafts truncated to 8 hex (~10^9) which would have
+ * been acceptable for pr-triage alone — review #4 flagged the truncation
+ * as cliff-edge once additional agents are wired.
+ *
+ * Per `assertSafeIdentifier`: no `/`, `\\`, `..`, NUL; max length
+ * enforced by the validator. UUID hex + hyphens satisfy all constraints.
+ */
+export function makeDaemonStartupSessionId(agentId: string): string {
+	const suffix = randomUUID().replace(/-/g, "");
+	return `daemon-startup-${suffix}-${agentId}`;
+}
+
+/**
+ * Dual-adversarial I-C fix — backoff schedule (ms) for cron-agent
+ * re-registration after a boot-spawned PTY exits. Exported so the
+ * regression test can advance fake timers deterministically.
+ *
+ *   attempt 1 → 5s
+ *   attempt 2 → 30s
+ *   attempt 3 → 60s
+ *
+ * After attempt 3 fails, `cron-agent-restart-failed` telemetry fires
+ * and the agent stays unrouted until the daemon is restarted.
+ */
+export const CRON_AGENT_RESTART_BACKOFF_MS: readonly number[] = [
+	5_000, 30_000, 60_000,
+];
+
+/**
+ * Dual-adversarial I-C fix — register a cron-driven agent and arm a
+ * restart loop that re-spawns the agent if its persistent PTY exits.
+ *
+ * Reason: `startDaemon`'s cron pre-register loop spawns a real PTY at
+ * boot. The `task-dispatch-needed` handler relies on the handle staying
+ * alive across many cron fires (the persistent-PTY claim-on-send
+ * model). If the PTY exits before the next cron-fire (credential
+ * expiry, crash, heartbeat-driven recycle), `isAgentRegistered` would
+ * return false and dispatch would silently emit
+ * `pr-triage-dispatch-failed { reason: "unregistered" }` on every
+ * subsequent fire until manual restart.
+ *
+ * The loop subscribes to the runtime's `onStatusChanged` callback on
+ * the spawned handle. On `exited` or `crashed`, it schedules a
+ * re-registration with exponential backoff
+ * (`CRON_AGENT_RESTART_BACKOFF_MS`). Each successful re-registration
+ * emits `cron-agent-restarted`; budget exhaustion emits
+ * `cron-agent-restart-failed`. Re-registration succeeded — the new
+ * handle gets its own status callback so a second exit reuses the same
+ * restart loop.
+ *
+ * The helper short-circuits when `isShuttingDown()` returns true (the
+ * daemon teardown drains the polling loop and removes listeners; a
+ * new spawn during this window would survive past
+ * `agentManager.shutdownAgent()` and become an orphan PTY).
+ *
+ * Exported for unit testability (main.test.ts).
+ */
+export async function registerCronAgentWithRestart(deps: {
+	agentManager: AgentManager;
+	agentId: string;
+	agentConfig: AgentConfigShape;
+	isShuttingDown: () => boolean;
+}): Promise<void> {
+	const { agentManager, agentId, agentConfig, isShuttingDown } = deps;
+
+	const armExitListener = (handle: AgentHandle): void => {
+		const runtime: AgentRuntime = resolveRuntime(handle.runtime);
+		let scheduled = false;
+		const unsubscribe = runtime.onStatusChanged(handle, (status) => {
+			if (status !== "exited" && status !== "crashed") return;
+			if (scheduled) return;
+			scheduled = true;
+			// Defer the actual unsubscribe + retry to a microtask so the
+			// status-callback site is not entangled with PTY teardown.
+			void (async () => {
+				try {
+					unsubscribe();
+				} catch {
+					// best-effort
+				}
+				await scheduleRestart(1);
+			})();
+		});
+	};
+
+	const scheduleRestart = async (attempt: number): Promise<void> => {
+		if (isShuttingDown()) return;
+		if (attempt > CRON_AGENT_RESTART_BACKOFF_MS.length) {
+			await emit({
+				kind: "cron-agent-restart-failed",
+				agentId,
+			});
+			return;
+		}
+		const delay = CRON_AGENT_RESTART_BACKOFF_MS[attempt - 1];
+		await new Promise<void>((resolve) => {
+			const t = setTimeout(resolve, delay);
+			if (typeof t.unref === "function") t.unref();
+		});
+		if (isShuttingDown()) return;
+		try {
+			const handle = await agentManager.registerAgent({
+				agentId,
+				runtimeId: agentConfig.runtimeId,
+				...(agentConfig.org !== undefined ? { org: agentConfig.org } : {}),
+				cwd: agentConfig.cwd,
+				env: agentConfig.env,
+				sessionId: makeDaemonStartupSessionId(agentId),
+			});
+			await emit({
+				kind: "cron-agent-restarted",
+				agentId,
+				attempt,
+			});
+			armExitListener(handle);
+		} catch (err) {
+			console.error(
+				`[daemon] cron-agent restart attempt ${attempt} for ${agentId} failed: ${err instanceof Error ? err.message : String(err)}`,
+			);
+			await scheduleRestart(attempt + 1);
+		}
+	};
+
+	try {
+		const handle = await agentManager.registerAgent({
+			agentId,
+			runtimeId: agentConfig.runtimeId,
+			...(agentConfig.org !== undefined ? { org: agentConfig.org } : {}),
+			cwd: agentConfig.cwd,
+			env: agentConfig.env,
+			sessionId: makeDaemonStartupSessionId(agentId),
+		});
+		armExitListener(handle);
+	} catch (err) {
+		console.error(
+			`[daemon] startup registerAgent(${agentId}) failed: ${err instanceof Error ? err.message : String(err)} — agent will be unrouted`,
+		);
+	}
 }
 
 /**
@@ -831,6 +1280,14 @@ export async function startDaemon(
 		);
 	}
 
+	// Dual-adversarial I-C fix: hoist the `shuttingDown` flag declaration
+	// above the cron pre-register loop so `registerCronAgentWithRestart`
+	// (called from that loop) can observe shutdown and skip re-spawn
+	// attempts when the daemon is tearing down. Assignment still happens
+	// inside `shutdown`; readers below pick up the value through the
+	// closure as before.
+	let shuttingDown = false;
+
 	// Plan 04b Task 3 — construct CronScheduler AFTER AgentManager (07b's
 	// EventEmitter + claimTask are alive for the scheduler's constructor
 	// terminal-event subscriptions) and BEFORE the auto-start loop (so the
@@ -854,6 +1311,59 @@ export async function startDaemon(
 			);
 		}
 	}
+
+	// Plan 04d Task 3 — pre-register every cron-driven agent so the
+	// polling loop's `isAgentRegistered(agentId)` check returns true and
+	// fired tasks route through dispatch rather than emitting
+	// `task-unrouted`. Each agent's `agent-config.json` is loaded via
+	// `loadAgentConfig`; failure to load is logged and skipped (degraded
+	// state — the dispatch handler emits `pr-triage-dispatch-failed
+	// { reason: "unregistered" }` when a cron-fire arrives for an agent
+	// whose pre-registration failed, which is the same telemetry shape
+	// operators already watch).
+	//
+	// SPAWN-AT-BOOT SEMANTICS (Plan 04d I-C dual-adversarial note):
+	// `registerAgent` for cron agents spawns a real PTY at daemon
+	// startup. The handle stays alive across many cron fires (persistent
+	// PTY adapter — see `makeTaskDispatchHandler` JSDoc). If that PTY
+	// exits before a cron-fire (credential expiry, crash,
+	// heartbeat-driven recycle), `isAgentRegistered` would return false
+	// and dispatch would emit `pr-triage-dispatch-failed { reason:
+	// "unregistered" }` silently for every subsequent cron-fire until
+	// the daemon was restarted. The re-register loop below
+	// (`scheduleCronAgentRestart`) subscribes to the runtime's status
+	// callback and re-runs `registerAgent` on exit/crash with
+	// exponential backoff (3 attempts at 5s/30s/60s).
+	for (const opts of cronEntries) {
+		let agentConfig: AgentConfigShape;
+		try {
+			agentConfig = await loadAgentConfig(agentsDir, opts.agentId);
+		} catch (err) {
+			console.error(
+				`[daemon] loadAgentConfig(${opts.agentId}) failed: ${err instanceof Error ? err.message : String(err)} — agent will be unrouted; dispatch will emit pr-triage-dispatch-failed`,
+			);
+			continue;
+		}
+		await registerCronAgentWithRestart({
+			agentManager,
+			agentId: opts.agentId,
+			agentConfig,
+			isShuttingDown: () => shuttingDown,
+		});
+	}
+
+	// Plan 04d Task 3 — subscribe the dispatch handler BEFORE
+	// `startPollingLoop` (called below at the post-shutdown-guard step) so
+	// the first tick already sees a listener. C2 stress fix: the
+	// removeAllListeners('task-dispatch-needed') teardown must run BEFORE
+	// `agentManager.stopPollingLoop()` so a tick that fires during
+	// shutdown does not silently decrement via the listener-less
+	// `claimTask` fallback path.
+	const taskDispatchHandler = makeTaskDispatchHandler({ agentManager, emit });
+	const taskDispatchListener = (evt: TaskDispatchEvent): void => {
+		void taskDispatchHandler(evt);
+	};
+	agentManager.on("task-dispatch-needed", taskDispatchListener);
 
 	const ipcServer = new IpcServer({
 		socketPath: config.ipc.socketPath,
@@ -888,7 +1398,8 @@ export async function startDaemon(
 		await bot.start();
 	}
 
-	let shuttingDown = false;
+	// `shuttingDown` is declared above (hoisted for the I-C cron-agent
+	// restart loop). All assignments happen inside `shutdown`.
 	const shutdownHandlers = new Set<() => void>();
 	let resolveShutdownPromise!: () => void;
 	const shutdownPromise = new Promise<void>((resolve) => {
@@ -961,6 +1472,18 @@ export async function startDaemon(
 			},
 			stageTimeoutMs,
 		);
+		// Dual-adversarial C-2 fix: REORDERED — stop the polling loop
+		// FIRST so the in-flight tick drains (no fresh dispatch emits),
+		// THEN remove the listener. The previous order (removeListener
+		// BEFORE stopPollingLoop) created a window where an in-flight
+		// tick observed zero listeners and used the now-removed
+		// `claimTask` fallback path to silently advance the cron-fired
+		// task to `resolved/` without dispatching it — a real data-loss
+		// path on every deploy that coincided with a pending task.
+		// Belt-and-suspenders pairing with the agent-manager C-2 fix
+		// (which drops the listener-less fallback entirely and emits
+		// `pr-triage-dispatch-failed { reason: "no-listener" }` if the
+		// race ever does fire).
 		await withTimeout(
 			"agentManager.stopPollingLoop",
 			async () => {
@@ -974,6 +1497,13 @@ export async function startDaemon(
 			},
 			stageTimeoutMs,
 		);
+		try {
+			agentManager.removeListener("task-dispatch-needed", taskDispatchListener);
+		} catch (err) {
+			console.error(
+				`[daemon] removeListener(task-dispatch-needed) failed: ${err instanceof Error ? err.message : String(err)}`,
+			);
+		}
 		// Opus I4: bound each stage with `withTimeout`. A hung adapter
 		// (heartbeat sweep, bot polling, IPC drain, or per-handle
 		// shutdown) would otherwise block the entire daemon and the
