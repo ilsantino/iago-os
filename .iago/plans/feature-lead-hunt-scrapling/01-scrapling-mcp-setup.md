@@ -26,14 +26,14 @@ Install Scrapling with AI extras and register its built-in MCP server as a globa
 ### Task 1: Install Scrapling with AI extras and browsers
 - **files:** none (global Python install)
 - **action:** Run `pip install "scrapling[ai]"` in the global Python environment used by existing MCP servers (same env as `markitdown_mcp` and `mcp_youtube_transcript`). Then run `scrapling install` to download Playwright + Camoufox browsers. Capture both stdout/stderr to a temp file for the next task. Requires Python 3.10+; if the active Python is older, STOP and report.
-- **verify:** `python -c "import scrapling; print(scrapling.__version__)" && scrapling --version`
-- **expected:** Scrapling version prints (e.g., `0.3.6` or newer) and `scrapling --version` returns a version line with exit 0.
+- **verify:** `python -c "import scrapling; print(scrapling.__version__)"`
+- **expected:** Scrapling version prints (e.g., `0.3.6` or newer) and exits 0. Note: the Scrapling CLI has no `--version` flag (exposes subcommands only: `extract`, `install`, `mcp`, `shell`); use the import check only.
 
 ### Task 2: Determine MCP launch shape (Windows-safe)
 - **files:** none
 - **action:** Existing global MCPs (`markitdown`, `youtube-transcript`) use `"command": "python", "args": ["-m", "<module>"]` — Windows-safe because it does not depend on Scripts/ being on the PATH that Claude Code inherits. Test if Scrapling supports the same pattern: run `python -m scrapling mcp --help 2>&1 | head -40`. If exit 0 and help text shows the `mcp` subcommand, the launch shape will be `{"command":"python","args":["-m","scrapling","mcp"]}`. If it fails, fall back to absolute-path form: locate the scrapling binary via `python -c "import shutil; print(shutil.which('scrapling'))"` and use `{"command":"<absolute-path-to-scrapling.exe>","args":["mcp"]}`. Do NOT actually start the server (it blocks on stdio). Record which shape will be used in Task 4's install log.
 - **verify:** `python -m scrapling mcp --help 2>&1 | head -10 || (python -c "import shutil; print(shutil.which('scrapling'))" && echo "FALLBACK: use absolute path")`
-- **expected:** Either `python -m scrapling mcp --help` prints help (preferred) OR `shutil.which('scrapling')` prints an absolute path (fallback).
+- **expected:** Either `python -m scrapling mcp --help` prints help (preferred) OR `shutil.which('scrapling')` prints an absolute path (fallback). **Note (from install log):** the preferred shape does NOT work on this machine — `scrapling` has no `__main__.py`. The fallback (absolute path to `scrapling.EXE`) was used. If re-running, expect to hit the fallback path again.
 
 ### Task 3: Register Scrapling MCP in `~/.claude.json`
 - **files:** `C:/Users/sanal/.claude.json`
@@ -64,4 +64,4 @@ Install Scrapling with AI extras and register its built-in MCP server as a globa
 
 ## Verification
 
-After all tasks, restart any open Claude Code session (close + reopen). Then in a new session run `/mcp` and confirm `scrapling` appears in the connected-servers list with 6 tools (`get`, `bulk_get`, `fetch`, `bulk_fetch`, `stealthy_fetch`, `bulk_stealthy_fetch`). If tools don't surface, check `~/.claude.json.bak-*` for rollback.
+After all tasks, restart any open Claude Code session (close + reopen). Then in a new session run `/mcp` and confirm `scrapling` appears in the connected-servers list with the 6 required tools (`get`, `bulk_get`, `fetch`, `bulk_fetch`, `stealthy_fetch`, `bulk_stealthy_fetch`) — the server actually exposes 10 total (including `open_session`, `close_session`, `list_sessions`, `screenshot`), so seeing 10 is correct. If tools don't surface, check `~/.claude.json.bak-*` for rollback.

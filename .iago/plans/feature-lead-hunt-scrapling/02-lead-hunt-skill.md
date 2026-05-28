@@ -83,6 +83,7 @@ Ship `/lead-hunt` as a Claude Code skill that orchestrates Scrapling MCP for fre
   - **P4**: Summary line printed with `needs_apollo_validation` count
   - **P5**: Total wall-clock ≤180s
   Anything else (rate-limit fallbacks, partial extractions, % needing Apollo) is OBSERVATIONAL not a failure. If target site is down, substitute with `https://www.amexcomp.com.mx/socios/` (Asociación Mexicana de Empaque) as backup. If MCP unreachable, STOP and revisit Plan 01 Task 3. If target itself blocks all 3 fetcher tiers, document and pick a different public-directory target — that proves the skill's failure path works correctly.
+  **⚠ Note:** Both smoke-test URLs are external dependencies. P2/P3 PASS criteria (CSV with ≥1 data row, confidence ≥0.4) may fail if either site changes structure even when the skill itself is correct. If criteria fail on a re-run, verify the target site still renders member data before attributing failure to the skill.
 - **verify:** `test -f .iago/handoff/lead-hunt-smoke-test.md && grep -c "^- P[1-5]:" .iago/handoff/lead-hunt-smoke-test.md`
 - **expected:** File exists; exactly 5 `- P1:` through `- P5:` lines with PASS/FAIL/N/A verdicts.
 

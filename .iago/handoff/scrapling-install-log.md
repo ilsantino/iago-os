@@ -45,6 +45,10 @@ chromadb 0.6.3 requires chroma-hnswlib==0.7.6, but you have chroma-hnswlib 0.7.5
   "markitdown"`). The pin is conservative; markitdown does not use any removed 1.x API. No action
   needed. (The conflict text once showed a transient "mcp 1.27.1"; the actually-installed and
   running version is **1.26.0**.)
+  **⚠ MONITOR:** This conflict persists in the environment. If `markitdown-mcp` is ever reinstalled
+  or `pip install --upgrade markitdown-mcp` is run, pip may downgrade `mcp` back to 1.8.x, breaking
+  Scrapling at runtime. After any future `pip install` in this environment, re-verify both MCP
+  servers with an offline `initialize` round-trip test.
 - **chroma-hnswlib:** PRE-EXISTING, unrelated to this install. `chroma-hnswlib` is NOT in the
   "Successfully installed" list — it belongs to mempalace's `chromadb` and was already mismatched
   before this work. Out of scope; left untouched.
@@ -96,6 +100,7 @@ scrapling.cli` runs but the click group does not dispatch cleanly (exit 0, no ou
 
 **Verification round-trips (offline JSON-RPC `initialize`, 4–5s timeout):**
 - Against the launch command directly → `serverInfo = {"name": "Scrapling", "version": "1.26.0"}`, PASS.
+  *(Note: `"version": "1.26.0"` is the MCP SDK version, NOT Scrapling's version — Scrapling is `0.4.8`. This is a Scrapling upstream bug: the server reports the MCP library version as its own. Do not confuse the two when debugging.)*
 - Against the command **read from the registered config** → PASS.
 - `tools/list` returned **10 tools** — all 6 required (`get`, `bulk_get`, `fetch`, `bulk_fetch`,
   `stealthy_fetch`, `bulk_stealthy_fetch`) plus 4 bonus session/screenshot tools
