@@ -145,6 +145,7 @@ Every plan goes through these stages in `scripts/execute-pipeline.sh`:
 | `/healthcare-phi-compliance` | HIPAA/PHI compliance | Healthcare features with PHI |
 | `/liquid-glass-design` | Glassmorphism UI effects | Design calls for glass effects |
 | `/agent-payment-x402` | Agent-to-agent payment (x402) | Agent payment flows, not Stripe/PayPal |
+| `/lead-hunt` | Scrapling-MCP-backed lead discovery, emits canonical CSV with Apollo-validation flag | iaGO prospecting / quick enrichment of high-value targets (5-50 leads, public sites) |
 
 ### Audit / Bug Bounty (on-demand deep sweeps)
 
