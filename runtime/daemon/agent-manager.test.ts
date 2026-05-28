@@ -68,19 +68,32 @@ type RenameFn = (
 	source: import("node:fs").PathLike,
 	dest: import("node:fs").PathLike,
 ) => Promise<void>;
-const { renameMock, renameState } = vi.hoisted(() => ({
-	renameMock: vi.fn(),
-	renameState: { real: null as RenameFn | null },
-}));
+type ReadFileFn = (
+	path: import("node:fs").PathLike,
+	options: BufferEncoding | { encoding: BufferEncoding; flag?: string },
+) => Promise<string>;
+const { renameMock, renameState, readFileMock, readFileState } = vi.hoisted(
+	() => ({
+		renameMock: vi.fn(),
+		renameState: { real: null as RenameFn | null },
+		readFileMock: vi.fn(),
+		readFileState: { real: null as ReadFileFn | null },
+	}),
+);
 vi.mock("node:fs/promises", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("node:fs/promises")>();
 	renameState.real = actual.rename as RenameFn;
+	readFileState.real = actual.readFile as unknown as ReadFileFn;
 	return {
 		...actual,
 		rename: (
 			source: import("node:fs").PathLike,
 			dest: import("node:fs").PathLike,
 		) => renameMock(source, dest),
+		readFile: (
+			p: import("node:fs").PathLike,
+			options: BufferEncoding | { encoding: BufferEncoding; flag?: string },
+		) => readFileMock(p, options),
 	};
 });
 
@@ -103,6 +116,13 @@ beforeEach(async () => {
 			throw new Error("renameState.real not initialized by vi.mock factory");
 		}
 		return renameState.real(source, dest);
+	});
+	readFileMock.mockReset();
+	readFileMock.mockImplementation((p, options) => {
+		if (readFileState.real === null) {
+			throw new Error("readFileState.real not initialized by vi.mock factory");
+		}
+		return readFileState.real(p, options);
 	});
 	vi.spyOn(console, "error").mockImplementation(() => {});
 });
@@ -1569,6 +1589,40 @@ function emittedEventsOfKind(kind: DaemonEvent["kind"]): DaemonEvent[] {
 	return out;
 }
 
+/**
+ * Dual-adversarial C-2 reconcile helper: wires a `task-dispatch-needed`
+ * listener that immediately drives `claimTask`. Mirrors how
+ * `makeTaskDispatchHandler` (main.ts) bridges polling emit → claim in
+ * production, minus runtime.send (PL tests do not exercise the runtime
+ * path). The C-2 fix removed the listener-less fallback in
+ * `processPendingTask`, so PL-1/4/5/8 must register a listener to keep
+ * the claim path live. `flush()` awaits any in-flight claim promises so
+ * assertions run AFTER the rename + telemetry land.
+ */
+function wireAutoClaim(mgr: AgentManager): { flush: () => Promise<void> } {
+	const pending: Array<Promise<void>> = [];
+	mgr.on(
+		"task-dispatch-needed",
+		(evt: { filename: string; agentId: string }) => {
+			pending.push(
+				mgr
+					.claimTask(evt.filename, evt.agentId)
+					.catch(() => {})
+					.finally(() => {
+						mgr.releaseDispatchSlot(evt.filename);
+					}),
+			);
+		},
+	);
+	return {
+		async flush(): Promise<void> {
+			while (pending.length > 0) {
+				await Promise.all(pending.splice(0));
+			}
+		},
+	};
+}
+
 describe("AgentManager / polling-loop (Plan 07b)", () => {
 	it("(PL-1) happy path: claims a registered agent's pending task and emits task-resolved", async () => {
 		const ctrl = makeMockRuntime("mock-pty-pl1");
@@ -1593,8 +1647,10 @@ describe("AgentManager / polling-loop (Plan 07b)", () => {
 		mgr.on("task-resolved", (e: { agentId: string; filename: string }) => {
 			eventLog.push(e);
 		});
+		const dispatch = wireAutoClaim(mgr);
 
 		await mgr._pollingTickForTests();
+		await dispatch.flush();
 
 		// File moved from pending → resolved.
 		await expect(
@@ -1713,6 +1769,7 @@ describe("AgentManager / polling-loop (Plan 07b)", () => {
 			outputTaskNamePrefix: "pr-triage",
 			maxConcurrent: 1,
 		});
+		const dispatch = wireAutoClaim(mgr);
 
 		// Fire 1: writes task file, runningCount → 1.
 		await scheduler._tickForTests();
@@ -1721,6 +1778,7 @@ describe("AgentManager / polling-loop (Plan 07b)", () => {
 		// Polling tick claims the cron-fired task, emits task-resolved →
 		// CronScheduler decrement listener drops runningCount back to 0.
 		await mgr._pollingTickForTests();
+		await dispatch.flush();
 		expect(scheduler._runningCountForTests().get("pr-triage") ?? 0).toBe(0);
 
 		// Fire 2: same UTC minute as fire 1 — should NOT be overlap-prevented
@@ -1757,9 +1815,11 @@ describe("AgentManager / polling-loop (Plan 07b)", () => {
 			}),
 			"utf8",
 		);
+		const dispatch = wireAutoClaim(mgr);
 
 		// Tick 1: tmp file present, no .json yet → polling loop ignores.
 		await mgr._pollingTickForTests();
+		await dispatch.flush();
 
 		// Tmp file still there, untouched.
 		await fsp.access(tmpPath);
@@ -1773,6 +1833,7 @@ describe("AgentManager / polling-loop (Plan 07b)", () => {
 
 		// Tick 2: .json file present → claimed + task-resolved emitted.
 		await mgr._pollingTickForTests();
+		await dispatch.flush();
 		await fsp.access(path.join(pathFor("tasks/resolved"), finalName));
 		const resolved = emittedEventsOfKind("task-resolved");
 		expect(resolved).toHaveLength(1);
@@ -1915,8 +1976,10 @@ describe("AgentManager / polling-loop (Plan 07b)", () => {
 		mgr.on("task-resolved", (e: { agentId: string; filename: string }) => {
 			resolvedEvents.push(e);
 		});
+		const dispatch = wireAutoClaim(mgr);
 
 		await mgr._pollingTickForTests();
+		await dispatch.flush();
 
 		// claimTask attempted exactly one rename.
 		expect(renameMock).toHaveBeenCalledTimes(1);
@@ -2007,7 +2070,13 @@ describe("AgentManager / task-dispatch-needed event (Plan 04d)", () => {
 		expect(emittedEventsOfKind("task-resolved")).toHaveLength(0);
 	});
 
-	it("(DN-2) falls through to claimTask when no listener is subscribed (backwards-compat)", async () => {
+	it("(DN-2/C-2) no listener subscribed: file stays in pending, emits pr-triage-dispatch-failed { reason: 'no-listener' }, claimTask NOT called", async () => {
+		// Dual-adversarial C-2 regression: the listener-less fallback was a
+		// silent data-loss path during shutdown (between removeAllListeners
+		// and stopPollingLoop, in-flight ticks would claimTask without ever
+		// sending the prompt to a runtime). The fallback is removed; tasks
+		// MUST stay in pending/ and emit `no-listener` telemetry so the next
+		// boot retries them.
 		const ctrl = makeMockRuntime("mock-pty-dn2");
 		registerRuntime(ctrl.runtime);
 		const mgr = new AgentManager();
@@ -2026,19 +2095,113 @@ describe("AgentManager / task-dispatch-needed event (Plan 04d)", () => {
 			needsApproval: false,
 		});
 
+		const claimSpy = vi.spyOn(mgr, "claimTask");
+
 		// No 'task-dispatch-needed' listener subscribed.
 		await mgr._pollingTickForTests();
 
-		// Legacy decrement-only path: file moved to resolved + task-resolved
-		// telemetry fired.
-		await fsp.access(path.join(pathFor("tasks/resolved"), filename));
-		const resolved = emittedEventsOfKind("task-resolved");
-		expect(resolved).toHaveLength(1);
-		expect(resolved[0]).toMatchObject({
-			kind: "task-resolved",
-			agentId: "pr-triage",
+		// File stays in pending/, NOT moved to resolved/.
+		await fsp.access(path.join(pathFor("tasks/pending"), filename));
+		await expect(
+			fsp.access(path.join(pathFor("tasks/resolved"), filename)),
+		).rejects.toThrow();
+
+		// claimTask never invoked — no silent decrement.
+		expect(claimSpy).not.toHaveBeenCalled();
+
+		// No task-resolved telemetry.
+		expect(emittedEventsOfKind("task-resolved")).toHaveLength(0);
+
+		// `pr-triage-dispatch-failed { reason: "no-listener" }` emitted so
+		// operators can detect listener-less drift.
+		const failed = emittedEventsOfKind("pr-triage-dispatch-failed");
+		expect(failed).toHaveLength(1);
+		expect(failed[0]).toMatchObject({
+			kind: "pr-triage-dispatch-failed",
 			filename,
+			reason: "no-listener",
 		});
+	});
+
+	it("(DN-2b/C-1) per-filename dispatchInFlight guard: two rapid ticks for same file emit dispatch ONCE", async () => {
+		// Dual-adversarial C-1 regression: processPendingTask emits
+		// 'task-dispatch-needed' synchronously and returns before the handler
+		// awaits runtime.send. A polling tick that fires before the handler
+		// resolves would re-emit the same filename. The per-filename
+		// dispatchInFlight guard suppresses the second emit until the handler
+		// calls releaseDispatchSlot from its finally block.
+		const ctrl = makeMockRuntime("mock-pty-dn2b");
+		registerRuntime(ctrl.runtime);
+		const mgr = new AgentManager();
+		await mgr.registerAgent({
+			agentId: "pr-triage",
+			runtimeId: "mock-pty-dn2b",
+			cwd: "/tmp/w",
+			env: {},
+			sessionId: "sess-dn2b",
+		});
+
+		const filename = "pr-triage__1700000110.json";
+		writePendingTask(filename, {
+			prompt: "do the triage",
+			agentId: "pr-triage",
+			needsApproval: false,
+		});
+
+		const dispatchEvents: unknown[] = [];
+		// Slow listener: holds the dispatch slot for 100ms. Without the
+		// guard, the second tick would emit again before this resolves.
+		mgr.on("task-dispatch-needed", async () => {
+			dispatchEvents.push({ at: Date.now() });
+			await new Promise<void>((r) => setTimeout(r, 100));
+		});
+
+		await mgr._pollingTickForTests();
+		// Second tick fires immediately while the listener is still awaiting.
+		await mgr._pollingTickForTests();
+
+		expect(dispatchEvents).toHaveLength(1);
+
+		// File still in pending (listener owns claim; nobody called claimTask).
+		await fsp.access(path.join(pathFor("tasks/pending"), filename));
+	});
+
+	it("(DN-2c/C-1) releaseDispatchSlot allows a subsequent tick to re-emit after handler completes", async () => {
+		// Companion to DN-2b: once the handler signals it has finished by
+		// calling releaseDispatchSlot, a later tick must be free to emit for
+		// the same filename (e.g., a retry scenario where the file was not
+		// claimed because the runtime was unregistered). Asserts the guard
+		// does not leak across handler completions.
+		const ctrl = makeMockRuntime("mock-pty-dn2c");
+		registerRuntime(ctrl.runtime);
+		const mgr = new AgentManager();
+		await mgr.registerAgent({
+			agentId: "pr-triage",
+			runtimeId: "mock-pty-dn2c",
+			cwd: "/tmp/w",
+			env: {},
+			sessionId: "sess-dn2c",
+		});
+
+		const filename = "pr-triage__1700000111.json";
+		writePendingTask(filename, {
+			prompt: "do the triage",
+			agentId: "pr-triage",
+			needsApproval: false,
+		});
+
+		const dispatchEvents: unknown[] = [];
+		mgr.on("task-dispatch-needed", (e: { filename: string }) => {
+			dispatchEvents.push(e);
+		});
+
+		await mgr._pollingTickForTests();
+		expect(dispatchEvents).toHaveLength(1);
+
+		// Handler signals completion → next tick is allowed to re-emit.
+		mgr.releaseDispatchSlot(filename);
+		await mgr._pollingTickForTests();
+		expect(dispatchEvents).toHaveLength(2);
 	});
 
 	it("(DN-3) payload includes parsed taskContent with prompt + agentId", async () => {
@@ -2076,7 +2239,14 @@ describe("AgentManager / task-dispatch-needed event (Plan 04d)", () => {
 		expect(captured[0]).toEqual(body);
 	});
 
-	it("(DN-4) listener exception is caught by polling tick wrapper; no double-claim, claimTask NOT called", async () => {
+	it("(DN-4/I-A) listener exception: claimTask spied + NEVER called, polling-loop-error telemetry emitted, file stays pending", async () => {
+		// Dual-adversarial I-A hardening: prior DN-4 only checked filesystem
+		// state. A direct spy on mgr.claimTask is the strongest assertion
+		// that the C1 invariant ("listener crashes must not silently advance
+		// the file to resolved") holds — even if a future refactor changes
+		// the post-failure move target. Also asserts the wrapper surfaces
+		// the crash as polling-loop-error telemetry (no .catch swallow on
+		// the tick itself; runPollingTickGuarded owns the try/catch).
 		const ctrl = makeMockRuntime("mock-pty-dn4");
 		registerRuntime(ctrl.runtime);
 		const mgr = new AgentManager();
@@ -2095,19 +2265,19 @@ describe("AgentManager / task-dispatch-needed event (Plan 04d)", () => {
 			needsApproval: false,
 		});
 
+		const claimSpy = vi.spyOn(mgr, "claimTask");
+
 		mgr.on("task-dispatch-needed", () => {
 			throw new Error("simulated listener crash");
 		});
 
-		// runPollingTickGuarded surfaces uncaught exceptions as
-		// polling-loop-error telemetry. The key invariants under test:
-		// (i) processPendingTask does NOT call claimTask after emit, even
-		//     when the listener throws.
-		// (ii) the file stays in tasks/pending/ for the next tick.
-		await mgr._pollingTickForTests().catch(() => {
-			// Swallow — polling tick surfaces the listener crash as
-			// polling-loop-error telemetry; assertions below check filesystem state.
-		});
+		// runPollingTickGuarded swallows the listener crash and surfaces it
+		// as polling-loop-error telemetry; the tick itself MUST resolve
+		// (no .catch wrapper needed).
+		await mgr._pollingTickForTests();
+
+		// I-A: direct spy assertion — claimTask never invoked.
+		expect(claimSpy).not.toHaveBeenCalled();
 
 		// File NOT moved to resolved — listener crash does not cause an
 		// accidental decrement.
@@ -2116,12 +2286,21 @@ describe("AgentManager / task-dispatch-needed event (Plan 04d)", () => {
 			fsp.access(path.join(pathFor("tasks/resolved"), filename)),
 		).rejects.toThrow();
 
-		// task-resolved NEVER fired (the C1 invariant — listener crashes
-		// must not silently advance the file to resolved).
+		// task-resolved NEVER fired.
 		expect(emittedEventsOfKind("task-resolved")).toHaveLength(0);
+
+		// I-A: polling-loop-error telemetry emitted with the listener crash.
+		const errors = emittedEventsOfKind("polling-loop-error");
+		expect(errors.length).toBeGreaterThanOrEqual(1);
 	});
 
-	it("(DN-5) oversized task payload is rejected as task-poisoned (oversized-task) BEFORE emit", async () => {
+	it("(DN-5/I-B) oversized task payload: stat-rejected BEFORE readFile allocation; poisoned with oversized-task", async () => {
+		// Dual-adversarial I-B regression: prior implementation called
+		// fsp.readFile(src, "utf8") and THEN checked Buffer.byteLength,
+		// allocating the full string per polling tick. The fix routes
+		// through fsp.stat first; oversized files never reach readFile.
+		// Spy on readFile to assert it was NEVER called for the oversized
+		// path — the strongest evidence the heap allocation was skipped.
 		const ctrl = makeMockRuntime("mock-pty-dn5");
 		registerRuntime(ctrl.runtime);
 		const mgr = new AgentManager();
@@ -2150,7 +2329,20 @@ describe("AgentManager / task-dispatch-needed event (Plan 04d)", () => {
 			dispatchEvents.push(e);
 		});
 
+		// Reset readFileMock call count so we only count calls during the
+		// polling tick (registerAgent + setup may invoke readFile elsewhere).
+		const callsBeforeTick = readFileMock.mock.calls.length;
+
 		await mgr._pollingTickForTests();
+
+		// I-B: readFile MUST NOT have been called for the oversized src
+		// path. Filter by source path to ignore unrelated readFile calls
+		// (state-paths bootstrap, session-log reads, etc.).
+		const srcAbs = path.join(pathFor("tasks/pending"), filename);
+		const readsOfSrc = readFileMock.mock.calls
+			.slice(callsBeforeTick)
+			.filter((call) => call[0] === srcAbs);
+		expect(readsOfSrc).toHaveLength(0);
 
 		// File moved to poisoned/, not emitted to dispatch listeners.
 		await fsp.access(path.join(pathFor("tasks/poisoned"), filename));
@@ -2162,6 +2354,54 @@ describe("AgentManager / task-dispatch-needed event (Plan 04d)", () => {
 			kind: "task-poisoned",
 			filename,
 			reason: "oversized-task",
+		});
+	});
+
+	it("(DN-6/M-A) agentId exceeding 255 chars is poisoned as missing-agent-id; no dispatch emit, no isAgentRegistered lookup with crafted id", async () => {
+		// Dual-adversarial M-A regression: an adversarial task file with a
+		// 10KB agentId would have flowed through isAgentRegistered (bounded
+		// by Map size, fine) but ended up in telemetry strings, filenames,
+		// and log lines (unbounded). The cap fires BEFORE any of those
+		// touch the value.
+		const ctrl = makeMockRuntime("mock-pty-dn6");
+		registerRuntime(ctrl.runtime);
+		const mgr = new AgentManager();
+		await mgr.registerAgent({
+			agentId: "pr-triage",
+			runtimeId: "mock-pty-dn6",
+			cwd: "/tmp/w",
+			env: {},
+			sessionId: "sess-dn6",
+		});
+
+		const filename = "pr-triage__1700000105.json";
+		const oversizedAgentId = "x".repeat(256);
+		writePendingTask(filename, {
+			prompt: "do the triage",
+			agentId: oversizedAgentId,
+			needsApproval: false,
+		});
+
+		const dispatchEvents: unknown[] = [];
+		mgr.on("task-dispatch-needed", (e: unknown) => {
+			dispatchEvents.push(e);
+		});
+
+		await mgr._pollingTickForTests();
+
+		// File moved to poisoned/, NOT to resolved/, NOT in pending/.
+		await fsp.access(path.join(pathFor("tasks/poisoned"), filename));
+		await expect(
+			fsp.access(path.join(pathFor("tasks/pending"), filename)),
+		).rejects.toThrow();
+		expect(dispatchEvents).toHaveLength(0);
+
+		const poisoned = emittedEventsOfKind("task-poisoned");
+		expect(poisoned).toHaveLength(1);
+		expect(poisoned[0]).toMatchObject({
+			kind: "task-poisoned",
+			filename,
+			reason: "missing-agent-id",
 		});
 	});
 });

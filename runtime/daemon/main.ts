@@ -590,16 +590,31 @@ export function makeTaskDispatchHandler(deps: {
 				});
 				return;
 			}
+			// Dual-adversarial I-E fix (extends async-bot M-3): validate
+			// `prompt` is a non-empty string BEFORE `runtime.send`. Empty
+			// or missing prompts no longer silently advance to `resolved/`
+			// — the file is LEFT in `tasks/pending/` for human inspection
+			// and the cron slot stays elevated until the operator drains
+			// it. Async-bot M-3 only logged the malformed shape; this fix
+			// stops the dispatch+claim path entirely.
 			const promptRaw = evt.taskContent.prompt;
-			let promptText: string;
-			if (typeof promptRaw === "string") {
-				promptText = promptRaw;
-			} else {
-				console.error(
-					`[daemon] dispatch: malformed task ${evt.filename} — prompt field is ${typeof promptRaw === "undefined" ? "absent" : `type ${typeof promptRaw}`}; sending empty-string prompt`,
-				);
-				promptText = "";
+			if (typeof promptRaw !== "string" || promptRaw.length === 0) {
+				await emit({
+					kind: "pr-triage-dispatch-failed",
+					agentId: evt.agentId,
+					filename: evt.filename,
+					reason: "malformed-task",
+					message: `prompt field is ${
+						typeof promptRaw === "undefined"
+							? "absent"
+							: typeof promptRaw !== "string"
+								? `type ${typeof promptRaw}`
+								: "empty string"
+					}; task left in tasks/pending/ for operator inspection`,
+				});
+				return;
 			}
+			const promptText = promptRaw;
 			const runtime: AgentRuntime = resolveRuntime(handle.runtime);
 			const message: AgentMessage = {
 				kind: "prompt",
@@ -641,6 +656,13 @@ export function makeTaskDispatchHandler(deps: {
 				reason: "listener-exception",
 				message: err instanceof Error ? err.message : String(err),
 			});
+		} finally {
+			// Dual-adversarial C-1 fix: ALWAYS release the per-filename
+			// in-flight guard, regardless of dispatch outcome. Without
+			// this, the next polling tick would suppress every subsequent
+			// dispatch for this filename and operators would see the
+			// cron-fired task wedged in `pending/` until daemon restart.
+			agentManager.releaseDispatchSlot(evt.filename);
 		}
 	};
 }
@@ -664,6 +686,134 @@ export function makeTaskDispatchHandler(deps: {
 export function makeDaemonStartupSessionId(agentId: string): string {
 	const suffix = randomUUID().replace(/-/g, "");
 	return `daemon-startup-${suffix}-${agentId}`;
+}
+
+/**
+ * Dual-adversarial I-C fix — backoff schedule (ms) for cron-agent
+ * re-registration after a boot-spawned PTY exits. Exported so the
+ * regression test can advance fake timers deterministically.
+ *
+ *   attempt 1 → 5s
+ *   attempt 2 → 30s
+ *   attempt 3 → 60s
+ *
+ * After attempt 3 fails, `cron-agent-restart-failed` telemetry fires
+ * and the agent stays unrouted until the daemon is restarted.
+ */
+export const CRON_AGENT_RESTART_BACKOFF_MS: readonly number[] = [
+	5_000, 30_000, 60_000,
+];
+
+/**
+ * Dual-adversarial I-C fix — register a cron-driven agent and arm a
+ * restart loop that re-spawns the agent if its persistent PTY exits.
+ *
+ * Reason: `startDaemon`'s cron pre-register loop spawns a real PTY at
+ * boot. The `task-dispatch-needed` handler relies on the handle staying
+ * alive across many cron fires (the persistent-PTY claim-on-send
+ * model). If the PTY exits before the next cron-fire (credential
+ * expiry, crash, heartbeat-driven recycle), `isAgentRegistered` would
+ * return false and dispatch would silently emit
+ * `pr-triage-dispatch-failed { reason: "unregistered" }` on every
+ * subsequent fire until manual restart.
+ *
+ * The loop subscribes to the runtime's `onStatusChanged` callback on
+ * the spawned handle. On `exited` or `crashed`, it schedules a
+ * re-registration with exponential backoff
+ * (`CRON_AGENT_RESTART_BACKOFF_MS`). Each successful re-registration
+ * emits `cron-agent-restarted`; budget exhaustion emits
+ * `cron-agent-restart-failed`. Re-registration succeeded — the new
+ * handle gets its own status callback so a second exit reuses the same
+ * restart loop.
+ *
+ * The helper short-circuits when `isShuttingDown()` returns true (the
+ * daemon teardown drains the polling loop and removes listeners; a
+ * new spawn during this window would survive past
+ * `agentManager.shutdownAgent()` and become an orphan PTY).
+ *
+ * Exported for unit testability (main.test.ts).
+ */
+export async function registerCronAgentWithRestart(deps: {
+	agentManager: AgentManager;
+	agentId: string;
+	agentConfig: AgentConfigShape;
+	isShuttingDown: () => boolean;
+}): Promise<void> {
+	const { agentManager, agentId, agentConfig, isShuttingDown } = deps;
+
+	const armExitListener = (handle: AgentHandle): void => {
+		const runtime: AgentRuntime = resolveRuntime(handle.runtime);
+		let scheduled = false;
+		const unsubscribe = runtime.onStatusChanged(handle, (status) => {
+			if (status !== "exited" && status !== "crashed") return;
+			if (scheduled) return;
+			scheduled = true;
+			// Defer the actual unsubscribe + retry to a microtask so the
+			// status-callback site is not entangled with PTY teardown.
+			void (async () => {
+				try {
+					unsubscribe();
+				} catch {
+					// best-effort
+				}
+				await scheduleRestart(1);
+			})();
+		});
+	};
+
+	const scheduleRestart = async (attempt: number): Promise<void> => {
+		if (isShuttingDown()) return;
+		if (attempt > CRON_AGENT_RESTART_BACKOFF_MS.length) {
+			await emit({
+				kind: "cron-agent-restart-failed",
+				agentId,
+			});
+			return;
+		}
+		const delay = CRON_AGENT_RESTART_BACKOFF_MS[attempt - 1];
+		await new Promise<void>((resolve) => {
+			const t = setTimeout(resolve, delay);
+			if (typeof t.unref === "function") t.unref();
+		});
+		if (isShuttingDown()) return;
+		try {
+			const handle = await agentManager.registerAgent({
+				agentId,
+				runtimeId: agentConfig.runtimeId,
+				...(agentConfig.org !== undefined ? { org: agentConfig.org } : {}),
+				cwd: agentConfig.cwd,
+				env: agentConfig.env,
+				sessionId: makeDaemonStartupSessionId(agentId),
+			});
+			await emit({
+				kind: "cron-agent-restarted",
+				agentId,
+				attempt,
+			});
+			armExitListener(handle);
+		} catch (err) {
+			console.error(
+				`[daemon] cron-agent restart attempt ${attempt} for ${agentId} failed: ${err instanceof Error ? err.message : String(err)}`,
+			);
+			await scheduleRestart(attempt + 1);
+		}
+	};
+
+	try {
+		const handle = await agentManager.registerAgent({
+			agentId,
+			runtimeId: agentConfig.runtimeId,
+			...(agentConfig.org !== undefined ? { org: agentConfig.org } : {}),
+			cwd: agentConfig.cwd,
+			env: agentConfig.env,
+			sessionId: makeDaemonStartupSessionId(agentId),
+		});
+		armExitListener(handle);
+	} catch (err) {
+		console.error(
+			`[daemon] startup registerAgent(${agentId}) failed: ${err instanceof Error ? err.message : String(err)} — agent will be unrouted`,
+		);
+	}
 }
 
 /**
@@ -1130,6 +1280,14 @@ export async function startDaemon(
 		);
 	}
 
+	// Dual-adversarial I-C fix: hoist the `shuttingDown` flag declaration
+	// above the cron pre-register loop so `registerCronAgentWithRestart`
+	// (called from that loop) can observe shutdown and skip re-spawn
+	// attempts when the daemon is tearing down. Assignment still happens
+	// inside `shutdown`; readers below pick up the value through the
+	// closure as before.
+	let shuttingDown = false;
+
 	// Plan 04b Task 3 — construct CronScheduler AFTER AgentManager (07b's
 	// EventEmitter + claimTask are alive for the scheduler's constructor
 	// terminal-event subscriptions) and BEFORE the auto-start loop (so the
@@ -1163,6 +1321,19 @@ export async function startDaemon(
 	// { reason: "unregistered" }` when a cron-fire arrives for an agent
 	// whose pre-registration failed, which is the same telemetry shape
 	// operators already watch).
+	//
+	// SPAWN-AT-BOOT SEMANTICS (Plan 04d I-C dual-adversarial note):
+	// `registerAgent` for cron agents spawns a real PTY at daemon
+	// startup. The handle stays alive across many cron fires (persistent
+	// PTY adapter — see `makeTaskDispatchHandler` JSDoc). If that PTY
+	// exits before a cron-fire (credential expiry, crash,
+	// heartbeat-driven recycle), `isAgentRegistered` would return false
+	// and dispatch would emit `pr-triage-dispatch-failed { reason:
+	// "unregistered" }` silently for every subsequent cron-fire until
+	// the daemon was restarted. The re-register loop below
+	// (`scheduleCronAgentRestart`) subscribes to the runtime's status
+	// callback and re-runs `registerAgent` on exit/crash with
+	// exponential backoff (3 attempts at 5s/30s/60s).
 	for (const opts of cronEntries) {
 		let agentConfig: AgentConfigShape;
 		try {
@@ -1173,20 +1344,12 @@ export async function startDaemon(
 			);
 			continue;
 		}
-		try {
-			await agentManager.registerAgent({
-				agentId: opts.agentId,
-				runtimeId: agentConfig.runtimeId,
-				...(agentConfig.org !== undefined ? { org: agentConfig.org } : {}),
-				cwd: agentConfig.cwd,
-				env: agentConfig.env,
-				sessionId: makeDaemonStartupSessionId(opts.agentId),
-			});
-		} catch (err) {
-			console.error(
-				`[daemon] startup registerAgent(${opts.agentId}) failed: ${err instanceof Error ? err.message : String(err)} — agent will be unrouted`,
-			);
-		}
+		await registerCronAgentWithRestart({
+			agentManager,
+			agentId: opts.agentId,
+			agentConfig,
+			isShuttingDown: () => shuttingDown,
+		});
 	}
 
 	// Plan 04d Task 3 — subscribe the dispatch handler BEFORE
@@ -1235,7 +1398,8 @@ export async function startDaemon(
 		await bot.start();
 	}
 
-	let shuttingDown = false;
+	// `shuttingDown` is declared above (hoisted for the I-C cron-agent
+	// restart loop). All assignments happen inside `shutdown`.
 	const shutdownHandlers = new Set<() => void>();
 	let resolveShutdownPromise!: () => void;
 	const shutdownPromise = new Promise<void>((resolve) => {
@@ -1308,19 +1472,18 @@ export async function startDaemon(
 			},
 			stageTimeoutMs,
 		);
-		// Plan 04d Task 3 C2 stress fix — drop the dispatch listener BEFORE
-		// stopPollingLoop. Reverse order would let an in-flight tick that
-		// observed a registered agent fire `task-dispatch-needed` to no
-		// listeners, falling through to the backwards-compat `claimTask`
-		// path — wrong direction of the race, because the cron-fired task
-		// would silently advance to resolved without ever being dispatched.
-		try {
-			agentManager.removeListener("task-dispatch-needed", taskDispatchListener);
-		} catch (err) {
-			console.error(
-				`[daemon] removeListener(task-dispatch-needed) failed: ${err instanceof Error ? err.message : String(err)}`,
-			);
-		}
+		// Dual-adversarial C-2 fix: REORDERED — stop the polling loop
+		// FIRST so the in-flight tick drains (no fresh dispatch emits),
+		// THEN remove the listener. The previous order (removeListener
+		// BEFORE stopPollingLoop) created a window where an in-flight
+		// tick observed zero listeners and used the now-removed
+		// `claimTask` fallback path to silently advance the cron-fired
+		// task to `resolved/` without dispatching it — a real data-loss
+		// path on every deploy that coincided with a pending task.
+		// Belt-and-suspenders pairing with the agent-manager C-2 fix
+		// (which drops the listener-less fallback entirely and emits
+		// `pr-triage-dispatch-failed { reason: "no-listener" }` if the
+		// race ever does fire).
 		await withTimeout(
 			"agentManager.stopPollingLoop",
 			async () => {
@@ -1334,6 +1497,13 @@ export async function startDaemon(
 			},
 			stageTimeoutMs,
 		);
+		try {
+			agentManager.removeListener("task-dispatch-needed", taskDispatchListener);
+		} catch (err) {
+			console.error(
+				`[daemon] removeListener(task-dispatch-needed) failed: ${err instanceof Error ? err.message : String(err)}`,
+			);
+		}
 		// Opus I4: bound each stage with `withTimeout`. A hung adapter
 		// (heartbeat sweep, bot polling, IPC drain, or per-handle
 		// shutdown) would otherwise block the entire daemon and the

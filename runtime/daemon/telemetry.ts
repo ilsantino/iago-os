@@ -330,7 +330,8 @@ export type DaemonEvent =
 			 * `runningCount` stays elevated until a retry succeeds or
 			 * `cron-overlap-prevented` surfaces the stall to the operator.
 			 *
-			 * Reasons currently emitted by `makeTaskDispatchHandler`:
+			 * Reasons currently emitted by `makeTaskDispatchHandler` and
+			 * `AgentManager.processPendingTask`:
 			 *   - `unregistered`: no live `AgentHandle` resolved at
 			 *     dispatch time (pre-registration failed or was
 			 *     deregistered).
@@ -338,7 +339,20 @@ export type DaemonEvent =
 			 *     threw (PTY closed, stdin write error, etc.).
 			 *   - `listener-exception`: any other unexpected throw caught
 			 *     by the outermost try/catch (e.g., runtime resolution
-			 *     miss, malformed payload, `claimTask` failure).
+			 *     miss, `claimTask` failure).
+			 *   - `malformed-task`: task body lacked a non-empty string
+			 *     `prompt` field. File is LEFT in `tasks/pending/` for
+			 *     human inspection; `runtime.send` and `claimTask` are NOT
+			 *     called so cron `runningCount` stays elevated and the
+			 *     operator sees `cron-overlap-prevented` if the bad task
+			 *     persists.
+			 *   - `no-listener`: `processPendingTask` saw an empty
+			 *     listener set on `'task-dispatch-needed'`. The previous
+			 *     behavior was to fall through to `claimTask`, silently
+			 *     advancing the file to `resolved/` without dispatch —
+			 *     the C-2 data-loss path during shutdown. File stays in
+			 *     `tasks/pending/` so a re-registered listener picks it
+			 *     up on the next tick.
 			 *
 			 * NOTE on `exit-*` / `spawn-failed` (Plan 04d review #2):
 			 * earlier drafts of the plan included an "await clean exit"
@@ -354,8 +368,41 @@ export type DaemonEvent =
 			readonly kind: "pr-triage-dispatch-failed";
 			readonly agentId: string;
 			readonly filename: string;
-			readonly reason: "send-failed" | "listener-exception" | "unregistered";
+			readonly reason:
+				| "send-failed"
+				| "listener-exception"
+				| "unregistered"
+				| "malformed-task"
+				| "no-listener";
 			readonly message: string;
+	  }
+	| {
+			/**
+			 * Plan 04d dual-adversarial I-C fix: a cron-driven agent that
+			 * was pre-registered at daemon startup exited (PTY crash,
+			 * credential expiry, heartbeat-driven recycle). Re-registration
+			 * succeeded after `attempt` tries (1-indexed). Without the
+			 * re-register loop the agent would silently become unrouted
+			 * and `pr-triage-dispatch-failed { reason: "unregistered" }`
+			 * would fire on every cron tick until manual operator
+			 * intervention.
+			 */
+			readonly kind: "cron-agent-restarted";
+			readonly agentId: string;
+			readonly attempt: number;
+	  }
+	| {
+			/**
+			 * Plan 04d dual-adversarial I-C fix: the re-register loop
+			 * exhausted its 3-attempt budget for a cron-driven agent that
+			 * exited after boot pre-registration. The agent stays
+			 * unrouted; future cron-fires will emit
+			 * `pr-triage-dispatch-failed { reason: "unregistered" }` until
+			 * the daemon is restarted or a manual `registerAgent` call
+			 * fires.
+			 */
+			readonly kind: "cron-agent-restart-failed";
+			readonly agentId: string;
 	  }
 	| {
 			/**

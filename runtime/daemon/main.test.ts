@@ -827,6 +827,7 @@ describe("makeTaskDispatchHandler (Plan 04d)", () => {
 		claimTask?: (filename: string, agentId: string) => Promise<void>;
 	}): AgentManager {
 		const calls: Array<{ filename: string; agentId: string }> = [];
+		const releaseCalls: string[] = [];
 		const mgr = {
 			listHandles: () => (opts.handle === null ? [] : [opts.handle]),
 			claimTask:
@@ -834,7 +835,15 @@ describe("makeTaskDispatchHandler (Plan 04d)", () => {
 				(async (filename: string, agentId: string) => {
 					calls.push({ filename, agentId });
 				}),
+			// Dual-adversarial C-1: handler ALWAYS calls releaseDispatchSlot
+			// from its finally block. The stub records calls so tests can
+			// assert the guard is properly released even on the malformed-
+			// task / unregistered / send-failed branches.
+			releaseDispatchSlot: (filename: string) => {
+				releaseCalls.push(filename);
+			},
 			_claimCalls: calls,
+			_releaseCalls: releaseCalls,
 		} as unknown as AgentManager;
 		return mgr;
 	}
@@ -1035,7 +1044,15 @@ describe("makeTaskDispatchHandler (Plan 04d)", () => {
 		);
 	});
 
-	it("(DH-5) malformed taskContent (no prompt) sends empty-string prompt and still claims (degraded but accountable)", async () => {
+	it("(DH-5/I-E) missing prompt key: emits pr-triage-dispatch-failed(malformed-task), does NOT send, does NOT claim, file stays in pending", async () => {
+		// Dual-adversarial I-E regression (extends async-bot M-3 from
+		// log-only to block-and-leave-for-operator). The prior behavior
+		// sent runtime.send("") and then claimTask, which moved the file
+		// to resolved/ and released the cron slot — a silent-loss path
+		// because the task looked completed despite never reaching a
+		// meaningful prompt. Now the dispatch is blocked, the file stays
+		// in pending/ (no claimTask call), and the malformed-task
+		// telemetry surfaces the issue to operators.
 		const { runtime, sendCalls } = makeStubRuntime("dh5-runtime");
 		registerRuntime(runtime);
 		const handle = makeHandleFixture("pr-triage", "dh5-runtime");
@@ -1055,17 +1072,160 @@ describe("makeTaskDispatchHandler (Plan 04d)", () => {
 
 		await handler(evt);
 
-		expect(sendCalls).toHaveLength(1);
-		expect(sendCalls[0]).toEqual({
-			kind: "prompt",
-			payload: { text: "" },
+		// NOT sent, NOT claimed.
+		expect(sendCalls).toHaveLength(0);
+		expect((mgr as unknown as { _claimCalls: unknown[] })._claimCalls).toEqual(
+			[],
+		);
+
+		// malformed-task telemetry emitted with absent-prompt diagnostic.
+		const failedCalls = emitMock.mock.calls
+			.map((c) => c[0])
+			.filter(
+				(e) => (e as { kind: string }).kind === "pr-triage-dispatch-failed",
+			);
+		expect(failedCalls).toHaveLength(1);
+		expect(failedCalls[0]).toMatchObject({
+			kind: "pr-triage-dispatch-failed",
+			agentId: "pr-triage",
+			filename: evt.filename,
+			reason: "malformed-task",
 		});
-		// Empty prompt is observable to the agent (which can decide to no-op)
-		// and the task is claimed so the cron slot releases — the polling
-		// loop is not the place to enforce prompt-shape (that's the upstream
-		// task-writer's job).
-		expect((mgr as unknown as { _claimCalls: unknown[] })._claimCalls).toEqual([
-			{ filename: evt.filename, agentId: "pr-triage" },
-		]);
+		expect((failedCalls[0] as { message: string }).message).toContain("absent");
+
+		// C-1: dispatch slot released even on the malformed-task branch.
+		expect(
+			(mgr as unknown as { _releaseCalls: string[] })._releaseCalls,
+		).toEqual([evt.filename]);
+	});
+
+	it("(DH-6/I-E) empty-string prompt: emits pr-triage-dispatch-failed(malformed-task), does NOT send, does NOT claim", async () => {
+		// Companion to DH-5. The prior fallback at `prompt = prompt || ""`
+		// treated an explicit empty string identically to a missing key —
+		// both routes silently advanced the file. The fix uses
+		// `typeof === "string" && length > 0` so empty strings are now
+		// rejected explicitly.
+		const { runtime, sendCalls } = makeStubRuntime("dh6-runtime");
+		registerRuntime(runtime);
+		const handle = makeHandleFixture("pr-triage", "dh6-runtime");
+		const mgr = makeStubManager({ handle });
+		const emitMock = vi.fn().mockResolvedValue(undefined);
+
+		const handler = makeTaskDispatchHandler({
+			agentManager: mgr,
+			emit: emitMock,
+		});
+
+		const evt: TaskDispatchEvent = {
+			filename: "pr-triage__1700000205.json",
+			agentId: "pr-triage",
+			taskContent: { prompt: "", agentId: "pr-triage" },
+		};
+
+		await handler(evt);
+
+		expect(sendCalls).toHaveLength(0);
+		expect((mgr as unknown as { _claimCalls: unknown[] })._claimCalls).toEqual(
+			[],
+		);
+
+		const failedCalls = emitMock.mock.calls
+			.map((c) => c[0])
+			.filter(
+				(e) => (e as { kind: string }).kind === "pr-triage-dispatch-failed",
+			);
+		expect(failedCalls).toHaveLength(1);
+		expect(failedCalls[0]).toMatchObject({
+			kind: "pr-triage-dispatch-failed",
+			filename: evt.filename,
+			reason: "malformed-task",
+		});
+		expect((failedCalls[0] as { message: string }).message).toContain(
+			"empty string",
+		);
+
+		expect(
+			(mgr as unknown as { _releaseCalls: string[] })._releaseCalls,
+		).toEqual([evt.filename]);
+	});
+
+	it("(DH-7/I-E) non-string prompt (number): emits pr-triage-dispatch-failed(malformed-task), does NOT send, does NOT claim", async () => {
+		// Third I-E branch: a task file that round-trips through JSON.parse
+		// with `prompt: 42` (or null, boolean, object) would have hit the
+		// `prompt || ""` fallback and sent an empty string. The fix
+		// validates type explicitly so the operator sees the typeof in the
+		// telemetry message.
+		const { runtime, sendCalls } = makeStubRuntime("dh7-runtime");
+		registerRuntime(runtime);
+		const handle = makeHandleFixture("pr-triage", "dh7-runtime");
+		const mgr = makeStubManager({ handle });
+		const emitMock = vi.fn().mockResolvedValue(undefined);
+
+		const handler = makeTaskDispatchHandler({
+			agentManager: mgr,
+			emit: emitMock,
+		});
+
+		const evt: TaskDispatchEvent = {
+			filename: "pr-triage__1700000206.json",
+			agentId: "pr-triage",
+			taskContent: { prompt: 42 as unknown as string, agentId: "pr-triage" },
+		};
+
+		await handler(evt);
+
+		expect(sendCalls).toHaveLength(0);
+		expect((mgr as unknown as { _claimCalls: unknown[] })._claimCalls).toEqual(
+			[],
+		);
+
+		const failedCalls = emitMock.mock.calls
+			.map((c) => c[0])
+			.filter(
+				(e) => (e as { kind: string }).kind === "pr-triage-dispatch-failed",
+			);
+		expect(failedCalls).toHaveLength(1);
+		expect(failedCalls[0]).toMatchObject({
+			kind: "pr-triage-dispatch-failed",
+			filename: evt.filename,
+			reason: "malformed-task",
+		});
+		expect((failedCalls[0] as { message: string }).message).toContain(
+			"type number",
+		);
+
+		expect(
+			(mgr as unknown as { _releaseCalls: string[] })._releaseCalls,
+		).toEqual([evt.filename]);
+	});
+
+	it("(DH-1b/C-1) happy path also releases dispatch slot in finally", async () => {
+		// Belt-and-suspenders for the C-1 invariant: the `finally` block
+		// fires on every code path through the handler. DH-2..DH-7 cover
+		// the failure branches; this asserts the happy path too. Without
+		// this, a future refactor that returns early from the success
+		// branch could silently regress the guard.
+		const { runtime } = makeStubRuntime("dh1b-runtime");
+		registerRuntime(runtime);
+		const handle = makeHandleFixture("pr-triage", "dh1b-runtime");
+		const mgr = makeStubManager({ handle });
+		const emitMock = vi.fn().mockResolvedValue(undefined);
+
+		const handler = makeTaskDispatchHandler({
+			agentManager: mgr,
+			emit: emitMock,
+		});
+
+		const evt: TaskDispatchEvent = {
+			filename: "pr-triage__1700000207.json",
+			agentId: "pr-triage",
+			taskContent: { prompt: "hello", agentId: "pr-triage" },
+		};
+
+		await handler(evt);
+
+		expect(
+			(mgr as unknown as { _releaseCalls: string[] })._releaseCalls,
+		).toEqual([evt.filename]);
 	});
 });
