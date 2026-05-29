@@ -141,7 +141,7 @@ cross-model gate before the human merges:
 ```
 Workflow({
   scriptPath: "<IAGO_ROOT>/.claude/workflows/dual-adversarial.js",
-  args: { projectDir: "<PROJECT_DIR>", base: "<PR base, e.g. origin/main>", prNumber: "<#>" }
+  args: { projectDir: "<PROJECT_DIR>", iagoRoot: "<IAGO_ROOT>", base: "<PR base, e.g. origin/main>", prNumber: "<#>" }
 })
 ```
 

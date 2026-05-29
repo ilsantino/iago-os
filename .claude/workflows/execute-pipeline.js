@@ -142,7 +142,7 @@ const CODEX_SCHEMA = {
 
 const PR_SCHEMA = {
   type: 'object',
-  required: ['prUrl'],
+  required: ['prUrl', 'prNumber'],
   properties: {
     prUrl: { type: 'string' },
     prNumber: { type: 'string' },
@@ -325,10 +325,14 @@ Return passed (true only if every applicable check is green), ran (the exact com
 // history) never see and that the PR push never includes — shipping code the review
 // never saw. So: never edit, never commit. On failure, return passed=false → the
 // pipeline stops for manual review.
-const BUILD_VERIFY_PROMPT = `${PREAMBLE}
+function buildVerifyPrompt(sha) {
+  return `${PREAMBLE}
 
-BUILD VERIFY (read-only re-gate after a fix round). The fix stage already repaired AND committed. Re-run the checks relevant to the changed paths — same routing as the build gate: root tsc/vite if frontend; nested-package typecheck+tests; bash -n + shellcheck for changed .sh; node "${iagoRoot}/scripts/validate-workflows.mjs" for changed workflow JS; console-check.mjs on Vite projects; any plan verify command.
+BUILD VERIFY (read-only re-gate after a fix round). The fix stage already repaired AND committed.
+1. List changed files: git diff --name-only ${sha}..HEAD (the fix stage already committed — git status is clean).
+2. Re-run the checks relevant to those paths — same routing as the build gate: root tsc/vite if frontend; nested-package typecheck+tests; bash -n + shellcheck for changed .sh; node "${iagoRoot}/scripts/validate-workflows.mjs" for changed workflow JS; console-check.mjs on Vite projects; any plan verify command.
 Do NOT edit any files and do NOT commit — this is VERIFICATION ONLY. If a check fails, the committed fix did not actually build clean: return passed=false with the failing diagnostic. Return passed, ran, summary.`
+}
 
 function commitPrompt() {
   const branchStep = noPr
@@ -557,7 +561,7 @@ while (
   // Re-gate the build after fixes, then re-review (fixes were committed by the fix agent).
   phase('Build gate')
   const rebuild = await withRetry(
-    () => agent(BUILD_VERIFY_PROMPT, { label: `rebuild:${rounds}`, phase: 'Build gate', schema: BUILD_SCHEMA }),
+    () => agent(buildVerifyPrompt(preImplSha), { label: `rebuild:${rounds}`, phase: 'Build gate', schema: BUILD_SCHEMA }),
     `rebuild:${rounds}`,
   )
   if (!rebuild.passed) throw new Error(`Build broke during fix round ${rounds}: ${rebuild.summary || ''}`)
@@ -626,11 +630,12 @@ if (noPr) {
 
 // Stage 6 — Summary + telemetry
 phase('Summary')
-await agent(summaryPrompt(preImplSha, prUrl, verdict, codexSource, rounds), {
+const summary = await agent(summaryPrompt(preImplSha, prUrl, verdict, codexSource, rounds), {
   label: 'summary',
   phase: 'Summary',
   schema: IMPL_SCHEMA,
 })
+if (!summary) throw new Error('Summary agent was skipped — .iago/summaries/ uncommitted, dirty tree for next plan')
 
 log(`PIPELINE COMPLETE — ${planName}`)
 return {

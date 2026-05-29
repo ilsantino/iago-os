@@ -7,6 +7,17 @@ export const meta = {
   phases: [{ title: 'Review' }, { title: 'Codex' }],
 }
 
+// Retry a read-only agent call. Transient API errors (e.g. "thinking blocks cannot be modified"
+// 400s) are retried; null return (user skipped mid-run) aborts immediately.
+async function withRetry(fn, label, tries = 2) {
+  for (let i = 0; i < tries; i++) {
+    const result = await fn()
+    if (result !== null) return result
+    if (i < tries - 1) log(`${label}: null result, retrying (${i + 2}/${tries})`)
+  }
+  return null
+}
+
 // args = { projectDir (required), base (required, e.g. "origin/main" or PR base branch),
 //          iagoRoot, prNumber (optional, context only) }
 // args may arrive parsed OR as a JSON string in this harness build — normalize.
@@ -85,8 +96,8 @@ You are the CROSS-MODEL leg — prefer Codex (GPT-5.5) so the second opinion is 
 Return findings (empty if clean) and source.`
 
 const [review, codex] = await parallel([
-  () => agent(reviewPrompt, { label: 'review', phase: 'Review', schema: REVIEW_SCHEMA }),
-  () => agent(codexPrompt, { label: 'codex', phase: 'Codex', schema: CODEX_SCHEMA }),
+  () => withRetry(() => agent(reviewPrompt, { label: 'review', phase: 'Review', schema: REVIEW_SCHEMA }), 'review'),
+  () => withRetry(() => agent(codexPrompt, { label: 'codex', phase: 'Codex', schema: CODEX_SCHEMA }), 'codex'),
 ])
 
 const findings = []

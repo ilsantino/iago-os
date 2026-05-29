@@ -129,7 +129,7 @@ reviewVerdict, codexSource, fixRounds }` and notifies you on completion.
 After the async GitHub review-fix loop reports clean, run the pre-merge gate (pass #2):
 ```
 Workflow({ scriptPath: "<IAGO_ROOT>/.claude/workflows/dual-adversarial.js",
-           args: { projectDir: "<dir>", base: "origin/main", prNumber: "<#>" } })
+           args: { projectDir: "<dir>", iagoRoot: "<IAGO_ROOT>", base: "origin/main", prNumber: "<#>" } })
 ```
 If it returns `clean`, tell Santiago it's safe to merge. Never merge yourself.
 

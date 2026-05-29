@@ -158,7 +158,7 @@ pre-merge gate — the `dual-adversarial` Workflow (`.claude/workflows/dual-adve
 
 ```
 Workflow({ scriptPath: "<IAGO_ROOT>/.claude/workflows/dual-adversarial.js",
-           args: { projectDir, base: "origin/main", prNumber } })
+           args: { projectDir, iagoRoot, base: "origin/main", prNumber } })
 ```
 
 Read-only (Opus reviewer ∥ Codex over the PR diff). Returns `{ clean, verdict,
