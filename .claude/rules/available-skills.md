@@ -65,19 +65,18 @@ Flags that work across the pipeline:
 
 ### Pipeline Stages (automatic, per plan)
 
-Every plan goes through these stages in `scripts/execute-pipeline.sh`:
+Every plan goes through these stages in the `execute-pipeline` Workflow (`.claude/workflows/execute-pipeline.js`, replacing the deprecated `scripts/execute-pipeline.sh`) — each stage a tracked subagent:
 
 | # | Stage | What it does |
 |---|-------|-------------|
-| 0 | Stress test | Adversarial review of the plan (skipped if already stress-tested) |
-| 1 | Implement | Fresh claude session writes code from the plan |
-| 2 | Build gate | `tsc --noEmit && vite build` (max 2 retries) |
-| 3 | Review | Plan compliance + domain routing + adversarial (Critical/Important/Minor) |
-| 4 | Codex adversarial | Cross-model check: auth, data loss, races, rollback |
-| 4b | Codex fix | Fix all Codex findings (skipped if clean) |
-| 5 | Create PR | Stage, commit, push, create PR via gh |
-| 5b | Tag @claude | Post review request on PR (triggers async fix loop) |
-| 6 | Summary | Write results to .iago/summaries/ |
+| 0 | Stress | Adversarial review of the plan (skipped if already stress-tested) |
+| 1 | Implement | Tracked subagent writes code (auto-retries transient API errors, no static turn cap) |
+| 2 | Build gate | `tsc --noEmit` + `vite build` |
+| 2b | Commit | Commit on a feature branch — gives the Codex leg a real committed `base..HEAD` diff |
+| 3+4 | Dual adversarial | Opus reviewer ∥ Codex (GPT-5.5), in parallel: plan compliance, domains, auth/data-loss/races/rollback |
+| 5 | Fix | Fix findings + regression tests, commit, re-review (≤2 rounds) |
+| 6 | Create PR | Push branch, open PR (plan embedded), tag @claude unless noTag |
+| 7 | Summary | Write results to .iago/summaries/ + telemetry NDJSON |
 
 ## All Skills
 

@@ -11,9 +11,9 @@ description: >-
 ## Purpose
 
 Lightweight one-shot execution path for standalone tasks that don't warrant the
-full workflow. Produces a plan (with stress test), then runs it through
-`scripts/execute-pipeline.sh` for the full 8-stage pipeline (stress test →
-implement → build → review → codex → codex fix → PR → summary).
+full workflow. Produces a plan (with stress test), then runs it through the
+`execute-pipeline` Workflow (`.claude/workflows/execute-pipeline.js`) for the full
+pipeline (stress → implement → build → commit → dual adversarial → fix → PR → summary).
 
 ## When to Use
 
@@ -99,28 +99,39 @@ base: main
 
 Determine the project directory (repo root or client project dir).
 
-Run:
+Resolve the workflow path, then invoke the **Workflow tool** (this skill invocation
+is the authorization to call Workflow):
 ```bash
-# Default (auto-tag, same as /iago-execute):
-bash scripts/execute-pipeline.sh --plan {path} --project-dir {dir}
-# With --no-tag:
-bash scripts/execute-pipeline.sh --plan {path} --project-dir {dir} --no-tag
+IAGO_ROOT="${IAGO_OS_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null)}"
+echo "$IAGO_ROOT/.claude/workflows/execute-pipeline.js"   # absolute scriptPath
+```
+```
+Workflow({
+  scriptPath: "<IAGO_ROOT>/.claude/workflows/execute-pipeline.js",
+  args: {
+    plan: "<absolute plan path>",
+    projectDir: "<absolute project dir>",
+    iagoRoot: "<IAGO_ROOT>",
+    noTag: <true ONLY if --no-tag was passed, else omit>
+  }
+})
 ```
 
-By default, quick tasks auto-tag @claude (same behavior as `/iago-execute`).
-If `--no-tag` is passed, the PR is created but the async review-fix loop is
-not triggered.
+By default, quick tasks auto-tag @claude. With `--no-tag`, set `noTag: true` (PR is
+created but the async review-fix loop is not triggered).
 
-This runs the full 8-stage pipeline as separate `claude -p` sessions:
-0. **Stress test** — adversarial plan review (skipped if plan has `## Stress Test` section)
-1. **Implement** — writes code from the plan
-2. **Build gate** — `tsc --noEmit && vite build` (max 2 retries)
-3. **Review** — two-pass: plan compliance + adversarial (auth, data loss, races, rollback)
-4. **Codex adversarial** — auth bypass, data loss, race conditions
-4b. **Codex fix** — opus fixes all Codex findings, then rebuild (skipped if no findings)
-5. **Create PR** — stages, commits, pushes, creates PR via `gh`
-5b. **Tag @claude** — posts review request on PR
-6. **Summary** — writes results to `.iago/summaries/`
+The Workflow runs the full pipeline as tracked subagents (no `claude -p` fragility —
+transient API errors auto-retry, no static turn caps):
+stress → implement → build gate → **commit** → **dual adversarial (Opus ∥ Codex)** →
+fix + regression tests (≤2 rounds) → PR → summary. It returns `{ branch, prUrl,
+reviewVerdict, codexSource, fixRounds }` and notifies you on completion.
+
+After the async GitHub review-fix loop reports clean, run the pre-merge gate (pass #2):
+```
+Workflow({ scriptPath: "<IAGO_ROOT>/.claude/workflows/dual-adversarial.js",
+           args: { projectDir: "<dir>", iagoRoot: "<IAGO_ROOT>", base: "origin/main", prNumber: "<#>" } })
+```
+If it returns `clean`, tell Santiago it's safe to merge. Never merge yourself.
 
 Review-fix loop runs async via GitHub Action (`claude-review-fix.yml`).
 

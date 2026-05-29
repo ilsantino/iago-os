@@ -20,9 +20,10 @@ Each agent gets minimal, focused context — no cross-task state leakage.
 `/subagent-driven-development {plan-path}` — path to the plan file.
 
 Optional flags:
-- `--pipeline` — run each task through `scripts/execute-pipeline.sh` instead of
-  in-session agents. Gives full 8-stage review isolation (stress test → implement → build gate
-  → review → codex → codex fix → PR → summary) at the cost of more API calls and slower execution.
+- `--pipeline` — run each task through the `execute-pipeline` Workflow
+  (`.claude/workflows/execute-pipeline.js`) instead of in-session agents. Gives full
+  review isolation (stress → implement → build gate → commit → dual adversarial → fix → PR
+  → summary) at the cost of more agent calls and slower execution.
   Recommended for production code changes; skip for config-only repos.
 - `--full-review` — two-stage review via `review-full` profile instead of
   single-pass `review-single` (ignored when `--pipeline` is set, since the
@@ -49,12 +50,20 @@ If `--dry-run`: validate plan structure, report issues, stop.
 ### 2. Execute tasks
 
 **If `--pipeline` is set:** For each task, write a single-task plan to
-`.iago/plans/sdd-{slug}-{N}.md`, then run:
-```bash
-bash scripts/execute-pipeline.sh --plan .iago/plans/sdd-{slug}-{N}.md --project-dir {dir}
+`.iago/plans/sdd-{slug}-{N}.md`, then invoke the **Workflow tool** (this skill
+invocation authorizes the Workflow call):
 ```
-The pipeline handles implement → build gate → review → codex → codex fix → PR for each task.
-Skip "3. Review", "4. Handle review findings", and "4b. Codex adversarial review gate (mandatory)" since the pipeline handles all three. Proceed directly to "5. Write summary" after all tasks complete.
+Workflow({
+  scriptPath: "<IAGO_ROOT>/.claude/workflows/execute-pipeline.js",
+  args: { plan: "<abs>/.iago/plans/sdd-{slug}-{N}.md", projectDir: "{dir}", iagoRoot: "<IAGO_ROOT>" }
+})
+```
+(`IAGO_ROOT` = `${IAGO_OS_ROOT:-$(git rev-parse --show-toplevel)}`.) The Workflow
+handles implement → build gate → commit → dual adversarial (Opus ∥ Codex) → fix → PR
+per task — replacing the deprecated `scripts/execute-pipeline.sh`. Skip "3. Review",
+"4. Handle review findings", and "4b. Codex adversarial review gate (mandatory)" since
+the Workflow handles all three. Proceed directly to "5. Write summary" after all tasks
+complete.
 
 **Default (no `--pipeline`):** For each task (respecting wave order):
 
