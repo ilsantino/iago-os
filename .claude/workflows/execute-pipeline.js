@@ -44,13 +44,16 @@ function parseArgs(a) {
 const A = parseArgs(args)
 const plan = A.plan
 const projectDir = A.projectDir
-const iagoRoot = A.iagoRoot || 'C:/Users/sanal/dev/iago-os'
+const iagoRoot = A.iagoRoot
 const noPr = !!A.noPr
 const noTag = noPr || !!A.noTag
 
-if (!plan || !projectDir) {
+// Fail loud if any required path is missing — do NOT default iagoRoot to a personal
+// absolute path (it resolves review-checks modules / console-check.mjs and would
+// mis-resolve on another machine). All three /iago-* skills pass these explicitly.
+if (!plan || !projectDir || !iagoRoot) {
   throw new Error(
-    'execute-pipeline workflow requires args.plan and args.projectDir (absolute paths).',
+    'execute-pipeline workflow requires args.plan, args.projectDir, and args.iagoRoot (absolute paths). The /iago-* skills pass all three.',
   )
 }
 
@@ -316,6 +319,17 @@ BUILD GATE — run the checks RELEVANT to what changed (do NOT assume root tsc/v
 
 Return passed (true only if every applicable check is green), ran (the exact commands you ran), and a one-line summary (or the first failing diagnostic if not passed).`
 
+// Verify-only re-gate used AFTER a fix round. The fix agent already repaired AND
+// committed; this confirms the COMMITTED tree builds clean without editing. Editing
+// here would leave uncommitted changes that the re-review/Codex (which diff committed
+// history) never see and that the PR push never includes — shipping code the review
+// never saw. So: never edit, never commit. On failure, return passed=false → the
+// pipeline stops for manual review.
+const BUILD_VERIFY_PROMPT = `${PREAMBLE}
+
+BUILD VERIFY (read-only re-gate after a fix round). The fix stage already repaired AND committed. Re-run the checks relevant to the changed paths — same routing as the build gate: root tsc/vite if frontend; nested-package typecheck+tests; bash -n + shellcheck for changed .sh; node "${iagoRoot}/scripts/validate-workflows.mjs" for changed workflow JS; console-check.mjs on Vite projects; any plan verify command.
+Do NOT edit any files and do NOT commit — this is VERIFICATION ONLY. If a check fails, the committed fix did not actually build clean: return passed=false with the failing diagnostic. Return passed, ran, summary.`
+
 function commitPrompt() {
   const branchStep = noPr
     ? `3. Do NOT create a new branch — commit on the CURRENT branch (this is a stacked commit for a later combined PR).`
@@ -386,6 +400,7 @@ Write the pipeline summary. In ${projectDir}:
 1. mkdir -p .iago/summaries
 2. Write .iago/summaries/${planName}.md with frontmatter (plan, status: done, verified: today's UTC date via  date -u +%Y-%m-%d, pr) and sections: Pipeline Result (review verdict ${reviewVerdict}, codex source ${codexSource}, fix rounds ${rounds}, PR ${prUrl || '(none)'}) and Diff Stats (git diff --stat ${preImplSha}..HEAD).
 3. Append one NDJSON line to .iago/state/pipeline-runs.ndjson (mkdir -p .iago/state first): {"plan":"${planName}","pr":"${prUrl || ''}","verdict":"${reviewVerdict}","codex":"${codexSource}","rounds":${rounds},"ts":"<date -u +%Y-%m-%dT%H:%M:%SZ>"}
+4. COMMIT the summary so the working tree is left CLEAN for the next sequential plan's prep guard: git add .iago/summaries/${planName}.md && git commit -m "docs(summary): ${planName} pipeline result". (.iago/state/* is gitignored — do NOT stage it. This commit is local bookkeeping; it is fine that it lands after the PR push and is not part of the PR.)
 Return status=DONE.`
 }
 
@@ -478,7 +493,11 @@ const impl = await withRetryMutating(
       schema: IMPL_SCHEMA,
     }),
   'implement',
-  `git checkout "${preImplSha}" -- .`,
+  // Restore tracked files to the checkpoint AND remove untracked files the failed
+  // attempt created (git checkout -- . only reverts tracked paths; without this the
+  // Commit stage's `git add -A` would sweep the failed attempt's orphan files into
+  // the PR). --exclude-standard keeps gitignored runtime state (.iago/state) intact.
+  `git checkout "${preImplSha}" -- . && git ls-files --others --exclude-standard -z | xargs -0 -r rm -f`,
 )
 if (impl.status !== 'DONE') {
   throw new Error(`Implementation ${impl.status}: ${impl.notes || '(no detail)'}`)
@@ -538,7 +557,7 @@ while (
   // Re-gate the build after fixes, then re-review (fixes were committed by the fix agent).
   phase('Build gate')
   const rebuild = await withRetry(
-    () => agent(BUILD_PROMPT, { label: `rebuild:${rounds}`, phase: 'Build gate', schema: BUILD_SCHEMA }),
+    () => agent(BUILD_VERIFY_PROMPT, { label: `rebuild:${rounds}`, phase: 'Build gate', schema: BUILD_SCHEMA }),
     `rebuild:${rounds}`,
   )
   if (!rebuild.passed) throw new Error(`Build broke during fix round ${rounds}: ${rebuild.summary || ''}`)

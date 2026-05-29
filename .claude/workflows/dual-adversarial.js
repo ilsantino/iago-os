@@ -26,9 +26,11 @@ function parseArgs(a) {
 const A = parseArgs(args)
 const projectDir = A.projectDir
 const base = A.base || 'origin/main'
-const iagoRoot = A.iagoRoot || 'C:/Users/sanal/dev/iago-os'
+const iagoRoot = A.iagoRoot // no personal-path default — fail loud (resolves review-checks)
 const prNumber = A.prNumber || ''
-if (!projectDir) throw new Error('dual-adversarial requires args.projectDir')
+if (!projectDir || !iagoRoot) {
+  throw new Error('dual-adversarial requires args.projectDir and args.iagoRoot (absolute paths)')
+}
 
 const FINDING = {
   type: 'object',
