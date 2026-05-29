@@ -962,4 +962,133 @@ describe("pr-triage integration (Plan 04c)", () => {
 
 		await scheduler.stop();
 	});
+
+	it("Case 10 — secret gate: a non-trusted cron agent self-labeling org:internal does NOT inherit daemon secrets (Codex H2)", async () => {
+		// composeAgentEnv gates the daemon's CRON_AGENT_ENV_ALLOWLIST secrets on
+		// membership in the daemon-owned CRON_AGENT_SECRET_TRUSTED_AGENTS set,
+		// keyed on the daemon-controlled agentId — NOT on the self-declared
+		// `agentConfig.org`. A less-trusted agent that writes org:"internal" in
+		// its own agent-config must still receive ONLY its declared env, never
+		// the Telegram/GH creds. Fails pre-fix (the old `org === "internal"`
+		// gate forwarded them on the spoofed field); passes post-fix.
+		const rogueDir = path.join(agentsDir, "rogue-agent");
+		fs.mkdirSync(rogueDir, { recursive: true });
+		fs.writeFileSync(
+			path.join(rogueDir, "agent-config.json"),
+			JSON.stringify({
+				runtimeId: "claude-pty",
+				org: "internal", // self-declared — must NOT be honored for secrets
+				cwd: REPO_ROOT,
+				env: { IAGO_DAEMON_STATE_ROOT: tempDir },
+				autoStart: false,
+				authProfile: "default",
+			}),
+			"utf8",
+		);
+		const rogueCfg = await loadAgentConfig(agentsDir, "rogue-agent");
+		const rogueMgr = new AgentManager();
+		await registerCronAgentWithRestart({
+			agentManager: rogueMgr,
+			agentId: "rogue-agent",
+			agentConfig: rogueCfg,
+			isShuttingDown: () => false,
+		});
+		const rogueCall = mockSpawn.mock.calls[mockSpawn.mock.calls.length - 1] as [
+			string,
+			string[],
+			{ env: Record<string, string> },
+		];
+		expect(rogueCall).toBeDefined();
+		// Declared env preserved…
+		expect(rogueCall[2].env.IAGO_DAEMON_STATE_ROOT).toBe(tempDir);
+		// …but NONE of the daemon secrets leak to the untrusted agent.
+		expect(rogueCall[2].env.IAGO_TELEGRAM_BOT_TOKEN).toBeUndefined();
+		expect(rogueCall[2].env.IAGO_TELEGRAM_ALLOWED_USER_IDS).toBeUndefined();
+		expect(rogueCall[2].env.GH_TOKEN).toBeUndefined();
+
+		// Positive control: the trusted pr-triage agentId DOES receive them, so
+		// the gate's effect is the trust list, not a blanket denial.
+		writePrTriageFixture();
+		const trustedCfg = await loadAgentConfig(agentsDir, "pr-triage");
+		const trustedMgr = new AgentManager();
+		await registerCronAgentWithRestart({
+			agentManager: trustedMgr,
+			agentId: "pr-triage",
+			agentConfig: trustedCfg,
+			isShuttingDown: () => false,
+		});
+		const trustedCall = mockSpawn.mock.calls[
+			mockSpawn.mock.calls.length - 1
+		] as [string, string[], { env: Record<string, string> }];
+		expect(trustedCall[2].env.IAGO_TELEGRAM_BOT_TOKEN).toBe("test-bot-token");
+		expect(trustedCall[2].env.GH_TOKEN).toBe("test-gh-token");
+	});
+
+	it("Case 11 — ndjsonAlert scoping: alert branch fires ONLY for pr-triage + a known kind (Codex H1)", async () => {
+		// The record-and-resolve alert branch is scoped to (a) agentId
+		// "pr-triage", (b) a known PR_TRIAGE_ALERT_KINDS value, (c) prompt-less.
+		// tasks/pending is the SHARED task bus, so without scoping a task for
+		// another agent — or an unknown alert kind — carrying `ndjsonAlert`
+		// would skip dispatch, get silently resolved, and could release a cron
+		// slot it does not own. Both negatives below must NOT emit a
+		// telegram-send-failed alert.
+		writePrTriageFixture();
+		const { mgr, register } = await buildSystem();
+		await register("pr-triage");
+		const dispatch = wireDispatchHandler(mgr);
+
+		// (1) Foreign (unregistered) agent with a valid-looking alert envelope
+		// → alert branch skipped (agentId !== "pr-triage") → task-unrouted,
+		// file left in pending/ (NOT resolved-as-alert).
+		const foreign = "rogue-agent__1700000001.json";
+		fs.writeFileSync(
+			path.join(tempDir, "tasks/pending", foreign),
+			JSON.stringify({
+				agentId: "rogue-agent",
+				ndjsonAlert: "pr-triage-telegram-send-failed",
+				details: "spoofed alert from a foreign agent",
+			}),
+			"utf8",
+		);
+		// (2) pr-triage with an UNKNOWN alert kind + no prompt → alert branch
+		// skipped (kind not in the set) → falls through to dispatch → no prompt
+		// → malformed-task, NOT a telegram-send-failed alert.
+		const unknownKind = "pr-triage__1700000002.json";
+		fs.writeFileSync(
+			path.join(tempDir, "tasks/pending", unknownKind),
+			JSON.stringify({
+				agentId: "pr-triage",
+				ndjsonAlert: "totally-unknown-alert-kind",
+			}),
+			"utf8",
+		);
+
+		await mgr._pollingTickForTests();
+		await dispatch.flush();
+
+		// Neither envelope produced an alert resolution.
+		expect(emittedEventsOfKind("pr-triage-telegram-send-failed")).toHaveLength(
+			0,
+		);
+		// Foreign agent → task-unrouted, file untouched in pending/, never
+		// moved to resolved/.
+		expect(
+			emittedEventsOfKind("task-unrouted").some(
+				(e) => (e as { filename: string }).filename === foreign,
+			),
+		).toBe(true);
+		await fsp.access(path.join(tempDir, "tasks/pending", foreign));
+		expect(fs.existsSync(path.join(tempDir, "tasks/resolved", foreign))).toBe(
+			false,
+		);
+		// Unknown-kind pr-triage envelope fell through to the dispatch path and
+		// was rejected as malformed-task (no prompt) — never resolved-as-alert.
+		expect(
+			emittedEventsOfKind("pr-triage-dispatch-failed").some(
+				(e) =>
+					(e as { filename: string }).filename === unknownKind &&
+					(e as { reason: string }).reason === "malformed-task",
+			),
+		).toBe(true);
+	});
 });

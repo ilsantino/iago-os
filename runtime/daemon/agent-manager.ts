@@ -64,7 +64,7 @@ import {
 	cancelPendingAppends,
 } from "./session-log.js";
 import { assertSafeIdentifier, getErrnoCode, pathFor } from "./state-paths.js";
-import { emit as emitTelemetry } from "./telemetry.js";
+import { PR_TRIAGE_ALERT_KINDS, emit as emitTelemetry } from "./telemetry.js";
 
 export interface AgentManagerOpts {
 	readonly heartbeat?: HeartbeatController;
@@ -1733,8 +1733,29 @@ export class AgentManager extends EventEmitter {
 		// is (de)registered. Emit telemetry BEFORE `claimTask` so a rename
 		// failure leaves the file in pending/ and the alert re-trips next
 		// tick rather than being lost.
+		//
+		// Codex H1 follow-up (un-scoped-bypass close): `tasks/pending/` is the
+		// GENERIC bus shared by ALL agents. Treating ANY non-empty `ndjsonAlert`
+		// on ANY task as a terminal alert let a malformed/adversarial task for
+		// another (or unregistered) agent skip runtime execution and still get
+		// silently resolved — possibly releasing a cron slot it doesn't own.
+		// The branch now fires ONLY when ALL of: (a) `agentId === "pr-triage"`
+		// (the sole producer today; daemon-owned, not self-declared),
+		// (b) the alert kind is in the daemon-owned `PR_TRIAGE_ALERT_KINDS`
+		// set, and (c) there is NO non-empty `prompt` field (a real alert
+		// envelope is prompt-less). Any other shape (alert for a different
+		// agent, unknown kind, or prompt+alert combined) FALLS THROUGH to the
+		// existing handling (registration check / dispatch / poison).
 		const ndjsonAlert = (parsed as { ndjsonAlert?: unknown }).ndjsonAlert;
-		if (typeof ndjsonAlert === "string" && ndjsonAlert.length > 0) {
+		const alertPromptRaw = (parsed as { prompt?: unknown }).prompt;
+		const alertHasPrompt =
+			typeof alertPromptRaw === "string" && alertPromptRaw.length > 0;
+		if (
+			agentId === "pr-triage" &&
+			typeof ndjsonAlert === "string" &&
+			PR_TRIAGE_ALERT_KINDS.has(ndjsonAlert) &&
+			!alertHasPrompt
+		) {
 			const detailsRaw = (parsed as { details?: unknown }).details;
 			const details = typeof detailsRaw === "string" ? detailsRaw : "";
 			await emitTelemetry({

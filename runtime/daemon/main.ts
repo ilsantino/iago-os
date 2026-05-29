@@ -115,7 +115,7 @@ import { CronScheduler, type RegisterCronOpts } from "./cron-scheduler.js";
 import { HeartbeatController } from "./heartbeat.js";
 import { IpcServer } from "./ipc-server.js";
 import { ensureStateDirsSync, pathFor } from "./state-paths.js";
-import { type DaemonEvent, emit } from "./telemetry.js";
+import { type DaemonEvent, PR_TRIAGE_ALERT_KINDS, emit } from "./telemetry.js";
 
 /**
  * Per-stage shutdown timeout (ms). Opus I4: the daemon shutdown path
@@ -600,9 +600,26 @@ export function makeTaskDispatchHandler(deps: {
 			// NEVER fall through to `malformed-task` on its absent `prompt`.
 			// The `finally` block still releases the dispatch slot on this
 			// early return.
+			//
+			// Codex H1 follow-up (un-scoped-bypass close): mirror the polling
+			// path's scoping. Fire ONLY when (a) `agentId === "pr-triage"`
+			// (daemon-owned producer, not self-declared), (b) the alert kind
+			// is in the daemon-owned `PR_TRIAGE_ALERT_KINDS` set, and (c) there
+			// is NO non-empty `prompt` field. Any other shape falls through to
+			// the prompt-validation / dispatch path below so an alert field on
+			// a real prompt task (or for another agent / unknown kind) cannot
+			// short-circuit dispatch.
 			const ndjsonAlert = (evt.taskContent as { ndjsonAlert?: unknown })
 				.ndjsonAlert;
-			if (typeof ndjsonAlert === "string" && ndjsonAlert.length > 0) {
+			const alertPromptRaw = (evt.taskContent as { prompt?: unknown }).prompt;
+			const alertHasPrompt =
+				typeof alertPromptRaw === "string" && alertPromptRaw.length > 0;
+			if (
+				evt.agentId === "pr-triage" &&
+				typeof ndjsonAlert === "string" &&
+				PR_TRIAGE_ALERT_KINDS.has(ndjsonAlert) &&
+				!alertHasPrompt
+			) {
 				const detailsRaw = (evt.taskContent as { details?: unknown }).details;
 				const details = typeof detailsRaw === "string" ? detailsRaw : "";
 				await emit({
@@ -731,7 +748,8 @@ export const CRON_AGENT_RESTART_BACKOFF_MS: readonly number[] = [
 
 /**
  * pr84-gap-closure (Codex H2) — the daemon-secrets a cron-driven agent
- * inherits from the daemon's own `process.env`, gated by org.
+ * inherits from the daemon's own `process.env`, gated by a daemon-owned
+ * trusted-agent allowlist.
  *
  * The pr-triage agent's bash needs `IAGO_TELEGRAM_BOT_TOKEN`,
  * `IAGO_TELEGRAM_ALLOWED_USER_IDS`, and `GH_TOKEN` to post its Telegram
@@ -741,15 +759,34 @@ export const CRON_AGENT_RESTART_BACKOFF_MS: readonly number[] = [
  * multi-tenant, so a generic merge would leak iaGO's creds into every
  * spawned agent, including future client agents). The daemon, as the
  * trusted orchestrator, is the layer allowed to compose its own secrets
- * into a per-agent env — but ONLY for its own (`org: "internal"`) agents,
- * and ONLY this explicit allowlist. See `composeAgentEnv` in
- * `registerCronAgentWithRestart`.
+ * into a per-agent env — but ONLY for agents in
+ * `CRON_AGENT_SECRET_TRUSTED_AGENTS`, and ONLY this explicit allowlist.
+ * See `composeAgentEnv` in `registerCronAgentWithRestart`.
  */
 export const CRON_AGENT_ENV_ALLOWLIST: readonly string[] = [
 	"IAGO_TELEGRAM_BOT_TOKEN",
 	"IAGO_TELEGRAM_ALLOWED_USER_IDS",
 	"GH_TOKEN",
 ];
+
+/**
+ * pr84-gap-closure (Codex H2 follow-up — spoof close) — the daemon-owned set
+ * of agentIds permitted to inherit the daemon's `CRON_AGENT_ENV_ALLOWLIST`
+ * secrets.
+ *
+ * The prior gate keyed secret injection on `agentConfig.org === "internal"`,
+ * but `org` is read from the agent's OWN `agent-config.json`. The daemon
+ * registers every cron entry under `agentsDir`, so a less-trusted agent could
+ * self-label `org: "internal"` and inherit the daemon's Telegram/GH creds.
+ *
+ * `agentId` is daemon-controlled (the registration key passed to
+ * `registerCronAgentWithRestart`, NOT a self-declared config field), so gating
+ * on membership in THIS set fails closed: any agent not explicitly listed gets
+ * ONLY its declared `agentConfig.env`, never the daemon secrets.
+ */
+export const CRON_AGENT_SECRET_TRUSTED_AGENTS: ReadonlySet<string> = new Set([
+	"pr-triage",
+]);
 
 /**
  * Dual-adversarial I-C fix — register a cron-driven agent and arm a
@@ -798,15 +835,19 @@ export async function registerCronAgentWithRestart(deps: {
 	const { agentManager, agentId, agentConfig, isShuttingDown } = deps;
 	const backoffMs = deps.backoffMs ?? CRON_AGENT_RESTART_BACKOFF_MS;
 
-	// pr84-gap-closure (Codex H2, brief D2) — compose the per-agent env
-	// the daemon hands to `registerAgent`. For an `org: "internal"` agent,
-	// merge the allowlisted daemon secrets that are actually present in
-	// `process.env` (skip absent/empty so we never materialize empty-string
-	// env entries). A non-internal (client) agent gets ONLY its declared
-	// `agentConfig.env`. Used for BOTH the initial registration and the
+	// pr84-gap-closure (Codex H2, brief D2 + H2-follow-up) — compose the
+	// per-agent env the daemon hands to `registerAgent`. For an agent in the
+	// daemon-owned `CRON_AGENT_SECRET_TRUSTED_AGENTS` allowlist, merge the
+	// allowlisted daemon secrets that are actually present in `process.env`
+	// (skip absent/empty so we never materialize empty-string env entries).
+	// Any agent NOT in the allowlist gets ONLY its declared `agentConfig.env`.
+	// Gating on the daemon-controlled `agentId` (NOT the self-declared
+	// `agentConfig.org`) fails closed: a less-trusted cron agent cannot opt
+	// into the daemon's creds by self-labeling `org: "internal"` in its own
+	// `agent-config.json`. Used for BOTH the initial registration and the
 	// restart re-registration so a restarted agent keeps its creds.
 	const composeAgentEnv = (): Record<string, string> => {
-		if (agentConfig.org !== "internal") return agentConfig.env;
+		if (!CRON_AGENT_SECRET_TRUSTED_AGENTS.has(agentId)) return agentConfig.env;
 		const merged: Record<string, string> = { ...agentConfig.env };
 		for (const key of CRON_AGENT_ENV_ALLOWLIST) {
 			const value = process.env[key];

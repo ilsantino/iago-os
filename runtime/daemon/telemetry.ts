@@ -484,6 +484,31 @@ export type DaemonEvent =
 			readonly message: string;
 	  };
 
+/**
+ * pr84-gap-closure (Codex H1 follow-up) — the daemon-owned set of recognized
+ * `ndjsonAlert` kinds the `pr-triage` agent may emit. An alert envelope is a
+ * record-and-resolve signal that bypasses the dispatch path; treating ANY
+ * non-empty `ndjsonAlert` string as a terminal alert was an un-scoped dispatch
+ * bypass — `tasks/pending/` is the GENERIC bus shared by all agents, so a
+ * malformed or adversarial task for another (or unregistered) agent could skip
+ * runtime execution and still get silently resolved.
+ *
+ * Both `AgentManager.processPendingTask` (agent-manager.ts) and
+ * `makeTaskDispatchHandler` (main.ts) gate the alert branch on membership in
+ * THIS set (plus `agentId === "pr-triage"` and no `prompt` field), so the
+ * branch is daemon-owned, not self-declared by the task envelope. Any other
+ * shape falls through to the existing registration/dispatch/poison handling.
+ *
+ * Defined here (not in main.ts) so both consumers import it from the module
+ * they already depend on — avoids a circular import between agent-manager.ts
+ * and main.ts. Values mirror the two producer shapes in
+ * `runtime/agents/pr-triage/prompt-template.md` (lines 145-148, 180).
+ */
+export const PR_TRIAGE_ALERT_KINDS: ReadonlySet<string> = new Set([
+	"pr-triage-telegram-send-failed",
+	"pr-triage-double-failure",
+]);
+
 let missingSessionIdWarned = false;
 
 function formatDate(date: Date): string {
