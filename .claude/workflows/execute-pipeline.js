@@ -79,10 +79,12 @@ const STRESS_SCHEMA = {
 
 const PREP_SCHEMA = {
   type: 'object',
-  required: ['preImplSha'],
+  required: ['status'],
   properties: {
+    status: { type: 'string', enum: ['DONE', 'BLOCKED'] },
     preImplSha: { type: 'string' },
     branch: { type: 'string' },
+    notes: { type: 'string' },
   },
 }
 
@@ -153,6 +155,36 @@ async function withRetry(fn, label, tries) {
   const max = tries || 2
   let lastErr
   for (let i = 0; i < max; i++) {
+    try {
+      const result = await fn()
+      if (result === null) throw new Error(`${label}: agent was skipped — aborting`)
+      return result
+    } catch (e) {
+      lastErr = e
+      log(`${label} attempt ${i + 1}/${max} failed: ${String(e).slice(0, 200)}`)
+    }
+  }
+  throw lastErr
+}
+
+// Retry a MUTATING stage safely. Before each RE-attempt (not the first), roll back
+// partial edits from the failed attempt so the retry starts from the checkpoint —
+// a blind retry on a half-edited worktree could duplicate work. Keeps transient-
+// error survival for the impl stage without the corruption risk Codex flagged.
+// `restoreCmd` is a git command run in projectDir to discard partial changes
+// (e.g. `git checkout <preImplSha> -- .`). Commit and fix stages do NOT use this —
+// they create commits, so they run single-attempt to avoid double-commits.
+async function withRetryMutating(fn, label, restoreCmd) {
+  const max = 2
+  let lastErr
+  for (let i = 0; i < max; i++) {
+    if (i > 0) {
+      log(`${label}: rolling back partial changes before retry`)
+      await agent(
+        `${PREAMBLE}\n\nRoll back partial changes from a FAILED pipeline attempt so the retry starts clean. In ${projectDir} run exactly:\n  ${restoreCmd}\nThen verify with: git status --short. Return status=DONE.`,
+        { label: `${label}-rollback`, schema: IMPL_SCHEMA },
+      )
+    }
     try {
       const result = await fn()
       if (result === null) throw new Error(`${label}: agent was skipped — aborting`)
@@ -250,10 +282,10 @@ Verdict: PROCEED (no significant issues) / PROCEED_WITH_NOTES (proceed with awar
 
 const PREP_PROMPT = `${PREAMBLE}
 
-Capture pre-implementation state. In ${projectDir}:
-- preImplSha = output of: git rev-parse HEAD
-- branch = output of: git branch --show-current
-Return them. Do not modify anything.`
+Capture pre-implementation state AND guard against a dirty/contended worktree. In ${projectDir}:
+1. Assert the working tree is clean: run  git status --porcelain. If it is NON-EMPTY, return status=BLOCKED with notes saying the tree is dirty — the pipeline must NOT run on a contended worktree. (Concurrent pipeline runs on one projectDir are unsupported; use a separate git worktree. This is the lock: a second run sees the first's edits and stops here.)
+2. If clean: preImplSha = git rev-parse HEAD ; branch = git branch --show-current ; return status=DONE with both.
+Do not modify anything.`
 
 function implPrompt(stressNotes) {
   const stressBlock =
@@ -270,15 +302,19 @@ When done, return status=DONE (or BLOCKED / NEEDS_CONTEXT with a notes explanati
 
 const BUILD_PROMPT = `${PREAMBLE}
 
-BUILD GATE. In ${projectDir}:
-1. Detect tooling: tsconfig.json present? vite.config.(ts|js|mjs) present?
-2. Run the gates that apply:
-   - if tsconfig: npx tsc --noEmit
-   - if vite config: npx vite build
-   - if neither: pass trivially (passed=true, ran=[]).
-3. If a gate fails, fix the root cause in the source (edit files — do NOT suppress errors), then re-run until both pass or you have made a thorough attempt. Do NOT commit.
+BUILD GATE — run the checks RELEVANT to what changed (do NOT assume root tsc/vite are the only checks; a root-only gate can falsely pass a change to nested packages, shell, or workflow JS). In ${projectDir}:
+1. List changed files: git status --porcelain (the implementation is not yet committed).
+2. Run EVERY check that applies to the changed paths:
+   - Frontend (root tsconfig.json / vite config present and src changed): npx tsc --noEmit ; npx vite build
+   - Nested package (any changed dir with its own package.json, e.g. runtime/): cd into it and run its typecheck + tests (npx tsc --noEmit ; npm test or npx vitest run if defined)
+   - Shell scripts (*.sh changed): bash -n on each ; shellcheck -x if installed
+   - Workflow JS (.claude/workflows/*.js changed): node "${iagoRoot}/scripts/validate-workflows.mjs"
+   - Any explicit verify command(s) named in the plan (${plan})
+3. CONSOLE GATE: if a Vite config exists AND "${iagoRoot}/scripts/console-check.mjs" is present, run  node "${iagoRoot}/scripts/console-check.mjs" --project-dir "${projectDir}"  (exit 0 = clean, 2 = skipped/no Playwright, 1 = runtime console errors). Fix the ROOT CAUSE of any console errors — never suppress with try/catch or console filtering.
+4. If a check fails, fix the root cause in the source (edit files — do NOT suppress errors, do NOT commit) and re-run until green or you have made a thorough attempt.
+5. If genuinely NO check applies to the changed files, that is suspicious for a code change — set passed=true but ran=[] and say so explicitly in summary; do NOT silently green a real change.
 
-Return passed (true only if every applicable gate is green), ran (the commands you ran), and a one-line summary (or the first failing diagnostic if not passed).`
+Return passed (true only if every applicable check is green), ran (the exact commands you ran), and a one-line summary (or the first failing diagnostic if not passed).`
 
 function commitPrompt() {
   const branchStep = noPr
@@ -425,10 +461,16 @@ const prep = await withRetry(
   () => agent(PREP_PROMPT, { label: 'prep', phase: 'Implement', schema: PREP_SCHEMA }),
   'prep',
 )
+if (prep.status !== 'DONE') {
+  throw new Error(`Prep blocked — ${prep.notes || 'working tree not clean / concurrent run on this projectDir'}`)
+}
 const preImplSha = prep.preImplSha
+if (!preImplSha) throw new Error('Prep did not return preImplSha')
 log(`pre-impl HEAD: ${preImplSha} (branch ${prep.branch || '?'})`)
 
-const impl = await withRetry(
+// withRetryMutating: on a retry, partial edits from the failed attempt are rolled
+// back to preImplSha first (impl makes no commits, so a worktree restore suffices).
+const impl = await withRetryMutating(
   () =>
     agent(implPrompt(stress.notes), {
       label: 'implement',
@@ -436,6 +478,7 @@ const impl = await withRetry(
       schema: IMPL_SCHEMA,
     }),
   'implement',
+  `git checkout "${preImplSha}" -- .`,
 )
 if (impl.status !== 'DONE') {
   throw new Error(`Implementation ${impl.status}: ${impl.notes || '(no detail)'}`)
@@ -457,10 +500,10 @@ if (!buildOk) throw new Error('Build gate failed after 2 attempts')
 // Stage 2b — Commit (BEFORE review so Codex's `git diff base..HEAD` is non-empty;
 // codex-companion reviews committed history only — uncommitted changes are invisible to it).
 phase('Commit')
-const commit = await withRetry(
-  () => agent(commitPrompt(), { label: 'commit', phase: 'Commit', schema: COMMIT_SCHEMA }),
-  'commit',
-)
+// Single attempt — the commit stage creates a commit; a blind retry could
+// double-commit. If it throws, the pipeline aborts for inspection.
+const commit = await agent(commitPrompt(), { label: 'commit', phase: 'Commit', schema: COMMIT_SCHEMA })
+if (!commit) throw new Error('Commit agent was skipped — aborting')
 if (commit.status !== 'DONE') {
   throw new Error(`Commit ${commit.status}: ${commit.notes || '(no detail)'}`)
 }
@@ -484,15 +527,14 @@ while (
   rounds++
   phase('Fix')
   log(`fix round ${rounds}: ${actionable(findings).length} findings (codex=${codexSource})`)
-  await withRetry(
-    () =>
-      agent(fixPrompt(actionable(findings), rounds, MAX_FIX_ROUNDS), {
-        label: `fix:${rounds}`,
-        phase: 'Fix',
-        schema: IMPL_SCHEMA,
-      }),
-    `fix:${rounds}`,
-  )
+  // Single attempt — the fix agent commits its fixes; a blind retry could
+  // double-commit. A transient failure here aborts the run for inspection.
+  const fix = await agent(fixPrompt(actionable(findings), rounds, MAX_FIX_ROUNDS), {
+    label: `fix:${rounds}`,
+    phase: 'Fix',
+    schema: IMPL_SCHEMA,
+  })
+  if (!fix) throw new Error(`Fix round ${rounds} agent was skipped — aborting`)
   // Re-gate the build after fixes, then re-review (fixes were committed by the fix agent).
   phase('Build gate')
   const rebuild = await withRetry(

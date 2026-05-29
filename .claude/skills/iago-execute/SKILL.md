@@ -10,10 +10,11 @@ description: >-
 
 ## Purpose
 
-Execute plans for a phase via the cross-session pipeline script. Each plan goes
-through: stress test → implement → build gate → review → codex adversarial → codex fix → PR. Every step
-is a separate `claude -p` session with fresh context — no token burn in the
-orchestrator session.
+Execute plans for a phase via the harness-native `execute-pipeline` Workflow. Each
+plan goes through: stress → implement → build gate → commit → dual-adversarial
+(Opus ∥ Codex GPT-5.5) → fix → PR. Every stage runs as a tracked subagent with
+fresh context — no token burn in the orchestrator session, and completion is
+notified automatically (no log polling).
 
 ## Preconditions
 
@@ -180,9 +181,10 @@ If `--n8n` flag is set:
 
 ## Boundaries
 
-- The orchestrator does NOT implement code — the script does via `claude -p`
-- The orchestrator does NOT review code — the script does via `claude -p`
-- The orchestrator does NOT dispatch agents — the script spawns sessions
-- One script run per plan — never batch multiple plans
-- PRs are never auto-merged — user reviews on GitHub
-- If the script fails, STOP and escalate — do not retry without user input
+- The orchestrator does NOT implement code — the Workflow's subagents do
+- The orchestrator does NOT review code — the Workflow's subagents do
+- The orchestrator does NOT dispatch implementation/review agents directly — the Workflow does
+- One Workflow run per plan — never batch multiple plans into one run
+- PRs are never auto-merged — Santiago reviews and merges on GitHub
+- After the async loop reports clean, the orchestrator runs pass #2 (dual-adversarial) before telling Santiago to merge
+- If the Workflow throws, STOP and escalate — do not retry without user input

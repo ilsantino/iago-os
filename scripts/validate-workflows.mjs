@@ -7,6 +7,11 @@
 // with vm.Script (compile-only; nothing runs). Catches syntax errors, unbalanced
 // braces, and broken template literals before a workflow ships.
 //
+// Scope: this is a COMPILE check only. It does NOT verify that the live harness
+// injects the runtime bindings (agent/parallel/pipeline/log/phase/args) or honors
+// the agent() `schema` option — the first real /iago-execute run is the integration
+// test for those (the deprecated bash pipeline is retained as fallback until then).
+//
 // Used by .github/workflows/validate.yml and runnable locally:
 //   node scripts/validate-workflows.mjs
 import { readFileSync, readdirSync } from 'node:fs'
