@@ -317,19 +317,24 @@ function prPrompt(branch) {
 
 CREATE PR for the plan ${planName}. The changes are ALREADY COMMITTED on branch "${branch}". In ${projectDir}:
 1. Push the branch: git push -u origin "${branch}"
-2. Create the PR via gh. Body structure:
+2. IDEMPOTENCY: check whether a PR already exists for this branch —
+   gh pr view "${branch}" --json url,number,state 2>/dev/null
+   If an OPEN PR already exists, REUSE it (return its url/number) — do NOT create a duplicate.
+3. Otherwise create the PR via gh. Body structure:
    - Open with "## What this does" — a plain-English 1-3 sentence summary (no jargon).
    - ## Summary — 1-3 bullets of what changed.
    - <details><summary>Plan: ${planName}</summary> ... paste the FULL plan content from ${plan} ... </details>
    - ## Test plan — how to verify.
    PR TITLE: short plain-English feature name, no conventional-commit prefix, under 60 chars.
-3. Do NOT merge. Return the PR url and number and the branch name.`
+4. Do NOT merge. Return the PR url and number and the branch name.`
 }
 
 function tagPrompt(prNumber) {
   return `${PREAMBLE}
 
-Post a GitHub PR comment tagging @claude for review on PR #${prNumber} (in ${projectDir}). Output via gh pr comment. The comment text must be:
+Post a GitHub PR comment tagging @claude for review on PR #${prNumber} (in ${projectDir}).
+IDEMPOTENCY FIRST: list existing comments — gh pr view ${prNumber} --json comments — and if a comment already tags @claude for review, do NOT post again; return status=DONE immediately. (A duplicate @claude tag races parallel review-fix loops.)
+Otherwise output exactly one comment via gh pr comment. The comment text must be:
 1. First line: @claude Review this PR thoroughly.
 2. Blank line. Context: 2-3 sentences on what this PR implements and why (synthesize from the plan ${plan}); note the full plan is embedded in the PR description.
 3. Blank line. Focus areas: name the specific domains the diff touches (auth, API, React, backend, infra, i18n) and concrete patterns to watch — reference specific files/functions.
@@ -373,24 +378,27 @@ async function runDualAdversarial(label, isReReview, stressBlock, preImplSha) {
       ),
   ])
 
-  if (!review && !codex) {
-    throw new Error(`Both review legs failed at ${label} — cannot gate this change`)
+  // BOTH legs are mandatory — the gate must not silently degrade to a single
+  // reviewer. A missing Opus leg skips domain-routing + severity-floor review;
+  // a missing Codex leg drops the cross-model check. The codex agent already
+  // self-falls-back to a Claude adversarial pass internally, so a null Codex
+  // leg here means even that failed (a real infra problem worth stopping for).
+  // withRetry already gave each leg 2 attempts. Fail closed — no bad merge.
+  if (!review) {
+    throw new Error(
+      `Opus review leg failed at ${label} after retries — cannot gate without the primary (domain + severity-floor) review`,
+    )
+  }
+  if (!codex) {
+    throw new Error(
+      `Codex leg failed at ${label} after retries (codex-companion AND its Claude fallback both unavailable) — the dual-adversarial guarantee cannot be met; stopping`,
+    )
   }
   const findings = []
-  let verdict = 'UNKNOWN'
-  let codexSource = 'unavailable'
-  if (review) {
-    verdict = review.verdict
-    for (const f of review.findings || []) findings.push({ ...f, by: 'opus' })
-  } else {
-    log(`WARNING: Opus review leg failed at ${label}; relying on Codex leg only`)
-  }
-  if (codex) {
-    codexSource = codex.source
-    for (const f of codex.findings || []) findings.push({ ...f, by: codex.source })
-  } else {
-    log(`WARNING: Codex leg failed at ${label}; relying on Opus leg only`)
-  }
+  const verdict = review.verdict
+  const codexSource = codex.source
+  for (const f of review.findings || []) findings.push({ ...f, by: 'opus' })
+  for (const f of codex.findings || []) findings.push({ ...f, by: codex.source })
   return { findings, verdict, codexSource }
 }
 
@@ -464,7 +472,15 @@ phase('Review')
 let { findings, verdict, codexSource } = await runDualAdversarial('r0', false, stressBlock, preImplSha)
 let rounds = 0
 const MAX_FIX_ROUNDS = 2
-while (actionable(findings).length > 0 && rounds < MAX_FIX_ROUNDS) {
+// Loop while there is work AND it is either round 0 (always do ONE fix pass for any
+// findings — the fix agent addresses every severity, including Minor) or blocking
+// findings remain. This avoids burning a second fix+rebuild+re-review round on a
+// Minor-only result while still fixing Minors once.
+while (
+  actionable(findings).length > 0 &&
+  rounds < MAX_FIX_ROUNDS &&
+  (rounds === 0 || hasBlocking(findings))
+) {
   rounds++
   phase('Fix')
   log(`fix round ${rounds}: ${actionable(findings).length} findings (codex=${codexSource})`)
@@ -509,21 +525,41 @@ let prNumber = ''
 if (noPr) {
   log(`stacked commit on ${branch} (no PR)`)
 } else {
-  const pr = await withRetry(
-    () => agent(prPrompt(branch), { label: 'create-pr', phase: 'PR', schema: PR_SCHEMA, model: 'sonnet' }),
-    'create-pr',
-  )
+  // PR-create and tag are side-effecting (git push, gh pr create, gh pr comment).
+  // NOT wrapped in withRetry: a blind retry could create a duplicate PR or
+  // double-post the @claude tag, racing parallel review-fix loops (MEMORY:
+  // feedback_single_claude_tag). The prompts are idempotent instead — they reuse
+  // an existing PR for the branch and skip an already-posted @claude comment.
+  const pr = await agent(prPrompt(branch), {
+    label: 'create-pr',
+    phase: 'PR',
+    schema: PR_SCHEMA,
+    model: 'sonnet',
+  })
+  if (!pr) throw new Error('PR-create agent was skipped — aborting')
   prUrl = pr.prUrl || ''
   prNumber = pr.prNumber || (prUrl.match(/\/pull\/(\d+)/) || [])[1] || ''
-  log(`PR: ${prUrl || '(url not captured)'}`)
-  if (!noTag && prNumber) {
-    await withRetry(
-      () => agent(tagPrompt(prNumber), { label: 'tag-claude', phase: 'PR', schema: IMPL_SCHEMA, model: 'sonnet' }),
-      'tag-claude',
+  if (!noTag && (!prUrl || !prNumber)) {
+    // Tagging is mandatory unless noTag. A missing PR number means the async
+    // review loop cannot be triggered, so the pipeline must NOT report success.
+    throw new Error(
+      `PR stage did not yield a usable PR url/number (url="${prUrl}", number="${prNumber}") — cannot trigger the @claude review loop; resolve and re-run, or tag with /iago-prfix`,
     )
+  }
+  log(`PR: ${prUrl || '(none)'}`)
+  if (!noTag) {
+    const tag = await agent(tagPrompt(prNumber), {
+      label: 'tag-claude',
+      phase: 'PR',
+      schema: IMPL_SCHEMA,
+      model: 'sonnet',
+    })
+    if (!tag || tag.status !== 'DONE') {
+      throw new Error(
+        `@claude tag stage did not confirm DONE (status=${tag ? tag.status : 'null'}) — the async review loop may not have started; tag manually with /iago-prfix`,
+      )
+    }
     log(`tagged @claude on PR #${prNumber} — async GitHub review-fix loop will run`)
-  } else if (!noTag) {
-    log('WARNING: could not determine PR number — @claude NOT tagged; tag manually with /iago-prfix')
   }
 }
 

@@ -87,8 +87,6 @@ const [review, codex] = await parallel([
   () => agent(codexPrompt, { label: 'codex', phase: 'Codex', schema: CODEX_SCHEMA }),
 ])
 
-if (!review && !codex) throw new Error('Both review legs failed — cannot gate this PR')
-
 const findings = []
 let verdict = 'UNKNOWN'
 let codexSource = 'unavailable'
@@ -96,17 +94,33 @@ if (review) {
   verdict = review.verdict
   for (const f of review.findings || []) findings.push({ ...f, by: 'opus' })
 } else {
-  log('WARNING: Opus review leg failed; Codex leg only')
+  log('WARNING: Opus review leg failed — pre-merge review INCOMPLETE')
+  findings.push({
+    severity: 'Important',
+    summary:
+      'Pre-merge gate INCOMPLETE: the Opus reviewer leg failed, so domain-routing + severity-floor review did not run. Do NOT merge on the Codex leg alone — re-run the gate.',
+    by: 'gate',
+  })
 }
 if (codex) {
   codexSource = codex.source
   for (const f of codex.findings || []) findings.push({ ...f, by: codex.source })
 } else {
-  log('WARNING: Codex leg failed; Opus leg only')
+  log('WARNING: Codex leg failed — cross-model check INCOMPLETE')
+  findings.push({
+    severity: 'Important',
+    summary:
+      'Pre-merge gate INCOMPLETE: the Codex (GPT-5.5) cross-model leg failed, so there is no second-model opinion. Re-run the gate before merging.',
+    by: 'gate',
+  })
 }
 
 const blocking = findings.filter((f) => f.severity === 'Critical' || f.severity === 'Important')
-const clean = blocking.length === 0
-log(`dual-adversarial #2: ${clean ? 'CLEAN' : `${blocking.length} blocking`} (opus verdict ${verdict}, codex ${codexSource})`)
+// `clean` requires BOTH legs to have actually run AND no blocking findings — a
+// half-completed review must never report clean. (The synthetic findings above
+// already force blocking > 0 when a leg fails; the explicit !!review && !!codex
+// guard is belt-and-suspenders.)
+const clean = blocking.length === 0 && !!review && !!codex
+log(`dual-adversarial #2: ${clean ? 'CLEAN' : `${blocking.length} blocking`} (opus verdict ${verdict}, codex ${codexSource}, legs: opus=${!!review} codex=${!!codex})`)
 
 return { clean, verdict, codexSource, findings, blocking: blocking.length }

@@ -193,10 +193,15 @@ merged/closed PRs (`state == open` guard).
   │
   ▼  claude-review-fix.yml ── checks findings + round count
   │
-  ├── CLEAN ──► post summary ──► run pass #2 (dual-adversarial) ──► human merges
+  ├── CLEAN ──► post summary  (CI loop ends here)
   ├── MAX ROUNDS (>5) ──► post notice ──► manual review
   └── FINDINGS ──► fix agent ──► commit + push ──► re-tag @claude ──► back to claude.yml
 ```
+
+Pass #2 is NOT part of this CI loop. After CI posts the CLEAN summary, the
+**orchestrator** (in-session, per the skill steps) runs the `dual-adversarial`
+Workflow as the final pre-merge gate, then the human merges. There is no
+`dual-adversarial` reference in `.github/` — it is invoked from the session, not CI.
 
 ### Legacy bash fallback (deprecated)
 
