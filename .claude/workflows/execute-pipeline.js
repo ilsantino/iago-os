@@ -200,8 +200,12 @@ async function withRetryMutating(fn, label, restoreCmd) {
   throw lastErr
 }
 
+// Both ROOT-level (`:!.env`) AND nested (`:!**/.env`) patterns are required:
+// in default git pathspec mode `**/.env` does NOT match a top-level `.env`
+// (it needs a leading path segment), so a root-level secret would otherwise be
+// staged by `git add -A`. Caught by the PR #83 dual-adversarial (Opus leg).
 const SECRET_EXCLUDES =
-  "':!**/.env' ':!**/.env.*' ':!**/*.pem' ':!**/*.key' ':!**/*.p12' ':!**/*.pfx' ':!.iago/state/**' ':!**/.iago/state/**'"
+  "':!.env' ':!.env.*' ':!*.pem' ':!*.key' ':!*.p12' ':!*.pfx' ':!**/.env' ':!**/.env.*' ':!**/*.pem' ':!**/*.key' ':!**/*.p12' ':!**/*.pfx' ':!.iago/state/**' ':!**/.iago/state/**'"
 
 // Standing context every working agent needs.
 const PREAMBLE = `You are a stage in the iaGO execution pipeline (harness-native v2).
