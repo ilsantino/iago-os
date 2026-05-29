@@ -81,7 +81,14 @@ export function pathFor(kind: StateKind): string {
 
 export function ensureStateDirsSync(): void {
 	for (const kind of ALL_KINDS) {
-		fs.mkdirSync(pathFor(kind), { recursive: true });
+		// 0o700: state dirs are daemon-private. Persisted agent configs under
+		// `agents/` carry per-agent env AND daemon-owned secrets (Telegram bot
+		// token, GH PAT) once the cron-agent env allowlist runs
+		// (main.ts `composeAgentEnv`), so other local users on the host must
+		// not be able to traverse/read them. The mode survives a 0o022 umask
+		// (no group/other bits to clear). systemd `LoadCredential=` adds at-rest
+		// ENCRYPTION on top in Phase 2 — filesystem perms ≠ encryption.
+		fs.mkdirSync(pathFor(kind), { recursive: true, mode: 0o700 });
 	}
 }
 

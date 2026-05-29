@@ -537,10 +537,23 @@ function resolveSessionId(): string {
 	return "no-session-id";
 }
 
+/**
+ * Append a telemetry event to the daily NDJSON file.
+ *
+ * Returns `true` if the line durably landed on disk, `false` if the append
+ * failed (the error is logged, never thrown — fire-and-forget callers can
+ * keep ignoring the result). The boolean exists for the rare caller that
+ * must NOT take an irreversible action unless the event was durably
+ * recorded: the pr-triage ndjsonAlert path (agent-manager `processPendingTask`)
+ * uses it to avoid resolving a fallback-alert task out of `pending/` when its
+ * `pr-triage-telegram-send-failed` record could not be written — otherwise a
+ * degraded telemetry dir (ENOSPC/EACCES) would silently swallow the
+ * double-failure signal AND stop the task from retrying (Codex Medium).
+ */
 export async function emit(
 	event: DaemonEvent,
 	extra?: Record<string, unknown>,
-): Promise<void> {
+): Promise<boolean> {
 	const filePath = getTelemetryPath();
 	const sessionId = resolveSessionId();
 	const line = {
@@ -554,8 +567,10 @@ export async function emit(
 	try {
 		await fsp.mkdir(path.dirname(filePath), { recursive: true });
 		await fsp.appendFile(filePath, serialized, "utf8");
+		return true;
 	} catch (err) {
 		console.error("[telemetry] write failed:", err);
+		return false;
 	}
 }
 

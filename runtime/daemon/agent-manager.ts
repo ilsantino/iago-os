@@ -1264,17 +1264,25 @@ export class AgentManager extends EventEmitter {
 			// in some scenarios, leaving restoreFromMarker no env source at
 			// all.
 			//
-			// Security tradeoff (documented in daemon/README.md "Env
-			// persistence" section): Phase 2 wraps this file in systemd
-			// `LoadCredential=` for at-rest encryption. Until then the file
-			// is mode 0600 via state-paths defaults and lives under
-			// `pathFor("agents")` which is daemon-private. Operators are
-			// responsible for not running the daemon with secrets the
-			// host filesystem cannot protect.
+			// Security (Codex H at-rest follow-up): this file now carries
+			// daemon-owned secrets (Telegram bot token, GH PAT) for trusted
+			// cron agents, so it is written mode 0600 (below) inside the
+			// `agents/` dir created mode 0700 (state-paths `ensureStateDirsSync`)
+			// — other local users cannot read it. systemd `LoadCredential=` adds
+			// at-rest ENCRYPTION in Phase 2 (perms protect against other local
+			// users; encryption protects disk images / backups). The earlier
+			// "0600 via state-paths defaults" claim was aspirational — both the
+			// dir mkdir and this writeFile were issued with NO mode; that is now
+			// enforced in code.
 			env: config.env,
 		};
 		try {
-			await fsp.writeFile(file, JSON.stringify(payload));
+			// mode 0o600 applies on creation (umask-masked, but 0o600 survives a
+			// 0o022 umask); the explicit chmod enforces it on the overwrite path
+			// too. No-op on Windows (NTFS ignores POSIX bits) — the daemon's
+			// at-rest target is the POSIX VPS.
+			await fsp.writeFile(file, JSON.stringify(payload), { mode: 0o600 });
+			await fsp.chmod(file, 0o600);
 		} catch (err) {
 			console.error(
 				`[agent-manager] persistAgentConfig for ${handleId} failed: ${
@@ -1758,14 +1766,22 @@ export class AgentManager extends EventEmitter {
 		) {
 			const detailsRaw = (parsed as { details?: unknown }).details;
 			const details = typeof detailsRaw === "string" ? detailsRaw : "";
-			await emitTelemetry({
+			// Codex Medium (durability): `emitTelemetry` swallows append
+			// failures and returns `false` on a degraded telemetry dir
+			// (ENOSPC/EACCES). Resolve the fallback-alert file ONLY when its
+			// record durably landed — otherwise leave it in `pending/` so the
+			// alert re-trips next tick instead of being silently resolved
+			// without ever surfacing the double-failure signal.
+			const recorded = await emitTelemetry({
 				kind: "pr-triage-telegram-send-failed",
 				agentId,
 				filename,
 				alertKind: ndjsonAlert,
 				details,
 			});
-			await this.claimTask(filename, agentId);
+			if (recorded) {
+				await this.claimTask(filename, agentId);
+			}
 			return;
 		}
 		if (!this.isAgentRegistered(agentId)) {

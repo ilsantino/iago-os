@@ -142,28 +142,29 @@ vi.mock("node:child_process", async () => {
 
 // ───── telemetry mock (pass-through; tests inspect emitMock.mock.calls) ─────
 
-const { emitMock, emitState } = vi.hoisted(() => ({
+const { emitMock } = vi.hoisted(() => ({
 	emitMock: vi.fn(),
-	emitState: {
-		real: null as ((e: DaemonEvent) => Promise<void>) | null,
-	},
 }));
 vi.mock("../../daemon/telemetry.js", async () => {
 	const actual = await vi.importActual<
 		typeof import("../../daemon/telemetry.js")
 	>("../../daemon/telemetry.js");
-	emitState.real = actual.emit;
-	// Opus I5: install the delegating implementation ONCE, at module load,
-	// so emitMock ALWAYS pass-throughs to the real telemetry writer. Pairing
-	// emitMock.mockReset() (wipes the implementation) with a follow-up
-	// mockImplementation() in beforeEach left a window — however brief —
-	// where emit was a bare mock that dropped telemetry. beforeEach now uses
-	// mockClear() (call history only, implementation preserved), so no test
-	// can ever observe an unconfigured emit.
-	emitMock.mockImplementation((e: DaemonEvent) => {
-		if (emitState.real === null) return Promise.resolve();
-		return emitState.real(e);
-	});
+	// Opus I5: install the implementation ONCE, at module load, so emitMock is
+	// NEVER a bare mock — beforeEach uses mockClear() (call history only, impl
+	// preserved), so no test observes an unconfigured emit (a mockReset()+re-set
+	// pair previously left a window where emit dropped events).
+	//
+	// The implementation records the call and resolves `true`. The integration
+	// suite inspects emitMock.mock.calls for emitted EVENTS; it does NOT read
+	// real telemetry files (telemetry.test.ts owns persistence). The daemon's
+	// emit() now returns whether the durable write landed, and `true` is the
+	// normal case. Returning a fixed value (rather than delegating to the real
+	// writer) decouples this suite from the real telemetry writer's
+	// filesystem/env state — a cross-suite IAGO_DAEMON_STATE_ROOT race could
+	// otherwise make a real write fail and, via the ndjsonAlert durability gate
+	// (Codex Medium), wrongly flip the alert-resolution outcome. Case 12
+	// overrides this to `false` to exercise the write-failure branch.
+	emitMock.mockImplementation(() => Promise.resolve(true));
 	return {
 		...actual,
 		emit: emitMock,
@@ -367,10 +368,16 @@ beforeEach(async () => {
 		return pty;
 	});
 	spawnSyncMock.mockReset();
-	// Opus I5: mockClear (not mockReset) — clears call history between tests
-	// but PRESERVES the delegating implementation installed in the vi.mock
-	// factory at module load, so emit never has a window with no impl.
+	// Re-install emitMock's implementation EVERY test. afterEach's
+	// `vi.restoreAllMocks()` strips it (mockRestore on a vi.fn() clears the
+	// impl), so the one-time vi.mock-factory install would leave emit returning
+	// `undefined` from the 2nd test onward. The daemon's ndjsonAlert durability
+	// gate checks emit's boolean return, so emit MUST resolve `true` here (the
+	// normal "durably recorded" case). Setting it in beforeEach is
+	// synchronous — there is no window where emit lacks an impl (Opus I5).
+	// Case 12 overrides this to `false` to exercise the write-failure branch.
 	emitMock.mockClear();
+	emitMock.mockImplementation(() => Promise.resolve(true));
 	vi.spyOn(console, "error").mockImplementation(() => {});
 	vi.spyOn(console, "warn").mockImplementation(() => {});
 });
@@ -1091,4 +1098,69 @@ describe("pr-triage integration (Plan 04c)", () => {
 			),
 		).toBe(true);
 	});
+
+	it("Case 12 — ndjsonAlert is NOT resolved when its telemetry record fails to persist (Codex Medium)", async () => {
+		// emit() returns false on a degraded telemetry dir (it swallows the
+		// append error internally). The alert branch must NOT claim/resolve the
+		// fallback file in that case — resolving would silently lose the
+		// double-failure signal AND stop the task from retrying. Simulate the
+		// failed durable write by making the telemetry mock return false for
+		// this tick, then assert the file stays in pending/.
+		writePrTriageFixture();
+		const { mgr, register } = await buildSystem();
+		await register("pr-triage");
+
+		const filename = "pr-triage__1700000003.json";
+		fs.writeFileSync(
+			path.join(tempDir, "tasks/pending", filename),
+			JSON.stringify({
+				agentId: "pr-triage",
+				ndjsonAlert: "pr-triage-telegram-send-failed",
+				details: "telemetry-degraded path",
+			}),
+			"utf8",
+		);
+
+		// Telemetry write fails (returns false) for this tick.
+		emitMock.mockImplementation(() => Promise.resolve(false));
+
+		await mgr._pollingTickForTests();
+
+		// The alert branch fired (attempted to record the event)…
+		expect(emittedEventsOfKind("pr-triage-telegram-send-failed")).toHaveLength(
+			1,
+		);
+		// …but the file was NOT resolved — left in pending/ for the next tick
+		// to retry, because the durable write failed.
+		await fsp.access(path.join(tempDir, "tasks/pending", filename));
+		expect(fs.existsSync(path.join(tempDir, "tasks/resolved", filename))).toBe(
+			false,
+		);
+	});
+
+	it.skipIf(process.platform === "win32")(
+		"Case 13 — persisted agent config is written mode 0600 (Codex H at-rest)",
+		async () => {
+			// The cron-agent env allowlist injects daemon secrets (Telegram bot
+			// token, GH PAT) into the persisted config; persistAgentConfig must
+			// write it 0600 so other local users on the POSIX VPS cannot read the
+			// credentials. POSIX-only — NTFS ignores POSIX mode bits.
+			writePrTriageFixture();
+			const { register } = await buildSystem();
+			await register("pr-triage");
+			const agentsDirPath = path.join(tempDir, "agents");
+			const persisted = fs
+				.readdirSync(agentsDirPath)
+				.filter(
+					(f) =>
+						f.endsWith(".json") &&
+						fs.statSync(path.join(agentsDirPath, f)).isFile(),
+				);
+			expect(persisted.length).toBeGreaterThanOrEqual(1);
+			for (const f of persisted) {
+				const mode = fs.statSync(path.join(agentsDirPath, f)).mode & 0o777;
+				expect(mode).toBe(0o600);
+			}
+		},
+	);
 });

@@ -574,7 +574,10 @@ export interface TaskDispatchEvent {
  */
 export function makeTaskDispatchHandler(deps: {
 	agentManager: AgentManager;
-	emit: (event: DaemonEvent) => Promise<void>;
+	// Promise<unknown>: the handler awaits emit and ignores the result, so it
+	// accepts both the real telemetry `emit` (now Promise<boolean> — reports
+	// durable-write success) and the Promise<void> mocks used in tests.
+	emit: (event: DaemonEvent) => Promise<unknown>;
 }): (evt: TaskDispatchEvent) => Promise<void> {
 	const { agentManager, emit } = deps;
 	return async (evt: TaskDispatchEvent): Promise<void> => {
@@ -1080,7 +1083,9 @@ export interface SighupHandlerDeps {
 		  }
 		| undefined;
 	/** Telemetry emit. No-throw via internal try/catch (telemetry.ts swallows write errors). */
-	readonly emit: (event: DaemonEvent) => Promise<void>;
+	// Promise<unknown>: callers await emit and ignore the result, so this
+	// accepts the real telemetry `emit` (Promise<boolean>) and Promise<void> mocks.
+	readonly emit: (event: DaemonEvent) => Promise<unknown>;
 	/**
 	 * Returns the current set of credential env-var names. Called fresh on
 	 * every SIGHUP so Phase 3+ additions to `CREDENTIALS` (e.g., the commented
