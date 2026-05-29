@@ -153,7 +153,9 @@ const PR_SCHEMA = {
 // ─── Helpers ─────────────────────────────────────────────────────────
 // Retry a critical agent call. A throw (transient API error like the
 // "thinking blocks cannot be modified" 400 that killed the bash pipeline) is
-// retried; a null return (user skipped the agent mid-run) aborts immediately.
+// retried; a null return (user skipped the agent mid-run) is turned into a throw
+// and likewise retried — after `max` attempts the last error propagates (a skipped
+// agent won't un-skip, so it just burns the remaining attempts before aborting).
 async function withRetry(fn, label, tries) {
   const max = tries || 2
   let lastErr
@@ -183,10 +185,17 @@ async function withRetryMutating(fn, label, restoreCmd) {
   for (let i = 0; i < max; i++) {
     if (i > 0) {
       log(`${label}: rolling back partial changes before retry`)
-      await agent(
-        `${PREAMBLE}\n\nRoll back partial changes from a FAILED pipeline attempt so the retry starts clean. In ${projectDir} run exactly:\n  ${restoreCmd}\nThen verify with: git status --short. Return status=DONE.`,
+      // Capture and VERIFY the rollback — never retry a mutating stage on a dirty
+      // tree. If the rollback can't reach a clean checkpoint, fail closed.
+      const rb = await agent(
+        `${PREAMBLE}\n\nRoll back ALL partial changes from a FAILED pipeline attempt so the retry starts from the checkpoint. In ${projectDir} run exactly:\n  ${restoreCmd}\nThen VERIFY: git status --porcelain MUST be empty. Return status=DONE only if the tree is clean; otherwise status=BLOCKED with what remains.`,
         { label: `${label}-rollback`, schema: IMPL_SCHEMA },
       )
+      if (!rb || rb.status !== 'DONE') {
+        throw new Error(
+          `${label}: rollback before retry did not reach a clean tree (status=${rb ? rb.status : 'null'}${rb && rb.notes ? ': ' + rb.notes : ''}) — refusing to retry on dirty state`,
+        )
+      }
     }
     try {
       const result = await fn()
@@ -505,7 +514,8 @@ const impl = await withRetryMutating(
   // attempt created (git checkout -- . only reverts tracked paths; without this the
   // Commit stage's `git add -A` would sweep the failed attempt's orphan files into
   // the PR). --exclude-standard keeps gitignored runtime state (.iago/state) intact.
-  `git checkout "${preImplSha}" -- . && git ls-files --others --exclude-standard -z | xargs -0 -r rm -f`,
+  // Portable NUL-safe loop (no `xargs -r`, which is GNU-only and absent on macOS/BSD).
+  `git checkout "${preImplSha}" -- . && git ls-files --others --exclude-standard -z | while IFS= read -r -d '' f; do rm -f "$f"; done`,
 )
 if (impl.status !== 'DONE') {
   throw new Error(`Implementation ${impl.status}: ${impl.notes || '(no detail)'}`)
