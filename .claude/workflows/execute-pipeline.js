@@ -635,7 +635,7 @@ const summary = await agent(summaryPrompt(preImplSha, prUrl, verdict, codexSourc
   phase: 'Summary',
   schema: IMPL_SCHEMA,
 })
-if (!summary) throw new Error('Summary agent was skipped — .iago/summaries/ uncommitted, dirty tree for next plan')
+if (!summary || summary.status !== 'DONE') throw new Error('Summary agent was skipped or BLOCKED — .iago/summaries/ uncommitted, dirty tree for next plan')
 
 log(`PIPELINE COMPLETE — ${planName}`)
 return {

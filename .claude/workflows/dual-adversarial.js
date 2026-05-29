@@ -8,12 +8,18 @@ export const meta = {
 }
 
 // Retry a read-only agent call. Transient API errors (e.g. "thinking blocks cannot be modified"
-// 400s) are retried; null return (user skipped mid-run) aborts immediately.
+// 400s) and null returns (user skipped mid-run) are both retried.
 async function withRetry(fn, label, tries = 2) {
+  let lastErr
   for (let i = 0; i < tries; i++) {
-    const result = await fn()
-    if (result !== null) return result
-    if (i < tries - 1) log(`${label}: null result, retrying (${i + 2}/${tries})`)
+    try {
+      const result = await fn()
+      if (result !== null) return result
+      lastErr = new Error(`${label}: agent was skipped`)
+    } catch (e) {
+      lastErr = e
+    }
+    if (i < tries - 1) log(`${label} attempt ${i + 1}/${tries} failed: ${String(lastErr).slice(0, 200)}, retrying`)
   }
   return null
 }
