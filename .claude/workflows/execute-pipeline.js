@@ -558,6 +558,7 @@ while (
     schema: IMPL_SCHEMA,
   })
   if (!fix) throw new Error(`Fix round ${rounds} agent was skipped — aborting`)
+  if (fix.status !== 'DONE') throw new Error(`Fix round ${rounds} ${fix.status}: ${fix.notes || '(no detail)'}`)
   // Re-gate the build after fixes, then re-review (fixes were committed by the fix agent).
   phase('Build gate')
   const rebuild = await withRetry(
