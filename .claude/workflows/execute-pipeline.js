@@ -473,6 +473,39 @@ async function runDualAdversarial(label, isReReview, stressBlock, preImplSha) {
 // ─── Flow ────────────────────────────────────────────────────────────
 log(`execute-pipeline v2 — plan ${planName} — project ${projectDir}`)
 
+// ─── Lock — atomic per-project guard ─────────────────────────────────
+// `mkdir` is atomic, so it CLOSES the TOCTOU window the PREP clean-tree check
+// cannot (two runs can both observe a clean tree before either writes — but only
+// one can create the lock dir). Released best-effort on the success path; a crashed
+// run is recovered by the 3h stale-reclaim below or a manual `rmdir`. .iago/state
+// is gitignored, so the lock never enters git. NOTE (documented tradeoff): there is
+// no finally-release — a guaranteed finally would dispatch a release agent that can
+// itself throw on the same API outage that aborted the run, masking the real error;
+// instead a thrown/crashed run leaves the lock for stale-reclaim or manual cleanup.
+// Concurrent same-projectDir runs are discouraged regardless — use a worktree
+// (MEMORY: worktree-per-session). This lock is belt-and-suspenders for the accident.
+const LOCK_DIR = '.iago/state/.pipeline.lock.d'
+const lock = await agent(
+  `${PREAMBLE}
+
+Acquire the per-project pipeline lock in ${projectDir}. Run EXACTLY, in order:
+1. mkdir -p .iago/state   (ensure the PARENT exists — this is not the lock)
+2. Atomically claim the lock: run  mkdir ${LOCK_DIR}   with NO -p flag. A NON-ZERO exit means the lock is already held. (Never use -p on the lock dir — it would not fail on an existing dir and would defeat the lock.)
+3. If step 2 SUCCEEDED: write owner metadata —  date -u +%Y-%m-%dT%H:%M:%SZ > ${LOCK_DIR}/acquired ; echo "${planName}" > ${LOCK_DIR}/owner  — then return status=ACQUIRED.
+4. If step 2 FAILED (held): check staleness. If ${LOCK_DIR}/acquired is MISSING or its timestamp is older than 3 hours, the previous holder is dead — reclaim: run  rm -rf ${LOCK_DIR}  then retry step 2 once and, on success, do step 3 and return ACQUIRED. Otherwise return status=BLOCKED with notes: "another pipeline is running on this projectDir; if you are sure it is dead, clear it with: rmdir ${LOCK_DIR}".`,
+  {
+    label: 'lock-acquire',
+    phase: 'Stress',
+    schema: { type: 'object', required: ['status'], properties: { status: { type: 'string', enum: ['ACQUIRED', 'BLOCKED'] }, notes: { type: 'string' } } },
+  },
+)
+if (!lock || lock.status !== 'ACQUIRED') {
+  throw new Error(
+    `Pipeline lock not acquired (${lock ? lock.status : 'null'}): ${lock && lock.notes ? lock.notes : `another run holds ${LOCK_DIR} — clear with \`rmdir ${LOCK_DIR}\` if stale`}`,
+  )
+}
+log(`acquired pipeline lock (${LOCK_DIR})`)
+
 // Stage 0 — Stress
 phase('Stress')
 const stress = await withRetry(
@@ -651,6 +684,14 @@ const summary = await agent(summaryPrompt(preImplSha, prUrl, verdict, codexSourc
   schema: IMPL_SCHEMA,
 })
 if (!summary || summary.status !== 'DONE') throw new Error('Summary agent was skipped or BLOCKED — .iago/summaries/ uncommitted, dirty tree for next plan')
+
+// Release the pipeline lock (best-effort, success path — see the lock comment above
+// for why there is no finally-release).
+await agent(
+  `${PREAMBLE}\n\nRelease the pipeline lock: in ${projectDir} run  rm -rf ${LOCK_DIR}. Return status=DONE.`,
+  { label: 'lock-release', phase: 'Summary', schema: IMPL_SCHEMA },
+)
+log(`released pipeline lock`)
 
 log(`PIPELINE COMPLETE — ${planName}`)
 return {

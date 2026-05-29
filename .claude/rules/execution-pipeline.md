@@ -94,6 +94,29 @@ Workflow execute-pipeline.js (args: plan, projectDir, iagoRoot, noTag?)
 - **Commit-before-review.** The cross-model Codex leg only sees committed diffs — the
   Commit stage (2b) guarantees a real `base..HEAD` before review.
 - **Tracked, not polled.** The workflow notifies on completion; no nohup + log-watching.
+- **Per-project lock.** A flow-start stage atomically `mkdir`s `.iago/state/.pipeline.lock.d`
+  (closes the TOCTOU the clean-tree check alone cannot). Released best-effort on success;
+  a crashed run is reclaimed after a 3h stale window or a manual `rmdir .iago/state/.pipeline.lock.d`.
+  Concurrent same-`projectDir` runs are still discouraged — use a worktree (worktree-per-session).
+
+### Multi-plan execution (stacking) — known model + caveat
+
+`/iago-execute` runs a phase's plans **sequentially and STACKED**: git-sync to `main`
+happens ONCE before plan 1, and each later plan builds on the previous plan's commits
+(this is required — phase plans often `depends_on` earlier ones). Consequences and the
+current contract:
+
+- Each plan's **review diff** (`preImplSha..HEAD`, `preImplSha` captured at that plan's
+  PREP) is correctly **that plan only** — the prior plan's commits (incl. its summary
+  commit) are behind `preImplSha`.
+- Each plan's **PR diff** (`main...HEAD`) is **cumulative** — it shows earlier
+  not-yet-merged plans too. Merge the phase's PRs **in order**; once plan N's PR merges,
+  plan N+1's diff against `main` collapses to its own delta.
+- **Deferred (well-specified follow-up):** a cleaner multi-plan model — either one PR
+  per phase (plans 2..N as `noPr` stacked commits) or true stacked PRs (`--base` the
+  prior plan's branch) — plus a finally-guaranteed lock release and atomic stale-reclaim.
+  The design + the exact failure modes are captured in the PR #83 dual-adversarial
+  stress-test. Single-plan / `--plan` / `/iago-quick` runs are unaffected by any of this.
 
 ### Control Flags
 
