@@ -46,7 +46,7 @@ Phases: init → discuss → plan (+ stress) → execute → verify. See `/iago-
 | Trivial fix (≤3 files, obvious) | `/iago-fast {desc}` | Build gate only |
 
 ## Review Pipeline
-`scripts/execute-pipeline.sh`: stress → impl → build gate → review → codex → codex fix → PR → tag → summary + async GitHub review-fix loop. Details in `.claude/rules/execution-pipeline.md`. Skip only via `/iago-fast`.
+Harness-native Workflow `.claude/workflows/execute-pipeline.js`: stress → impl → build gate → commit → dual-adversarial (Opus ∥ Codex GPT-5.5) → fix → PR → tag → summary + async GitHub loop + post-async dual-adversarial gate (`.claude/workflows/dual-adversarial.js`). (`scripts/execute-pipeline.sh` deprecated — retained one cycle.) Details in `.claude/rules/execution-pipeline.md`. Skip only via `/iago-fast`.
 
 ## Verification
 Never claim done without running verification and reading output. "Tests pass" = ran them, saw green. "Build succeeds" = ran it, saw exit 0.

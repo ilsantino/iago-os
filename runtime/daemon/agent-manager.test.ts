@@ -537,7 +537,7 @@ describe("AgentManager / cost rollup", () => {
 			sessionId: "sess-rc",
 			dollarsUsd: 0.42,
 			provider: "anthropic",
-			model: "claude-opus-4-7",
+			model: "claude-opus-4-8",
 		});
 
 		await waitForCondition(() => mgr.getCostSummary(child.id).selfCost > 0);
@@ -1069,7 +1069,7 @@ describe("AgentManager / EC5 cost event after parent teardown", () => {
 			sessionId: "sess-ec5-c",
 			dollarsUsd: 0.1,
 			provider: "anthropic",
-			model: "claude-opus-4-7",
+			model: "claude-opus-4-8",
 		});
 		await waitForCondition(
 			() => mgr.getCostSummary(parent.id).rolledUpCost > 0,
@@ -1101,7 +1101,7 @@ describe("AgentManager / EC5 cost event after parent teardown", () => {
 				sessionId: "sess-ec5-c",
 				dollarsUsd: 0.1,
 				provider: "anthropic",
-				model: "claude-opus-4-7",
+				model: "claude-opus-4-8",
 			}),
 		).resolves.toBeUndefined();
 	});

@@ -9,6 +9,18 @@ set -euo pipefail
 # Each step is a separate claude -p session with fresh context.
 # After PR creation, tags @claude — review-fix loop runs async via GitHub Action.
 # No n8n needed — just bash.
+#
+# ─── DEPRECATED (2026-05-28) ─────────────────────────────────────────
+# Superseded by the harness-native Workflow at
+# .claude/workflows/execute-pipeline.js (invoked by /iago-execute,
+# /iago-quick, /subagent-driven-development). The Workflow eliminates the
+# nohup-bash + `claude -p` fragility that caused repeated impl-stage
+# failures (transient API errors with no retry, static turn caps) and the
+# Windows-specific scar tissue (self-freeze re-exec, taskkill pipe-FD
+# dance, timeout detection, mkdir locks). See
+# .iago/research/2026-05-28-execute-pipeline-teardown.md.
+# This script is RETAINED as a fallback for one cycle — do not extend it;
+# fix forward in the Workflow.
 
 PLAN_PATH=""
 PROJECT_DIR=""

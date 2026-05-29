@@ -20,7 +20,7 @@ orchestrator session.
 - `.iago/PROJECT.md` must exist.
 - At least one `.iago/plans/{NN}-{slug}-*.md` must exist for the target phase.
   If not, STOP: "No plans found. Run `/iago-plan {slug}` first."
-- `scripts/execute-pipeline.sh` must exist in the iago-os root.
+- `.claude/workflows/execute-pipeline.js` must exist in the iago-os root.
 - When invoking from a client project directory, set `IAGO_OS_ROOT` to the
   iago-os installation path (e.g., `export IAGO_OS_ROOT=~/dev/iago-os`).
   `git rev-parse --show-toplevel` resolves to the client root, not iago-os.
@@ -65,17 +65,21 @@ Execute all? (y/n)
 
 ### 2. Resolve paths
 
+The pipeline is the harness-native **Workflow** at
+`.claude/workflows/execute-pipeline.js` (NOT the deprecated `scripts/execute-pipeline.sh`).
+Resolve its absolute path via Bash:
+
 ```bash
-# Dynamic resolution. Set IAGO_OS_ROOT env var, or auto-detect via git.
+# Set IAGO_OS_ROOT env var, or auto-detect via git.
 IAGO_ROOT="${IAGO_OS_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null)}"
-if [[ -z "$IAGO_ROOT" || ! -f "$IAGO_ROOT/scripts/execute-pipeline.sh" ]]; then
-  echo "ERROR: Cannot resolve iago-os root. Set IAGO_OS_ROOT env var." >&2; exit 1
+WF="$IAGO_ROOT/.claude/workflows/execute-pipeline.js"
+if [[ -z "$IAGO_ROOT" || ! -f "$WF" ]]; then
+  echo "ERROR: Cannot resolve iago-os root / workflow. Set IAGO_OS_ROOT env var." >&2; exit 1
 fi
-SCRIPT="$IAGO_ROOT/scripts/execute-pipeline.sh"
-PROJECT_DIR="{cwd}"  # the client project directory (where .iago/ lives)
+echo "WF=$WF"   # absolute path to pass as the Workflow scriptPath
 ```
 
-Verify the script exists: `test -f "$SCRIPT"`. If not, STOP with error.
+`PROJECT_DIR` = the client project directory (where `.iago/` lives), absolute.
 
 ### 3. Git sync
 
@@ -88,41 +92,61 @@ This ensures we're on the latest main with no conflicts.
 
 ### 4. Execute plans sequentially
 
-For each plan in order:
+For each plan in order, invoke the **Workflow tool** (this skill invocation is the
+authorization to call it — Workflow opt-in). Use the absolute paths from step 2:
 
-```bash
-# Default (auto-review):
-bash "$SCRIPT" --plan {plan_path} --project-dir "$PROJECT_DIR"
-# With --no-review:
-bash "$SCRIPT" --plan {plan_path} --project-dir "$PROJECT_DIR" --no-tag
+```
+Workflow({
+  scriptPath: "<WF>",                      // .claude/workflows/execute-pipeline.js (absolute)
+  args: {
+    plan: "<absolute plan path>",
+    projectDir: "<absolute PROJECT_DIR>",
+    iagoRoot: "<IAGO_ROOT>",
+    noTag: <true ONLY if --no-review was passed, else omit>
+  }
+})
 ```
 
-If `--no-review` was passed, append `--no-tag` to the script call. This skips
-step 5b (@claude tagging) but all local pipeline stages still run.
+The Workflow runs in the background as tracked subagents and notifies you on
+completion; its return value carries `{ branch, prUrl, prNumber, reviewVerdict,
+codexSource, fixRounds, minorRemaining }`. Run plans ONE AT A TIME — wait for each
+to complete before launching the next (the next plan builds on the previous
+plan's commits).
 
-**Run this via the Bash tool.** Set timeout to 600000 (10 min). Run in background
-if the user wants to do other work, otherwise foreground.
+The Workflow runs the full pipeline per plan as tracked subagents (no
+nohup-bash + `claude -p` fragility — transient API errors auto-retry, no static
+turn caps):
+0. **Stress** — adversarial plan review (skipped if plan has `## Stress Test`)
+1. **Implement** — writes code from the plan
+2. **Build gate** — `tsc --noEmit` + `vite build`
+2b. **Commit** — commits on a feature branch so the cross-model diff is real
+3+4. **Dual adversarial** — Opus reviewer ∥ Codex (GPT-5.5), in parallel
+5. **Fix** — fixes findings + regression tests, commits, re-reviews (≤2 rounds)
+6. **PR** — pushes branch, opens PR (full plan embedded), tags @claude unless `noTag`
+7. **Summary** — writes `.iago/summaries/` + telemetry NDJSON
 
-The script handles the FULL 8-stage pipeline per plan:
-0. **Stress test** — adversarial plan review (skipped if plan has `## Stress Test` section from `/iago-plan` or `/iago-stress`)
-1. **Implement** — `claude -p` session reads the plan and writes code
-2. **Build gate** — `tsc --noEmit && vite build` (max 2 retries)
-3. **Review** — `claude -p` session: plan compliance + adversarial (auth, data loss, races, rollback)
-4. **Codex adversarial** — `codex review` or `claude -p` adversarial check
-4b. **Codex fix** — `claude -p` opus fixes all Codex findings, then rebuild (skipped if no findings)
-5. **Create PR** — `claude -p` session stages, commits, pushes, creates PR via `gh`
-5b. **Tag @claude** — sonnet synthesizes review request, posts on PR
-6. **Summary** — write pipeline results to `.iago/summaries/`
-
-After the script completes, the review-fix loop runs async via GitHub Actions
+After the Workflow completes, the async GitHub review-fix loop runs
 (`claude-review-fix.yml`): Claude reviews → fixes → re-tags → max 5 rounds.
 
-**Between plans:** Do NOT run `git checkout main && git pull`. The next plan
-builds on the previous plan's commits. Plans are sequential — each plan's code
-is available to the next.
+**If a plan's Workflow throws** (stress BLOCK, build fail after 2 attempts, or
+Critical/Important findings persisting after 2 fix rounds): STOP. Report the
+error. Do not continue to the next plan. The user must investigate.
 
-**If a plan fails** (non-zero exit): STOP. Report the error. Do not continue
-to the next plan. The user must investigate.
+### 4b. Post-async dual-adversarial (pass #2)
+
+Once the async GitHub loop posts its clean summary on a PR, run the final
+cross-model gate before the human merges:
+
+```
+Workflow({
+  scriptPath: "<IAGO_ROOT>/.claude/workflows/dual-adversarial.js",
+  args: { projectDir: "<PROJECT_DIR>", base: "<PR base, e.g. origin/main>", prNumber: "<#>" }
+})
+```
+
+It returns `{ clean, verdict, findings, blocking }`. If `clean`, tell Santiago
+it's safe to merge. If `blocking > 0`, surface the findings and offer `/iago-prfix`.
+**Never merge** — Santiago merges.
 
 ### 5. Report results
 
