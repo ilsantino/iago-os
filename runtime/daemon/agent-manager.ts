@@ -687,7 +687,7 @@ export class AgentManager extends EventEmitter {
 	 */
 	async bootRecovery(opts?: BootRecoveryOpts): Promise<BootRecoveryResult> {
 		if (this.bootRecoveryPromise !== null) return this.bootRecoveryPromise;
-		this.bootRecoveryPromise = (async () => {
+		const bootRecoveryPromise = (async (): Promise<BootRecoveryResult> => {
 			this.bootRecoveryRan = true;
 
 			const recovered: string[] = [];
@@ -781,8 +781,11 @@ export class AgentManager extends EventEmitter {
 			this.cachedBootRecovery = result;
 			return result;
 		})();
-		// bootRecoveryPromise was just assigned above; non-null assertion is safe.
-		return this.bootRecoveryPromise!;
+		// Assigned synchronously (no await precedes this), so the guard above
+		// memoizes correctly for concurrent callers. Return the local to avoid
+		// a non-null assertion on the nullable field.
+		this.bootRecoveryPromise = bootRecoveryPromise;
+		return bootRecoveryPromise;
 	}
 
 	/**
@@ -1718,6 +1721,30 @@ export class AgentManager extends EventEmitter {
 		// (filenames, log lines, telemetry) are not.
 		if (agentId.length > 255) {
 			await this.poisonTask(filename, "missing-agent-id");
+			return;
+		}
+		// pr84-gap-closure (Codex H1): an `ndjsonAlert` envelope is a
+		// record-and-resolve signal, NOT a prompt task. The pr-triage agent
+		// writes it when its Telegram POST failed (prompt-template.md
+		// lines 145-148, 180). It needs no live handle and must NEVER reach
+		// the dispatch path — falling through would mis-classify the
+		// prompt-less envelope as `malformed-task`. Branch here, BEFORE the
+		// `isAgentRegistered` check, so the alert resolves even if the agent
+		// is (de)registered. Emit telemetry BEFORE `claimTask` so a rename
+		// failure leaves the file in pending/ and the alert re-trips next
+		// tick rather than being lost.
+		const ndjsonAlert = (parsed as { ndjsonAlert?: unknown }).ndjsonAlert;
+		if (typeof ndjsonAlert === "string" && ndjsonAlert.length > 0) {
+			const detailsRaw = (parsed as { details?: unknown }).details;
+			const details = typeof detailsRaw === "string" ? detailsRaw : "";
+			await emitTelemetry({
+				kind: "pr-triage-telegram-send-failed",
+				agentId,
+				filename,
+				alertKind: ndjsonAlert,
+				details,
+			});
+			await this.claimTask(filename, agentId);
 			return;
 		}
 		if (!this.isAgentRegistered(agentId)) {

@@ -69,7 +69,13 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
-	delete process.env.IAGO_DAEMON_STATE_ROOT;
+	// Computed-key `delete` (not `delete process.env.X`) stays Biome-clean:
+	// `noDelete` flags only static member deletes, and the autofix it would
+	// apply (`= undefined`) coerces the value to the literal string "undefined",
+	// breaking isolation. Matches the loop-delete idiom in config.test.ts /
+	// sighup.test.ts.
+	const stateRootKey = "IAGO_DAEMON_STATE_ROOT";
+	delete process.env[stateRootKey];
 	process.argv = originalArgv;
 	vi.restoreAllMocks();
 	vi.useRealTimers();
@@ -242,14 +248,15 @@ describe("loadPersistedConfigs", () => {
 		});
 		const result = await loadPersistedConfigs();
 		expect(result.size).toBe(1);
-		const entry = result.get("h-valid")!;
-		expect(entry.agentId).toBe("agent-good");
-		expect(entry.runtimeId).toBe("claude-pty");
-		expect(entry.cwd).toBe("/tmp/wd");
-		expect(entry.sessionId).toBe("session-1");
-		expect(entry.org).toBe("org-a");
+		const entry = result.get("h-valid");
+		expect(entry).toBeDefined();
+		expect(entry?.agentId).toBe("agent-good");
+		expect(entry?.runtimeId).toBe("claude-pty");
+		expect(entry?.cwd).toBe("/tmp/wd");
+		expect(entry?.sessionId).toBe("session-1");
+		expect(entry?.org).toBe("org-a");
 		// Non-string env values were skipped; string ones preserved.
-		expect(entry.env).toEqual({ FOO: "bar", KEEP: "yes" });
+		expect(entry?.env).toEqual({ FOO: "bar", KEEP: "yes" });
 	});
 
 	it("treats env as empty when env field is not an object", async () => {
@@ -262,7 +269,7 @@ describe("loadPersistedConfigs", () => {
 		});
 		const result = await loadPersistedConfigs();
 		expect(result.size).toBe(1);
-		expect(result.get("h-bad-env")!.env).toEqual({});
+		expect(result.get("h-bad-env")?.env).toEqual({});
 	});
 
 	it("treats env as empty when env field is null", async () => {
@@ -275,7 +282,7 @@ describe("loadPersistedConfigs", () => {
 		});
 		const result = await loadPersistedConfigs();
 		expect(result.size).toBe(1);
-		expect(result.get("h-null-env")!.env).toEqual({});
+		expect(result.get("h-null-env")?.env).toEqual({});
 	});
 
 	it("accepts a record with no env field at all (defaults to empty)", async () => {
@@ -286,7 +293,7 @@ describe("loadPersistedConfigs", () => {
 			sessionId: "session-1",
 		});
 		const result = await loadPersistedConfigs();
-		expect(result.get("h-no-env")!.env).toEqual({});
+		expect(result.get("h-no-env")?.env).toEqual({});
 	});
 });
 
@@ -369,9 +376,9 @@ describe("buildFleetHealth", () => {
 			expect(row).toHaveProperty("generationToken");
 			expect(row).toHaveProperty("spawnedAt");
 		}
-		expect(result[0]!.handleId).toBe("h-1");
-		expect(result[1]!.agentId).toBe("agent-b");
-		expect(result[1]!.shape).toBe("http");
+		expect(result[0]?.handleId).toBe("h-1");
+		expect(result[1]?.agentId).toBe("agent-b");
+		expect(result[1]?.shape).toBe("http");
 	});
 });
 
@@ -471,11 +478,11 @@ describe("injectIntoAgent", () => {
 		});
 		await injectIntoAgent(makeManager([handle]), "agent-a", "hello world");
 		expect(rt.sendCalls).toHaveLength(1);
-		expect(rt.sendCalls[0]!.message).toEqual({
+		expect(rt.sendCalls[0]?.message).toEqual({
 			kind: "inject",
 			payload: { text: "hello world" },
 		});
-		expect(rt.sendCalls[0]!.handle.id).toBe(handle.id);
+		expect(rt.sendCalls[0]?.handle.id).toBe(handle.id);
 	});
 
 	it("propagates send() failures from the runtime", async () => {
@@ -557,7 +564,7 @@ describe("isDirectlyExecuted", () => {
 		// Compute main.ts's own URL from this test file's location.
 		const mainUrl = new URL("./main.ts", import.meta.url).href;
 		const mainPath = fileURLToPath(mainUrl);
-		process.argv = [process.argv[0]!, mainPath];
+		process.argv = [process.argv[0] ?? "node", mainPath];
 		// Note: the test is meaningful only when main.ts is loaded as a
 		// .ts module under vitest. If the bundled .js path is loaded
 		// instead (production), the comparison would still equal because
@@ -568,14 +575,14 @@ describe("isDirectlyExecuted", () => {
 	it("returns false when process.argv[1] points to an unrelated file", () => {
 		// Use a real path that's not main.ts so pathToFileURL succeeds but
 		// the URL does NOT match import.meta.url.
-		process.argv = [process.argv[0]!, path.join(tempDir, "other.ts")];
+		process.argv = [process.argv[0] ?? "node", path.join(tempDir, "other.ts")];
 		expect(isDirectlyExecuted()).toBe(false);
 	});
 
 	it("returns false when pathToFileURL throws on argv[1]", () => {
 		// NUL byte is rejected by pathToFileURL (ERR_INVALID_ARG_VALUE).
 		// Cover the catch branch without mocking node:url.
-		process.argv = [process.argv[0]!, "\x00"];
+		process.argv = [process.argv[0] ?? "node", "\x00"];
 		expect(isDirectlyExecuted()).toBe(false);
 	});
 
@@ -584,7 +591,7 @@ describe("isDirectlyExecuted", () => {
 		// only on non-Node engines; node argv[1] = "" is a defined string,
 		// so pathToFileURL(\"\") triggers ERR_INVALID_FILE_URL_PATH on
 		// most platforms — that throw is caught and false returned.
-		process.argv = [process.argv[0]!, ""];
+		process.argv = [process.argv[0] ?? "node", ""];
 		// Empty string is a falsy but non-undefined string so the first
 		// guard does not return false; pathToFileURL throws → catch → false.
 		// (On platforms where pathToFileURL accepts \"\" and returns the
@@ -1224,6 +1231,79 @@ describe("makeTaskDispatchHandler (Plan 04d)", () => {
 
 		await handler(evt);
 
+		expect(
+			(mgr as unknown as { _releaseCalls: string[] })._releaseCalls,
+		).toEqual([evt.filename]);
+	});
+
+	it("(DH-8/H1) ndjsonAlert envelope: emits pr-triage-telegram-send-failed + claims, NOT malformed-task", async () => {
+		// pr84-gap-closure (Codex H1) — the mirror branch. In production the
+		// polling path short-circuits an ndjsonAlert envelope in
+		// AgentManager.processPendingTask BEFORE the task-dispatch-needed
+		// emit, so this handler branch is exercised only by a direct
+		// invocation (this test). A prompt-less alert envelope must
+		// record-and-resolve (emit pr-triage-telegram-send-failed +
+		// claimTask), NEVER fall through to the malformed-task path on its
+		// absent `prompt`.
+		const { runtime, sendCalls } = makeStubRuntime("dh8-runtime");
+		registerRuntime(runtime);
+		const handle = makeHandleFixture("pr-triage", "dh8-runtime");
+		const mgr = makeStubManager({ handle });
+		const emitMock = vi.fn().mockResolvedValue(undefined);
+
+		const handler = makeTaskDispatchHandler({
+			agentManager: mgr,
+			emit: emitMock,
+		});
+
+		const details =
+			'429 Too Many Requests body={"ok":false,"description":"Too Many Requests"}';
+		const evt: TaskDispatchEvent = {
+			filename: "pr-triage__1700000208.json",
+			agentId: "pr-triage",
+			taskContent: {
+				agentId: "pr-triage",
+				ndjsonAlert: "pr-triage-telegram-send-failed",
+				details,
+			},
+		};
+
+		await handler(evt);
+
+		// Record-and-resolve, not dispatch — nothing sent to the runtime.
+		expect(sendCalls).toHaveLength(0);
+
+		// Exactly one pr-triage-telegram-send-failed, payload mirrored from
+		// the envelope (alertKind = the verbatim ndjsonAlert value).
+		const alertCalls = emitMock.mock.calls
+			.map((c) => c[0])
+			.filter(
+				(e) =>
+					(e as { kind: string }).kind === "pr-triage-telegram-send-failed",
+			);
+		expect(alertCalls).toHaveLength(1);
+		expect(alertCalls[0]).toMatchObject({
+			kind: "pr-triage-telegram-send-failed",
+			agentId: "pr-triage",
+			filename: evt.filename,
+			alertKind: "pr-triage-telegram-send-failed",
+			details,
+		});
+
+		// NOT mis-classified as malformed-task (or any dispatch-failed).
+		const failedCalls = emitMock.mock.calls
+			.map((c) => c[0])
+			.filter(
+				(e) => (e as { kind: string }).kind === "pr-triage-dispatch-failed",
+			);
+		expect(failedCalls).toHaveLength(0);
+
+		// File claimed (pending → resolved).
+		expect((mgr as unknown as { _claimCalls: unknown[] })._claimCalls).toEqual([
+			{ filename: evt.filename, agentId: "pr-triage" },
+		]);
+
+		// C-1: dispatch slot released on the alert branch too.
 		expect(
 			(mgr as unknown as { _releaseCalls: string[] })._releaseCalls,
 		).toEqual([evt.filename]);

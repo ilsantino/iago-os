@@ -378,6 +378,31 @@ export type DaemonEvent =
 	  }
 	| {
 			/**
+			 * Plan pr84-gap-closure (Codex H1) — the pr-triage agent's bash
+			 * failed to deliver a Telegram alert and wrote an `ndjsonAlert`
+			 * fallback envelope instead of a `prompt` task. The daemon
+			 * records-and-resolves it: no live handle is needed, the file
+			 * moves pending→resolved, and this event carries the audit trail.
+			 *
+			 * `alertKind` is the verbatim `ndjsonAlert` value from the
+			 * envelope — it disambiguates the two producer shapes the agent
+			 * emits (the telegram-send-failed alert and the
+			 * `pr-triage-double-failure` alert, per
+			 * prompt-template.md:145-148,180) plus any future alert kind,
+			 * without multiplying union members. `details` is the verbatim
+			 * `details` string from the envelope, already token-redacted by
+			 * the agent (it captures `$HTTP_STATUS` + a redacted response
+			 * body, NOT the curl process exit) — so there are deliberately
+			 * no `curlExitCode`/`telegramResponseBody` fields here.
+			 */
+			readonly kind: "pr-triage-telegram-send-failed";
+			readonly agentId: string;
+			readonly filename: string;
+			readonly alertKind: string;
+			readonly details: string;
+	  }
+	| {
+			/**
 			 * Plan 04d dual-adversarial I-C fix: a cron-driven agent that
 			 * was pre-registered at daemon startup exited (PTY crash,
 			 * credential expiry, heartbeat-driven recycle). Re-registration

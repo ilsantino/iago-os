@@ -590,6 +590,31 @@ export function makeTaskDispatchHandler(deps: {
 				});
 				return;
 			}
+			// pr84-gap-closure (Codex H1) — defense in depth. The normal
+			// polling path short-circuits an `ndjsonAlert` envelope in
+			// `AgentManager.processPendingTask` BEFORE the
+			// `task-dispatch-needed` emit, so this branch is not reached in
+			// production. It guards any path that drives the handler directly
+			// (tests, future re-routing): a record-and-resolve alert must
+			// emit the telegram-send-failed telemetry kind + claim the file,
+			// NEVER fall through to `malformed-task` on its absent `prompt`.
+			// The `finally` block still releases the dispatch slot on this
+			// early return.
+			const ndjsonAlert = (evt.taskContent as { ndjsonAlert?: unknown })
+				.ndjsonAlert;
+			if (typeof ndjsonAlert === "string" && ndjsonAlert.length > 0) {
+				const detailsRaw = (evt.taskContent as { details?: unknown }).details;
+				const details = typeof detailsRaw === "string" ? detailsRaw : "";
+				await emit({
+					kind: "pr-triage-telegram-send-failed",
+					agentId: evt.agentId,
+					filename: evt.filename,
+					alertKind: ndjsonAlert,
+					details,
+				});
+				await agentManager.claimTask(evt.filename, evt.agentId);
+				return;
+			}
 			// Dual-adversarial I-E fix (extends async-bot M-3): validate
 			// `prompt` is a non-empty string BEFORE `runtime.send`. Empty
 			// or missing prompts no longer silently advance to `resolved/`
@@ -705,6 +730,28 @@ export const CRON_AGENT_RESTART_BACKOFF_MS: readonly number[] = [
 ];
 
 /**
+ * pr84-gap-closure (Codex H2) — the daemon-secrets a cron-driven agent
+ * inherits from the daemon's own `process.env`, gated by org.
+ *
+ * The pr-triage agent's bash needs `IAGO_TELEGRAM_BOT_TOKEN`,
+ * `IAGO_TELEGRAM_ALLOWED_USER_IDS`, and `GH_TOKEN` to post its Telegram
+ * report and query GitHub (prompt-template.md lines 113-114). The PTY
+ * adapter (`claude-pty.ts`) forwards ONLY `opts.env` and is forbidden
+ * from merging `process.env` (its CRITICAL #1 invariant — the daemon is
+ * multi-tenant, so a generic merge would leak iaGO's creds into every
+ * spawned agent, including future client agents). The daemon, as the
+ * trusted orchestrator, is the layer allowed to compose its own secrets
+ * into a per-agent env — but ONLY for its own (`org: "internal"`) agents,
+ * and ONLY this explicit allowlist. See `composeAgentEnv` in
+ * `registerCronAgentWithRestart`.
+ */
+export const CRON_AGENT_ENV_ALLOWLIST: readonly string[] = [
+	"IAGO_TELEGRAM_BOT_TOKEN",
+	"IAGO_TELEGRAM_ALLOWED_USER_IDS",
+	"GH_TOKEN",
+];
+
+/**
  * Dual-adversarial I-C fix — register a cron-driven agent and arm a
  * restart loop that re-spawns the agent if its persistent PTY exits.
  *
@@ -738,8 +785,37 @@ export async function registerCronAgentWithRestart(deps: {
 	agentId: string;
 	agentConfig: AgentConfigShape;
 	isShuttingDown: () => boolean;
+	/**
+	 * pr84-gap-closure (brief D3) — injectable restart backoff schedule.
+	 * Defaults to `CRON_AGENT_RESTART_BACKOFF_MS`. A test seam (mirrors
+	 * `CronScheduler` `nowFn` / `startPollingLoop` `intervalMs`) so the
+	 * restart-loop integration test can drive a real-timer restart in
+	 * ~10ms instead of the production 5s, without faking timers (which
+	 * would break Phase B's real-I/O marker poll).
+	 */
+	backoffMs?: readonly number[];
 }): Promise<void> {
 	const { agentManager, agentId, agentConfig, isShuttingDown } = deps;
+	const backoffMs = deps.backoffMs ?? CRON_AGENT_RESTART_BACKOFF_MS;
+
+	// pr84-gap-closure (Codex H2, brief D2) — compose the per-agent env
+	// the daemon hands to `registerAgent`. For an `org: "internal"` agent,
+	// merge the allowlisted daemon secrets that are actually present in
+	// `process.env` (skip absent/empty so we never materialize empty-string
+	// env entries). A non-internal (client) agent gets ONLY its declared
+	// `agentConfig.env`. Used for BOTH the initial registration and the
+	// restart re-registration so a restarted agent keeps its creds.
+	const composeAgentEnv = (): Record<string, string> => {
+		if (agentConfig.org !== "internal") return agentConfig.env;
+		const merged: Record<string, string> = { ...agentConfig.env };
+		for (const key of CRON_AGENT_ENV_ALLOWLIST) {
+			const value = process.env[key];
+			if (typeof value === "string" && value.length > 0) {
+				merged[key] = value;
+			}
+		}
+		return merged;
+	};
 
 	const armExitListener = (handle: AgentHandle): void => {
 		const runtime: AgentRuntime = resolveRuntime(handle.runtime);
@@ -763,14 +839,14 @@ export async function registerCronAgentWithRestart(deps: {
 
 	const scheduleRestart = async (attempt: number): Promise<void> => {
 		if (isShuttingDown()) return;
-		if (attempt > CRON_AGENT_RESTART_BACKOFF_MS.length) {
+		if (attempt > backoffMs.length) {
 			await emit({
 				kind: "cron-agent-restart-failed",
 				agentId,
 			});
 			return;
 		}
-		const delay = CRON_AGENT_RESTART_BACKOFF_MS[attempt - 1];
+		const delay = backoffMs[attempt - 1];
 		await new Promise<void>((resolve) => {
 			const t = setTimeout(resolve, delay);
 			if (typeof t.unref === "function") t.unref();
@@ -782,7 +858,7 @@ export async function registerCronAgentWithRestart(deps: {
 				runtimeId: agentConfig.runtimeId,
 				...(agentConfig.org !== undefined ? { org: agentConfig.org } : {}),
 				cwd: agentConfig.cwd,
-				env: agentConfig.env,
+				env: composeAgentEnv(),
 				sessionId: makeDaemonStartupSessionId(agentId),
 			});
 			await emit({
@@ -805,7 +881,7 @@ export async function registerCronAgentWithRestart(deps: {
 			runtimeId: agentConfig.runtimeId,
 			...(agentConfig.org !== undefined ? { org: agentConfig.org } : {}),
 			cwd: agentConfig.cwd,
-			env: agentConfig.env,
+			env: composeAgentEnv(),
 			sessionId: makeDaemonStartupSessionId(agentId),
 		});
 		armExitListener(handle);
@@ -956,10 +1032,12 @@ export function computeRunUnder(
  */
 export interface SighupHandlerDeps {
 	/** Re-reads credstore into `process.env`. May throw — surfaced as `cred-reload-failed`. */
-	readonly loadCredentials: () => {
-		read: readonly string[];
-		failed: readonly string[];
-	} | void;
+	readonly loadCredentials: () =>
+		| {
+				read: readonly string[];
+				failed: readonly string[];
+		  }
+		| undefined;
 	/** Telemetry emit. No-throw via internal try/catch (telemetry.ts swallows write errors). */
 	readonly emit: (event: DaemonEvent) => Promise<void>;
 	/**

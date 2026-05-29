@@ -49,7 +49,6 @@ import { AgentManager } from "../../daemon/agent-manager.js";
 import { CronScheduler } from "../../daemon/cron-scheduler.js";
 import {
 	type AgentConfigShape,
-	CRON_AGENT_RESTART_BACKOFF_MS,
 	type TaskDispatchEvent,
 	loadAgentConfig,
 	loadCronEntries,
@@ -154,6 +153,17 @@ vi.mock("../../daemon/telemetry.js", async () => {
 		typeof import("../../daemon/telemetry.js")
 	>("../../daemon/telemetry.js");
 	emitState.real = actual.emit;
+	// Opus I5: install the delegating implementation ONCE, at module load,
+	// so emitMock ALWAYS pass-throughs to the real telemetry writer. Pairing
+	// emitMock.mockReset() (wipes the implementation) with a follow-up
+	// mockImplementation() in beforeEach left a window — however brief —
+	// where emit was a bare mock that dropped telemetry. beforeEach now uses
+	// mockClear() (call history only, implementation preserved), so no test
+	// can ever observe an unconfigured emit.
+	emitMock.mockImplementation((e: DaemonEvent) => {
+		if (emitState.real === null) return Promise.resolve();
+		return emitState.real(e);
+	});
 	return {
 		...actual,
 		emit: emitMock,
@@ -228,7 +238,10 @@ function writePrTriageFixture(scheduleOverride?: string | null): void {
 async function buildSystem(): Promise<{
 	scheduler: CronScheduler;
 	mgr: AgentManager;
-	register: (agentId: string) => Promise<void>;
+	register: (
+		agentId: string,
+		opts?: { backoffMs?: readonly number[] },
+	) => Promise<void>;
 }> {
 	const mgr = new AgentManager();
 	const scheduler = new CronScheduler({
@@ -249,7 +262,10 @@ async function buildSystem(): Promise<{
 			promptTemplatePath: promptAbs,
 		});
 	}
-	const register = async (agentId: string): Promise<void> => {
+	const register = async (
+		agentId: string,
+		opts?: { backoffMs?: readonly number[] },
+	): Promise<void> => {
 		let cfg: AgentConfigShape;
 		try {
 			cfg = await loadAgentConfig(agentsDir, agentId);
@@ -265,6 +281,7 @@ async function buildSystem(): Promise<{
 			agentId,
 			agentConfig: cfg,
 			isShuttingDown: () => false,
+			...(opts?.backoffMs !== undefined ? { backoffMs: opts.backoffMs } : {}),
 		});
 	};
 	return { scheduler, mgr, register };
@@ -350,11 +367,10 @@ beforeEach(async () => {
 		return pty;
 	});
 	spawnSyncMock.mockReset();
-	emitMock.mockReset();
-	emitMock.mockImplementation((e: DaemonEvent) => {
-		if (emitState.real === null) return Promise.resolve();
-		return emitState.real(e);
-	});
+	// Opus I5: mockClear (not mockReset) — clears call history between tests
+	// but PRESERVES the delegating implementation installed in the vi.mock
+	// factory at module load, so emit never has a window with no impl.
+	emitMock.mockClear();
 	vi.spyOn(console, "error").mockImplementation(() => {});
 	vi.spyOn(console, "warn").mockImplementation(() => {});
 });
@@ -362,10 +378,19 @@ beforeEach(async () => {
 afterEach(async () => {
 	vi.useRealTimers();
 	vi.restoreAllMocks();
-	delete process.env.IAGO_DAEMON_STATE_ROOT;
-	delete process.env.IAGO_TELEGRAM_BOT_TOKEN;
-	delete process.env.IAGO_TELEGRAM_ALLOWED_USER_IDS;
-	delete process.env.GH_TOKEN;
+	// Computed-key `delete` (not `delete process.env.X`) truly unsets each var
+	// for test isolation while staying Biome-clean: `noDelete` flags only static
+	// member deletes, and the autofix it would apply to those (`= undefined`)
+	// coerces the value to the literal string "undefined". Matches the
+	// loop-delete idiom in daemon/config.test.ts and daemon/sighup.test.ts.
+	for (const key of [
+		"IAGO_DAEMON_STATE_ROOT",
+		"IAGO_TELEGRAM_BOT_TOKEN",
+		"IAGO_TELEGRAM_ALLOWED_USER_IDS",
+		"GH_TOKEN",
+	]) {
+		delete process.env[key];
+	}
 	await fsp.rm(tempDir, { recursive: true, force: true }).catch(() => {});
 });
 
@@ -411,28 +436,30 @@ describe("pr-triage integration (Plan 04c)", () => {
 		await register("pr-triage");
 		const startupSpawn = ptyState.last;
 		expect(startupSpawn).not.toBeNull();
-		// Verify the startup spawn forwarded the agent-config env. NOTE:
-		// agent-config.json's `env` only carries IAGO_DAEMON_STATE_ROOT —
-		// the prompt-template (lines 113-114) assumes IAGO_TELEGRAM_BOT_TOKEN
-		// + IAGO_TELEGRAM_ALLOWED_USER_IDS are inherited from the daemon's
-		// process.env, but claude-pty.ts:340-343 only forwards opts.env (no
-		// process.env merge). For the Telegram POST to work in production
-		// the daemon must extend agent-config or claude-pty must opt into
-		// the inheritance. **GAP** flagged here; integration test asserts
-		// the current contract (IAGO_DAEMON_STATE_ROOT forwarded only).
+		// Verify the startup spawn forwarded the agent-config env PLUS the
+		// org-gated daemon secrets. agent-config.json's `env` carries only
+		// IAGO_DAEMON_STATE_ROOT, but the prompt-template (lines 113-114)
+		// needs IAGO_TELEGRAM_BOT_TOKEN + IAGO_TELEGRAM_ALLOWED_USER_IDS +
+		// GH_TOKEN to post its report and query GitHub. Because the fixture
+		// agent-config sets `org: "internal"`, registerCronAgentWithRestart's
+		// composeAgentEnv merges those three from process.env (the
+		// CRON_AGENT_ENV_ALLOWLIST) into the spawn env. claude-pty.ts is
+		// untouched — its CRITICAL #1 no-process.env-merge invariant holds;
+		// the daemon is the trusted layer that composes its own creds.
 		const startupCall = mockSpawn.mock.calls[0] as [
 			string,
 			string[],
 			{ env: Record<string, string> },
 		];
 		expect(startupCall[2].env.IAGO_DAEMON_STATE_ROOT).toBe(tempDir);
-		// Negative assertions encode the GAP — when the daemon ships an env
-		// allowlist that forwards Telegram/GH creds into spawned agents,
-		// these assertions FLIP and force a follow-up PR to swap them for
-		// positive assertions. Dual-adversarial fix.
-		expect(startupCall[2].env.IAGO_TELEGRAM_BOT_TOKEN).toBeUndefined();
-		expect(startupCall[2].env.IAGO_TELEGRAM_ALLOWED_USER_IDS).toBeUndefined();
-		expect(startupCall[2].env.GH_TOKEN).toBeUndefined();
+		// Org-gated allowlist (Codex H2 close) forwards the daemon's
+		// Telegram/GH creds into the internal cron agent's spawn env. Values
+		// match the beforeEach fixture set on process.env.
+		expect(startupCall[2].env.IAGO_TELEGRAM_BOT_TOKEN).toBe("test-bot-token");
+		expect(startupCall[2].env.IAGO_TELEGRAM_ALLOWED_USER_IDS).toBe(
+			"123456,789012",
+		);
+		expect(startupCall[2].env.GH_TOKEN).toBe("test-gh-token");
 		expect(startupCall[2].env.CLAUDE_CODE_SESSION_ID).toMatch(
 			/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
 		);
@@ -547,7 +574,11 @@ describe("pr-triage integration (Plan 04c)", () => {
 	it("Case 4 — PTY crash mid-run → SIGTERM + crash marker + registerCronAgentWithRestart re-spawns", async () => {
 		writePrTriageFixture();
 		const { register } = await buildSystem();
-		await register("pr-triage");
+		// brief D3 — inject a tiny restart backoff so the real-timer restart
+		// fires in ~10ms instead of the production 5s. Real timers stay
+		// throughout (Phase B's marker poll is real fs I/O that fake timers
+		// can't flush); only the backoff value is shortened.
+		await register("pr-triage", { backoffMs: [10] });
 		const pty = ptyState.last;
 		expect(pty).not.toBeNull();
 		if (pty === null) throw new Error("unreachable");
@@ -562,9 +593,12 @@ describe("pr-triage integration (Plan 04c)", () => {
 		pty.emitData(noise);
 		expect(pty.killCalls).toContain("SIGTERM");
 
-		// Phase B — flush writeStopMarker. Bumped to 2s ceiling (200 × 10ms)
-		// after Codex flagged 500ms could false-pass on cold Windows
-		// runners where fdatasync stalls on antivirus.
+		// Phase B — flush writeStopMarker. Real-I/O poll, not a fixed sleep:
+		// up to 200 iterations, each sleeping 10ms before re-checking, so the
+		// ceiling is 200 × 10ms = 2000ms = 2s — and it breaks the instant the
+		// .daemon-stop marker appears. Bumped from the original 500ms (50 ×
+		// 10ms) after Codex flagged that 500ms could false-pass on cold
+		// Windows runners where fdatasync stalls on antivirus.
 		const markersDir = path.join(tempDir, "markers");
 		let crashMarker: string | undefined;
 		for (let i = 0; i < 200; i++) {
@@ -586,14 +620,12 @@ describe("pr-triage integration (Plan 04c)", () => {
 
 		// Phase C — restart wiring (registerCronAgentWithRestart's
 		// armExitListener subscribes to onStatusChanged "crashed"|"exited"
-		// and schedules a fresh registerAgent after
-		// CRON_AGENT_RESTART_BACKOFF_MS[0] = 5_000ms). Wait the backoff +
-		// a small grace for the scheduled registerAgent to settle, then
-		// assert a second spawn landed AND a `cron-agent-restarted`
-		// telemetry event was emitted.
-		await new Promise((resolve) =>
-			setTimeout(resolve, CRON_AGENT_RESTART_BACKOFF_MS[0] + 1_500),
-		);
+		// and schedules a fresh registerAgent after the injected backoff —
+		// 10ms here, not the production 5_000ms). Wait the backoff + a small
+		// grace for the scheduled registerAgent to settle, then assert a
+		// second spawn landed AND a `cron-agent-restarted` telemetry event
+		// was emitted. Asserts the restart MECHANISM, not the literal delay.
+		await new Promise((resolve) => setTimeout(resolve, 100));
 		const restartedEvents = emittedEventsOfKind("cron-agent-restarted");
 		expect(restartedEvents).toHaveLength(1);
 		expect(restartedEvents[0]).toMatchObject({
@@ -604,36 +636,43 @@ describe("pr-triage integration (Plan 04c)", () => {
 		expect(mockSpawn.mock.calls.length).toBe(initialSpawns + 1);
 	}, 15_000);
 
-	it("Case 5 — fallback envelope (CURRENT behavior; ndjsonAlert branch unimplemented)", async () => {
-		// GAP: prompt-template.md line 155 promises the daemon will branch
-		// on `ndjsonAlert` BEFORE the registration check, emit a
-		// `pr-triage-telegram-send-failed` telemetry event carrying the
-		// alert kind + details payload, and move the file to
-		// `tasks/resolved/`. That branch is NOT implemented in
-		// processPendingTask (agent-manager.ts) or makeTaskDispatchHandler
-		// (main.ts) as of 04b/04d/07b. An envelope without a `prompt`
-		// string currently hits the malformed-task branch in the dispatch
-		// handler. This test asserts the actual present-day behavior so
-		// the contract gap surfaces in code review rather than silently.
+	it("Case 5 — ndjsonAlert envelope → pr-triage-telegram-send-failed + resolved (Codex H1 close)", async () => {
+		// prompt-template.md lines 145-148,180: when the agent's Telegram
+		// POST fails it writes an `ndjsonAlert` fallback envelope (no
+		// `prompt`). The daemon branches on it in processPendingTask
+		// (agent-manager.ts) BEFORE the registration check — emits
+		// `pr-triage-telegram-send-failed { alertKind, details }`, moves the
+		// file pending→resolved via claimTask, and NEVER advances to the
+		// dispatch path (so the prompt-less envelope cannot be mis-classified
+		// as malformed-task). This is the FLIPPED contract: the prior
+		// revision asserted the broken malformed-task path "to stay honest"
+		// while production was wrong — Codex H1 correctly flagged that
+		// green-locks the broken path. The assertions below now assert the
+		// CORRECT behavior, so they fail against pre-change prod and pass
+		// after (they ARE the regression test for the daemon branch).
 		writePrTriageFixture();
 		const { mgr, register } = await buildSystem();
 		await register("pr-triage");
 		const dispatch = wireDispatchHandler(mgr);
 
 		const filename = "pr-triage__1700000000.json";
+		const details =
+			'429 Too Many Requests body={"ok":false,"description":"Too Many Requests"}';
 		fs.writeFileSync(
 			path.join(tempDir, "tasks/pending", filename),
 			JSON.stringify({
 				agentId: "pr-triage",
 				ndjsonAlert: "pr-triage-telegram-send-failed",
-				details:
-					'429 Too Many Requests body={"ok":false,"description":"Too Many Requests"}',
+				details,
 			}),
 			"utf8",
 		);
 
-		// Capture the EventEmitter event (task-dispatch-needed is NOT in
-		// the telemetry kind union, so we can't observe it via emitMock).
+		// Capture the EventEmitter event. With the short-circuit in
+		// processPendingTask the alert is handled BEFORE the
+		// `task-dispatch-needed` emit, so this listener MUST stay empty —
+		// flipped from the old toHaveLength(1) as positive proof the
+		// short-circuit fires.
 		const dispatchEvents: TaskDispatchEvent[] = [];
 		mgr.on("task-dispatch-needed", (evt: TaskDispatchEvent) => {
 			dispatchEvents.push(evt);
@@ -642,43 +681,38 @@ describe("pr-triage integration (Plan 04c)", () => {
 		await mgr._pollingTickForTests();
 		await dispatch.flush();
 
-		expect(dispatchEvents).toHaveLength(1);
-		expect(dispatchEvents[0]).toMatchObject({
-			filename,
-			agentId: "pr-triage",
-		});
-
-		// CURRENT behavior: dispatch handler hits malformed-task because
-		// no `prompt` field on the envelope.
-		const failed = emittedEventsOfKind("pr-triage-dispatch-failed");
-		expect(failed).toHaveLength(1);
-		expect(failed[0]).toMatchObject({
-			kind: "pr-triage-dispatch-failed",
+		// (a) Exactly one pr-triage-telegram-send-failed; alertKind +
+		// details mirror the envelope verbatim.
+		const alerts = emittedEventsOfKind("pr-triage-telegram-send-failed");
+		expect(alerts).toHaveLength(1);
+		expect(alerts[0]).toMatchObject({
+			kind: "pr-triage-telegram-send-failed",
 			agentId: "pr-triage",
 			filename,
-			reason: "malformed-task",
+			alertKind: "pr-triage-telegram-send-failed",
+			details,
 		});
+		// (b) File moved pending → resolved.
+		await fsp.access(path.join(tempDir, "tasks/resolved", filename));
+		await expect(
+			fsp.access(path.join(tempDir, "tasks/pending", filename)),
+		).rejects.toThrow();
+		// (c) NO dispatch-failed — the prompt-less alert envelope must never
+		// be mis-classified as malformed-task.
+		expect(emittedEventsOfKind("pr-triage-dispatch-failed")).toHaveLength(0);
+		// (d) Short-circuit proof: the alert never reached the dispatch path.
+		expect(dispatchEvents).toHaveLength(0);
 
-		// Per dispatch handler contract: malformed-task LEAVES the file in
-		// tasks/pending/ for operator inspection (does NOT call claimTask).
-		await fsp.access(path.join(tempDir, "tasks/pending", filename));
+		// Idempotency / no double-resolve (Opus I3): a second polling tick
+		// must NOT re-emit or re-resolve. The file already moved to
+		// resolved/, so the next readdir of pending/ finds nothing for this
+		// filename — still exactly one alert total.
+		await mgr._pollingTickForTests();
+		await dispatch.flush();
+		expect(emittedEventsOfKind("pr-triage-telegram-send-failed")).toHaveLength(
+			1,
+		);
 	});
-
-	// Dual-adversarial fix: the GAP for ndjsonAlert handling is encoded as
-	// an `it.todo` so the failing-behavior contract is visible in test
-	// output AND a future commit that implements the daemon branch has a
-	// home to fill in. Until the daemon ships:
-	//   1. processPendingTask reads `ndjsonAlert` ahead of the
-	//      registration check;
-	//   2. emits `pr-triage-telegram-send-failed { alertKind, details }`
-	//      telemetry;
-	//   3. moves the file to `tasks/resolved/` via claimTask.
-	// Case 5 above asserts the current (incorrect) malformed-task path so
-	// regressions in THAT codepath surface, but the desired behavior lives
-	// here as a TODO so the next implementer cannot miss it.
-	it.todo(
-		"Case 5b — fallback envelope with ndjsonAlert emits pr-triage-telegram-send-failed + moves file to resolved (BLOCKED on daemon impl)",
-	);
 
 	it("Case 6 — wake-check missing GH_TOKEN (script exit 2) → cron-skipped wake-check-failed exitCode 2", async () => {
 		writePrTriageFixture();
@@ -822,18 +856,23 @@ describe("pr-triage integration (Plan 04c)", () => {
 		// NOTE on scope (Codex: "case 9 proves send-time decrement, not
 		// real task completion"): the dispatch handler calls claimTask
 		// immediately after runtime.send (the persistent-PTY claim-on-send
-		// model documented in main.ts:546-573). The mocked PTY's `send` is
-		// a synchronous stdin write, so claimTask runs synchronously after
-		// the polling tick. This test proves the runningCount slot
-		// PROTOCOL correctly increments on fire, blocks at maxConcurrent,
-		// AND releases on the terminal `task-resolved` event for the
-		// specific filename emitted by fire(). It does NOT prove that
-		// maxConcurrent gates a still-running real Claude agent — that's
-		// a Phase-3 concern (cron cadence shorter than agent runtime),
-		// out of scope here. The decrement-chain assertion below is
-		// structural (capture filename → assert in outstanding set →
-		// assert removed after flush) to catch regressions in the
-		// per-filename filter, NOT just the aggregate counter.
+		// model documented in main.ts). The mocked PTY's `send` resolves
+		// immediately, so once `await dispatch.flush()` drains the in-flight
+		// dispatch promise, claimTask has run and `task-resolved` has been
+		// emitted — the assertions below therefore land AFTER the resolve,
+		// not on a synchronous side-effect. This test proves the runningCount
+		// slot PROTOCOL correctly increments on fire, blocks at
+		// maxConcurrent, AND releases on the terminal `task-resolved` event
+		// for the specific filename emitted by the cron fire. It does NOT
+		// prove that maxConcurrent gates a still-running real Claude agent —
+		// that's a Phase-3 concern (cron cadence shorter than agent runtime),
+		// out of scope here. The decrement-chain assertions below are
+		// structural — capture the cron filename, assert it is present in the
+		// agent's per-filename outstanding set, then assert it is removed
+		// after flush — to catch regressions in the per-filename
+		// outstanding-set filter (cron-scheduler.ts) that stops a non-cron
+		// task completion from reopening a cron slot, NOT merely the
+		// aggregate runningCount counter.
 
 		// Tick 1 — fires cleanly. runningCount: 0 → 1. Capture the
 		// emitted filename so subsequent assertions probe the SAME slot
