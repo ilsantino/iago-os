@@ -54,6 +54,24 @@ This stage produces 2–4 plan files that ship the cortextOS-video 'agents messa
 - **No Postgres, no Docker.** Pipeline preserved.
 - **Garry-impressed completeness** — every failure path tested; no TODOs without a tracked issue.
 
+## Locked envelope (do not change the field set without an ADR)
+Inter-agent messages are file-bus envelopes with this EXACT shape (ADR `.iago/decisions/2026-05-30-per-agent-bots-and-chief-tier.md`):
+
+`{ v, kind, from, to, body, threadId, seq, needsApproval, quality_signal, createdAt }`
+
+- `v` — envelope schema version (forward-compat; bump only via ADR).
+- `kind` — `"agent-message" | "task-assignment" | "status" | "result"`.
+- `from` — originator agentId, **server-stamped** (never client-settable — anti-spoof).
+- `to` — recipient agentId (routes the envelope to `tasks/pending/<to>__<uuid>.json`).
+- `body` — structured payload (free-text body permitted as an escape hatch).
+- `threadId` — correlates a delegation/conversation thread for A→B→A chains.
+- `seq` — monotonic per-thread sequence number for ordering + replay dedupe.
+- `needsApproval` — when true, the send gates through `approvals/{pending,resolved}/` before delivery.
+- `quality_signal` — the chief's quality verdict on a result. **Signed-chief-as-BLOCKER:** a result the chief has not signed (or has signed as failing) is BLOCKED from proceeding — the chief is the gate, not an advisory reviewer.
+- `createdAt` — ISO-8601 emit timestamp.
+
+Status is the DIRECTORY (pending/claimed/resolved), never an envelope field. `v` + `seq` are load-bearing (versioning + ordering) — both were council blind-spots, kept per the ADR.
+
 ## Open questions to capture (not block)
 - Free-text agent chat vs structured task/status as the primary mode (recommend structured; free-text body as escape hatch).
 - Loop-depth cap via `parentTaskId` for A→B→A delegation chains.

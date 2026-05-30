@@ -42,6 +42,7 @@ This stage produces 1–2 plan files. The cortextOS 'comms tab' is backed by the
 ## Decided constraints (do not relitigate during planning)
 - **Read-only views** — no new data model; render existing file-bus + NDJSON state.
 - **Status is the directory** — kanban columns map pending=To-Do, claimed=In-Progress, resolved=Done.
+- **Surface the chief quality gate** — the Comms tab (and Board result cards) render the envelope's `quality_signal`: a result the chief has signed/passed vs one **blocked** awaiting or failing chief sign-off renders distinctly, so the **signed-chief-as-BLOCKER** state is visible at a glance (matches the agent-comms-channel locked envelope + ADR).
 - **SKIP nothing — Comms tab has real data** because feature-v2-agent-comms-channel ships first.
 - **Do NOT port** cortextOS business-analytics or email-outreach dashboards (out of v2 scope).
 - **React 19 + Vite + TS strict + Tailwind 4 + ShadCN (verify vs official docs) + Framer Motion** per stack rules.

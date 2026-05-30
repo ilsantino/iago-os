@@ -40,8 +40,8 @@ This stage produces 1–3 plan files realizing master-prompt Mission #5 ('the su
 | PR(s) @claude tagged | GitHub | Pending |
 
 ## Decided constraints (do not relitigate during planning)
-- **Chief is a ROLE, not a shape.** `role:"supervisor"|"worker"` (default worker). Any shape can be a supervisor.
-- **Top-down dispatch only.** Daemon-gated enqueueTask, supervisor-role guard, same-org validation. NO symmetric peer messaging.
+- **Chief is a ROLE, not a shape.** `role:"chief"|"worker"` (default worker) — the canonical value per ADR `.iago/decisions/2026-05-30-per-agent-bots-and-chief-tier.md` and the comms-channel producer gate (`role:"chief"` gates peer-task production). Any shape can be a chief.
+- **Top-down dispatch only.** Daemon-gated enqueueTask, chief-role guard, same-org validation. NO symmetric peer messaging.
 - **Reuse spawnSubagent for tight coupling, enqueueTask for loose coupling.** Do not reinvent parent-child linkage or cost rollup.
 - **Results merge as structured task-resolved injections** via AgentRuntime.send() — NOT free-form chat.
 - **No org-chart titles** (Paperclip rejected). Mechanical dispatch permission only.
