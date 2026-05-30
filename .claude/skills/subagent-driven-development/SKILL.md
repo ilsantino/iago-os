@@ -73,7 +73,7 @@ Match the task to a profile based on file paths:
 - Files in both `src/` and `amplify/` → `fullstack`
 - Files only in `src/` → `frontend`
 - Files only in `amplify/` → `backend`
-- Fallback (no domain profile matches) → `general`
+- Fallback → `fullstack`
 
 If the task specifies `profile:` explicitly, use that.
 

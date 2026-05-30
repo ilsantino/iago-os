@@ -4,7 +4,13 @@ The review pipeline is the harness-native Workflow at
 `.claude/workflows/execute-pipeline.js`. Every plan goes through 8 local stages +
 async GitHub review-fix loop + a post-async dual-adversarial gate. No shortcuts.
 
-The bash `scripts/execute-pipeline.sh` is **deprecated** (retained one cycle). Why it was retired and what the Workflow replaced: see `.iago/research/2026-05-28-execute-pipeline-teardown.md`.
+The bash `scripts/execute-pipeline.sh` is **deprecated** (retained one cycle as a
+fallback). It failed repeatedly because each stage shelled out to `claude -p` via a
+polled background process: transient API errors had no retry, turn budgets were
+static, and ~55% of the script was Windows-specific scar tissue (self-freeze
+re-exec, taskkill pipe-FD dance, timeout detection, mkdir locks). The Workflow runs
+each stage as a tracked, retryable subagent and deletes all of that. See
+`.iago/research/2026-05-28-execute-pipeline-teardown.md`.
 
 ### How It Works
 
@@ -78,23 +84,20 @@ Workflow execute-pipeline.js (args: plan, projectDir, iagoRoot, noTag?)
 7. SUMMARY — opus subagent writes .iago/summaries/{plan}.md + appends .iago/state/pipeline-runs.ndjson
 ```
 
-### Robustness
+### Robustness (vs the bash pipeline)
 
 - **Retry on transient errors.** `withRetry` re-runs any stage agent that throws (e.g.
-  the `400 'thinking' blocks cannot be modified` error). A user-skipped agent (null)
-  aborts cleanly. A 400 thinking-block error crashes the orchestrator session but NOT
-  the workflow — recover the lost verdict from
-  `subagents/workflows/{wf}/journal.jsonl`; do not re-run the stage.
-- **No static turn caps.** Subagents self-manage their turn budget.
+  the `400 'thinking' blocks cannot be modified` error that killed bash runs). A
+  user-skipped agent (null) aborts cleanly.
+- **No static turn caps.** Subagents self-manage; the bash `--max-turns 80` default
+  that truncated large plans is gone.
 - **Commit-before-review.** The cross-model Codex leg only sees committed diffs — the
   Commit stage (2b) guarantees a real `base..HEAD` before review.
-- **Tracked, not polled.** The workflow notifies on completion; no log-watching.
+- **Tracked, not polled.** The workflow notifies on completion; no nohup + log-watching.
 - **Per-project lock.** A flow-start stage atomically `mkdir`s `.iago/state/.pipeline.lock.d`
   (closes the TOCTOU the clean-tree check alone cannot). Released best-effort on success;
   a crashed run is reclaimed after a 3h stale window or a manual `rmdir .iago/state/.pipeline.lock.d`.
   Concurrent same-`projectDir` runs are still discouraged — use a worktree (worktree-per-session).
-- **Fix forward in the Workflow.** Do NOT extend the deprecated bash script; the legacy
-  tree is being deleted (see teardown research doc).
 
 ### Multi-plan execution (stacking) — known model + caveat
 
@@ -225,7 +228,12 @@ Workflow as the final pre-merge gate, then the human merges. There is no
 
 ### Legacy bash fallback (deprecated)
 
-`scripts/execute-pipeline.sh` + `scripts/lib/*` remain for one cycle, then delete. Do NOT extend the bash script; fix forward in the Workflow. Obsolete machinery inventory + teardown rationale: see `.iago/research/2026-05-28-execute-pipeline-teardown.md`.
+`scripts/execute-pipeline.sh` + `scripts/lib/*` remain for one cycle. Their
+Windows-specific machinery — self-freeze re-exec (`IAGO_PIPELINE_FROZEN`),
+`run_claude` taskkill/poll, `timeout`/`gtimeout` detection, per-project mkdir lock,
+`IAGO_PARALLEL_BUILD`, `IAGO_IMPL_TIMEOUT_SECS`/`IAGO_PR_TIMEOUT` env validation — is
+obsolete under the Workflow. Do NOT extend the bash script; fix forward in the
+Workflow. Once the Workflow has a few real-plan runs banked, delete the bash tree.
 
 ## Observation Masking
 

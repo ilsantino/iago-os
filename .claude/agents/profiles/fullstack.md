@@ -22,7 +22,7 @@ Dispatch this profile when:
 - Task description mentions frontend + backend coordination
 - Plan specifies full-stack implementation
 
-Tasks that match no domain profile route to the `general` profile, not here.
+This profile is also the FALLBACK when no other profile matches.
 
 ## Review Pairing
 

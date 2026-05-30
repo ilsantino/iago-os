@@ -8,7 +8,6 @@ model: sonnet
 maxTurns: 20
 capabilities:
   - infra
-  - trust-boundary
 ---
 
 ## Match Signals
