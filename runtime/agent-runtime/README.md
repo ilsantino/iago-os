@@ -53,16 +53,31 @@ registry validates each registration:
 - `id` is not already registered.
 
 **Fail-isolated policy.** The registry itself throws on invalid
-registration; isolation is the importer's job. The daemon entry point wraps
-each adapter import in `try/catch` so that a single broken adapter does NOT
-crash the daemon — the daemon logs the failed adapter id, skips it, and
-continues booting the remaining registered runtimes. After all imports, the
-daemon calls `listRuntimes()` to log which adapters loaded successfully and
-refuses to spawn agents whose configured `runtime` id is not in the list.
+registration; isolation is the importer's job. The daemon entry point loads
+each built-in adapter via `loadAdapterFailIsolated()`
+(`runtime/daemon/main.ts`) which uses a dynamic `await import(specifier)`
+wrapped in `try/catch` so that a single broken adapter does NOT crash the
+daemon — the daemon logs the failed adapter to stderr, emits a
+`runtime-registration-failed` telemetry event (fields: `adapterModule`,
+`message`, `stackTrace` truncated to 3 lines), and continues booting with
+the remaining registered runtimes. After all imports, the daemon calls
+`listRuntimes()` to log which adapters loaded successfully and refuses to
+spawn agents whose configured `runtime` id is not in the list.
 
-A regression test for this policy lives alongside the daemon entry point
-(Plan 07): "adapter module that throws at registerRuntime is skipped;
-daemon continues with the remaining runtimes."
+Operator triage: tail
+`<state-root>/telemetry/<yyyy-mm-dd>.ndjson | jq -c 'select(.kind ==
+"runtime-registration-failed")'` to surface adapter regressions in production
+without scraping stderr.
+
+Regression coverage:
+`runtime/integration/adapter-isolation.test.ts` exercises this contract with
+two real fixture modules under `runtime/integration/fixtures/` — a broken
+adapter (`fake-broken-adapter.ts`) whose top-level `registerRuntime` throws,
+and a good adapter (`fake-good-adapter.ts`) that registers cleanly. The test
+asserts: (i) the broken-adapter `loadAdapterFailIsolated` result is
+`{ loaded: false, error }`; (ii) a `runtime-registration-failed` telemetry
+event landed; (iii) `listRuntimes()` contains `fake-good-adapter` but NOT
+`fake-broken-adapter`.
 
 ## Interface versioning + migration
 

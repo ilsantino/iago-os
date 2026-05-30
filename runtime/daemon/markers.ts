@@ -45,6 +45,16 @@ function isStopMarkerReason(value: unknown): value is StopMarkerReason {
 	return value === "graceful" || value === "crash" || value === "recycle";
 }
 
+/**
+ * Direct write (not write-temp-then-rename). On hard-kill mid-write the
+ * file may exist truncated; `readStopMarker` JSON.parse fails → treated
+ * as absent → next-boot recovery treats this as crash, which is the
+ * safe default. Convention elsewhere in the daemon
+ * (`state-paths.ts` `atomicRename` pattern) is tmp+rename; markers ship
+ * the simpler form because the safe-fallback exists. If this assumption
+ * changes (e.g., `readStopMarker` recovers partial markers), switch to
+ * tmp+atomicRename.
+ */
 export async function writeStopMarker(
 	handleId: string,
 	reason: StopMarkerReason,

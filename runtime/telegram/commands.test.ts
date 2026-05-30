@@ -119,9 +119,7 @@ describe("commands / parseCommand", () => {
 	});
 
 	it("rejects callback approve_allow_<uuid with path separator> (defense-in-depth)", () => {
-		const r = parseCommand(
-			"approve_allow_11111111-2222/4333-8444-555555555555",
-		);
+		const r = parseCommand("approve_allow_11111111-2222/4333-8444-555555555555");
 		expect(r.ok).toBe(false);
 		if (!r.ok) {
 			expect(r.error).toContain("invalid approval ID");
@@ -145,6 +143,31 @@ describe("commands / parseCommand", () => {
 				agent: "agent-foo",
 				text: "hello world",
 			});
+		}
+	});
+
+	// PR45 M2 — whitespace preservation. tokens.slice(2).join(" ")
+	// collapsed every run of whitespace to a single space, which silently
+	// rewrote multi-line payloads before they reached the PTY. The
+	// slice-from-prefix implementation preserves newlines + tabs +
+	// repeated spaces verbatim.
+	it("parses /inject and preserves newlines + repeated whitespace in payload", () => {
+		const r = parseCommand("/inject claude-main hello\n  world");
+		expect(r.ok).toBe(true);
+		if (r.ok) {
+			expect(r.command).toEqual({
+				name: "inject",
+				agent: "claude-main",
+				text: "hello\n  world",
+			});
+		}
+	});
+
+	it("parses /inject and preserves tabs in payload", () => {
+		const r = parseCommand("/inject claude-main col1\tcol2\tcol3");
+		expect(r.ok).toBe(true);
+		if (r.ok && r.command.name === "inject") {
+			expect(r.command.text).toBe("col1\tcol2\tcol3");
 		}
 	});
 
@@ -208,8 +231,7 @@ describe("commands / isCommandAvailableForShape", () => {
 	it.each([["pty"], ["http"], ["mcp"], ["event"], ["daemon"]] as const)(
 		"/start is available for shape %s",
 		async ([shape]) => {
-			const getShape = async (): Promise<AgentShape | null> =>
-				shape as AgentShape;
+			const getShape = async (): Promise<AgentShape | null> => shape as AgentShape;
 			const result = await isCommandAvailableForShape(
 				{ name: "start", agent: "agent-foo" },
 				getShape,
@@ -236,10 +258,7 @@ describe("commands / isCommandAvailableForShape", () => {
 			called = true;
 			return null;
 		};
-		const result = await isCommandAvailableForShape(
-			{ name: "agents" },
-			getShape,
-		);
+		const result = await isCommandAvailableForShape({ name: "agents" }, getShape);
 		expect(result.available).toBe(true);
 		expect(called).toBe(false);
 	});

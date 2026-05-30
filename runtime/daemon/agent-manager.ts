@@ -315,6 +315,13 @@ export class AgentManager extends EventEmitter {
 		}
 	}
 
+	/**
+	 * Persistence order: `persistAgentConfig` BEFORE `runtime.spawn`
+	 * (Plan 04 hardening). If spawn fails, the config file persists
+	 * pointing at a never-spawned id; H1 recovery sees "no marker" and
+	 * attempts `restoreFromMarker` (returns null) → recorded as crash
+	 * with no replay (correct outcome).
+	 */
 	async registerAgent(config: RegisterAgentConfig): Promise<AgentHandle> {
 		assertSafeIdentifier(config.agentId, "agentId");
 		assertSafeIdentifier(config.sessionId, "sessionId");
@@ -376,6 +383,41 @@ export class AgentManager extends EventEmitter {
 
 	listHandles(): AgentHandle[] {
 		return Array.from(this.handles.values()).map((t) => t.handle);
+	}
+
+	/**
+	 * Last status observed for this handle (per status-callback wiring in
+	 * `trackHandle`). Returns `undefined` if the handle is unknown.
+	 * Synchronous read of the in-memory tracked record — safe to call
+	 * from the Telegram bot's `/status` reply path. PR45 M6.
+	 */
+	getLastStatus(handleId: string): string | undefined {
+		return this.handles.get(handleId)?.lastStatus;
+	}
+
+	/**
+	 * Synchronous liveness derivation from the tracked `lastStatus`.
+	 * Returns `undefined` for unknown handles, `true` for `running` /
+	 * `idle` (the runtime considers the process alive even when blocked
+	 * on input), `false` for `exited` / `crashed`, and `undefined` for
+	 * `unknown` (the adapter has not reported yet — caller should not
+	 * assume either state). Async liveness probes registered via
+	 * `registerLivenessProbe` deliberately bypass this method; they are
+	 * consumed by the heartbeat loop, not the bot. PR45 M6.
+	 */
+	isAlive(handleId: string): boolean | undefined {
+		const tracked = this.handles.get(handleId);
+		if (tracked === undefined) return undefined;
+		switch (tracked.lastStatus) {
+			case "running":
+			case "idle":
+				return true;
+			case "exited":
+			case "crashed":
+				return false;
+			case "unknown":
+				return undefined;
+		}
 	}
 
 	async shutdownAgent(
@@ -742,10 +784,7 @@ export class AgentManager extends EventEmitter {
 				// matches the marker's handleId. Adapters MAY return a handle
 				// with a different id (e.g., generation suffix); the recovered
 				// listing reflects what was actually tracked.
-				const recoveredId = await this.attemptCrashReplay(
-					handleId,
-					knownConfigs,
-				);
+				const recoveredId = await this.attemptCrashReplay(handleId, knownConfigs);
 				if (recoveredId !== null && this.handles.has(recoveredId)) {
 					recovered.push(recoveredId);
 				}
@@ -763,10 +802,7 @@ export class AgentManager extends EventEmitter {
 				for (const handleId of knownConfigs.keys()) {
 					if (seenHandleIds.has(handleId)) continue;
 					crashes.push(handleId);
-					const recoveredId = await this.attemptCrashReplay(
-						handleId,
-						knownConfigs,
-					);
+					const recoveredId = await this.attemptCrashReplay(handleId, knownConfigs);
 					if (recoveredId !== null && this.handles.has(recoveredId)) {
 						recovered.push(recoveredId);
 					}
@@ -1370,11 +1406,7 @@ export class AgentManager extends EventEmitter {
 			if (tracked.handle.agentId !== agentId) continue;
 			const existingOrg = tracked.org;
 			if (existingOrg !== attemptedOrg) {
-				throw new AgentIdAlreadyRegisteredError(
-					agentId,
-					existingOrg,
-					attemptedOrg,
-				);
+				throw new AgentIdAlreadyRegisteredError(agentId, existingOrg, attemptedOrg);
 			}
 		}
 
@@ -1411,11 +1443,7 @@ export class AgentManager extends EventEmitter {
 			const orgVal = (parsed as { org?: unknown }).org;
 			const existingOrg = typeof orgVal === "string" ? orgVal : null;
 			if (existingOrg !== attemptedOrg) {
-				throw new AgentIdAlreadyRegisteredError(
-					agentId,
-					existingOrg,
-					attemptedOrg,
-				);
+				throw new AgentIdAlreadyRegisteredError(agentId, existingOrg, attemptedOrg);
 			}
 		}
 	}

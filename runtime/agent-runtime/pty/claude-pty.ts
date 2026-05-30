@@ -49,12 +49,13 @@ import { writeStopMarker } from "../../daemon/markers.js";
 import { appendEvent, getHWM } from "../../daemon/session-log.js";
 import { getErrnoCode, pathFor } from "../../daemon/state-paths.js";
 import { type AgentRuntime, registerRuntime } from "../registry.js";
-import type {
-	AgentHandle,
-	AgentMessage,
-	SpawnOpts,
-	StatusCallback,
-	StatusValue,
+import {
+	type AgentHandle,
+	type AgentMessage,
+	INTERFACE_VERSION,
+	type SpawnOpts,
+	type StatusCallback,
+	type StatusValue,
 } from "../types.js";
 
 import { parseStatusFromOutput } from "./prompt-parser.js";
@@ -503,7 +504,7 @@ export const claudePty: PTYAdapter = {
 	shape: "pty",
 	id: RUNTIME_ID,
 	version: ADAPTER_VERSION,
-	interfaceVersion: "v1",
+	interfaceVersion: INTERFACE_VERSION,
 
 	async spawn(opts: SpawnOpts): Promise<AgentHandle> {
 		const { handle } = await spawnInternal(opts, 0);

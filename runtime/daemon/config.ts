@@ -225,10 +225,7 @@ function parseHeartbeat(
 	const intervalMs =
 		rec.intervalMs === undefined
 			? DEFAULT_HEARTBEAT.intervalMs
-			: requireFiniteNumber(
-					rec.intervalMs,
-					`${sourcePath}: heartbeat.intervalMs`,
-				);
+			: requireFiniteNumber(rec.intervalMs, `${sourcePath}: heartbeat.intervalMs`);
 	const rssLimitBytes =
 		rec.rssLimitBytes === undefined
 			? DEFAULT_HEARTBEAT.rssLimitBytes
@@ -369,10 +366,7 @@ export async function loadConfig(): Promise<DaemonConfig> {
 	if (envToken !== undefined && envToken.length > 0) {
 		const allowedFromEnv =
 			envAllowedIdsRaw !== undefined && envAllowedIdsRaw.length > 0
-				? parseAllowedUserIds(
-						envAllowedIdsRaw,
-						"IAGO_TELEGRAM_ALLOWED_USER_IDS",
-					)
+				? parseAllowedUserIds(envAllowedIdsRaw, "IAGO_TELEGRAM_ALLOWED_USER_IDS")
 				: (fileTelegram?.allowedUserIds ?? []);
 		telegram = { token: envToken, allowedUserIds: allowedFromEnv };
 	} else if (envAllowedIdsRaw !== undefined && envAllowedIdsRaw.length > 0) {
