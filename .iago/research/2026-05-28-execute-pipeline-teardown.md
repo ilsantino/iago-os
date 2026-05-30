@@ -141,3 +141,46 @@ Sentria immediately. Then do the Workflow rebuild as its own scoped effort when 
 shipping under pressure, with Phase A already relieving the pain. Big-bang-rewriting core
 infra mid-ship is the reckless move; sequencing it is not a compromise on the "build the
 ocean" standard — Phase B still ships whole.
+
+## Moved from execution-pipeline.md (2026-05-30)
+
+Lever 6: deprecated/transitional narrative relocated out of the always-loaded
+`execution-pipeline.md` rule. The operational rules stay in the rule file; this is the
+rationale-bearing prose that no longer needs to load on every session. Pointers in the
+rule file now reference this doc.
+
+### Why the bash pipeline was deprecated (was: intro narrative)
+
+The bash `scripts/execute-pipeline.sh` was deprecated because each stage shelled out to
+`claude -p` via a polled background process: transient API errors had no retry, turn
+budgets were static, and ~55% of the script was Windows-specific scar tissue (self-freeze
+re-exec, taskkill pipe-FD dance, timeout detection, mkdir locks). The Workflow runs each
+stage as a tracked, retryable subagent and deletes all of that.
+
+### Robustness gains vs the bash pipeline (was: "Robustness (vs the bash pipeline)" framing)
+
+The operational facts behind these gains (withRetry + journal recovery, no static turn
+caps, commit-before-review, tracked-not-polled, the per-project lock at
+`.iago/state/.pipeline.lock.d` with its 3h stale-reclaim window and manual `rmdir`
+recovery, and the "fix forward in the Workflow" instruction) remain in
+`execution-pipeline.md` under `### Robustness`. The comparison framing that motivated each
+gain:
+
+- **Retry on transient errors.** `withRetry` re-runs any stage agent that throws — e.g.
+  the `400 'thinking' blocks cannot be modified` error that *killed bash runs* (bash had
+  zero retry: `run_claude` returned non-zero, caller did `|| IMPL_EXIT=$?` then `exit 1`,
+  so one flake killed the whole run).
+- **No static turn caps.** The bash `--max-turns 80` default truncated large plans (one
+  monolithic agent did the entire plan in one session); Workflow subagents self-manage.
+- **Tracked, not polled.** The bash pipeline used nohup + log-watching; the Workflow
+  notifies on completion.
+- **Per-project lock.** Replaces the bash per-project `mkdir` lock + liveness check.
+
+### Legacy bash fallback inventory (was: "Legacy bash fallback (deprecated)")
+
+`scripts/execute-pipeline.sh` + `scripts/lib/*` remain for one cycle, then delete. Their
+Windows-specific machinery — self-freeze re-exec (`IAGO_PIPELINE_FROZEN`), `run_claude`
+taskkill/poll, `timeout`/`gtimeout` detection, per-project mkdir lock, `IAGO_PARALLEL_BUILD`,
+`IAGO_IMPL_TIMEOUT_SECS`/`IAGO_PR_TIMEOUT` env validation — is obsolete under the Workflow.
+Do NOT extend the bash script; fix forward in the Workflow. Once the Workflow has a few
+real-plan runs banked, delete the bash tree.

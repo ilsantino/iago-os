@@ -64,7 +64,7 @@ Every subagent ends with one status: **DONE** (verified) / **DONE_WITH_CONCERNS*
 Detailed rules in `.claude/rules/`: `stack.md` (tech stack), `output-style.md` (orchestrator response style), `memory.md` (six-layer memory + frozen-snapshot rule), `execution-pipeline.md` (**MANDATORY** review pipeline), `tdd.md` (RED-GREEN-REFACTOR), `systematic-debugging.md` (4-phase debugging), `git-workflow.md` (branching/PRs), `available-skills.md` (full skill catalog). Path-scoped: `react-vite.md` (src/**/*.tsx), `aws-amplify.md` (amplify/**), `e2e-testing.md` (tests), `mcp-server-patterns.md` (MCP files). Code standards live in the path-scoped React/AWS/TDD/MCP rules.
 
 ## Agents
-3 bases, 13 capabilities, 12 profiles in `.claude/agents/`. Hub-and-spoke: only orchestrator dispatches.
+3 bases, 14 capabilities, 13 profiles in `.claude/agents/` (authoritative live counts on disk). Hub-and-spoke: only orchestrator dispatches.
 
 ## Model Routing
 Opus: orchestrator + code-writing (impl/fix/debug). Sonnet: PR creation, @claude tags, Codex fallback, mechanical analysis. Codex (GPT-5.5): cross-model adversarial review, `/codex:rescue` — pinned in `~/.codex/config.toml`.
