@@ -14,6 +14,8 @@ export const meta = {
     { title: 'Frontend' },
     { title: 'Amplify' },
     { title: 'Performance' },
+    { title: 'Team' },
+    { title: 'Verify' },
   ],
 }
 
@@ -56,6 +58,10 @@ const projectDir = A.projectDir
 const base = A.base || 'origin/main'
 const iagoRoot = A.iagoRoot // no personal-path default — fail loud (resolves review-checks)
 const prNumber = A.prNumber || ''
+// TEAM mode adds two extra independent reviewer legs (team:data + team:arch) and an
+// adversarial verification pass over Critical/Important findings. Any value other
+// than the literal "team" leaves the workflow byte-for-byte in STANDARD behavior.
+const mode = A.mode === 'team' ? 'team' : 'standard'
 if (!projectDir || !iagoRoot) {
   throw new Error('dual-adversarial requires args.projectDir and args.iagoRoot (absolute paths)')
 }
@@ -90,6 +96,22 @@ const LENS_SCHEMA = {
   type: 'object',
   required: ['findings'],
   properties: { findings: { type: 'array', items: FINDING } },
+}
+// TEAM verification: a skeptic is dispatched PER blocking finding to REFUTE it from the
+// actual committed code. `real:true` = the skeptic could not refute it (the bug stands);
+// `real:false` = the skeptic claims it is not a real defect, justified by `reason`.
+const SKEPTIC_SCHEMA = {
+  type: 'object',
+  required: ['real', 'reason'],
+  properties: { real: { type: 'boolean' }, reason: { type: 'string' } },
+}
+// Read-only tree snapshot (HEAD + porcelain) used to assert the review/verification
+// legs never mutated the worktree (I1 — the gate must FAIL loudly rather than report
+// clean if any leg wrote to the tree).
+const SNAPSHOT_SCHEMA = {
+  type: 'object',
+  required: ['head', 'porcelain'],
+  properties: { head: { type: 'string' }, porcelain: { type: 'string' } },
 }
 
 const PREAMBLE = `You are a read-only adversarial reviewer (pre-merge gate, pass #2). Work in ${projectDir}. Do NOT edit files, commit, push, or merge — only review and report.
@@ -194,6 +216,88 @@ ${def.focus}
 Honor module severity floors (ALWAYS Critical / ALWAYS Important — never downgrade). Report findings as Critical / Important / Minor, each with file + line. Return an empty findings array if this lens surfaces nothing.`
 }
 
+// TEAM mode — two extra independent reviewer legs. Same PREAMBLE + read-each-changed-
+// file-in-full stance as the lenses; pinned to Opus; READ-ONLY (never edit/commit).
+const TEAM_DEFS = [
+  {
+    key: 'team:data',
+    phase: 'Team',
+    focus: `DATA-CORRECTNESS team leg. Hunt: arithmetic/aggregation errors, money or float drift (rounding, cents-vs-dollars, IEEE-754 accumulation), concurrency and race conditions (TOCTOU, non-atomic read-modify-write, lost updates under concurrent actors), partial writes (a multi-step write that can leave half-committed state on failure), missing idempotency on retried/replayed operations, and unhandled empty/null/zero state (empty list, null field, first-use vs returning, zero-division). Treat any money-drift or data-loss path as Critical.`,
+  },
+  {
+    key: 'team:arch',
+    phase: 'Team',
+    focus: `ARCHITECTURE / INTEGRATION team leg. Hunt: cross-module integration effects the diff-only view hides, interface/contract drift (a caller and callee that disagree on a shape, an enum/field added on one side only), rollback and migration safety (a change that cannot be safely reverted or that breaks on a half-applied migration), hidden coupling (a change here that silently depends on or breaks behavior elsewhere), and observability gaps (a new failure path with no log/metric/trace, a swallowed error). Treat a rollback-unsafe migration or a silent cross-module break as Critical.`,
+  },
+]
+
+function teamPrompt(def) {
+  return `${PREAMBLE}
+
+You are an INDEPENDENT TEAM reviewer on PR${prNumber ? ` #${prNumber}` : ''}. Read each changed source file IN FULL (from ${diffExpr}), not just the diff.
+
+${def.focus}
+
+Honor module severity floors (ALWAYS Critical / ALWAYS Important — never downgrade). Report findings as Critical / Important / Minor, each with file + line. Return an empty findings array if this leg surfaces nothing.`
+}
+
+// TEAM verification — an adversarial skeptic dispatched to REFUTE one finding from the
+// CURRENT committed code. Two skeptics run per finding with DIFFERENT angles (one argues
+// exploitability/impact, one argues reachability/preconditions) so their errors are less
+// correlated (I3). A skeptic returns real=false ONLY with concrete code evidence; a bare
+// refute is caller-coerced to a confirm (C1). Default to real=false ONLY when the code
+// genuinely disproves the finding.
+function skepticPrompt(finding, angle) {
+  return `${PREAMBLE}
+
+You are an adversarial SKEPTIC verifying ONE finding from a multi-leg review of PR${prNumber ? ` #${prNumber}` : ''}. Your job is to REFUTE it — prove it is NOT a real defect in the CURRENT committed code.
+
+Finding under test (severity ${finding.severity}, raised by ${finding.by || 'a reviewer'}):
+${finding.summary}${finding.file ? `\nReported file: ${finding.file}` : ''}
+
+ANGLE: ${angle}
+
+Method: read the ACTUAL diff (${diffExpr}) and the relevant source files IN FULL. Determine whether the committed code actually exhibits the defect.
+- Return real=false (NOT a real defect) ONLY if you can point to concrete code — a specific file:line or code path — that makes the finding wrong (the attack is impossible, the value is already guarded, the path is unreachable). Put that evidence in reason.
+- Return real=true if the code confirms the defect, OR if you CANNOT confirm from the current committed code that it is wrong. DEFAULT TO real=false ONLY when the code disproves it; a finding you merely "doubt" but cannot disprove is real=true.
+- A bare "I don't think this is exploitable" with no code citation is NOT a refutation — in that case return real=true.
+
+This is READ-ONLY: do NOT edit, commit, push, or merge. Return real (boolean) and reason (your evidence).`
+}
+
+// A skeptic "refute" (real=false) only counts if it cites CONCRETE CODE evidence.
+// The failure mode this guards is LLM hallucination — a confident, fluent,
+// uncited claim ("this input is fully validated upstream before use"). Word-count
+// is exactly the wrong proxy for that mode (a hallucination is wordy by nature),
+// so a refute MUST point at code — a specific file path/extension OR an explicit
+// line ref (`line 42`, `L42`, `:42`). A bare or merely verbose reason with no
+// citation is NOT a refutation and is coerced to a confirm (keep the finding).
+function refuteHasEvidence(reason) {
+  if (!reason || typeof reason !== 'string') return false
+  const r = reason.trim()
+  if (r.length < 12) return false
+  // Require a code citation: a file path/extension or an explicit line ref. A
+  // confident-but-uncited argument (however wordy) does NOT qualify.
+  const citesCode = /[\w/.-]+\.(ts|tsx|js|jsx|mjs|cjs|py|sh|json|md)\b/i.test(r) || /\b(line|L)\s*\d+|:\d+\b/i.test(r)
+  return citesCode
+}
+
+// SIDE-EFFECT GUARD (I1) — this workflow is READ-ONLY. Snapshot the worktree before
+// any review/verification leg runs; re-snapshot at the end and assert nothing moved.
+// A leg that mutated the tree (and still reported clean) is the worst outcome, so we
+// fail the gate loudly instead. Read-only itself.
+async function treeSnapshot(when) {
+  return withRetry(
+    () =>
+      agent(
+        `${PREAMBLE}\n\nREAD-ONLY tree snapshot (${when}). In ${projectDir} run exactly:\n  git rev-parse HEAD\n  git status --porcelain\nReturn head (the rev-parse output, trimmed) and porcelain (the FULL git status --porcelain output, empty string if clean). Do NOT edit, stage, commit, or run anything else.`,
+        { label: `side-effect-snapshot:${when}`, phase: 'Review', schema: SNAPSHOT_SCHEMA, model: 'opus' },
+      ),
+    `side-effect-snapshot:${when}`,
+  )
+}
+const startSnap = await treeSnapshot('start')
+
 const legs = [
   () => withRetry(() => agent(reviewPrompt, { label: 'review', phase: 'Review', schema: REVIEW_SCHEMA, model: 'opus' }), 'review'),
   () => withRetry(() => agent(codexPrompt, { label: 'codex', phase: 'Codex', schema: CODEX_SCHEMA }), 'codex'),
@@ -204,12 +308,27 @@ for (const key of lenses) {
     withRetry(() => agent(lensPrompt(def), { label: def.title, phase: def.phase, schema: LENS_SCHEMA, model: 'opus' }), def.title),
   )
 }
-log(`dual-adversarial #2 starting: ${2 + lenses.length} independent legs (opus review ∥ codex${lenses.length ? ' + lenses: ' + lenses.join(', ') : ''})`)
+// TEAM breadth — append the two extra independent reviewer legs AFTER the lens legs so
+// the standard `results[0]`/`results[1]`/`slice(2, 2+lenses.length)` indexing is never
+// disturbed. Standard mode (mode !== 'team') adds nothing here.
+const teamDefs = mode === 'team' ? TEAM_DEFS : []
+for (const def of teamDefs) {
+  legs.push(() =>
+    withRetry(() => agent(teamPrompt(def), { label: def.key, phase: def.phase, schema: LENS_SCHEMA, model: 'opus' }), def.key),
+  )
+}
+log(
+  `dual-adversarial #2 starting (${mode} mode): ${2 + lenses.length + teamDefs.length} independent legs (opus review ∥ codex${lenses.length ? ' + lenses: ' + lenses.join(', ') : ''}${teamDefs.length ? ' + team: ' + teamDefs.map((d) => d.key).join(', ') : ''})`,
+)
 
 const results = await parallel(legs)
 const review = results[0]
 const codex = results[1]
-const lensResults = results.slice(2)
+// Lens results occupy the slots immediately after the two core legs; team results (if
+// any) occupy the slots after the lenses. Slice by COUNT, not open-ended, so team legs
+// never bleed into lensResults.
+const lensResults = results.slice(2, 2 + lenses.length)
+const teamResults = results.slice(2 + lenses.length, 2 + lenses.length + teamDefs.length)
 
 const findings = []
 let verdict = 'UNKNOWN'
@@ -242,6 +361,65 @@ lenses.forEach((key, i) => {
     incompleteLegs.push(`lens:${key}`)
   }
 })
+// TEAM breadth — collect the two extra reviewer legs (non-blocking like the lenses).
+teamDefs.forEach((def, i) => {
+  const r = teamResults[i]
+  if (r) {
+    for (const f of r.findings || []) findings.push({ ...f, by: def.key })
+  } else {
+    log(`WARNING: ${def.key} team leg failed (non-blocking)`)
+    incompleteLegs.push(def.key)
+  }
+})
+
+// TEAM verification (mode === 'team' only) — adversarially verify every Critical/Important
+// finding BEFORE computing the blocking set. Two independent skeptics per finding try to
+// REFUTE it from the actual committed code; a finding is CONFIRMED if >= 1 skeptic returns
+// real=true (an evidence-backed refute is required to count against it — see refuteHasEvidence,
+// C1). A finding dropped by BOTH skeptics moves to `filtered`. Minor findings are kept
+// un-verified. False-negative bias is worse than dropping a real bug, so one confirm keeps it.
+const filtered = []
+let verificationDegraded = false
+if (mode === 'team') {
+  const toVerify = findings.filter((f) => f.severity === 'Critical' || f.severity === 'Important')
+  const kept = []
+  for (const f of toVerify) {
+    // Two skeptics, DIFFERENT angles (less-correlated errors — I3). Both are Opus here,
+    // so verification is same-family (DEGRADED, like crossModelDegraded). Surface it.
+    verificationDegraded = true
+    const angles = [
+      'Argue EXPLOITABILITY / IMPACT: even if the code path exists, prove the impact cannot actually occur (the bad value is bounded, the write is guarded, the failure is recovered).',
+      'Argue REACHABILITY / PRECONDITIONS: prove the precondition that would trigger this can never hold from any real caller / input / state in the committed code.',
+    ]
+    const skeptics = await parallel(
+      angles.map(
+        (angle, si) => () =>
+          withRetry(
+            () => agent(skepticPrompt(f, angle), { label: `skeptic:${si}:${f.severity}`, phase: 'Verify', schema: SKEPTIC_SCHEMA, model: 'opus' }),
+            `skeptic:${si}`,
+          ),
+      ),
+    )
+    // A skeptic that failed to run (null) cannot refute — treat as a confirm (fail-safe:
+    // keep the finding). real=false counts as a refute ONLY with code evidence (C1).
+    const refutes = skeptics.map((s) => s && s.real === false && refuteHasEvidence(s.reason))
+    const confirmed = refutes.some((isRefute) => !isRefute) // >= 1 NON-refute keeps it
+    if (confirmed) {
+      kept.push(f)
+    } else {
+      // BOTH skeptics refuted WITH evidence — drop the finding for human audit.
+      const reasons = skeptics.filter((s) => s && s.reason).map((s) => s.reason)
+      filtered.push({ ...f, reasons })
+      log(`team verification DROPPED [${f.severity}] ${f.summary} (both skeptics refuted with evidence)`)
+    }
+  }
+  // Reported findings = confirmed (Critical/Important) + all Minor (un-verified). Replace
+  // the findings array in place so the return value and `blocking` reflect verification.
+  const minor = findings.filter((f) => f.severity === 'Minor')
+  findings.length = 0
+  for (const f of kept) findings.push(f)
+  for (const f of minor) findings.push(f)
+}
 
 const blocking = findings.filter((f) => f.severity === 'Critical' || f.severity === 'Important')
 // A core leg (Opus review / Codex) that failed to run makes the gate INCOMPLETE — this is
@@ -261,15 +439,38 @@ log(
   `dual-adversarial #2: ${clean ? 'CLEAN' : gateStatus === 'INCOMPLETE' ? `INCOMPLETE (re-run; failed legs: ${incompleteLegs.join(', ')})` : `${blocking.length} blocking`} (opus verdict ${verdict}, codex ${codexSource}${crossModelDegraded ? ' [DEGRADED — no GPT-5.5 cross-model]' : ''}, legs: opus=${!!review} codex=${!!codex}, lenses=[${lenses.join(',')}])`,
 )
 
+// SIDE-EFFECT GUARD (I1) — re-snapshot the worktree and assert NOTHING moved since the
+// start snapshot. Every leg (review / codex / lens / team / skeptic) is READ-ONLY; if any
+// leg disregarded its prompt and mutated the tree, that is the worst outcome — a gate that
+// reports `clean` over a dirtied worktree. Fail LOUDLY instead of returning a verdict.
+// When BOTH snapshots ran and DIFFER, a leg mutated the tree → throw. If a snapshot could
+// not be captured (transient agent failure), the guard is degraded, not violated: log a
+// warning and skip the assertion rather than block an otherwise-clean gate.
+const endSnap = await treeSnapshot('end')
+if (startSnap && endSnap) {
+  if (startSnap.head !== endSnap.head || startSnap.porcelain !== endSnap.porcelain) {
+    throw new Error(
+      `SIDE-EFFECT BREACH — a read-only review leg mutated the worktree (the gate is strictly read-only). HEAD ${startSnap.head} → ${endSnap.head}; porcelain "${(startSnap.porcelain || '').trim()}" → "${(endSnap.porcelain || '').trim()}". Inspect the tree manually; do NOT treat this run as a clean gate.`,
+    )
+  }
+} else {
+  log(
+    `WARNING: side-effect guard DEGRADED — could not capture ${!startSnap ? 'start' : 'end'} tree snapshot; the read-only invariant could not be verified for this run`,
+  )
+}
+
 // `verdict` reflects the Opus leg ONLY — it can read PASS while Codex surfaced a Critical.
 // `clean` is the authoritative merge signal; the SKILL leads with `clean`, never `verdict`.
 return {
   clean,
+  mode,
   gateStatus,
   incompleteLegs,
   verdict,
   codexSource,
   crossModelDegraded,
+  verificationDegraded,
+  filtered,
   findings,
   blocking: blocking.length,
   lenses,
