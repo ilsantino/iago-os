@@ -11,6 +11,9 @@ export const meta = {
     { title: 'Code quality' },
     { title: 'Tests' },
     { title: 'Completeness' },
+    { title: 'Frontend' },
+    { title: 'Amplify' },
+    { title: 'Performance' },
   ],
 }
 
@@ -144,6 +147,21 @@ const LENS_DEFS = {
     phase: 'Completeness',
     title: 'completeness critic',
     focus: `COMPLETENESS-CRITIC meta-lens. Assume the other legs missed something. Ask: which changed file did no one read in full? which cross-module integration effect is unverified? which claim in the PR/plan is asserted but not proven by code or a test? which failure mode (timeout, partial write, retry, concurrent actor, empty/null state) is unhandled? Surface each gap as a finding at the severity the underlying risk warrants.`,
+  },
+  frontend: {
+    phase: 'Frontend',
+    title: 'frontend bug-bounty',
+    focus: `FRONTEND BUG-BOUNTY lens — apply the /frontend-bug-bounty rule set (read ${iagoRoot}/.claude/skills/frontend-bug-bounty/ in full, including its references/, for the complete checklist). On the changed src/**/*.ts(x): React 19 hook misuse, stale closures, missing effect cleanup, race conditions, list/key bugs, TypeScript type-drift, Vite misconfig, Tailwind v4 CSS-first pitfalls, AND Section-Q data-correctness — paginated KPIs that silently drop pages, NaN aggregates, money/float drift, a tenant filter missing on an aggregate. Treat any data-correctness or money-drift bug as Critical.`,
+  },
+  amplify: {
+    phase: 'Amplify',
+    title: 'amplify bug-bounty',
+    focus: `AMPLIFY BUG-BOUNTY lens — apply the /amplify-bug-bounty rule set (read ${iagoRoot}/.claude/skills/amplify-bug-bounty/ in full for the complete checklist). On the changed amplify/** : CloudFormation dependency cycles, AppSync/authorization-rule holes (an empty model authorization falls back to default-open), multi-tenancy leaks (owner/group not enforced), IAM over-grants, Cognito misconfig (token lifetimes, triggers), S3 access. Treat any auth bypass or cross-tenant read/write as Critical.`,
+  },
+  perf: {
+    phase: 'Performance',
+    title: 'performance & cost',
+    focus: `PERFORMANCE & COST lens (AWS-aware). DynamoDB: N+1 access patterns, hot partitions, unbounded Scan, missing pagination, redundant GSIs. Lambda: cold-start / bundle bloat, heavy top-level imports, await-in-loop, fire-and-forget (un-awaited async) work that gets abandoned. Frontend: oversized bundles, unmemoized heavy renders, fetch waterfalls. Flag anything that scales badly or silently burns cost, and cite the access pattern or call site.`,
   },
 }
 function normalizeLenses(l) {
