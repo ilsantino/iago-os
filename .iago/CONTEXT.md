@@ -40,6 +40,16 @@ Per MWP §3.2: L3 = factory (configured once, stable, internalized by agents as 
 | `.iago/state/` | **L4 product** | Session-specific runtime markers (gitignored, README tracked) |
 | `.iago/logs/` | **L4 product** | Pipeline run logs (gitignored, README tracked) |
 
+## Level B sub-workspaces
+
+Level B sub-workspaces have their own `CLAUDE.md` declaring sub-workspace identity. The root iaGO-OS workspace is at the repo root; sub-workspaces inherit from it via the `../` path.
+
+| Path | Type | Layer 0 declaration | Layer 2 stage contract |
+|---|---|---|---|
+| `runtime/` | v2 daemon | `runtime/CLAUDE.md` | `runtime/CONTEXT.md` |
+| `mcp-servers/youtube-transcript/` | Python MCP server | `mcp-servers/CLAUDE.md` | own README.md (Python project, no separate stage contract needed) |
+| `clients/{name}/` | per-client workspaces | future — feature-mwp-restructure-clients/ | per-client |
+
 ## Stage contracts (L2) — where the work actually executes
 
 Each active "stage" (a coherent unit of work — a phase, a feature, a daemon build) declares its own `CONTEXT.md` with Inputs / Process / Outputs per MWP §3.2.

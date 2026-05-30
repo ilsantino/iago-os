@@ -66,5 +66,11 @@ Detailed rules in `.claude/rules/`: `stack.md` (tech stack), `output-style.md` (
 ## Agents
 3 bases, 13 capabilities, 12 profiles in `.claude/agents/`. Hub-and-spoke: only orchestrator dispatches.
 
+## Workspace map
+This repo hosts the iaGO-OS meta-workspace + Level B sub-workspaces. See `.iago/CONTEXT.md` `## Level B sub-workspaces` for registry.
+- `runtime/` — v2 daemon (own CLAUDE.md)
+- `mcp-servers/youtube-transcript/` — Python MCP (top-level per audit §10.5 Q2 = KEEP; standalone project, own deps)
+- `clients/{name}/` — per-client; some are inner git repos, never edit from iago-os PRs (see memory `feedback_inner_repo_check.md`).
+
 ## Model Routing
 Opus: orchestrator + code-writing (impl/fix/debug). Sonnet: PR creation, @claude tags, Codex fallback, mechanical analysis. Codex (GPT-5.5): cross-model adversarial review, `/codex:rescue` — pinned in `~/.codex/config.toml`.
