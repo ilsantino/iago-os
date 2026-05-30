@@ -18,15 +18,21 @@ Dispatch this profile when:
 
 ## Dynamic Capability Selection
 
-The orchestrator selects capabilities based on the research topic:
+**ALWAYS inject `trust-boundary`** — this is the operator base, which fetches and
+ingests untrusted external content (web pages, scraped HTML, third-party docs).
+It is a fixed baseline capability for this profile, injected on every dispatch
+regardless of topic. The remaining capabilities below are the dynamic selection.
+
+The orchestrator then selects topic-specific capabilities:
 - React/frontend topic → inject `react-19` capability
 - DynamoDB/data modeling topic → inject `dynamodb` capability
 - Lambda/serverless topic → inject `lambda` capability
 - Auth/Cognito topic → inject `cognito` capability
 - Infrastructure topic → inject `infra` capability
-- General research → no additional capabilities (base operator is sufficient)
+- General research → `trust-boundary` only (base operator + trust-boundary is sufficient)
 
-Multiple capabilities can be injected if the topic spans domains.
+Multiple capabilities can be injected if the topic spans domains; `trust-boundary`
+is always present in addition to any topic-specific selections.
 
 ## Output Expectations
 
