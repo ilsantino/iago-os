@@ -1249,7 +1249,7 @@ describe("makeTaskDispatchHandler (Plan 04d)", () => {
 		registerRuntime(runtime);
 		const handle = makeHandleFixture("pr-triage", "dh8-runtime");
 		const mgr = makeStubManager({ handle });
-		const emitMock = vi.fn().mockResolvedValue(undefined);
+		const emitMock = vi.fn().mockResolvedValue(true); // pr84: durable write -> mirror durability-gate claims (main.ts)
 
 		const handler = makeTaskDispatchHandler({
 			agentManager: mgr,

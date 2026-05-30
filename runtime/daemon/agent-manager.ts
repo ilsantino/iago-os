@@ -63,7 +63,12 @@ import {
 	appendEvent,
 	cancelPendingAppends,
 } from "./session-log.js";
-import { assertSafeIdentifier, getErrnoCode, pathFor } from "./state-paths.js";
+import {
+	assertSafeIdentifier,
+	atomicRenameStaleDest,
+	getErrnoCode,
+	pathFor,
+} from "./state-paths.js";
 import { PR_TRIAGE_ALERT_KINDS, emit as emitTelemetry } from "./telemetry.js";
 
 export interface AgentManagerOpts {
@@ -148,6 +153,17 @@ export class AgentIdAlreadyRegisteredError extends Error {
  * AgentManager memory by writing a 1GB task. Exported for test access.
  */
 export const TASK_PAYLOAD_MAX_BYTES = 1_048_576;
+
+/**
+ * pr84 CRITICAL (consumer tolerance): number of consecutive polling ticks a
+ * `.json` task file may fail `JSON.parse` before it is poisoned. A
+ * non-atomically-written file caught mid-write parses on a later tick; a
+ * genuinely-malformed file exhausts the budget and is poisoned. Set to 1 so
+ * a single transient failure is tolerated (the file is re-read next tick) but
+ * a persistently-broken file poisons promptly on the second failure — bounding
+ * the retry so a corrupt task cannot loop forever. Exported for test access.
+ */
+export const JSON_PARSE_RETRY_BUDGET = 1;
 
 /**
  * Plan 04d Task 1 — typed shape of the `taskContent` payload carried on
@@ -284,6 +300,25 @@ export class AgentManager extends EventEmitter {
 	 * called from the listener's `finally` block.
 	 */
 	private readonly dispatchInFlight = new Set<string>();
+	/**
+	 * pr84 CRITICAL (consumer tolerance): per-filename count of consecutive
+	 * JSON.parse failures. A producer that writes a `.json` file directly
+	 * (instead of the atomic `.tmp`-then-rename discipline) can be caught
+	 * mid-write by a polling tick, yielding a TRANSIENT parse error on a
+	 * file that becomes valid microseconds later. Poisoning on the first
+	 * failure permanently LOSES that task (it moves to `tasks/poisoned/`).
+	 * The consumer instead grants `JSON_PARSE_RETRY_BUDGET` ticks of grace:
+	 * a parse failure increments the counter and leaves the file in
+	 * `pending/` for the next tick; only once the budget is exhausted is a
+	 * genuinely-malformed file poisoned. A successful parse clears the
+	 * counter. `stopPollingLoop` clears the whole map.
+	 *
+	 * This is defense-in-depth — the root fix is the atomic producer
+	 * (`agents/pr-triage/prompt-template.md`). It does NOT weaken poison
+	 * handling: a file that stays unparseable for the full budget is still
+	 * poisoned, so a truly corrupt task does not loop forever.
+	 */
+	private readonly jsonParseRetries = new Map<string, number>();
 
 	constructor(opts?: AgentManagerOpts) {
 		super();
@@ -1266,24 +1301,40 @@ export class AgentManager extends EventEmitter {
 			//
 			// Security (Codex H at-rest follow-up): this file now carries
 			// daemon-owned secrets (Telegram bot token, GH PAT) for trusted
-			// cron agents, so it is written mode 0600 (below) inside the
-			// `agents/` dir created mode 0700 (state-paths `ensureStateDirsSync`)
-			// — other local users cannot read it. systemd `LoadCredential=` adds
-			// at-rest ENCRYPTION in Phase 2 (perms protect against other local
-			// users; encryption protects disk images / backups). The earlier
-			// "0600 via state-paths defaults" claim was aspirational — both the
-			// dir mkdir and this writeFile were issued with NO mode; that is now
-			// enforced in code.
+			// cron agents, so it is written via a fresh 0o600 temp file then
+			// atomic-renamed (below) inside the `agents/` dir created+chmod'd
+			// mode 0700 (state-paths `ensureStateDirsSync`) — other local users
+			// cannot read it, and there is no overwrite window where the dest
+			// briefly carries a looser mode (pr84). systemd `LoadCredential=`
+			// adds at-rest ENCRYPTION in Phase 2 (perms protect against other
+			// local users; encryption protects disk images / backups).
 			env: config.env,
 		};
+		// pr84 IMPORTANT (at-rest secret race on overwrite): write to a FRESH
+		// temp file at 0o600, then atomic-rename over the dest. `fsp.writeFile`'s
+		// `mode` option is honored only on file CREATION; on OVERWRITE (restore
+		// reuses the same handleId → same filename) the prior — possibly
+		// looser — mode persists until the trailing chmod, a window where the
+		// secret is world-readable. A fresh temp file is always created (so 0o600
+		// is enforced at creation, never inherited), and the rename publishes it
+		// atomically — the dest never exists in a partially-written or
+		// loose-mode state. `atomicRenameStaleDest` is correct here: the prior
+		// `<handleId>.json` is by definition stale (same logical agent,
+		// superseded config), so destructive replace is the intended semantics.
+		// No-op security difference on Windows (NTFS ignores POSIX bits) — the
+		// daemon's at-rest target is the POSIX VPS.
+		const tmpFile = path.join(dir, `${handleId}.json.tmp`);
 		try {
-			// mode 0o600 applies on creation (umask-masked, but 0o600 survives a
-			// 0o022 umask); the explicit chmod enforces it on the overwrite path
-			// too. No-op on Windows (NTFS ignores POSIX bits) — the daemon's
-			// at-rest target is the POSIX VPS.
-			await fsp.writeFile(file, JSON.stringify(payload), { mode: 0o600 });
-			await fsp.chmod(file, 0o600);
+			await fsp.writeFile(tmpFile, JSON.stringify(payload), { mode: 0o600 });
+			// Guard against an inherited loose mode if the tmp file somehow
+			// pre-existed (e.g., a crash between a prior write and rename) — the
+			// `mode` above would not have applied to an already-present file.
+			await fsp.chmod(tmpFile, 0o600);
+			await atomicRenameStaleDest(tmpFile, file);
 		} catch (err) {
+			// Best-effort cleanup of the temp file so a failed write does not
+			// leave a stray secret-bearing `.tmp` on disk.
+			await fsp.unlink(tmpFile).catch(() => undefined);
 			console.error(
 				`[agent-manager] persistAgentConfig for ${handleId} failed: ${
 					err instanceof Error ? err.message : String(err)
@@ -1575,6 +1626,7 @@ export class AgentManager extends EventEmitter {
 		}
 		this.unroutedSet.clear();
 		this.unroutedSetOverflowed = false;
+		this.jsonParseRetries.clear();
 	}
 
 	/**
@@ -1711,9 +1763,25 @@ export class AgentManager extends EventEmitter {
 		try {
 			parsed = JSON.parse(raw);
 		} catch (err) {
+			// pr84 CRITICAL (consumer tolerance): a non-atomically-written
+			// `.json` file can be caught mid-write, yielding a TRANSIENT parse
+			// failure on a file that is valid microseconds later. Grant a
+			// bounded grace window before poisoning so an alert envelope from a
+			// producer that wrote the final path directly is NOT permanently
+			// lost. The file stays in `pending/` and is re-read next tick; only
+			// once the per-filename failure count exceeds JSON_PARSE_RETRY_BUDGET
+			// is the file poisoned as genuinely malformed.
+			const priorFailures = this.jsonParseRetries.get(filename) ?? 0;
+			if (priorFailures < JSON_PARSE_RETRY_BUDGET) {
+				this.jsonParseRetries.set(filename, priorFailures + 1);
+				return;
+			}
+			this.jsonParseRetries.delete(filename);
 			await this.poisonTask(filename, "json-parse-error", getErrnoCode(err));
 			return;
 		}
+		// Parse succeeded — clear any transient-failure tally for this file.
+		this.jsonParseRetries.delete(filename);
 		if (
 			typeof parsed !== "object" ||
 			parsed === null ||

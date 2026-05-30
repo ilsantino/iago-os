@@ -88,7 +88,18 @@ export function ensureStateDirsSync(): void {
 		// not be able to traverse/read them. The mode survives a 0o022 umask
 		// (no group/other bits to clear). systemd `LoadCredential=` adds at-rest
 		// ENCRYPTION on top in Phase 2 — filesystem perms ≠ encryption.
-		fs.mkdirSync(pathFor(kind), { recursive: true, mode: 0o700 });
+		const dir = pathFor(kind);
+		fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+		// pr84 IMPORTANT (upgrade hardening): `mkdirSync`'s `mode` is applied
+		// ONLY when the directory is CREATED. A daemon upgraded from an older
+		// build that created `agents/` (or any state dir) at the default
+		// ~0o755 would leave secret-bearing configs world-readable. chmod on
+		// EVERY call so an existing dir is tightened to 0o700 too. POSIX-only:
+		// NTFS ignores POSIX bits (the daemon's at-rest target is the POSIX
+		// VPS), and `chmod` on Windows would no-op the group/other clearing.
+		if (!isWindows) {
+			fs.chmodSync(dir, 0o700);
+		}
 	}
 }
 

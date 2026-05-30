@@ -142,10 +142,18 @@ STATE_ROOT="${IAGO_DAEMON_STATE_ROOT:-/var/lib/iago-os/daemon-state}"
 TASK_FILE="$STATE_ROOT/tasks/pending/pr-triage__$(date +%s%3N)-$$.json"
 DETAILS=$(head -c 256 /tmp/tg-resp.json | sed "s|${IAGO_TELEGRAM_BOT_TOKEN}|[REDACTED]|g")
 mkdir -p "$STATE_ROOT/tasks/pending"
+# Atomic publish: write to a `.tmp` sibling, then `mv` into place. The
+# daemon's polling loop filters to `.json` only (agent-manager.ts
+# `runPollingTick`) and relies on EVERY producer being atomic — a bare
+# `jq -n ... > "$TASK_FILE"` lets a 5s polling tick read a half-written
+# `.json`, fail JSON.parse, and poison the alert (permanently losing it).
+# `mv` within the same dir is a rename(2) → atomic on POSIX, so the
+# consumer only ever sees the complete file under its `.json` name.
 jq -n \
   --arg details "${HTTP_STATUS} ${DETAILS}" \
   '{"agentId":"pr-triage","ndjsonAlert":"pr-triage-telegram-send-failed","details":$details}' \
-  > "$TASK_FILE"
+  > "$TASK_FILE.tmp"
+mv "$TASK_FILE.tmp" "$TASK_FILE"
 ```
 
 The `STATE_ROOT` fallback to `/var/lib/iago-os/daemon-state` mirrors the `Environment=` line in `runtime/deploy/iago-os-v2-daemon.service`; the PTY inherits the daemon's env so `IAGO_DAEMON_STATE_ROOT` will normally be set, but the fallback prevents ENOENT on a silent empty path if the var is somehow absent.
@@ -177,7 +185,21 @@ The `agentId` field is mandatory — Plan 04b's polling-loop wiring will require
 
   Use plain text (no `parse_mode=MarkdownV2`) for the failure path so unescaped error messages cannot trip Telegram's parser.
 
-- **The failure-path POST ALSO returns non-200:** write the fallback task file using the same `STATE_ROOT` guard as above (`STATE_ROOT="${IAGO_DAEMON_STATE_ROOT:-/var/lib/iago-os/daemon-state}"`), with body `{ "agentId": "pr-triage", "ndjsonAlert": "pr-triage-double-failure", "details": "<gh-error>; <telegram-status>" }`. Truncate `<gh-error>` to the first 200 chars before constructing the envelope to bound the telemetry payload size (the same cap used for the Telegram failure-summary text above). The `agentId` field is mandatory (same reason as the primary fallback envelope above). The daemon polling loop emits an `agent-alert` telemetry event carrying `alertKind: "pr-triage-double-failure"` — this is the loudest possible signal short of paging.
+- **The failure-path POST ALSO returns non-200:** write the fallback task file using the same `STATE_ROOT` guard as above (`STATE_ROOT="${IAGO_DAEMON_STATE_ROOT:-/var/lib/iago-os/daemon-state}"`), with body `{ "agentId": "pr-triage", "ndjsonAlert": "pr-triage-double-failure", "details": "<gh-error>; <telegram-status>" }`. Write it ATOMICALLY (same `.tmp`-then-`mv` discipline as the primary fallback above) so a polling tick cannot read a truncated file and poison the alert. Truncate `<gh-error>` to the first 200 chars before constructing the envelope to bound the telemetry payload size (the same cap used for the Telegram failure-summary text above), and redact the bot token from `<gh-error>` with the same `sed` substitution used on the primary path — `gh` stderr can echo a URL or header carrying a secret. The `agentId` field is mandatory (same reason as the primary fallback envelope above):
+
+  ```bash
+  STATE_ROOT="${IAGO_DAEMON_STATE_ROOT:-/var/lib/iago-os/daemon-state}"
+  TASK_FILE="$STATE_ROOT/tasks/pending/pr-triage__$(date +%s%3N)-$$.json"
+  GH_ERR=$(printf '%s' "$GH_ERROR" | head -c 200 | sed "s|${IAGO_TELEGRAM_BOT_TOKEN}|[REDACTED]|g")
+  mkdir -p "$STATE_ROOT/tasks/pending"
+  jq -n \
+    --arg details "${GH_ERR}; ${HTTP_STATUS}" \
+    '{"agentId":"pr-triage","ndjsonAlert":"pr-triage-double-failure","details":$details}' \
+    > "$TASK_FILE.tmp"
+  mv "$TASK_FILE.tmp" "$TASK_FILE"
+  ```
+
+  The daemon polling loop emits a `pr-triage-telegram-send-failed` telemetry event whose `alertKind` field carries the verbatim `ndjsonAlert` value (`pr-triage-double-failure` here) — there is NO distinct `agent-alert` telemetry kind; both producer envelopes share the one telemetry kind and are disambiguated by `alertKind`. An operator monitoring for double-failures filters on `alertKind === "pr-triage-double-failure"`. This is the loudest possible signal short of paging.
 
 ## Termination
 

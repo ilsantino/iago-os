@@ -1686,6 +1686,11 @@ describe("AgentManager / polling-loop (Plan 07b)", () => {
 		const filename = "pr-triage__1700000001.json";
 		writePendingTask(filename, "{ not valid json");
 
+		// pr84 consumer-tolerance: a JSON.parse failure is granted
+		// JSON_PARSE_RETRY_BUDGET (=1) tick(s) of grace (transient mid-write
+		// protection) and only poisoned on the FOLLOWING tick. Run budget+1
+		// ticks so this persistently-malformed file lands in poisoned/.
+		await mgr._pollingTickForTests();
 		await mgr._pollingTickForTests();
 
 		// Pending no longer has the file; poisoned has it.
@@ -1895,6 +1900,9 @@ describe("AgentManager / polling-loop (Plan 07b)", () => {
 
 		// Polling tick: malformed JSON → poisonTask → emits task-poisoned with
 		// derived agentId "pr-triage" → CronScheduler decrements runningCount.
+		// pr84 consumer-tolerance: 1 tick of grace before poisoning, so run
+		// budget+1 (=2) ticks for the persistently-corrupt file to be poisoned.
+		await mgr._pollingTickForTests();
 		await mgr._pollingTickForTests();
 		expect(scheduler._runningCountForTests().get("pr-triage") ?? 0).toBe(0);
 
@@ -1961,6 +1969,12 @@ describe("AgentManager / polling-loop (Plan 07b)", () => {
 			needsApproval: false,
 		});
 
+		// pr84: persistAgentConfig now publishes the agent config via an atomic
+		// temp-file rename during registerAgent (above), which calls renameMock
+		// once. Clear that setup call so the count assertion below reflects ONLY
+		// the claimTask rename under test.
+		renameMock.mockClear();
+
 		// Force the next fsp.rename to throw EACCES. The polling tick for a
 		// valid+routed task hits exactly one rename (claimTask), so the
 		// once-rejection fires precisely at the claim attempt; subsequent
@@ -2009,6 +2023,89 @@ describe("AgentManager / polling-loop (Plan 07b)", () => {
 			fsp.access(path.join(pathFor("tasks/resolved"), filename)),
 		).rejects.toThrow();
 	});
+});
+
+// ============================================================
+// pr84 IMPORTANT — persistAgentConfig at-rest secret race on OVERWRITE
+// ============================================================
+
+describe("AgentManager / persistAgentConfig overwrite-mode (pr84 Codex at-rest)", () => {
+	it.skipIf(process.platform === "win32")(
+		"persists <handleId>.json at mode 0600 even when the dest PRE-EXISTS at 0644",
+		async () => {
+			// `fsp.writeFile`'s `mode` option is honored ONLY on file CREATION.
+			// On OVERWRITE (e.g. a re-registration reusing the same handleId →
+			// same filename) the prior — possibly looser — mode would persist
+			// unless the write path forces 0600. The fix writes a FRESH 0600 temp
+			// file then atomic-renames over the dest, so the published file is
+			// always 0600 regardless of any prior mode. This test fails pre-fix
+			// (the dest kept its 0644 mode through the overwrite window) and
+			// passes after. POSIX-only — NTFS ignores POSIX mode bits.
+			//
+			// A custom mock runtime returns a FIXED handle id so the second
+			// registerAgent OVERWRITES the first's persisted `<handleId>.json`
+			// (same agentId + same org re-registration is permitted; see the
+			// CRITICAL #1 "same org" test above).
+			const fixedHandleId = "overwrite-fixed-h";
+			const ctrl = makeMockRuntime("mock-pty-overwrite");
+			ctrl.runtime.spawn = async (opts: SpawnOpts): Promise<AgentHandle> => {
+				ctrl.spawnCalls.push(opts);
+				return {
+					id: fixedHandleId,
+					runtime: "mock-pty-overwrite",
+					shape: "pty",
+					agentId: opts.agentId,
+					sessionId: opts.sessionId,
+					generationToken: 0,
+					org: opts.org,
+					parentHandleId: opts.parentHandle?.id,
+					spawnedAt: Date.now(),
+					markerPath: path.join(
+						pathFor("markers"),
+						`${fixedHandleId}.daemon-stop`,
+					),
+				};
+			};
+			registerRuntime(ctrl.runtime);
+			const mgr = new AgentManager();
+
+			const persistedFile = path.join(
+				pathFor("agents"),
+				`${fixedHandleId}.json`,
+			);
+
+			// First registration creates the persisted config at 0600.
+			await mgr.registerAgent({
+				agentId: "overwrite-agent",
+				runtimeId: "mock-pty-overwrite",
+				org: "org-1",
+				cwd: "/tmp/w",
+				env: { IAGO_TELEGRAM_BOT_TOKEN: "secret-token" },
+				sessionId: "sess-ow-1",
+			});
+			expect((await fsp.stat(persistedFile)).mode & 0o777).toBe(0o600);
+
+			// Simulate an older build / a leak: loosen the dest to 0644 so the
+			// OVERWRITE path is exercised on the next registerAgent.
+			await fsp.chmod(persistedFile, 0o644);
+			expect((await fsp.stat(persistedFile)).mode & 0o777).toBe(0o644);
+
+			// Re-register (same agentId + same org) → persistAgentConfig OVERWRITES
+			// the pre-existing 0644 file. The fix re-tightens it to 0600.
+			await mgr.registerAgent({
+				agentId: "overwrite-agent",
+				runtimeId: "mock-pty-overwrite",
+				org: "org-1",
+				cwd: "/tmp/w",
+				env: { IAGO_TELEGRAM_BOT_TOKEN: "secret-token" },
+				sessionId: "sess-ow-2",
+			});
+
+			expect((await fsp.stat(persistedFile)).mode & 0o777).toBe(0o600);
+			// No stray temp file left behind by the atomic-rename publish.
+			await expect(fsp.stat(`${persistedFile}.tmp`)).rejects.toThrow();
+		},
+	);
 });
 
 // ============================================================

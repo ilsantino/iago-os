@@ -45,7 +45,10 @@ import {
 	_resetRegistryForTests,
 	registerRuntime,
 } from "../../agent-runtime/registry.js";
-import { AgentManager } from "../../daemon/agent-manager.js";
+import {
+	AgentManager,
+	JSON_PARSE_RETRY_BUDGET,
+} from "../../daemon/agent-manager.js";
 import { CronScheduler } from "../../daemon/cron-scheduler.js";
 import {
 	type AgentConfigShape,
@@ -641,6 +644,23 @@ describe("pr-triage integration (Plan 04c)", () => {
 			attempt: 1,
 		});
 		expect(mockSpawn.mock.calls.length).toBe(initialSpawns + 1);
+
+		// composeAgentEnv restart-env regression (pr84): the RESTART
+		// re-registration must re-compose the org-gated daemon secrets, NOT
+		// drop them — a restarted pr-triage agent that lost
+		// IAGO_TELEGRAM_BOT_TOKEN / IAGO_TELEGRAM_ALLOWED_USER_IDS / GH_TOKEN
+		// cannot post its report or query GitHub. registerCronAgentWithRestart's
+		// scheduleRestart calls registerAgent with composeAgentEnv() (same path
+		// as the initial spawn), so the LAST spawn (the restart) carries the
+		// same three creds asserted on the initial spawn in Case 2.
+		const restartCall = mockSpawn.mock.calls[
+			mockSpawn.mock.calls.length - 1
+		] as [string, string[], { env: Record<string, string> }];
+		expect(restartCall[2].env.IAGO_TELEGRAM_BOT_TOKEN).toBe("test-bot-token");
+		expect(restartCall[2].env.IAGO_TELEGRAM_ALLOWED_USER_IDS).toBe(
+			"123456,789012",
+		);
+		expect(restartCall[2].env.GH_TOKEN).toBe("test-gh-token");
 	}, 15_000);
 
 	it("Case 5 — ndjsonAlert envelope → pr-triage-telegram-send-failed + resolved (Codex H1 close)", async () => {
@@ -1163,4 +1183,163 @@ describe("pr-triage integration (Plan 04c)", () => {
 			}
 		},
 	);
+
+	it("Case 14 — pr-triage-double-failure envelope → telemetry alertKind=double-failure + resolved (pr84 Codex H)", async () => {
+		// prompt-template.md's double-failure path (the failure-path Telegram
+		// POST ALSO returns non-200) writes a SECOND fallback envelope with
+		// `ndjsonAlert: "pr-triage-double-failure"`. There is NO distinct
+		// `agent-alert` telemetry kind — processPendingTask emits the single
+		// `pr-triage-telegram-send-failed` event whose `alertKind` field carries
+		// the verbatim `ndjsonAlert` value, so an operator filters double-
+		// failures on `alertKind === "pr-triage-double-failure"`. This mirrors
+		// Case 5's structure for the double-failure kind. Fails pre-fix (the old
+		// prompt-template promised an `agent-alert` kind that the daemon never
+		// emitted); passes after — it IS the regression test for the
+		// double-failure → telemetry contract.
+		writePrTriageFixture();
+		const { mgr, register } = await buildSystem();
+		await register("pr-triage");
+		const dispatch = wireDispatchHandler(mgr);
+
+		const filename = "pr-triage__1700000004.json";
+		const details = "gh: HTTP 502 Bad Gateway; telegram-status 500";
+		fs.writeFileSync(
+			path.join(tempDir, "tasks/pending", filename),
+			JSON.stringify({
+				agentId: "pr-triage",
+				ndjsonAlert: "pr-triage-double-failure",
+				details,
+			}),
+			"utf8",
+		);
+
+		// Short-circuit proof: the alert is handled BEFORE the dispatch emit, so
+		// this listener MUST stay empty.
+		const dispatchEvents: TaskDispatchEvent[] = [];
+		mgr.on("task-dispatch-needed", (evt: TaskDispatchEvent) => {
+			dispatchEvents.push(evt);
+		});
+
+		await mgr._pollingTickForTests();
+		await dispatch.flush();
+
+		// (a) Exactly one pr-triage-telegram-send-failed; alertKind carries the
+		// verbatim double-failure value (NOT an `agent-alert` kind).
+		const alerts = emittedEventsOfKind("pr-triage-telegram-send-failed");
+		expect(alerts).toHaveLength(1);
+		expect(alerts[0]).toMatchObject({
+			kind: "pr-triage-telegram-send-failed",
+			agentId: "pr-triage",
+			filename,
+			alertKind: "pr-triage-double-failure",
+			details,
+		});
+		// (b) File moved pending → resolved.
+		await fsp.access(path.join(tempDir, "tasks/resolved", filename));
+		await expect(
+			fsp.access(path.join(tempDir, "tasks/pending", filename)),
+		).rejects.toThrow();
+		// (c) Never mis-classified as malformed-task; never reached dispatch.
+		expect(emittedEventsOfKind("pr-triage-dispatch-failed")).toHaveLength(0);
+		expect(dispatchEvents).toHaveLength(0);
+	});
+
+	it("Case 15 — consumer tolerance: transient unparseable .json is NOT poisoned, retried, then resolves (pr84 Codex consumer-tolerance)", async () => {
+		// A producer that writes its task file directly (bypassing the atomic
+		// `.tmp`-then-`mv` discipline) can be caught mid-write by a 5s polling
+		// tick, yielding a TRANSIENT JSON.parse failure on a file that becomes
+		// valid microseconds later. Poisoning on the FIRST failure permanently
+		// loses that task. The consumer grants JSON_PARSE_RETRY_BUDGET ticks of
+		// grace: the file stays in pending/ and is re-read next tick. Fails
+		// pre-fix (first parse failure poisoned the file immediately); passes
+		// after.
+		writePrTriageFixture();
+		const { mgr, register } = await buildSystem();
+		await register("pr-triage");
+		const dispatch = wireDispatchHandler(mgr);
+
+		const filename = "pr-triage__1700000005.json";
+		const pendingPath = path.join(tempDir, "tasks/pending", filename);
+		// Tick 1: truncated JSON (mid-write) → must NOT poison, stays in pending.
+		fs.writeFileSync(
+			pendingPath,
+			'{"agentId":"pr-triage","prompt":"do the t',
+			"utf8",
+		);
+
+		await mgr._pollingTickForTests();
+		await dispatch.flush();
+
+		// Not poisoned: file untouched in pending/, no task-poisoned for it.
+		await fsp.access(pendingPath);
+		expect(fs.existsSync(path.join(tempDir, "tasks/poisoned", filename))).toBe(
+			false,
+		);
+		expect(
+			emittedEventsOfKind("task-poisoned").some(
+				(e) => (e as { filename: string }).filename === filename,
+			),
+		).toBe(false);
+
+		// The "mv" lands: the file becomes valid JSON before the next tick.
+		fs.writeFileSync(
+			pendingPath,
+			JSON.stringify({
+				prompt: "do the triage",
+				agentId: "pr-triage",
+				needsApproval: false,
+			}),
+			"utf8",
+		);
+
+		// Tick 2: parses cleanly → dispatch → claimTask → resolved.
+		await mgr._pollingTickForTests();
+		await dispatch.flush();
+		await mgr.stopPollingLoop();
+
+		await fsp.access(path.join(tempDir, "tasks/resolved", filename));
+		await expect(fsp.access(pendingPath)).rejects.toThrow();
+		const resolved = emittedEventsOfKind("task-resolved").filter(
+			(e) => (e as { filename: string }).filename === filename,
+		);
+		expect(resolved).toHaveLength(1);
+	});
+
+	it("Case 16 — consumer tolerance: persistently malformed .json IS poisoned past JSON_PARSE_RETRY_BUDGET (pr84 Codex consumer-tolerance)", async () => {
+		// The grace window is BOUNDED — a genuinely-corrupt task that stays
+		// unparseable for (JSON_PARSE_RETRY_BUDGET + 1) ticks is still poisoned,
+		// so a truly broken task cannot loop forever. Proves the fix is
+		// defense-in-depth and does NOT weaken poison handling.
+		writePrTriageFixture();
+		const { mgr, register } = await buildSystem();
+		await register("pr-triage");
+
+		const filename = "pr-triage__1700000006.json";
+		const pendingPath = path.join(tempDir, "tasks/pending", filename);
+		fs.writeFileSync(pendingPath, "{ irredeemably corrupt json", "utf8");
+
+		// JSON_PARSE_RETRY_BUDGET ticks of grace: the file survives each, never
+		// poisoned, never resolved.
+		for (let i = 0; i < JSON_PARSE_RETRY_BUDGET; i++) {
+			await mgr._pollingTickForTests();
+			await fsp.access(pendingPath);
+			expect(
+				fs.existsSync(path.join(tempDir, "tasks/poisoned", filename)),
+			).toBe(false);
+		}
+
+		// One more tick exceeds the budget → poisoned.
+		await mgr._pollingTickForTests();
+		await fsp.access(path.join(tempDir, "tasks/poisoned", filename));
+		await expect(fsp.access(pendingPath)).rejects.toThrow();
+		const poisoned = emittedEventsOfKind("task-poisoned").filter(
+			(e) => (e as { filename: string }).filename === filename,
+		);
+		expect(poisoned).toHaveLength(1);
+		expect(poisoned[0]).toMatchObject({
+			kind: "task-poisoned",
+			filename,
+			reason: "json-parse-error",
+		});
+	});
 });

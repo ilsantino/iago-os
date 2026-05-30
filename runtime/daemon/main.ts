@@ -625,14 +625,22 @@ export function makeTaskDispatchHandler(deps: {
 			) {
 				const detailsRaw = (evt.taskContent as { details?: unknown }).details;
 				const details = typeof detailsRaw === "string" ? detailsRaw : "";
-				await emit({
+				// pr84 minor (durability symmetry with agent-manager.ts
+				// processPendingTask): `emit` returns whether the record durably
+				// landed. Claim (resolve) the alert file ONLY when it did —
+				// otherwise leave it in `pending/` so the alert re-trips next tick
+				// instead of being silently resolved without ever surfacing the
+				// signal on a degraded telemetry dir (ENOSPC/EACCES).
+				const recorded = await emit({
 					kind: "pr-triage-telegram-send-failed",
 					agentId: evt.agentId,
 					filename: evt.filename,
 					alertKind: ndjsonAlert,
 					details,
 				});
-				await agentManager.claimTask(evt.filename, evt.agentId);
+				if (recorded) {
+					await agentManager.claimTask(evt.filename, evt.agentId);
+				}
 				return;
 			}
 			// Dual-adversarial I-E fix (extends async-bot M-3): validate
