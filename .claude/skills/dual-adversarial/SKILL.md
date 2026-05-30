@@ -43,7 +43,7 @@ merges. Santiago merges.**
 
 4. **Run the gate.** Invoke the Workflow once with the selected lenses:
    ```
-   Workflow({ scriptPath: "C:/Users/sanal/dev/iago-os/.claude/workflows/dual-adversarial.js",
+   Workflow({ scriptPath: "<IAGO_ROOT>/.claude/workflows/dual-adversarial.js",  // IAGO_ROOT = repo root, same value as the iagoRoot arg below
               args: { projectDir, iagoRoot, base, prNumber, lenses: [<selected lens keys>] } })
    ```
    Lens keys: `"security"`, `"codeQuality"`, `"tests"`, `"completeness"`, `"frontend"`, `"amplify"`, `"perf"`. Merge the selected keys from BOTH step-3 questions into one `lenses` array. Pass `lenses: []` if none selected.
