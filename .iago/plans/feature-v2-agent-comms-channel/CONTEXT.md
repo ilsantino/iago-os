@@ -60,7 +60,7 @@ Inter-agent messages are file-bus envelopes with this EXACT shape (ADR `.iago/de
 `{ v, kind, from, to, body, threadId, seq, needsApproval, quality_signal, createdAt }`
 
 - `v` — envelope schema version (forward-compat; bump only via ADR).
-- `kind` — `"agent-message" | "task-assignment" | "status" | "result"`.
+- `kind` — `"agent-message" | "task-assignment"` (ADR-canonical; `"status"` and `"result"` are open questions — extend via ADR before Phase-3 execution).
 - `from` — originator agentId, **server-stamped** (never client-settable — anti-spoof).
 - `to` — recipient agentId (routes the envelope to `tasks/pending/<to>__<uuid>.json`).
 - `body` — structured payload (free-text body permitted as an escape hatch).

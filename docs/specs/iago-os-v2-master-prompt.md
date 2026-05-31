@@ -92,7 +92,7 @@ Already specified in `docs/specs/iago-os-v2-vision.md`. Summary for executors:
 │    │   session.jsonl replay, subagent spawn,      │
 │    │   heartbeat health checks)                   │
 │    ├─ File-bus (O_EXCL task claims)               │
-│    ├─ Telegram router (one bot, per-agent tagging) │
+│    ├─ Telegram router (per-agent bots; not one-bot) │
 │    ├─ Cross-shape event router (generalized       │
 │    │   Hermes shell-hook matcher)                 │
 │    ├─ Cron scheduler (pre-LLM wake gates)         │

@@ -3,7 +3,7 @@
 **Stage:** iago-os v2 Phase 3 — Shape 2 (HTTP/SDK) adapters (`anthropic-sdk`, `openai-sdk`) under `runtime/agent-runtime/http/` PLUS one runnable LangGraph host-process example agent. Realizes Santiago's explicit 'i want langchain' ask and the spec's 'LangGraph runs as an HTTP-shape agent — v2 hosts it' (vision:255, master-prompt:293-295).
 **Layer:** L2 — stage contract.
 **Token budget:** 200–500 tokens of contract content.
-**Sibling stage (planned — CONTEXT not yet created; first step of the Phase-3 plan per `.iago/research/2026-05-30-v2-sharpened-action-plan.md`):** `feature-v2-codex-cohabitation` (the codex-pty/gemini-pty Shape-1 expansion — both land in Phase 3; together they make the video's 'Claude + Codex + LangChain side by side' literally runnable).
+**Sibling stage (planned — CONTEXT not yet created; Phase-3 ordering derived from `.iago/research/2026-05-29-cortextos-comms-gap-analysis.md` and ADR `.iago/decisions/2026-05-30-per-agent-bots-and-chief-tier.md`):** `feature-v2-codex-cohabitation` (the codex-pty/gemini-pty Shape-1 expansion — both land in Phase 3; together they make the video's 'Claude + Codex + LangChain side by side' literally runnable).
 **Preceding stage:** `.iago/plans/feature-v2-phase-1-daemon/CONTEXT.md` (Phase 1 — AgentRuntime interface + registry + claude-pty shipped; http/ dir does NOT yet exist on disk).
 
 This stage produces 2–4 plan files. Acceptance: an `anthropic-sdk` agent and a runnable LangGraph host agent both register in the daemon, claim file-bus tasks, and appear in Telegram /agents — proving cohabitation end-to-end, not just typed.
