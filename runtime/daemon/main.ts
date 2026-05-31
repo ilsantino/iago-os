@@ -789,6 +789,38 @@ export const CRON_AGENT_ENV_ALLOWLIST: readonly string[] = [
 ];
 
 /**
+ * pr84-gap-closure (Codex CRITICAL #1 — non-secret base-runtime env) — the
+ * daemon-owned set of NON-SECRET process-level vars a trusted cron agent's PTY
+ * needs to actually run a shell. node-pty REPLACES (does not merge) the parent
+ * env when `env` is supplied (claude-pty.ts spawnInternal — the deliberate
+ * CRITICAL #1 multi-tenant isolation invariant). So a cron agent whose composed
+ * env carries ONLY a state-root + the secret allowlist gets a shell with no
+ * `PATH`/`HOME`/`SHELL`/`LANG`: it cannot resolve `gh`/`curl`/`jq`/`mv`/`sed`,
+ * and node-pty may not even locate the `claude` binary. The feature is
+ * non-functional on a real target without these.
+ *
+ * Why these are safe to forward while the `CRON_AGENT_ENV_ALLOWLIST` secrets
+ * stay gated: these are NON-SECRET runtime descriptors (search path, home dir,
+ * login shell, locale). Forwarding them leaks no credential and exposes nothing
+ * a local shell could not already discover. The secrets (Telegram bot token, GH
+ * PAT) DO leak trust, so they remain gated behind
+ * `CRON_AGENT_SECRET_TRUSTED_AGENTS` exactly as before. Both lists are forwarded
+ * ONLY for trusted agents — an untrusted agent still receives `baseEnv`
+ * unchanged (the multi-tenant isolation invariant is NOT relaxed for it).
+ *
+ * `LC_ALL`/`XDG_*` are intentionally omitted — `LANG` covers locale for the
+ * shell utilities pr-triage invokes, and adding `XDG_*` would forward more of
+ * the daemon's home-dir layout than the agent needs. Extend this list only with
+ * a documented runtime need.
+ */
+export const CRON_AGENT_RUNTIME_ALLOWLIST: readonly string[] = [
+	"PATH",
+	"HOME",
+	"SHELL",
+	"LANG",
+];
+
+/**
  * pr84-gap-closure (Codex H2 follow-up — spoof close) — the daemon-owned set
  * of agentIds permitted to inherit the daemon's `CRON_AGENT_ENV_ALLOWLIST`
  * secrets.
@@ -815,15 +847,24 @@ export const CRON_AGENT_SECRET_TRUSTED_AGENTS: ReadonlySet<string> = new Set([
  *
  * Returns `baseEnv` UNCHANGED unless `agentId` is in the daemon-owned
  * `CRON_AGENT_SECRET_TRUSTED_AGENTS` set, in which case it returns a shallow
- * copy of `baseEnv` merged with the `CRON_AGENT_ENV_ALLOWLIST` secrets that are
- * actually present (non-empty string) in `daemonEnv`. Absent/empty secrets are
- * skipped so we never materialize empty-string env entries (no undefined
- * injection).
+ * copy of `baseEnv` merged with (1) the `CRON_AGENT_RUNTIME_ALLOWLIST`
+ * non-secret base-runtime vars (`PATH`/`HOME`/`SHELL`/`LANG`) and (2) the
+ * `CRON_AGENT_ENV_ALLOWLIST` secrets — taking only the keys actually present
+ * (non-empty string) in `daemonEnv`. Absent/empty values are skipped so we
+ * never materialize empty-string env entries (no undefined injection).
+ *
+ * The non-secret runtime vars are required because node-pty REPLACES the parent
+ * env (claude-pty.ts), so without them the spawned shell cannot resolve
+ * `gh`/`curl`/`jq` or even the `claude` binary. They leak no credential, so
+ * they ride the SAME trust gate as the secrets but carry no exfil risk — see
+ * `CRON_AGENT_RUNTIME_ALLOWLIST` JSDoc.
  *
  * The gate is on the daemon-controlled `agentId`, NOT the agent's
  * self-declared `org` — a less-trusted cron agent cannot opt into the daemon's
- * Telegram/GH creds by self-labeling `org: "internal"` in its own
- * `agent-config.json`. See `CRON_AGENT_SECRET_TRUSTED_AGENTS` JSDoc.
+ * Telegram/GH creds (NOR the runtime vars) by self-labeling `org: "internal"`
+ * in its own `agent-config.json`. An untrusted agent gets `baseEnv` UNCHANGED:
+ * the multi-tenant isolation invariant is preserved for it (no PATH injection).
+ * See `CRON_AGENT_SECRET_TRUSTED_AGENTS` JSDoc.
  */
 export function composeCronAgentEnv(
 	agentId: string,
@@ -832,7 +873,14 @@ export function composeCronAgentEnv(
 ): Record<string, string> {
 	if (!CRON_AGENT_SECRET_TRUSTED_AGENTS.has(agentId)) return baseEnv;
 	const merged: Record<string, string> = { ...baseEnv };
-	for (const key of CRON_AGENT_ENV_ALLOWLIST) {
+	// Non-secret base-runtime vars first (PATH/HOME/SHELL/LANG), then the
+	// secrets — both gated on the trusted-agent check above. A declared
+	// `baseEnv` value already present for a key is overwritten by the daemon's
+	// process.env value (the daemon's runtime/creds are authoritative).
+	for (const key of [
+		...CRON_AGENT_RUNTIME_ALLOWLIST,
+		...CRON_AGENT_ENV_ALLOWLIST,
+	]) {
 		const value = daemonEnv[key];
 		if (typeof value === "string" && value.length > 0) {
 			merged[key] = value;

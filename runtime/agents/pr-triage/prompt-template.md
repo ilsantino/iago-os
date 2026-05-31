@@ -140,8 +140,21 @@ On any non-`200` status (including the synthetic `000` from the empty-recipient 
 ```bash
 STATE_ROOT="${IAGO_DAEMON_STATE_ROOT:-/var/lib/iago-os/daemon-state}"
 TASK_FILE="$STATE_ROOT/tasks/pending/pr-triage__$(date +%s%3N)-$$.json"
-DETAILS=$(head -c 256 /tmp/tg-resp.json | sed "s|${IAGO_TELEGRAM_BOT_TOKEN}|[REDACTED]|g")
-mkdir -p "$STATE_ROOT/tasks/pending"
+# Redact the bot token from the captured Telegram error body. Build the sed
+# program conditionally: include the substitution ONLY when the token is
+# non-empty. With an EMPTY token, a static `sed "s|${IAGO_TELEGRAM_BOT_TOKEN}|...|g"`
+# becomes `s||[REDACTED]|g`, which GNU sed treats as "no previous regular
+# expression" (exit 1, destroying the captured DETAILS) — this fires in the
+# empty-recipient `HTTP_STATUS=000` misconfig window where the bot token may
+# also be unset. BRE-escape the token (`bre_escape`) so a credential containing
+# `|`, `.`, `*`, `[`, `\`, `^`, or `$` cannot corrupt the substitution. With no
+# token set, sed runs with zero `-e` args as a pass-through.
+bre_escape() { printf '%s' "$1" | sed 's/[.[\*^$|/\\]/\\&/g'; }
+set --
+if [ -n "$IAGO_TELEGRAM_BOT_TOKEN" ]; then
+  set -- "$@" -e "s|$(bre_escape "$IAGO_TELEGRAM_BOT_TOKEN")|[REDACTED]|g"
+fi
+DETAILS=$(head -c 256 /tmp/tg-resp.json | sed "$@")
 # Atomic publish: write to a `.tmp` sibling, then `mv` into place. The
 # daemon's polling loop filters to `.json` only (agent-manager.ts
 # `runPollingTick`) and relies on EVERY producer being atomic — a bare
@@ -149,19 +162,24 @@ mkdir -p "$STATE_ROOT/tasks/pending"
 # `.json`, fail JSON.parse, and poison the alert (permanently losing it).
 # `mv` within the same dir is a rename(2) → atomic on POSIX, so the
 # consumer only ever sees the complete file under its `.json` name.
-# `umask 0077` so the secret-bearing `.tmp` is born 0600 regardless of the
-# parent dir's mode — closes the 0644 race window before the `mv`.
-umask 0077
-jq -n \
-  --arg details "${HTTP_STATUS} ${DETAILS}" \
-  '{"agentId":"pr-triage","ndjsonAlert":"pr-triage-telegram-send-failed","details":$details}' \
-  > "$TASK_FILE.tmp"
-mv "$TASK_FILE.tmp" "$TASK_FILE"
+# `umask 0077` is scoped to a subshell so it covers BOTH the `mkdir -p` (the
+# dir is born 0700) AND the secret-bearing `.tmp` (born 0600) regardless of
+# the parent dir's mode, and does NOT leak the restrictive umask into the
+# rest of this session — closes the 0644 race window before the `mv`.
+(
+  umask 0077
+  mkdir -p "$STATE_ROOT/tasks/pending"
+  jq -n \
+    --arg details "${HTTP_STATUS} ${DETAILS}" \
+    '{"agentId":"pr-triage","ndjsonAlert":"pr-triage-telegram-send-failed","details":$details}' \
+    > "$TASK_FILE.tmp"
+  mv "$TASK_FILE.tmp" "$TASK_FILE"
+)
 ```
 
 The `STATE_ROOT` fallback to `/var/lib/iago-os/daemon-state` mirrors the `Environment=` line in `runtime/deploy/iago-os-v2-daemon.service`; the PTY inherits the daemon's env so `IAGO_DAEMON_STATE_ROOT` will normally be set, but the fallback prevents ENOENT on a silent empty path if the var is somehow absent.
 
-The `sed` redaction is mechanical: it replaces every literal occurrence of the bot token (which Telegram sometimes echoes back in error description fields) with `[REDACTED]` before the string enters any file or log.
+The `sed` redaction is mechanical: it replaces every occurrence of the bot token (which Telegram sometimes echoes back in error description fields) with `[REDACTED]` before the string enters any file or log. The substitution is added to the `sed` program ONLY when the token is non-empty (so an unset token does not produce an empty `s||...|g` pattern that GNU sed would reject), and the token is BRE-escaped so a metacharacter in a future credential cannot corrupt the match.
 
 The `agentId` field is mandatory — Plan 04b's polling-loop wiring will require it on every envelope (including alert envelopes) and is expected to poison files that omit it as `missing-agent-id`. The `ndjsonAlert` consumption contract is a Plan 04b dependency: when 04b's polling loop ships, the daemon will branch on `ndjsonAlert` BEFORE the registration check, emit a telemetry event carrying the alert kind + `details` payload, and move the file to `tasks/resolved/`. Until 04b lands, this fallback file accumulates in `tasks/pending/` and a human must rotate them manually — write the file anyway so the envelope contract is in place for 04b to pick up.
 
@@ -196,19 +214,40 @@ The `agentId` field is mandatory — Plan 04b's polling-loop wiring will require
   # `$GH_ERROR` is `gh` stderr — `gh` authenticates via `$GH_TOKEN`, so a
   # verbose error (URL with embedded token, auth header echo) can carry the
   # GH PAT. Redact BOTH the Telegram bot token AND `$GH_TOKEN` before the
-  # string enters the on-disk envelope + the daemon's telemetry NDJSON. Both
-  # vars are non-empty when set; the substitution is a no-op when a var is
-  # absent from the error text.
-  GH_ERR=$(printf '%s' "$GH_ERROR" | head -c 200 | sed -e "s|${IAGO_TELEGRAM_BOT_TOKEN}|[REDACTED]|g" -e "s|${GH_TOKEN}|[REDACTED]|g")
-  mkdir -p "$STATE_ROOT/tasks/pending"
-  # `umask 0077` so the secret-bearing `.tmp` is born 0600 regardless of the
-  # parent dir's mode — closes the 0644 race window before the `mv`.
-  umask 0077
-  jq -n \
-    --arg details "${GH_ERR}; ${HTTP_STATUS}" \
-    '{"agentId":"pr-triage","ndjsonAlert":"pr-triage-double-failure","details":$details}' \
-    > "$TASK_FILE.tmp"
-  mv "$TASK_FILE.tmp" "$TASK_FILE"
+  # string enters the on-disk envelope + the daemon's telemetry NDJSON.
+  #
+  # Build the sed program conditionally: add a token's `-e` substitution ONLY
+  # when that var is non-empty. An empty token would otherwise emit
+  # `s||[REDACTED]|g`, which in GNU sed errors ("no previous regular
+  # expression", exit 1, destroying $GH_ERR) when it is the first/only
+  # expression, or silently reuses the prior regex — either way corrupting the
+  # redaction. This path fires in the double-failure misconfig window where
+  # the bot token may itself be empty. Each token is also BRE-escaped
+  # (`bre_escape`) so a future credential containing `|`, `.`, `*`, `[`, `\`,
+  # `^`, or `$` cannot corrupt the substitution. With NO non-empty token there
+  # are zero `-e` args and sed runs as a pass-through `cat`.
+  bre_escape() { printf '%s' "$1" | sed 's/[.[\*^$|/\\]/\\&/g'; }
+  set --
+  if [ -n "$IAGO_TELEGRAM_BOT_TOKEN" ]; then
+    set -- "$@" -e "s|$(bre_escape "$IAGO_TELEGRAM_BOT_TOKEN")|[REDACTED]|g"
+  fi
+  if [ -n "$GH_TOKEN" ]; then
+    set -- "$@" -e "s|$(bre_escape "$GH_TOKEN")|[REDACTED]|g"
+  fi
+  GH_ERR=$(printf '%s' "$GH_ERROR" | head -c 200 | sed "$@")
+  # `umask 0077` is scoped to a subshell so it covers BOTH the `mkdir -p` (the
+  # dir is born 0700) AND the secret-bearing `.tmp` (born 0600) regardless of
+  # the parent dir's mode, and does NOT leak the restrictive umask into the
+  # rest of this session — closes the 0644 race window before the `mv`.
+  (
+    umask 0077
+    mkdir -p "$STATE_ROOT/tasks/pending"
+    jq -n \
+      --arg details "${GH_ERR}; ${HTTP_STATUS}" \
+      '{"agentId":"pr-triage","ndjsonAlert":"pr-triage-double-failure","details":$details}' \
+      > "$TASK_FILE.tmp"
+    mv "$TASK_FILE.tmp" "$TASK_FILE"
+  )
   ```
 
   The daemon polling loop emits a `pr-triage-telegram-send-failed` telemetry event whose `alertKind` field carries the verbatim `ndjsonAlert` value (`pr-triage-double-failure` here) — there is NO distinct `agent-alert` telemetry kind; both producer envelopes share the one telemetry kind and are disambiguated by `alertKind`. An operator monitoring for double-failures filters on `alertKind === "pr-triage-double-failure"`. This is the loudest possible signal short of paging.

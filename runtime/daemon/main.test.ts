@@ -1355,4 +1355,85 @@ describe("composeCronAgentEnv (pr84 I-2 — secret-injection allowlist)", () => 
 		} as NodeJS.ProcessEnv);
 		expect("GH_TOKEN" in env).toBe(false);
 	});
+
+	// pr84 Codex CRITICAL #1 — node-pty REPLACES the parent env, so a trusted
+	// cron agent's composed env MUST carry the non-secret base-runtime vars
+	// (PATH/HOME/SHELL/LANG) or its shell cannot resolve gh/curl/jq/mv/sed (and
+	// node-pty may not even locate `claude`). These ride the SAME trust gate as
+	// the secrets but leak no credential.
+	it("allowlisted 'pr-triage' inherits PATH + HOME from the daemon env", () => {
+		const env = composeCronAgentEnv(
+			"pr-triage",
+			{ IAGO_DAEMON_STATE_ROOT: "/state" },
+			{
+				PATH: "/usr/bin:/bin",
+				HOME: "/home/iago",
+				SHELL: "/bin/bash",
+				LANG: "en_US.UTF-8",
+				...SECRETS,
+			} as NodeJS.ProcessEnv,
+		);
+		// (a) Non-secret runtime vars sourced from process.env.
+		expect(env.PATH).toBe("/usr/bin:/bin");
+		expect(env.HOME).toBe("/home/iago");
+		expect(env.SHELL).toBe("/bin/bash");
+		expect(env.LANG).toBe("en_US.UTF-8");
+		// Declared base env preserved.
+		expect(env.IAGO_DAEMON_STATE_ROOT).toBe("/state");
+	});
+
+	it("allowlisted 'pr-triage' inherits ONLY the 3 secrets — no arbitrary process.env var leaks", () => {
+		const env = composeCronAgentEnv(
+			"pr-triage",
+			{ IAGO_DAEMON_STATE_ROOT: "/state" },
+			{
+				PATH: "/usr/bin",
+				HOME: "/home/iago",
+				...SECRETS,
+				// Arbitrary daemon-process vars that are NEITHER runtime-allowlist
+				// NOR secret-allowlist members — these must NOT cross into the
+				// composed agent env.
+				AWS_SECRET_ACCESS_KEY: "must-not-leak",
+				SOME_OTHER_TOKEN: "also-must-not-leak",
+				NODE_ENV: "production",
+			} as NodeJS.ProcessEnv,
+		);
+		// Exactly the 3 intended secrets are present…
+		expect(env.IAGO_TELEGRAM_BOT_TOKEN).toBe("tg-secret");
+		expect(env.IAGO_TELEGRAM_ALLOWED_USER_IDS).toBe("42,99");
+		expect(env.GH_TOKEN).toBe("gh-pat-secret");
+		// …and no other arbitrary daemon-process var crossed over.
+		expect("AWS_SECRET_ACCESS_KEY" in env).toBe(false);
+		expect("SOME_OTHER_TOKEN" in env).toBe(false);
+		expect("NODE_ENV" in env).toBe(false);
+		// The composed env contains only: the declared base key, the 4 runtime
+		// vars, and the 3 secrets — nothing else.
+		expect(Object.keys(env).sort()).toEqual(
+			[
+				"GH_TOKEN",
+				"HOME",
+				"IAGO_DAEMON_STATE_ROOT",
+				"IAGO_TELEGRAM_ALLOWED_USER_IDS",
+				"IAGO_TELEGRAM_BOT_TOKEN",
+				"PATH",
+			].sort(),
+		);
+	});
+
+	it("an UNTRUSTED agent gets baseEnv UNCHANGED — no PATH injected (isolation invariant held)", () => {
+		const base = { IAGO_DAEMON_STATE_ROOT: "/state" };
+		const env = composeCronAgentEnv("rogue-agent", base, {
+			PATH: "/usr/bin:/bin",
+			HOME: "/home/iago",
+			SHELL: "/bin/bash",
+			LANG: "en_US.UTF-8",
+			...SECRETS,
+		} as NodeJS.ProcessEnv);
+		// baseEnv returned unchanged — neither runtime vars NOR secrets injected.
+		expect(env).toEqual(base);
+		expect("PATH" in env).toBe(false);
+		expect("HOME" in env).toBe(false);
+		expect("IAGO_TELEGRAM_BOT_TOKEN" in env).toBe(false);
+		expect("GH_TOKEN" in env).toBe(false);
+	});
 });

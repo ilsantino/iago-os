@@ -452,29 +452,44 @@ describe("pr-triage integration (Plan 04c)", () => {
 		const startupSpawn = ptyState.last;
 		expect(startupSpawn).not.toBeNull();
 		// Verify the startup spawn forwarded the agent-config env PLUS the
-		// org-gated daemon secrets. agent-config.json's `env` carries only
+		// trusted-agent daemon secrets. agent-config.json's `env` carries only
 		// IAGO_DAEMON_STATE_ROOT, but the prompt-template (lines 113-114)
 		// needs IAGO_TELEGRAM_BOT_TOKEN + IAGO_TELEGRAM_ALLOWED_USER_IDS +
-		// GH_TOKEN to post its report and query GitHub. Because the fixture
-		// agent-config sets `org: "internal"`, registerCronAgentWithRestart's
-		// composeAgentEnv merges those three from process.env (the
-		// CRON_AGENT_ENV_ALLOWLIST) into the spawn env. claude-pty.ts is
-		// untouched — its CRITICAL #1 no-process.env-merge invariant holds;
-		// the daemon is the trusted layer that composes its own creds.
+		// GH_TOKEN to post its report and query GitHub. Because the agentId
+		// "pr-triage" is in the daemon-owned CRON_AGENT_SECRET_TRUSTED_AGENTS
+		// set, registerCronAgentWithRestart's composeAgentEnv merges those
+		// three from process.env (the CRON_AGENT_ENV_ALLOWLIST) into the spawn
+		// env. The gate is on the daemon-controlled agentId, NOT the
+		// self-declared `org` field (org:"internal" is dead config for the
+		// secret path). claude-pty.ts is untouched — its CRITICAL #1
+		// no-process.env-merge invariant holds; the daemon is the trusted layer
+		// that composes its own creds.
 		const startupCall = mockSpawn.mock.calls[0] as [
 			string,
 			string[],
 			{ env: Record<string, string> },
 		];
 		expect(startupCall[2].env.IAGO_DAEMON_STATE_ROOT).toBe(tempDir);
-		// Org-gated allowlist (Codex H2 close) forwards the daemon's
-		// Telegram/GH creds into the internal cron agent's spawn env. Values
+		// agentId-gated allowlist (Codex H2 close) forwards the daemon's
+		// Telegram/GH creds into the trusted cron agent's spawn env. Values
 		// match the beforeEach fixture set on process.env.
 		expect(startupCall[2].env.IAGO_TELEGRAM_BOT_TOKEN).toBe("test-bot-token");
 		expect(startupCall[2].env.IAGO_TELEGRAM_ALLOWED_USER_IDS).toBe(
 			"123456,789012",
 		);
 		expect(startupCall[2].env.GH_TOKEN).toBe("test-gh-token");
+		// pr84 Codex CRITICAL #1: node-pty REPLACES the parent env, so the
+		// composed spawn env MUST also forward the non-secret base-runtime vars
+		// (PATH/HOME) from the daemon's process.env — without them the spawned
+		// shell cannot resolve gh/curl/jq/mv/sed and node-pty may not locate the
+		// `claude` binary. These are sourced verbatim from process.env (set by
+		// the test runner). PATH is universally present; HOME may be absent on
+		// some CI shells, so assert it only when the daemon process actually has
+		// it (composeCronAgentEnv skips absent/empty vars).
+		expect(startupCall[2].env.PATH).toBe(process.env.PATH);
+		if (typeof process.env.HOME === "string" && process.env.HOME.length > 0) {
+			expect(startupCall[2].env.HOME).toBe(process.env.HOME);
+		}
 		expect(startupCall[2].env.CLAUDE_CODE_SESSION_ID).toMatch(
 			/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
 		);

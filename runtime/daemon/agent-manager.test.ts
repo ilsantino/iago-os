@@ -2106,6 +2106,76 @@ describe("AgentManager / persistAgentConfig overwrite-mode (pr84 Codex at-rest)"
 			await expect(fsp.stat(`${persistedFile}.tmp`)).rejects.toThrow();
 		},
 	);
+
+	it("swallows a persist write/rename failure and cleans up the secret-bearing .tmp (pr84 Finding 3)", async () => {
+		// Finding 3 (pr84 dual-adversarial, Important — coverage gap): the
+		// persist path writes a fresh 0o600 temp file then atomic-renames it
+		// over the dest. If the write/chmod/rename throws (ENOSPC/EACCES/
+		// ENOTDIR), the catch MUST (a) best-effort unlink the stray
+		// secret-bearing `.tmp` so a Telegram token + GH PAT are not left on
+		// disk, and (b) SWALLOW the error so a transient persist failure does
+		// not crash `registerAgent`. Only the success path was tested before.
+		// Platform-agnostic: asserts cleanup + non-throw, not POSIX mode bits.
+		const fixedHandleId = "persist-fail-fixed-h";
+		const ctrl = makeMockRuntime("mock-pty-persist-fail");
+		ctrl.runtime.spawn = async (opts: SpawnOpts): Promise<AgentHandle> => {
+			ctrl.spawnCalls.push(opts);
+			return {
+				id: fixedHandleId,
+				runtime: "mock-pty-persist-fail",
+				shape: "pty",
+				agentId: opts.agentId,
+				sessionId: opts.sessionId,
+				generationToken: 0,
+				org: opts.org,
+				parentHandleId: opts.parentHandle?.id,
+				spawnedAt: Date.now(),
+				markerPath: path.join(
+					pathFor("markers"),
+					`${fixedHandleId}.daemon-stop`,
+				),
+			};
+		};
+		registerRuntime(ctrl.runtime);
+		const mgr = new AgentManager();
+
+		const persistedFile = path.join(pathFor("agents"), `${fixedHandleId}.json`);
+		const tmpFile = `${persistedFile}.tmp`;
+
+		// Force ONLY the persist rename (`<tmp>` -> `<handleId>.json`) to fail,
+		// passing every OTHER rename through to the real fs so the rest of
+		// registration is unaffected (deterministic regardless of call order).
+		renameMock.mockImplementation((source, dest) => {
+			if (String(dest).endsWith(`${fixedHandleId}.json`)) {
+				return Promise.reject(
+					Object.assign(new Error("ENOSPC: no space left on device, rename"), {
+						code: "ENOSPC",
+					}),
+				);
+			}
+			if (renameState.real === null) {
+				throw new Error("renameState.real not initialized by vi.mock factory");
+			}
+			return renameState.real(source, dest);
+		});
+
+		// (b) registerAgent RESOLVES despite the persist failure — error swallowed.
+		await expect(
+			mgr.registerAgent({
+				agentId: "persist-fail-agent",
+				runtimeId: "mock-pty-persist-fail",
+				org: "org-1",
+				cwd: "/tmp/w",
+				env: { IAGO_TELEGRAM_BOT_TOKEN: "secret-token", GH_TOKEN: "gh-pat" },
+				sessionId: "sess-persist-fail",
+			}),
+		).resolves.toBeDefined();
+
+		// (a) The stray secret-bearing `.tmp` was cleaned up by the catch's unlink.
+		await expect(fsp.stat(tmpFile)).rejects.toThrow();
+		// The dest config was never published (the rename failed before publish).
+		await expect(fsp.stat(persistedFile)).rejects.toThrow();
+	});
 });
 
 // ============================================================
