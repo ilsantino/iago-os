@@ -986,14 +986,37 @@ export async function registerCronAgentWithRestart(deps: {
 		});
 		if (isShuttingDown()) return;
 		try {
-			const handle = await agentManager.registerAgent({
-				agentId,
-				runtimeId: agentConfig.runtimeId,
-				...(agentConfig.org !== undefined ? { org: agentConfig.org } : {}),
-				cwd: agentConfig.cwd,
-				env: composeAgentEnv(),
-				sessionId: makeDaemonStartupSessionId(agentId),
-			});
+			// pr84 R2: on a PTY crash the AgentManager cascades child shutdown
+			// but does NOT teardown the crashed handle itself — it lingers in
+			// `handles`. A plain `registerAgent` would ADD a second handle for
+			// the same agentId (same-org re-register is allowed), and
+			// `findHandleForAgent` (insertion order) would keep resolving the
+			// DEAD one — every post-restart dispatch silently no-ops while
+			// telemetry falsely signals recovery. So when the dead handle is
+			// still tracked, reuse `restartAgent`: it tears the dead handle
+			// down and re-spawns under the SAME stable id (SpawnOpts.restoreId),
+			// guaranteeing exactly ONE live handle per agentId. The env is
+			// RE-COMPOSED here (envOverride) so the respawn picks up the current
+			// org-gated daemon secrets — and because the handle id is stable, no
+			// new `<handleId>.json` accumulates (the twin orphan-secret finding).
+			const deadHandle = findHandleForAgent(agentManager, agentId);
+			let handle: AgentHandle;
+			if (deadHandle !== null) {
+				handle = await agentManager.restartAgent(deadHandle.id, "crash", {
+					envOverride: composeAgentEnv(),
+				});
+			} else {
+				// No tracked handle at all (e.g. it was already torn down). Fall
+				// back to a fresh registration so the agent still recovers.
+				handle = await agentManager.registerAgent({
+					agentId,
+					runtimeId: agentConfig.runtimeId,
+					...(agentConfig.org !== undefined ? { org: agentConfig.org } : {}),
+					cwd: agentConfig.cwd,
+					env: composeAgentEnv(),
+					sessionId: makeDaemonStartupSessionId(agentId),
+				});
+			}
 			await emit({
 				kind: "cron-agent-restarted",
 				agentId,

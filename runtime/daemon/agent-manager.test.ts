@@ -2178,6 +2178,62 @@ describe("AgentManager / persistAgentConfig overwrite-mode (pr84 Codex at-rest)"
 	});
 });
 
+describe("AgentManager / restartAgent reuse-id + env re-compose (pr84 R2)", () => {
+	it("reuses the stable handle id, tears down the dead handle, and overwrites the config with the re-composed env", async () => {
+		// pr84 R2 + twin: on a cron crash-restart the daemon must reuse the
+		// STABLE handle id (teardown the dead handle, re-spawn via restoreId) so
+		// exactly ONE handle remains and `findHandleForAgent` resolves the LIVE
+		// one — a plain re-register would ADD a second handle and route every
+		// dispatch to the DEAD one. Reusing the id also OVERWRITES the same
+		// `<handleId>.json`, so secret-bearing orphan configs do not accumulate
+		// and a rotated cred replaces the stale one on disk.
+		const ctrl = makeMockRuntime("mock-pty-r2");
+		registerRuntime(ctrl.runtime);
+		const mgr = new AgentManager();
+		const h1 = await mgr.registerAgent({
+			agentId: "pr-triage",
+			runtimeId: "mock-pty-r2",
+			org: "internal",
+			cwd: "/tmp/w",
+			env: { GH_TOKEN: "old-pat" },
+			sessionId: "sess-r2",
+		});
+		const agentsDir = pathFor("agents");
+		const jsonAfterRegister = (await fsp.readdir(agentsDir)).filter((f) =>
+			f.endsWith(".json"),
+		);
+		expect(jsonAfterRegister).toHaveLength(1);
+
+		// Restart with a RE-COMPOSED env (simulates the cron loop re-running
+		// composeCronAgentEnv against rotated daemon creds).
+		const h2 = await mgr.restartAgent(h1.id, "crash", {
+			envOverride: { GH_TOKEN: "new-pat" },
+		});
+
+		// (1) Same stable id — restoreId reuse, not a fresh id.
+		expect(h2.id).toBe(h1.id);
+		// (2) Exactly ONE handle for the agent — the dead handle was torn down,
+		// not left to coexist (the R2 routing defect).
+		const live = mgr.listHandles().filter((h) => h.agentId === "pr-triage");
+		expect(live).toHaveLength(1);
+		expect(live[0]?.id).toBe(h1.id);
+		expect(mgr.getHandle(h1.id)).toBeDefined();
+		// (3) No orphan config accumulation — still ONE file (overwritten), now
+		// carrying the ROTATED cred (boot-recovery rebuilds from current creds).
+		const jsonAfterRestart = (await fsp.readdir(agentsDir)).filter((f) =>
+			f.endsWith(".json"),
+		);
+		expect(jsonAfterRestart).toHaveLength(1);
+		const persisted = JSON.parse(
+			await fsp.readFile(
+				path.join(agentsDir, jsonAfterRestart[0] as string),
+				"utf8",
+			),
+		) as { env?: Record<string, string> };
+		expect(persisted.env?.GH_TOKEN).toBe("new-pat");
+	});
+});
+
 // ============================================================
 // Plan 04d: task-dispatch-needed event tests (DN-1 through DN-5)
 // ============================================================

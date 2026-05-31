@@ -92,6 +92,22 @@ export interface SpawnSubagentOpts {
 	readonly env?: Record<string, string>;
 }
 
+/**
+ * Optional inputs for {@link AgentManager.restartAgent}.
+ *
+ * `envOverride` lets a restart RE-COMPOSE the spawn env from current sources
+ * (e.g. the cron restart loop re-running `composeCronAgentEnv` against the
+ * live `process.env`) instead of reusing the env captured at the first spawn.
+ * When omitted, the existing env is preserved verbatim — heartbeat-, IPC-, and
+ * Telegram-triggered restarts deliberately reuse the prior creds. When
+ * supplied, the on-disk `<handleId>.json` config is also re-persisted so
+ * boot-recovery rebuilds the spawn env from the rotated creds, not a stale
+ * snapshot (pr84 R2/twin).
+ */
+export interface RestartAgentOpts {
+	readonly envOverride?: Record<string, string>;
+}
+
 export interface BootRecoveryResult {
 	readonly recovered: string[];
 	readonly cleanShutdowns: string[];
@@ -470,6 +486,7 @@ export class AgentManager extends EventEmitter {
 	async restartAgent(
 		handleId: string,
 		reason: ForceRestartReason | "crash",
+		opts?: RestartAgentOpts,
 	): Promise<AgentHandle> {
 		// M1: hand back the in-flight promise instead of throwing during the
 		// teardown→track window. Concurrent callers receive the new
@@ -481,7 +498,7 @@ export class AgentManager extends EventEmitter {
 		if (existing === undefined) {
 			throw new Error(`No handle to restart: ${handleId}`);
 		}
-		const promise = this.doRestart(handleId, reason, existing);
+		const promise = this.doRestart(handleId, reason, existing, opts);
 		this.restartingPromises.set(handleId, promise);
 		try {
 			return await promise;
@@ -494,6 +511,7 @@ export class AgentManager extends EventEmitter {
 		handleId: string,
 		reason: ForceRestartReason | "crash",
 		existing: TrackedHandle,
+		opts?: RestartAgentOpts,
 	): Promise<AgentHandle> {
 		const markerReason: StopMarkerReason =
 			reason === "crash" || reason === "dead" ? "crash" : "recycle";
@@ -516,6 +534,21 @@ export class AgentManager extends EventEmitter {
 		}
 		this.teardown(handleId);
 
+		// pr84 R2/twin: a caller (the cron restart loop) may supply a freshly
+		// RE-COMPOSED env so a restart picks up rotated daemon secrets instead
+		// of reusing the stale snapshot captured at the first spawn. When no
+		// override is given (heartbeat / IPC / Telegram restarts) the existing
+		// env is preserved verbatim — those paths intentionally reuse creds.
+		const envOverride = opts?.envOverride;
+		const respawnSpawnOpts: SpawnOpts =
+			envOverride === undefined
+				? existing.spawnOpts
+				: { ...existing.spawnOpts, env: { ...envOverride } };
+		const respawnConfig: RegisterAgentConfig =
+			envOverride === undefined
+				? existing.config
+				: { ...existing.config, env: { ...envOverride } };
+
 		// CRITICAL #3: re-spawn with the SAME handle id via SpawnOpts.restoreId
 		// so the new handle is keyed identically — `getHandle(handleId)` after
 		// restart returns the new generation, and any external reference
@@ -524,7 +557,7 @@ export class AgentManager extends EventEmitter {
 		// session.jsonl is continuous; the generation increment is the only
 		// signal callers should use to discriminate generations.
 		const restoreSpawnOpts: SpawnOpts = {
-			...existing.spawnOpts,
+			...respawnSpawnOpts,
 			restoreId: handleId,
 		};
 		const freshHandle = await existing.runtime.spawn(restoreSpawnOpts);
@@ -553,11 +586,21 @@ export class AgentManager extends EventEmitter {
 		await this.trackHandle({
 			handle: newGeneration,
 			runtime: existing.runtime,
-			spawnOpts: existing.spawnOpts,
-			config: existing.config,
+			spawnOpts: respawnSpawnOpts,
+			config: respawnConfig,
 			org: existing.org,
 			parentHandleId: existing.parentHandleId,
 		});
+		// pr84 twin: when the env was re-composed, re-persist the on-disk
+		// `<handleId>.json` so boot-recovery's `restoreFromMarker` rebuilds the
+		// spawn env from CURRENT creds — not the stale tokens captured at first
+		// register. The filename is keyed on the stable handleId (restoreId), so
+		// this OVERWRITES the same file: no orphan `<oldHandleId>.json`
+		// accumulates across restarts (atomic 0o600 temp-then-rename in
+		// persistAgentConfig). Skipped when env is unchanged (nothing to rewrite).
+		if (envOverride !== undefined) {
+			await this.persistAgentConfig(handleId, respawnConfig, existing.runtime);
+		}
 		return newGeneration;
 	}
 

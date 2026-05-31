@@ -603,7 +603,7 @@ describe("pr-triage integration (Plan 04c)", () => {
 
 	it("Case 4 — PTY crash mid-run → SIGTERM + crash marker + registerCronAgentWithRestart re-spawns", async () => {
 		writePrTriageFixture();
-		const { register } = await buildSystem();
+		const { mgr, register } = await buildSystem();
 		// brief D3 — inject a tiny restart backoff so the real-timer restart
 		// fires in ~10ms instead of the production 5s. Real timers stay
 		// throughout (Phase B's marker poll is real fs I/O that fake timers
@@ -631,21 +631,32 @@ describe("pr-triage integration (Plan 04c)", () => {
 		// Windows runners where fdatasync stalls on antivirus.
 		const markersDir = path.join(tempDir, "markers");
 		let crashMarker: string | undefined;
+		let markerBody: { reason: string } | undefined;
 		for (let i = 0; i < 200; i++) {
 			await new Promise((resolve) => setTimeout(resolve, 10));
 			const found = fs
 				.readdirSync(markersDir)
 				.find((m) => m.endsWith(".daemon-stop"));
-			if (found !== undefined) {
+			if (found === undefined) continue;
+			// The marker can appear in readdir BEFORE its contents are flushed
+			// (writeStopMarker is fire-and-forget, and the restart path rewrites
+			// the same marker path), so reading too early yields an empty/partial
+			// file and `JSON.parse` throws "Unexpected end of JSON input". Poll
+			// until the marker is present AND fully parseable.
+			const raw = fs.readFileSync(path.join(markersDir, found), "utf8");
+			if (raw.trim() === "") continue;
+			try {
+				markerBody = JSON.parse(raw) as { reason: string };
 				crashMarker = found;
 				break;
+			} catch {
+				// partial write — retry on the next tick
 			}
 		}
 		expect(crashMarker).toBeDefined();
-		if (crashMarker === undefined) throw new Error("unreachable");
-		const markerBody = JSON.parse(
-			fs.readFileSync(path.join(markersDir, crashMarker), "utf8"),
-		) as { reason: string };
+		if (crashMarker === undefined || markerBody === undefined) {
+			throw new Error("unreachable");
+		}
 		expect(markerBody.reason).toBe("crash");
 
 		// Phase C — restart wiring (registerCronAgentWithRestart's
@@ -681,6 +692,16 @@ describe("pr-triage integration (Plan 04c)", () => {
 			"123456,789012",
 		);
 		expect(restartCall[2].env.GH_TOKEN).toBe("test-gh-token");
+
+		// pr84 R2: the cron restart path must route through restartAgent (reuse
+		// the stable id + teardown the dead handle), NOT a plain registerAgent
+		// (which would ADD a second handle and leave findHandleForAgent resolving
+		// the DEAD one → pr-triage permanently silent after one crash). Assert
+		// exactly ONE pr-triage handle remains tracked after the crash-restart.
+		const liveHandles = mgr
+			.listHandles()
+			.filter((h) => h.agentId === "pr-triage");
+		expect(liveHandles).toHaveLength(1);
 	}, 15_000);
 
 	it("Case 5 — ndjsonAlert envelope → pr-triage-telegram-send-failed + resolved (Codex H1 close)", async () => {
