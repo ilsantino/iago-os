@@ -39,12 +39,19 @@ await docClient.update({
 });
 ```
 
-On `ConditionalCheckFailedException`: retry with fresh read (max 3 retries).
+On `ConditionalCheckFailedException`: re-read the item, then distinguish the two
+failure causes the combined `ConditionExpression` collapses — a **version drift**
+(concurrent write) is retryable (fresh read, max 3 retries), but a **`quantity >= :qty`
+failure** is genuine insufficient stock and must fail fast as out-of-stock (retrying
+only burns attempts before surfacing the same condition).
 
 ### 3. Reorder automation
 
 - Lambda scheduled daily: scan items where `quantity <= reorder_point`
-- Generate purchase order records in DynamoDB
+- Generate purchase order records in DynamoDB — guard idempotency: before creating a
+  PO, check for an existing **open** replenishment PO keyed by SKU/location/cycle and
+  use a conditional write (`attribute_not_exists`), so a retry or a repeated daily run
+  while stock stays below threshold does not create duplicate POs
 - Notify via SES to procurement team
 - n8n workflow for supplier API integration (if applicable)
 
@@ -59,6 +66,14 @@ Transfer flow:
 
 Use DynamoDB transactions for atomic multi-item updates when transferring
 multiple SKUs in one operation.
+
+The source-decrement and destination-increment target different partition keys and
+are separated by an external confirmation, so a single-SKU hop is **not** atomic: if
+the destination-increment never fires (crash, abandoned confirmation, lost webhook),
+stock is decremented at source but never re-added — a permanent loss with the transfer
+stuck `in_transit`. Guard it: make the source-debit + transfer-status leg a
+`TransactWriteItems`, and add a reconciliation/idempotency sweep that compensates
+(re-credits source) any transfer left `in_transit` past a timeout.
 
 ### 5. Cycle counting
 

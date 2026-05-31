@@ -66,5 +66,5 @@ Advisory — provides data models, webhook patterns, and disposition logic.
 - Advisory patterns only — does not create infrastructure
 - DynamoDB single-table design only
 - Does not process actual refunds — provides integration patterns
-- Does not cover forward logistics — use `/logistics`
+- Does not cover forward logistics — use `/industry-patterns --domain logistics`
 - Does not dispatch agents

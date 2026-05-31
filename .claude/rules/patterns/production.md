@@ -46,6 +46,11 @@ New/changed work order
 | Tooling | `RESOURCE#T#{id}` | Quantity, location, maintenance schedule |
 
 Availability check: query `SLOT#{date}#{time}` range for conflicts before assigning.
+Querying then writing is a TOCTOU — two concurrent schedule runs can both pass the
+check and double-book the same `RESOURCE#{id}`/`SLOT#{date}#{time}` (a batch write
+enforces no per-slot uniqueness). Make each slot assignment a **conditional write**
+(`attribute_not_exists(sk)`) or a `TransactWriteItems`, so the second writer fails
+the condition instead of overwriting an already-claimed slot.
 
 ### 4. Work order lifecycle
 
