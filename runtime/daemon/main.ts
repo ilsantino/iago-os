@@ -617,8 +617,16 @@ export function makeTaskDispatchHandler(deps: {
 			const alertPromptRaw = (evt.taskContent as { prompt?: unknown }).prompt;
 			const alertHasPrompt =
 				typeof alertPromptRaw === "string" && alertPromptRaw.length > 0;
+			// I-3 (dual-adversarial pass #2): mirror the polling-path
+			// filename-provenance check — require the FILENAME to match the
+			// pr-triage producer convention (`pr-triage__<ts>-<pid>.json`).
+			// `tasks/pending/` is the generic shared bus; a foreign producer's
+			// file with a pr-triage-shaped body must NOT be record-and-resolved
+			// as an alert (it would destroy the real producer's signal). Any
+			// non-matching filename falls through to prompt-validation/dispatch.
 			if (
 				evt.agentId === "pr-triage" &&
+				evt.filename.startsWith("pr-triage__") &&
 				typeof ndjsonAlert === "string" &&
 				PR_TRIAGE_ALERT_KINDS.has(ndjsonAlert) &&
 				!alertHasPrompt
@@ -800,6 +808,40 @@ export const CRON_AGENT_SECRET_TRUSTED_AGENTS: ReadonlySet<string> = new Set([
 ]);
 
 /**
+ * pr84-gap-closure (Codex H2, dual-adversarial pass #2 I-2) — pure
+ * env-composition helper extracted from the `composeAgentEnv` closure in
+ * `registerCronAgentWithRestart` so the secret-injection allowlist is directly
+ * unit-testable.
+ *
+ * Returns `baseEnv` UNCHANGED unless `agentId` is in the daemon-owned
+ * `CRON_AGENT_SECRET_TRUSTED_AGENTS` set, in which case it returns a shallow
+ * copy of `baseEnv` merged with the `CRON_AGENT_ENV_ALLOWLIST` secrets that are
+ * actually present (non-empty string) in `daemonEnv`. Absent/empty secrets are
+ * skipped so we never materialize empty-string env entries (no undefined
+ * injection).
+ *
+ * The gate is on the daemon-controlled `agentId`, NOT the agent's
+ * self-declared `org` — a less-trusted cron agent cannot opt into the daemon's
+ * Telegram/GH creds by self-labeling `org: "internal"` in its own
+ * `agent-config.json`. See `CRON_AGENT_SECRET_TRUSTED_AGENTS` JSDoc.
+ */
+export function composeCronAgentEnv(
+	agentId: string,
+	baseEnv: Record<string, string>,
+	daemonEnv: NodeJS.ProcessEnv,
+): Record<string, string> {
+	if (!CRON_AGENT_SECRET_TRUSTED_AGENTS.has(agentId)) return baseEnv;
+	const merged: Record<string, string> = { ...baseEnv };
+	for (const key of CRON_AGENT_ENV_ALLOWLIST) {
+		const value = daemonEnv[key];
+		if (typeof value === "string" && value.length > 0) {
+			merged[key] = value;
+		}
+	}
+	return merged;
+}
+
+/**
  * Dual-adversarial I-C fix — register a cron-driven agent and arm a
  * restart loop that re-spawns the agent if its persistent PTY exits.
  *
@@ -857,17 +899,8 @@ export async function registerCronAgentWithRestart(deps: {
 	// into the daemon's creds by self-labeling `org: "internal"` in its own
 	// `agent-config.json`. Used for BOTH the initial registration and the
 	// restart re-registration so a restarted agent keeps its creds.
-	const composeAgentEnv = (): Record<string, string> => {
-		if (!CRON_AGENT_SECRET_TRUSTED_AGENTS.has(agentId)) return agentConfig.env;
-		const merged: Record<string, string> = { ...agentConfig.env };
-		for (const key of CRON_AGENT_ENV_ALLOWLIST) {
-			const value = process.env[key];
-			if (typeof value === "string" && value.length > 0) {
-				merged[key] = value;
-			}
-		}
-		return merged;
-	};
+	const composeAgentEnv = (): Record<string, string> =>
+		composeCronAgentEnv(agentId, agentConfig.env, process.env);
 
 	const armExitListener = (handle: AgentHandle): void => {
 		const runtime: AgentRuntime = resolveRuntime(handle.runtime);

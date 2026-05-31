@@ -39,6 +39,7 @@ import {
 	SHUTDOWN_STAGE_TIMEOUT_MS,
 	type TaskDispatchEvent,
 	buildFleetHealth,
+	composeCronAgentEnv,
 	computeRunUnder,
 	findHandleForAgent,
 	getShapeForAgent,
@@ -1307,5 +1308,51 @@ describe("makeTaskDispatchHandler (Plan 04d)", () => {
 		expect(
 			(mgr as unknown as { _releaseCalls: string[] })._releaseCalls,
 		).toEqual([evt.filename]);
+	});
+});
+
+describe("composeCronAgentEnv (pr84 I-2 — secret-injection allowlist)", () => {
+	const SECRETS = {
+		IAGO_TELEGRAM_BOT_TOKEN: "tg-secret",
+		IAGO_TELEGRAM_ALLOWED_USER_IDS: "42,99",
+		GH_TOKEN: "gh-pat-secret",
+	} as const;
+
+	it("allowlisted 'pr-triage' inherits the daemon secrets, base env preserved", () => {
+		const env = composeCronAgentEnv("pr-triage", { EXISTING: "x" }, {
+			...SECRETS,
+		} as NodeJS.ProcessEnv);
+		expect(env.IAGO_TELEGRAM_BOT_TOKEN).toBe("tg-secret");
+		expect(env.IAGO_TELEGRAM_ALLOWED_USER_IDS).toBe("42,99");
+		expect(env.GH_TOKEN).toBe("gh-pat-secret");
+		expect(env.EXISTING).toBe("x");
+	});
+
+	it("a NON-allowlisted agent does NOT inherit secrets even if it self-labels org:'internal'", () => {
+		const base = { org: "internal", EXISTING: "y" };
+		const env = composeCronAgentEnv("rogue-agent", base, {
+			...SECRETS,
+		} as NodeJS.ProcessEnv);
+		// Gate is on the daemon-controlled agentId, NOT the self-declared org:
+		// the base env is returned unchanged — no daemon secrets leak.
+		expect(env).toEqual(base);
+		expect(env.IAGO_TELEGRAM_BOT_TOKEN).toBeUndefined();
+		expect(env.GH_TOKEN).toBeUndefined();
+	});
+
+	it("allowlisted but a secret ABSENT from the daemon env → that key is not injected (no empty entry)", () => {
+		const env = composeCronAgentEnv("pr-triage", {}, {
+			IAGO_TELEGRAM_BOT_TOKEN: "tg-secret",
+		} as NodeJS.ProcessEnv);
+		expect(env.IAGO_TELEGRAM_BOT_TOKEN).toBe("tg-secret");
+		expect("GH_TOKEN" in env).toBe(false);
+		expect("IAGO_TELEGRAM_ALLOWED_USER_IDS" in env).toBe(false);
+	});
+
+	it("an EMPTY-STRING secret in the daemon env is skipped (no empty-string injection)", () => {
+		const env = composeCronAgentEnv("pr-triage", {}, {
+			GH_TOKEN: "",
+		} as NodeJS.ProcessEnv);
+		expect("GH_TOKEN" in env).toBe(false);
 	});
 });

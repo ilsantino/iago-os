@@ -1740,7 +1740,11 @@ export class AgentManager extends EventEmitter {
 		} catch (err) {
 			const errno = getErrnoCode(err);
 			if (errno === "ENOENT") {
-				// Concurrent claim moved it out from under us — fine.
+				// Concurrent claim moved it out from under us — fine. Clear any
+				// transient parse-retry tally for this filename so a file that
+				// failed parse once then vanished does not leak a map entry
+				// forever (M-1: unbounded jsonParseRetries growth).
+				this.jsonParseRetries.delete(filename);
 				return;
 			}
 			throw err;
@@ -1755,6 +1759,9 @@ export class AgentManager extends EventEmitter {
 		} catch (err) {
 			const errno = getErrnoCode(err);
 			if (errno === "ENOENT") {
+				// Same M-1 concern as the stat ENOENT branch above: a file that
+				// failed parse once then vanished must not leak its retry tally.
+				this.jsonParseRetries.delete(filename);
 				return;
 			}
 			throw err;
@@ -1826,8 +1833,17 @@ export class AgentManager extends EventEmitter {
 		const alertPromptRaw = (parsed as { prompt?: unknown }).prompt;
 		const alertHasPrompt =
 			typeof alertPromptRaw === "string" && alertPromptRaw.length > 0;
+		// I-3 (dual-adversarial pass #2): ALSO require the FILENAME to match
+		// the pr-triage producer convention (`pr-triage__<ts>-<pid>.json`, see
+		// prompt-template.md). `tasks/pending/` is the GENERIC bus shared by all
+		// agents; without a filename-provenance check, a foreign producer's file
+		// whose BODY is shaped like a pr-triage alert would be silently
+		// record-and-resolved here, destroying the real producer's signal (data
+		// loss). A `rogue-agent__*.json` with a pr-triage body now FALLS THROUGH
+		// to normal routing (registration check / dispatch / unrouted).
 		if (
 			agentId === "pr-triage" &&
+			filename.startsWith("pr-triage__") &&
 			typeof ndjsonAlert === "string" &&
 			PR_TRIAGE_ALERT_KINDS.has(ndjsonAlert) &&
 			!alertHasPrompt

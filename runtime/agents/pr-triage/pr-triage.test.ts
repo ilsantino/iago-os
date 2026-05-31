@@ -24,13 +24,18 @@
  *     and the task lifecycle completed (pending → resolved + cron slot
  *     decrement).
  *
- *   - Plan case 5 expects daemon to branch on `ndjsonAlert` and emit
- *     `pr-triage-telegram-send-failed` telemetry. **GAP:** that branch is
- *     unimplemented in processPendingTask + makeTaskDispatchHandler as of
- *     04b/04d/07b. A fallback envelope without a `prompt` field currently
- *     hits the malformed-task path. This test asserts CURRENT behavior to
- *     keep coverage honest; the ndjsonAlert branch is tracked as a
- *     follow-up against prompt-template.md line 155 promise.
+ *   - The `ndjsonAlert` record-and-resolve branch IS implemented (Codex H1
+ *     close) in both `processPendingTask` (agent-manager.ts) and
+ *     `makeTaskDispatchHandler` (main.ts). When the agent's Telegram POST
+ *     fails it writes a prompt-less fallback envelope; the daemon branches on
+ *     it BEFORE the registration check — emits
+ *     `pr-triage-telegram-send-failed { alertKind, details }`, moves the file
+ *     pending→resolved via claimTask, and NEVER advances to the dispatch
+ *     path (so a prompt-less envelope cannot be mis-classified as
+ *     malformed-task). The branch is scoped to (a) `agentId === "pr-triage"`,
+ *     (b) a FILENAME matching the producer convention `pr-triage__*` (I-3),
+ *     (c) a known `PR_TRIAGE_ALERT_KINDS` value, and (d) prompt-less. Cases 5,
+ *     11, 12, 14, and 17 below assert this implemented contract.
  */
 
 import * as fs from "node:fs";
@@ -1341,5 +1346,59 @@ describe("pr-triage integration (Plan 04c)", () => {
 			filename,
 			reason: "json-parse-error",
 		});
+	});
+
+	it("Case 17 — filename provenance: a FOREIGN-filename file with a pr-triage-shaped alert body is NOT resolved-as-alert (pr84 I-3)", async () => {
+		// The record-and-resolve alert branch now ALSO requires the FILENAME to
+		// match the pr-triage producer convention (`pr-triage__<ts>-<pid>.json`,
+		// see prompt-template.md). tasks/pending is the GENERIC shared bus; a
+		// foreign producer that writes `rogue-agent__*.json` whose BODY claims
+		// `agentId: "pr-triage"` + a known alert kind would, WITHOUT the filename
+		// guard, be silently record-and-resolved here — destroying the real
+		// producer's signal (data loss). Case 11 only covers a foreign BODY
+		// (agentId !== "pr-triage"); this covers the consistent-body /
+		// foreign-FILENAME case. The file must fall through to normal routing
+		// (the body says pr-triage which IS registered, so it advances to the
+		// dispatch path and is rejected as malformed-task for its absent prompt)
+		// — NOT moved to resolved/ as an alert.
+		writePrTriageFixture();
+		const { mgr, register } = await buildSystem();
+		await register("pr-triage");
+		const dispatch = wireDispatchHandler(mgr);
+
+		const foreignFilename = "rogue-agent__1700000007.json";
+		fs.writeFileSync(
+			path.join(tempDir, "tasks/pending", foreignFilename),
+			JSON.stringify({
+				agentId: "pr-triage",
+				ndjsonAlert: "pr-triage-telegram-send-failed",
+				details: "pr-triage-shaped body smuggled under a foreign filename",
+			}),
+			"utf8",
+		);
+
+		await mgr._pollingTickForTests();
+		await dispatch.flush();
+
+		// (a) No alert resolution — the filename-provenance guard blocked the
+		// record-and-resolve branch.
+		expect(emittedEventsOfKind("pr-triage-telegram-send-failed")).toHaveLength(
+			0,
+		);
+		// (b) File NOT moved to resolved/ as an alert.
+		expect(
+			fs.existsSync(path.join(tempDir, "tasks/resolved", foreignFilename)),
+		).toBe(false);
+		// (c) It fell through to the dispatch path. The body's agentId is
+		// "pr-triage" (registered), so it dispatches; with no prompt it is
+		// rejected as malformed-task — proving it was NOT short-circuited as an
+		// alert.
+		expect(
+			emittedEventsOfKind("pr-triage-dispatch-failed").some(
+				(e) =>
+					(e as { filename: string }).filename === foreignFilename &&
+					(e as { reason: string }).reason === "malformed-task",
+			),
+		).toBe(true);
 	});
 });

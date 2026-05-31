@@ -149,6 +149,9 @@ mkdir -p "$STATE_ROOT/tasks/pending"
 # `.json`, fail JSON.parse, and poison the alert (permanently losing it).
 # `mv` within the same dir is a rename(2) → atomic on POSIX, so the
 # consumer only ever sees the complete file under its `.json` name.
+# `umask 0077` so the secret-bearing `.tmp` is born 0600 regardless of the
+# parent dir's mode — closes the 0644 race window before the `mv`.
+umask 0077
 jq -n \
   --arg details "${HTTP_STATUS} ${DETAILS}" \
   '{"agentId":"pr-triage","ndjsonAlert":"pr-triage-telegram-send-failed","details":$details}' \
@@ -190,8 +193,17 @@ The `agentId` field is mandatory — Plan 04b's polling-loop wiring will require
   ```bash
   STATE_ROOT="${IAGO_DAEMON_STATE_ROOT:-/var/lib/iago-os/daemon-state}"
   TASK_FILE="$STATE_ROOT/tasks/pending/pr-triage__$(date +%s%3N)-$$.json"
-  GH_ERR=$(printf '%s' "$GH_ERROR" | head -c 200 | sed "s|${IAGO_TELEGRAM_BOT_TOKEN}|[REDACTED]|g")
+  # `$GH_ERROR` is `gh` stderr — `gh` authenticates via `$GH_TOKEN`, so a
+  # verbose error (URL with embedded token, auth header echo) can carry the
+  # GH PAT. Redact BOTH the Telegram bot token AND `$GH_TOKEN` before the
+  # string enters the on-disk envelope + the daemon's telemetry NDJSON. Both
+  # vars are non-empty when set; the substitution is a no-op when a var is
+  # absent from the error text.
+  GH_ERR=$(printf '%s' "$GH_ERROR" | head -c 200 | sed -e "s|${IAGO_TELEGRAM_BOT_TOKEN}|[REDACTED]|g" -e "s|${GH_TOKEN}|[REDACTED]|g")
   mkdir -p "$STATE_ROOT/tasks/pending"
+  # `umask 0077` so the secret-bearing `.tmp` is born 0600 regardless of the
+  # parent dir's mode — closes the 0644 race window before the `mv`.
+  umask 0077
   jq -n \
     --arg details "${GH_ERR}; ${HTTP_STATUS}" \
     '{"agentId":"pr-triage","ndjsonAlert":"pr-triage-double-failure","details":$details}' \
