@@ -609,5 +609,33 @@ await test('explicit empty []: legacy/interactive zero-lens path — no derivati
   assert.ok(!h.calls.some((c) => c.label === 'changed-files'), 'explicit [] never dispatches changed-files')
 })
 
+
+// ── EXPLICIT csv/map: no changed-files probe ────────────────────────────
+await test('explicit csv ("security,frontend") takes the EXPLICIT path — no changed-files probe', async () => {
+  const h = makeHarness([
+    { match: (l) => l === 'review', reply: { verdict: 'PASS', findings: [] } },
+    { match: (l) => l === 'codex', reply: { source: 'codex', findings: [] } },
+    { match: (l) => l === 'security', reply: { findings: [] } },
+    { match: (l) => l === 'frontend bug-bounty', reply: { findings: [] } },
+  ])
+  const wf = buildWorkflow()
+  const out = await wf(h.agent, h.parallel, null, h.log, h.phase, { ...baseArgs, lenses: 'security,frontend' }, null, null)
+  assert.deepStrictEqual(out.lenses, ['security', 'frontend'], 'csv string honored verbatim')
+  assert.ok(!h.calls.some((c) => c.label === 'changed-files'), 'csv EXPLICIT path never dispatches changed-files')
+})
+
+await test('explicit map ({ security: true, frontend: true }) takes the EXPLICIT path — no changed-files probe', async () => {
+  const h = makeHarness([
+    { match: (l) => l === 'review', reply: { verdict: 'PASS', findings: [] } },
+    { match: (l) => l === 'codex', reply: { source: 'codex', findings: [] } },
+    { match: (l) => l === 'security', reply: { findings: [] } },
+    { match: (l) => l === 'frontend bug-bounty', reply: { findings: [] } },
+  ])
+  const wf = buildWorkflow()
+  const out = await wf(h.agent, h.parallel, null, h.log, h.phase, { ...baseArgs, lenses: { security: true, frontend: true } }, null, null)
+  assert.deepStrictEqual(out.lenses, ['security', 'frontend'], 'map honored verbatim')
+  assert.ok(!h.calls.some((c) => c.label === 'changed-files'), 'map EXPLICIT path never dispatches changed-files')
+})
+
 console.log(`\n${passed} passed, ${failed} failed`)
 process.exit(failed ? 1 : 0)
