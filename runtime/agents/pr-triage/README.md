@@ -13,9 +13,14 @@ its own `process.env` via cred-bootstrap):
 
 1. **fetches** every open PR (`runtime/daemon/pr-triage-fetch.ts`,
    holding `GH_TOKEN`),
-2. **sanitizes** each PR to a small set of pre-computed scalar fields —
-   no raw PR/comment bodies, so there is **zero prompt-injection
-   surface** — and injects that payload into the agent prompt,
+2. **sanitizes** each PR to a small set of pre-computed scalar fields and
+   injects that payload into the agent prompt. The raw PR **body** and
+   **comments** are structurally eliminated — reduced to the single
+   `mentionsClaude` boolean, so attacker-authored body/comment text never
+   reaches the prompt. `title`/`author`/`url` are attacker-influenced free
+   text passed verbatim as **delimited untrusted data**; they are
+   control-stripped + length-capped (defense-in-depth) — a real-but-mitigated
+   residual surface, **not** a zero-surface guarantee,
 3. **gates** the spawn on zero open PRs (replacing the retired bash
    wake-check — zero PRs means no spawn, no notification), and
 4. **sends** the agent's text summary to Santiago on Telegram itself

@@ -398,10 +398,11 @@ export type DaemonEvent =
 			 * moves pending→resolved, and this event carries the audit trail.
 			 *
 			 * `alertKind` is the verbatim `ndjsonAlert` value from the
-			 * envelope — it disambiguates the two producer shapes the agent
-			 * emits (the telegram-send-failed alert and the
-			 * `pr-triage-double-failure` alert, per
-			 * prompt-template.md:145-148,180) plus any future alert kind,
+			 * envelope — it disambiguates the two historical producer shapes
+			 * (the telegram-send-failed alert and the `pr-triage-double-failure`
+			 * alert) plus any future alert kind. (RETIRED under R1: the agent no
+			 * longer emits `ndjsonAlert`; the daemon now emits
+			 * `pr-triage-telegram-send-failed` directly from makeTaskSendHandler.)
 			 * without multiplying union members. `details` is the verbatim
 			 * `details` string from the envelope, already token-redacted by
 			 * the agent (it captures `$HTTP_STATUS` + a redacted response
@@ -541,8 +542,9 @@ export type DaemonEvent =
  *
  * Defined here (not in main.ts) so both consumers import it from the module
  * they already depend on — avoids a circular import between agent-manager.ts
- * and main.ts. Values mirror the two producer shapes in
- * `runtime/agents/pr-triage/prompt-template.md` (lines 145-148, 180).
+ * and main.ts. Values mirror the two HISTORICAL producer shapes. (RETIRED under
+ * R1: the pr-triage agent no longer emits `ndjsonAlert`; the daemon owns
+ * send-failure telemetry. The set is kept for the inert defensive branch.)
  */
 export const PR_TRIAGE_ALERT_KINDS: ReadonlySet<string> = new Set([
 	"pr-triage-telegram-send-failed",

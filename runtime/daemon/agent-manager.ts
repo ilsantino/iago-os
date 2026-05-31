@@ -1587,7 +1587,7 @@ export class AgentManager extends EventEmitter {
 	 * as a design gap; this is documented intentional scope, not an
 	 * implementation bug.
 	 */
-	async claimTask(filename: string, agentId: string): Promise<void> {
+	async claimTask(filename: string, agentId: string): Promise<boolean> {
 		assertSafeIdentifier(filename, "filename");
 		assertSafeIdentifier(agentId, "agentId");
 		const src = path.join(pathFor("tasks/pending"), filename);
@@ -1604,7 +1604,13 @@ export class AgentManager extends EventEmitter {
 				errno,
 				message,
 			});
-			return;
+			// R1 dual-adversarial pass#2 Critical fix: REPORT the rename failure to
+			// the caller (was silently `return`). The pr-triage send path claims the
+			// envelope BEFORE the irreversible Telegram send and uses this boolean to
+			// decide whether to send — so a failed claim must be observable, not
+			// swallowed. Callers that ignore the return (dispatch / noSend / alert
+			// paths) are unaffected: those paths have no external side effect.
+			return false;
 		}
 		await emitTelemetry({ kind: "task-resolved", agentId, filename });
 		// EventEmitter emit comes AFTER telemetry so a subscriber crash
@@ -1613,6 +1619,8 @@ export class AgentManager extends EventEmitter {
 		// caller — but the file is already moved and telemetry already
 		// flushed, so the only observable side-effect is the throw.
 		this.emit("task-resolved", { agentId, filename });
+		// The envelope was durably moved pending→resolved.
+		return true;
 	}
 
 	/**
@@ -1866,9 +1874,12 @@ export class AgentManager extends EventEmitter {
 			return;
 		}
 		// pr84-gap-closure (Codex H1): an `ndjsonAlert` envelope is a
-		// record-and-resolve signal, NOT a prompt task. The pr-triage agent
-		// writes it when its Telegram POST failed (prompt-template.md
-		// lines 145-148, 180). It needs no live handle and must NEVER reach
+		// record-and-resolve signal, NOT a prompt task. RETIRED under R1 — the
+		// pr-triage agent no longer emits `ndjsonAlert`: it writes
+		// `pr-triage-send__` {sendText|noSend} envelopes and the DAEMON owns
+		// send-failure handling (makeTaskSendHandler). This branch is now INERT
+		// (no current producer) and kept only as defensive handling. It needs no
+		// live handle and must NEVER reach
 		// the dispatch path — falling through would mis-classify the
 		// prompt-less envelope as `malformed-task`. Branch here, BEFORE the
 		// `isAgentRegistered` check, so the alert resolves even if the agent

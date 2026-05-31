@@ -348,8 +348,11 @@ export function sanitizePrPayload(
 		const updatedAt = asStringOrNull(pr.updatedAt);
 		const parsedUpdated =
 			updatedAt !== null ? Date.parse(updatedAt) : Number.NaN;
+		// Clamp to >= 0: a server-ahead `updatedAt` or local clock skew would
+		// otherwise yield a negative age that renders as "age:-2d" in the summary
+		// (pass#2 Minor). An unparseable/missing timestamp falls back to 0.
 		const ageDays = Number.isFinite(parsedUpdated)
-			? Math.floor((nowMs - parsedUpdated) / MS_PER_DAY)
+			? Math.max(0, Math.floor((nowMs - parsedUpdated) / MS_PER_DAY))
 			: 0;
 
 		const rollup = pr.statusCheckRollup;

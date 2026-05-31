@@ -120,7 +120,7 @@ import {
 import { HeartbeatController } from "./heartbeat.js";
 import { IpcServer } from "./ipc-server.js";
 import { fetchOpenPrs, sanitizePrPayload } from "./pr-triage-fetch.js";
-import { ensureStateDirsSync, pathFor } from "./state-paths.js";
+import { ensureStateDirsSync, getStateRoot, pathFor } from "./state-paths.js";
 import { type DaemonEvent, PR_TRIAGE_ALERT_KINDS, emit } from "./telemetry.js";
 
 /**
@@ -625,11 +625,28 @@ export function makeTaskSendHandler(deps: {
 				}
 				return;
 			}
-			const sendText = evt.sendText ?? "";
+			// AT-MOST-ONCE (pass#2 Critical fix). The Telegram send is an
+			// IRREVERSIBLE side effect, so CLAIM the envelope (move pending→resolved)
+			// BEFORE sending. `claimTask` returns false if the rename failed (disk
+			// fault): then we do NOT send — the envelope stays in pending/ for a
+			// later retry, with NO duplicate because no send happened. Once the
+			// envelope is durably out of pending/, a post-send fault can never
+			// re-trip a SECOND send (the prior bug: send-then-claim re-sent the same
+			// summary every 5s when the claim rename failed, because claimTask
+			// swallowed the error and returned). The cost is at-most-once delivery:
+			// a transient send failure AFTER a successful claim loses this run's
+			// summary (recorded as telemetry, surfaced next daily run) — acceptable
+			// for a notification, and it also eliminates the unbounded re-trip /
+			// telemetry storm on a persistently-undeliverable envelope.
+			const claimed = await agentManager.claimTask(evt.filename, evt.agentId);
+			if (!claimed) {
+				// Rename failed — leave in pending/ for a later retry. No send
+				// happened (no duplicate); claimTask already emitted claim-task-failed.
+				return;
+			}
 			if (telegramBot === null) {
-				// Local-dev / telegram-not-configured: record the failure so the
-				// envelope is not silently lost, then leave it in pending/ to
-				// re-trip (no durable send happened).
+				// Local-dev / telegram-not-configured: the envelope is already
+				// resolved, so record the non-delivery ONCE with no re-trip storm.
 				await emit({
 					kind: "pr-triage-telegram-send-failed",
 					agentId: evt.agentId,
@@ -639,10 +656,12 @@ export function makeTaskSendHandler(deps: {
 				});
 				return;
 			}
+			const sendText = evt.sendText ?? "";
 			const r = await telegramBot.sendAgentNotification(sendText);
 			if (!r.ok) {
-				// REUSE the existing Plan-04d kind. `details` carries a token-free
-				// status/error label from `sendAgentNotification`.
+				// Envelope already resolved (at-most-once). Record the failed
+				// delivery; do NOT re-trip (which would duplicate or storm). REUSE
+				// the Plan-04d kind; `details` is a token-free status/error label.
 				await emit({
 					kind: "pr-triage-telegram-send-failed",
 					agentId: evt.agentId,
@@ -650,12 +669,7 @@ export function makeTaskSendHandler(deps: {
 					alertKind: "pr-triage-telegram-send-failed",
 					details: `${r.status ?? ""} ${r.error ?? ""}`.trim(),
 				});
-				// Leave the envelope in pending/ so the failed send re-trips next
-				// tick rather than being silently resolved.
-				return;
 			}
-			// Send succeeded — resolve the envelope.
-			await agentManager.claimTask(evt.filename, evt.agentId);
 		} catch (err) {
 			// Never let the send path crash the polling/dispatch loop. Surface
 			// the failure as telemetry; leave the file in pending/ for retry.
@@ -938,7 +952,10 @@ export const PR_DATA_PLACEHOLDER = "{{PR_DATA_JSON}}";
  * fetch + readFile + token.
  */
 export function makePrTriageCronPrompt(deps: {
-	token: string | undefined;
+	// Static token (tests). Prefer `getToken` in production so a SIGHUP credential
+	// rotation (which updates process.env.GH_TOKEN) is picked up at fire-time.
+	token?: string | undefined;
+	getToken?: () => string | undefined;
 	fetchImpl?: typeof fetch;
 	fetchTimeoutMs?: number;
 	readTemplate?: (templatePath: string) => string;
@@ -957,7 +974,10 @@ export function makePrTriageCronPrompt(deps: {
 				return { skip: true, reason: "prepare-skip" };
 			}
 		}
-		const token = deps.token;
+		// pass#2 fix: read the PAT at FIRE time (live process.env via getToken), not
+		// a value captured once at startDaemon — so a SIGHUP rotation takes effect
+		// without a full daemon restart. Falls back to the static `token` for tests.
+		const token = deps.getToken ? deps.getToken() : deps.token;
 		if (typeof token !== "string" || token.length === 0) {
 			// No credential → cannot fetch → do NOT spawn with stale data.
 			return { skip: true, reason: "pr-fetch-failed" };
@@ -1679,6 +1699,16 @@ export async function startDaemon(
 
 	ensureStateDirsSync();
 
+	// pass#2 fix (state-root rendezvous): resolve the daemon's state root and
+	// materialize it into process.env so EVERY consumer — including the cron-agent
+	// env overlay (composeCronAgentEnv, which forwards IAGO_DAEMON_STATE_ROOT into
+	// the agent's PTY) — sees the SAME absolute path. Without this, when the env
+	// var is unset the daemon falls back to <cwd>/runtime/state or
+	// ~/.iago-os/daemon-state while the agent keeps its hardcoded agent-config
+	// default, so the agent's pr-triage-send__ envelope lands in a directory the
+	// daemon never polls (notification silently lost until the dead-letter timer).
+	process.env.IAGO_DAEMON_STATE_ROOT = getStateRoot();
+
 	const config = overrideConfig ?? (await loadConfig());
 
 	// Codex H1 + Opus C2: claude-pty is registered via the top-level
@@ -1783,7 +1813,9 @@ export async function startDaemon(
 	// process.env (cred-bootstrap); the agent never sees it.
 	const scheduler = new CronScheduler({
 		agentManager,
-		prepareCronPrompt: makePrTriageCronPrompt({ token: process.env.GH_TOKEN }),
+		prepareCronPrompt: makePrTriageCronPrompt({
+			getToken: () => process.env.GH_TOKEN,
+		}),
 	});
 	const agentsDir = resolveAgentsDir();
 	const cronEntries = await loadCronEntries(agentsDir);

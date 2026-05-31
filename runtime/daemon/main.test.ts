@@ -1449,6 +1449,23 @@ describe("composeCronAgentEnv (R1 — NO secrets, only non-secret runtime vars)"
 		expect(env.IAGO_TELEGRAM_ALLOWED_USER_IDS).toBeUndefined();
 	});
 
+	// pass#2 FIX D — the daemon's resolved IAGO_DAEMON_STATE_ROOT is overlaid onto
+	// the agent env, OVERWRITING any agent-config default, so the agent writes its
+	// pr-triage-send__ result envelope to the SAME directory the daemon polls.
+	it("(FIX D) overlays the daemon's IAGO_DAEMON_STATE_ROOT (rendezvous coherence)", () => {
+		const env = composeCronAgentEnv(
+			"pr-triage",
+			{ IAGO_DAEMON_STATE_ROOT: "/var/lib/iago-os/daemon-state" },
+			{
+				PATH: "/usr/bin",
+				IAGO_DAEMON_STATE_ROOT: "/resolved/daemon/root",
+			} as NodeJS.ProcessEnv,
+		);
+		// The daemon's resolved value WINS over the agent-config default so the
+		// agent's envelope-write dir and the daemon's poll dir cannot diverge.
+		expect(env.IAGO_DAEMON_STATE_ROOT).toBe("/resolved/daemon/root");
+	});
+
 	// Test 7 (KEPT, under the renamed runtime-trust gate) — an untrusted /
 	// client agent still gets baseEnv UNCHANGED (no PATH injection): the
 	// multi-tenant isolation invariant the claude-pty adapter encodes.
@@ -1484,16 +1501,22 @@ describe("composeCronAgentEnv (R1 — NO secrets, only non-secret runtime vars)"
 // R1 (feature-pr84-r1-daemon-creds): makeTaskSendHandler + makeResultTimers
 // ---------------------------------------------------------------------------
 
-function makeSendStubManager(): {
+function makeSendStubManager(opts?: { claimSucceeds?: boolean }): {
 	mgr: AgentManager;
 	claimCalls: Array<{ filename: string; agentId: string }>;
 	releaseCalls: string[];
 } {
+	const claimSucceeds = opts?.claimSucceeds ?? true;
 	const claimCalls: Array<{ filename: string; agentId: string }> = [];
 	const releaseCalls: string[] = [];
 	const mgr = {
+		// pass#2 Critical fix: claimTask now reports whether the pending→resolved
+		// rename succeeded. The send handler claims the envelope BEFORE the
+		// irreversible Telegram send (at-most-once); a false return means the
+		// rename failed and NO send must happen.
 		claimTask: async (filename: string, agentId: string) => {
 			claimCalls.push({ filename, agentId });
+			return claimSucceeds;
 		},
 		// R1 Critical-1 fix: the send handler ALWAYS releases the per-filename
 		// in-flight guard in its `finally`. The stub records the release so tests
@@ -1558,7 +1581,7 @@ describe("makeTaskSendHandler (R1)", () => {
 		expect(failed).toHaveLength(0);
 	});
 
-	it("(TS-2) failed send → pr-triage-telegram-send-failed, NO claim, timer still cleared", async () => {
+	it("(TS-2) failed send → claimed FIRST (at-most-once), send-failed telemetry, no re-trip", async () => {
 		const { mgr, claimCalls, releaseCalls } = makeSendStubManager();
 		const { bot } = makeFakeTelegram(async () => ({
 			ok: false,
@@ -1580,8 +1603,9 @@ describe("makeTaskSendHandler (R1)", () => {
 			sendText: "summary",
 		});
 
-		// NOT claimed — the failed send re-trips next tick.
-		expect(claimCalls).toHaveLength(0);
+		// AT-MOST-ONCE: claimed (resolved) BEFORE the send, so a failed send does
+		// NOT re-trip (which would duplicate or storm) — it is recorded instead.
+		expect(claimCalls).toHaveLength(1);
 		const failed = emitMock.mock.calls
 			.map(
 				(c) => c[0] as { kind: string; alertKind?: string; details?: string },
@@ -1592,8 +1616,7 @@ describe("makeTaskSendHandler (R1)", () => {
 		expect(failed[0].details).toContain("429");
 		// Timer always cleared in finally.
 		expect(cleared).toEqual(["pr-triage"]);
-		// Critical-1: the in-flight send guard is released even on a FAILED send,
-		// so the envelope (left in pending/) can re-trip on a later tick.
+		// The in-flight send guard is released in finally.
 		expect(releaseCalls).toEqual(["pr-triage-send__1700000301-1.json"]);
 	});
 
@@ -1624,7 +1647,7 @@ describe("makeTaskSendHandler (R1)", () => {
 		expect(noSend).toHaveLength(1);
 	});
 
-	it("(TS-4) null telegramBot (local-dev) → records failed send, NO claim", async () => {
+	it("(TS-4) null telegramBot (local-dev) → claimed FIRST (no re-trip storm), records non-delivery", async () => {
 		const { mgr, claimCalls } = makeSendStubManager();
 		const emitMock = vi.fn().mockResolvedValue(true);
 		const handler = makeTaskSendHandler({
@@ -1640,7 +1663,10 @@ describe("makeTaskSendHandler (R1)", () => {
 			sendText: "summary",
 		});
 
-		expect(claimCalls).toHaveLength(0);
+		// AT-MOST-ONCE: claimed (resolved) before the null-bot check, so a
+		// token-less local-dev run records the non-delivery ONCE and does NOT
+		// re-trip every 5s (the unbounded-retry storm the gate flagged).
+		expect(claimCalls).toHaveLength(1);
 		const failed = emitMock.mock.calls
 			.map((c) => c[0] as { kind: string; details?: string })
 			.filter((e) => e.kind === "pr-triage-telegram-send-failed");
@@ -1668,6 +1694,35 @@ describe("makeTaskSendHandler (R1)", () => {
 
 		// Not claimed — the no-send event must re-trip next tick.
 		expect(claimCalls).toHaveLength(0);
+	});
+
+	it("(TS-6, Critical) a failed claim (rename fault) does NOT send — no duplicate-send vector", async () => {
+		const { mgr, claimCalls, releaseCalls } = makeSendStubManager({
+			claimSucceeds: false,
+		});
+		const { bot, calls } = makeFakeTelegram(async () => ({ ok: true }));
+		const emitMock = vi.fn().mockResolvedValue(true);
+		const handler = makeTaskSendHandler({
+			agentManager: mgr,
+			emit: emitMock,
+			telegramBot: bot as unknown as import("../telegram/bot.js").TelegramBot,
+			clearResultTimer: () => {},
+		});
+
+		await handler({
+			filename: "pr-triage-send__1700000306-1.json",
+			agentId: "pr-triage",
+			sendText: "summary",
+		});
+
+		// Claim was ATTEMPTED but FAILED → the envelope stays in pending/ for a
+		// later retry and the Telegram send is NEVER attempted, so a post-send
+		// claim failure can never produce a duplicate user-visible send (the
+		// pass#2 Critical). The in-flight slot is still released so a later tick
+		// can retry the claim.
+		expect(claimCalls).toHaveLength(1);
+		expect(calls).toHaveLength(0);
+		expect(releaseCalls).toEqual(["pr-triage-send__1700000306-1.json"]);
 	});
 });
 
@@ -1778,6 +1833,35 @@ describe("makePrTriageCronPrompt (R1)", () => {
 		expect(result.skip).toBe(true);
 		expect(result.reason).toBe("no-open-prs");
 		expect(result.prompt).toBeUndefined();
+	});
+
+	it("(CP-3, FIX C) reads GH_TOKEN lazily via getToken at fire-time (picks up SIGHUP rotation)", async () => {
+		let currentToken: string | undefined = "ghp_old_token";
+		const seenAuth: Array<string | undefined> = [];
+		const fetchImpl = vi.fn(
+			async (_url: string | URL | Request, init?: RequestInit) => {
+				const auth = (init?.headers as Record<string, string> | undefined)
+					?.Authorization;
+				seenAuth.push(auth);
+				return new Response(
+					JSON.stringify({ data: { search: { nodes: [] } } }),
+					{ status: 200 },
+				);
+			},
+		) as unknown as typeof fetch;
+		const prepare = makePrTriageCronPrompt({
+			getToken: () => currentToken,
+			fetchImpl,
+			readTemplate: () => `prompt ${PR_DATA_PLACEHOLDER}`,
+		});
+		await prepare(cron);
+		// Simulate a SIGHUP credential rotation between daily fires.
+		currentToken = "ghp_rotated_token";
+		await prepare(cron);
+		// The SECOND fetch used the ROTATED token — the closure read it at fire
+		// time rather than capturing a value once at startDaemon.
+		expect(seenAuth[0]).toBe("Bearer ghp_old_token");
+		expect(seenAuth[1]).toBe("Bearer ghp_rotated_token");
 	});
 
 	it("(CP-2) non-zero PRs → { skip: false, prompt } with the payload injected and NO credentials", async () => {
