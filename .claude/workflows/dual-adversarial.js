@@ -62,6 +62,12 @@ const prNumber = A.prNumber || ''
 // adversarial verification pass over Critical/Important findings. Any value other
 // than the literal "team" leaves the workflow byte-for-byte in STANDARD behavior.
 const mode = A.mode === 'team' ? 'team' : 'standard'
+// Bound the team-mode skeptic fan-out: at most this many blocking (Critical/Important)
+// findings get the 2-skeptic verification pass; the rest are kept un-verified rather than
+// dropped, so the cap can only reduce work, never hide a real bug. A finding-dense plan
+// would otherwise spawn 2×N skeptics per round. Caller (execute-pipeline) passes skepticCap.
+const SKEPTIC_CAP_DEFAULT = 8
+const skepticCap = Number.isInteger(A.skepticCap) && A.skepticCap > 0 ? A.skepticCap : SKEPTIC_CAP_DEFAULT
 if (!projectDir || !iagoRoot) {
   throw new Error('dual-adversarial requires args.projectDir and args.iagoRoot (absolute paths)')
 }
@@ -379,14 +385,35 @@ teamDefs.forEach((def, i) => {
 // C1). A finding dropped by BOTH skeptics moves to `filtered`. Minor findings are kept
 // un-verified. False-negative bias is worse than dropping a real bug, so one confirm keeps it.
 const filtered = []
+// verificationSameFamily (T06): a STRUCTURAL fact — when the skeptic pass runs, both
+// skeptics are Opus, so that verification is same-family (no cross-model diversity for it).
+// verificationDegraded (T06): a real FAILURE — a skeptic that could not RUN (null return),
+// so a finding went unverified on that angle. Distinct signals; do not conflate.
+let verificationSameFamily = false
 let verificationDegraded = false
 if (mode === 'team') {
-  const toVerify = findings.filter((f) => f.severity === 'Critical' || f.severity === 'Important')
+  // Bound skeptic fan-out (T05): verify at most `skepticCap` of the blocking findings, the
+  // highest-priority first (Critical before Important, then longest summary as a proxy for
+  // the most-detailed/most-consequential). Findings BEYOND the cap are kept as un-verified
+  // blocking (never dropped) — the cap reduces verification work, never hides a real bug.
+  const blockingFindings = findings.filter((f) => f.severity === 'Critical' || f.severity === 'Important')
+  const sevRank = (f) => (f.severity === 'Critical' ? 0 : 1)
+  const ranked = [...blockingFindings].sort(
+    (a, b) => sevRank(a) - sevRank(b) || (b.summary || '').length - (a.summary || '').length,
+  )
+  const toVerify = ranked.slice(0, skepticCap)
+  const overflow = ranked.slice(skepticCap)
+  if (overflow.length) {
+    log(
+      `skeptic verification capped at ${skepticCap} of ${blockingFindings.length} blocking findings — ${overflow.length} kept un-verified`,
+    )
+  }
   const kept = []
   for (const f of toVerify) {
-    // Two skeptics, DIFFERENT angles (less-correlated errors — I3). Both are Opus here,
-    // so verification is same-family (DEGRADED, like crossModelDegraded). Surface it.
-    verificationDegraded = true
+    // Two skeptics, DIFFERENT angles (less-correlated errors — I3). Both are Opus here, so
+    // the verification pass is same-family — a structural fact, surfaced separately from a
+    // run failure (T06).
+    verificationSameFamily = true
     const angles = [
       'Argue EXPLOITABILITY / IMPACT: even if the code path exists, prove the impact cannot actually occur (the bad value is bounded, the write is guarded, the failure is recovered).',
       'Argue REACHABILITY / PRECONDITIONS: prove the precondition that would trigger this can never hold from any real caller / input / state in the committed code.',
@@ -401,7 +428,9 @@ if (mode === 'team') {
       ),
     )
     // A skeptic that failed to run (null) cannot refute — treat as a confirm (fail-safe:
-    // keep the finding). real=false counts as a refute ONLY with code evidence (C1).
+    // keep the finding) AND flag the verification as DEGRADED (a real run gap, distinct
+    // from same-family). real=false counts as a refute ONLY with code evidence (C1).
+    if (skeptics.some((s) => !s)) verificationDegraded = true
     const refutes = skeptics.map((s) => s && s.real === false && refuteHasEvidence(s.reason))
     const confirmed = refutes.some((isRefute) => !isRefute) // >= 1 NON-refute keeps it
     if (confirmed) {
@@ -413,11 +442,13 @@ if (mode === 'team') {
       log(`team verification DROPPED [${f.severity}] ${f.summary} (both skeptics refuted with evidence)`)
     }
   }
-  // Reported findings = confirmed (Critical/Important) + all Minor (un-verified). Replace
-  // the findings array in place so the return value and `blocking` reflect verification.
+  // Reported findings = confirmed (verified Critical/Important) + overflow (un-verified
+  // blocking, kept by the cap) + all Minor (un-verified). Replace the findings array in
+  // place so the return value and `blocking` reflect verification.
   const minor = findings.filter((f) => f.severity === 'Minor')
   findings.length = 0
   for (const f of kept) findings.push(f)
+  for (const f of overflow) findings.push(f)
   for (const f of minor) findings.push(f)
 }
 
@@ -469,6 +500,7 @@ return {
   verdict,
   codexSource,
   crossModelDegraded,
+  verificationSameFamily,
   verificationDegraded,
   filtered,
   findings,

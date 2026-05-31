@@ -301,7 +301,7 @@ await test('Minor findings are kept un-verified (never sent to skeptics, never d
   assert.deepStrictEqual(out.filtered, [], 'Minor never filtered')
 })
 
-await test('verificationDegraded surfaces when skeptics are same-family (I3/M2)', async () => {
+await test('verificationSameFamily surfaces when skeptics run (same-family Opus) — T06', async () => {
   const h = makeHarness(
     teamRules({ skeptic: () => ({ real: true, reason: 'confirmed' }) }),
   )
@@ -316,7 +316,49 @@ await test('verificationDegraded surfaces when skeptics are same-family (I3/M2)'
     null,
     null,
   )
-  assert.strictEqual(out.verificationDegraded, true, 'same-family skeptics flagged degraded')
+  // T06: the structural same-family fact is its own flag; verificationDegraded is reserved
+  // for a skeptic that could not RUN, so it stays false when both skeptics returned.
+  assert.strictEqual(out.verificationSameFamily, true, 'skeptics ran → same-family flagged')
+  assert.strictEqual(out.verificationDegraded, false, 'no null skeptic → not degraded')
+})
+
+await test('verificationDegraded is true only when a skeptic fails to run (null) — T06', async () => {
+  const h = makeHarness([
+    { match: (l) => l === 'review', reply: { verdict: 'FAIL', findings: [{ severity: 'Critical', summary: 'x' }] } },
+    { match: (l) => l === 'codex', reply: { source: 'codex', findings: [] } },
+    { match: (l) => l === 'team:data', reply: { findings: [] } },
+    { match: (l) => l === 'team:arch', reply: { findings: [] } },
+    { match: (l) => /^skeptic:0/.test(l), reply: null }, // one angle fails to run every retry
+    { match: (l) => /^skeptic:1/.test(l), reply: { real: true, reason: 'confirmed' } },
+  ])
+  const wf = buildWorkflow()
+  const out = await wf(h.agent, h.parallel, null, h.log, h.phase, { ...baseArgs, mode: 'team' }, null, null)
+  assert.strictEqual(out.verificationSameFamily, true, 'verification ran → same-family')
+  assert.strictEqual(out.verificationDegraded, true, 'a null skeptic marks verification degraded')
+  assert.strictEqual(out.blocking, 1, 'a null skeptic is treated as a confirm — finding kept')
+})
+
+await test('skeptic verification is capped; overflow blocking findings kept un-verified — T05', async () => {
+  const crits = Array.from({ length: 10 }, (_, i) => ({ severity: 'Critical', summary: `crit-${i}` }))
+  const skepticLabels = []
+  const h = makeHarness([
+    { match: (l) => l === 'review', reply: { verdict: 'FAIL', findings: crits } },
+    { match: (l) => l === 'codex', reply: { source: 'codex', findings: [] } },
+    { match: (l) => l === 'team:data', reply: { findings: [] } },
+    { match: (l) => l === 'team:arch', reply: { findings: [] } },
+    {
+      match: (l) => /skeptic/i.test(l),
+      reply: ({ label }) => {
+        skepticLabels.push(label)
+        return { real: true, reason: 'confirmed' }
+      },
+    },
+  ])
+  const wf = buildWorkflow()
+  const out = await wf(h.agent, h.parallel, null, h.log, h.phase, { ...baseArgs, mode: 'team', skepticCap: 8 }, null, null)
+  // 8 findings verified × 2 skeptics = 16 skeptic invocations; the other 2 get none.
+  assert.strictEqual(skepticLabels.length, 16, 'cap=8 → exactly 8 findings × 2 skeptics verified')
+  assert.strictEqual(out.blocking, 10, 'all 10 Criticals remain blocking (8 verified + 2 overflow kept)')
 })
 
 // ── Side-effect assertion (I1) ──────────────────────────────────────────
