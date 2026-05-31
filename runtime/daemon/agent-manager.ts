@@ -1911,6 +1911,49 @@ export class AgentManager extends EventEmitter {
 			}
 			return;
 		}
+		// R1 (feature-pr84-r1-daemon-creds, D2) — a pr-triage RESULT envelope is
+		// a record-and-send signal, NOT a prompt task. The agent (a pure
+		// data-in → text-out transform) writes `{ agentId: "pr-triage",
+		// sendText: "<summary>" }` (or `{ agentId: "pr-triage", noSend: true }`)
+		// to `tasks/pending/` and the DAEMON owns the Telegram send. Like the
+		// ndjsonAlert branch above, this needs no live handle and must NEVER
+		// reach the dispatch path (a prompt-less `{sendText}` envelope would be
+		// mis-classified as `malformed-task` at main.ts:661-677).
+		//
+		// Provenance guard (mirrors I-3): `tasks/pending/` is the GENERIC bus
+		// shared by all agents. The branch fires ONLY when ALL of:
+		//   (a) `agentId === "pr-triage"` (the sole producer),
+		//   (b) the filename uses the DISTINCT `pr-triage-send__` prefix — NOT
+		//       `pr-triage__` (which the alert branch owns), so a foreign
+		//       `rogue-agent__*.json` with a `sendText` body CANNOT trigger a
+		//       daemon send,
+		//   (c) the discriminator is present (`sendText` is a string OR
+		//       `noSend === true`), and
+		//   (d) there is NO non-empty `prompt` field.
+		// Any other shape falls through to the registration/dispatch/poison
+		// path. The actual send + dead-letter timer live in main.ts's
+		// `task-send-needed` handler (it owns the TelegramBot + clearResultTimer).
+		const sendTextRaw = (parsed as { sendText?: unknown }).sendText;
+		const noSendRaw = (parsed as { noSend?: unknown }).noSend;
+		const sendPromptRaw = (parsed as { prompt?: unknown }).prompt;
+		const sendHasPrompt =
+			typeof sendPromptRaw === "string" && sendPromptRaw.length > 0;
+		const hasSendText = typeof sendTextRaw === "string";
+		const isNoSend = noSendRaw === true;
+		if (
+			agentId === "pr-triage" &&
+			filename.startsWith("pr-triage-send__") &&
+			(hasSendText || isNoSend) &&
+			!sendHasPrompt
+		) {
+			this.emit("task-send-needed", {
+				filename,
+				agentId,
+				...(hasSendText ? { sendText: sendTextRaw } : {}),
+				...(isNoSend ? { noSend: true } : {}),
+			});
+			return;
+		}
 		if (!this.isAgentRegistered(agentId)) {
 			await this.emitUnrouted(filename, agentId);
 			return;

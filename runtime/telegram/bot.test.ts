@@ -1547,3 +1547,102 @@ describe("TelegramBot / toJSON (PR45 I7)", () => {
 		expect(json).toContain("REDACTED");
 	});
 });
+
+// R1 (feature-pr84-r1-daemon-creds) — daemon-owned outbound send
+describe("TelegramBot / sendAgentNotification", () => {
+	const TOKEN = "send-notif-secret-token-abcdef-1234567890";
+
+	function buildSendBot(opts: {
+		allowed?: number[];
+		chatId?: number;
+		sendMessage?: FakeTelegramBot["sendMessage"];
+	}): { bot: TelegramBot; fake: FakeTelegramBot } {
+		const fake = new FakeTelegramBot();
+		if (opts.sendMessage !== undefined) fake.sendMessage = opts.sendMessage;
+		const bot = new TelegramBot({
+			token: TOKEN,
+			allowedUserIds: opts.allowed ?? [42, 99],
+			...(opts.chatId !== undefined ? { chatId: opts.chatId } : {}),
+			agentManager: {
+				getHandle: () => undefined,
+				listHandles: () => [],
+				shutdownAgent: async () => undefined,
+				getShape: async () => null,
+			},
+			injectIntoAgent: async () => undefined,
+			botFactory: () => fake as unknown as never,
+		});
+		return { bot, fake };
+	}
+
+	it("sends a short summary as a single plain-text message to getChatId() (Santiago)", async () => {
+		const { bot, fake } = buildSendBot({ allowed: [42, 99] });
+		await bot.start();
+		const result = await bot.sendAgentNotification(
+			"PR Triage 2026-05-31\n\n3 open PRs",
+		);
+		expect(result.ok).toBe(true);
+		expect(fake.sendMessageCalls).toHaveLength(1);
+		// Recipient is allowedUserIds[0] = 42 (Santiago); NO parse_mode set.
+		expect(fake.sendMessageCalls[0].chatId).toBe(42);
+		expect(fake.sendMessageCalls[0].options).toBeUndefined();
+		await bot.stop();
+	});
+
+	it("chunks a >4000-char summary into multiple sendMessage calls", async () => {
+		const { bot, fake } = buildSendBot({});
+		await bot.start();
+		const big = "x".repeat(9000);
+		const result = await bot.sendAgentNotification(big);
+		expect(result.ok).toBe(true);
+		expect(fake.sendMessageCalls.length).toBeGreaterThan(1);
+		// Every chunk stays within Telegram's hard cap.
+		for (const call of fake.sendMessageCalls) {
+			expect(call.text.length).toBeLessThanOrEqual(4096);
+		}
+		await bot.stop();
+	});
+
+	it("returns { ok: false } (no throw) when sendMessage rejects, and never logs the token", async () => {
+		const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+		const { bot } = buildSendBot({
+			sendMessage: async () => {
+				throw new Error("telegram 400 boom");
+			},
+		});
+		await bot.start();
+		const result = await bot.sendAgentNotification("summary");
+		expect(result.ok).toBe(false);
+		expect(result.error).toContain("telegram 400 boom");
+		const logs = errSpy.mock.calls.map((c) => String(c[0])).join("\n");
+		expect(logs).toContain("sendAgentNotification failed");
+		expect(logs).not.toContain(TOKEN);
+		await bot.stop();
+	});
+
+	it("surfaces an HTTP status when the library attaches response.statusCode", async () => {
+		const { bot } = buildSendBot({
+			sendMessage: async () => {
+				const err = new Error("rate limited") as Error & {
+					response?: { statusCode: number };
+				};
+				err.response = { statusCode: 429 };
+				throw err;
+			},
+		});
+		await bot.start();
+		const result = await bot.sendAgentNotification("summary");
+		expect(result.ok).toBe(false);
+		expect(result.status).toBe(429);
+		await bot.stop();
+	});
+
+	it("returns { ok: false, error: 'telegram-not-configured' } when the bot is not started", async () => {
+		const { bot, fake } = buildSendBot({});
+		// Deliberately NOT starting — this.bot stays null (local-dev path).
+		const result = await bot.sendAgentNotification("summary");
+		expect(result.ok).toBe(false);
+		expect(result.error).toBe("telegram-not-configured");
+		expect(fake.sendMessageCalls).toHaveLength(0);
+	});
+});

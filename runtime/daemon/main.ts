@@ -111,9 +111,15 @@ import {
 	getCredentialEnvVars,
 	loadSystemdCredentials,
 } from "./cred-bootstrap.js";
-import { CronScheduler, type RegisterCronOpts } from "./cron-scheduler.js";
+import {
+	CronScheduler,
+	type PrepareCronPrompt,
+	type RegisterCronOpts,
+	type RegisteredCron,
+} from "./cron-scheduler.js";
 import { HeartbeatController } from "./heartbeat.js";
 import { IpcServer } from "./ipc-server.js";
+import { fetchOpenPrs, sanitizePrPayload } from "./pr-triage-fetch.js";
 import { ensureStateDirsSync, pathFor } from "./state-paths.js";
 import { type DaemonEvent, PR_TRIAGE_ALERT_KINDS, emit } from "./telemetry.js";
 
@@ -515,6 +521,158 @@ export interface TaskDispatchEvent {
 }
 
 /**
+ * R1 (feature-pr84-r1-daemon-creds, D2) — payload of the `'task-send-needed'`
+ * event `AgentManager.processPendingTask` emits when a pr-triage RESULT
+ * envelope (`pr-triage-send__*.json`) lands. The daemon owns the Telegram send,
+ * so the agent never holds the bot token. Exactly one of `sendText` / `noSend`
+ * is present (the producer-branch discriminator).
+ */
+export interface TaskSendEvent {
+	readonly filename: string;
+	readonly agentId: string;
+	readonly sendText?: string;
+	readonly noSend?: boolean;
+}
+
+/**
+ * R1 (feature-pr84-r1-daemon-creds, D4) — dead-letter deadline. A dispatched
+ * pr-triage PROMPT that does not produce a result envelope within this window
+ * emits `pr-triage-result-timeout`. `.unref()`'d so it never keeps the process
+ * alive; does NOT survive a daemon restart (next cron fire recovers; full
+ * durability = deferred #5).
+ */
+export const RESULT_TIMEOUT_MS = 120_000;
+
+/**
+ * R1 (feature-pr84-r1-daemon-creds, D4) — build the shared result-timer
+ * closures the dispatch handler and the send handler both use. `maxConcurrent:
+ * 1` means a single in-flight dispatch per pr-triage agent, so a single-key map
+ * is sufficient (a re-fire overwrites: clear-then-set). The timer is
+ * `.unref()`'d so it never keeps the process alive, and does NOT survive a
+ * daemon restart.
+ */
+export function makeResultTimers(deps: {
+	emit: (event: DaemonEvent) => Promise<unknown>;
+	timeoutMs?: number;
+}): {
+	startResultTimer: (agentId: string, timeoutMs?: number) => void;
+	clearResultTimer: (agentId: string) => void;
+} {
+	const { emit } = deps;
+	const defaultTimeout = deps.timeoutMs ?? RESULT_TIMEOUT_MS;
+	const timers = new Map<string, NodeJS.Timeout>();
+	const clearResultTimer = (agentId: string): void => {
+		const existing = timers.get(agentId);
+		if (existing !== undefined) {
+			clearTimeout(existing);
+			timers.delete(agentId);
+		}
+	};
+	const startResultTimer = (agentId: string, timeoutMs?: number): void => {
+		// Re-fire overwrites: clear-then-set (single in-flight per agent).
+		clearResultTimer(agentId);
+		const t = setTimeout(() => {
+			timers.delete(agentId);
+			void emit({
+				kind: "pr-triage-result-timeout",
+				agentId,
+				reason: "no-envelope-before-deadline",
+			});
+		}, timeoutMs ?? defaultTimeout);
+		if (typeof t.unref === "function") t.unref();
+		timers.set(agentId, t);
+	};
+	return { startResultTimer, clearResultTimer };
+}
+
+/**
+ * R1 (feature-pr84-r1-daemon-creds, D2/D4) — build the handler the daemon
+ * subscribes to `AgentManager`'s `'task-send-needed'` event. The DAEMON owns the
+ * Telegram send so the pr-triage agent never holds the bot token nor makes a
+ * network call.
+ *
+ * Behavior per event (mirrors the alert branch's durability rule):
+ *   - `noSend` → emit `pr-triage-no-send` (D4: distinguishes "nothing to send"
+ *     from "agent died").
+ *   - else → `telegramBot.sendAgentNotification(sendText)`; on `!ok` emit the
+ *     existing Plan-04d `pr-triage-telegram-send-failed` kind.
+ *   - claim (resolve) the envelope file ONLY after the telemetry/send outcome is
+ *     RECORDED — on a degraded telemetry dir leave it in `pending/` to re-trip.
+ *   - always `clearResultTimer(agentId)` in a `finally` (the agent produced a
+ *     result, so the dead-letter timer is no longer relevant).
+ *
+ * `telegramBot` may be null in local-dev (`config.telegram` absent);
+ * `sendAgentNotification` already guards that and returns `{ ok: false }`.
+ */
+export function makeTaskSendHandler(deps: {
+	agentManager: AgentManager;
+	emit: (event: DaemonEvent) => Promise<unknown>;
+	telegramBot: TelegramBot | null;
+	clearResultTimer: (agentId: string) => void;
+}): (evt: TaskSendEvent) => Promise<void> {
+	const { agentManager, emit, telegramBot, clearResultTimer } = deps;
+	return async (evt: TaskSendEvent): Promise<void> => {
+		try {
+			if (evt.noSend === true) {
+				// D4: empty summary — record-and-resolve, no send.
+				const recorded = await emit({
+					kind: "pr-triage-no-send",
+					agentId: evt.agentId,
+					filename: evt.filename,
+				});
+				if (recorded) {
+					await agentManager.claimTask(evt.filename, evt.agentId);
+				}
+				return;
+			}
+			const sendText = evt.sendText ?? "";
+			if (telegramBot === null) {
+				// Local-dev / telegram-not-configured: record the failure so the
+				// envelope is not silently lost, then leave it in pending/ to
+				// re-trip (no durable send happened).
+				await emit({
+					kind: "pr-triage-telegram-send-failed",
+					agentId: evt.agentId,
+					filename: evt.filename,
+					alertKind: "pr-triage-telegram-send-failed",
+					details: "telegram-not-configured",
+				});
+				return;
+			}
+			const r = await telegramBot.sendAgentNotification(sendText);
+			if (!r.ok) {
+				// REUSE the existing Plan-04d kind. `details` carries a token-free
+				// status/error label from `sendAgentNotification`.
+				await emit({
+					kind: "pr-triage-telegram-send-failed",
+					agentId: evt.agentId,
+					filename: evt.filename,
+					alertKind: "pr-triage-telegram-send-failed",
+					details: `${r.status ?? ""} ${r.error ?? ""}`.trim(),
+				});
+				// Leave the envelope in pending/ so the failed send re-trips next
+				// tick rather than being silently resolved.
+				return;
+			}
+			// Send succeeded — resolve the envelope.
+			await agentManager.claimTask(evt.filename, evt.agentId);
+		} catch (err) {
+			// Never let the send path crash the polling/dispatch loop. Surface
+			// the failure as telemetry; leave the file in pending/ for retry.
+			await emit({
+				kind: "pr-triage-telegram-send-failed",
+				agentId: evt.agentId,
+				filename: evt.filename,
+				alertKind: "pr-triage-telegram-send-failed",
+				details: `send-handler-exception ${err instanceof Error ? err.message : String(err)}`,
+			});
+		} finally {
+			clearResultTimer(evt.agentId);
+		}
+	};
+}
+
+/**
  * Plan 04d Task 3 — build the dispatch handler the daemon subscribes to
  * `AgentManager`'s `'task-dispatch-needed'` event. Extracted into a
  * factory so main.test.ts can exercise the handler directly without
@@ -578,8 +736,14 @@ export function makeTaskDispatchHandler(deps: {
 	// accepts both the real telemetry `emit` (now Promise<boolean> — reports
 	// durable-write success) and the Promise<void> mocks used in tests.
 	emit: (event: DaemonEvent) => Promise<unknown>;
+	// R1 (feature-pr84-r1-daemon-creds, D4) — arm the dead-letter timer after a
+	// successful pr-triage PROMPT dispatch. The matching `task-send-needed`
+	// handler clears it when the agent's result envelope arrives. Optional so
+	// the existing handler unit tests (which only assert dispatch behavior) need
+	// no timer plumbing.
+	startResultTimer?: (agentId: string, timeoutMs?: number) => void;
 }): (evt: TaskDispatchEvent) => Promise<void> {
-	const { agentManager, emit } = deps;
+	const { agentManager, emit, startResultTimer } = deps;
 	return async (evt: TaskDispatchEvent): Promise<void> => {
 		try {
 			const handle = findHandleForAgent(agentManager, evt.agentId);
@@ -695,6 +859,16 @@ export function makeTaskDispatchHandler(deps: {
 			}
 			try {
 				await agentManager.claimTask(evt.filename, evt.agentId);
+				// R1 (feature-pr84-r1-daemon-creds, D4) — the PROMPT was
+				// dispatched (claimed) successfully. Arm the dead-letter timer so
+				// an agent that crashes WITHOUT writing a result envelope surfaces
+				// as `pr-triage-result-timeout` rather than a silently lost
+				// notification. The `task-send-needed` handler clears it when the
+				// agent's `pr-triage-send__*.json` envelope arrives. Scoped to
+				// pr-triage — the only agent on the daemon-owned send contract.
+				if (startResultTimer !== undefined && evt.agentId === "pr-triage") {
+					startResultTimer(evt.agentId, RESULT_TIMEOUT_MS);
+				}
 			} catch (err) {
 				// claimTask itself surfaces `claim-task-failed` telemetry on
 				// fs.rename errors and resolves — a throw here is unexpected
@@ -725,6 +899,90 @@ export function makeTaskDispatchHandler(deps: {
 			// cron-fired task wedged in `pending/` until daemon restart.
 			agentManager.releaseDispatchSlot(evt.filename);
 		}
+	};
+}
+
+/**
+ * R1 (feature-pr84-r1-daemon-creds) — the placeholder in
+ * `prompt-template.md` the daemon substitutes the sanitized scalar PR payload
+ * JSON into. The agent reads ONLY this injected data (no gh/curl/token).
+ */
+export const PR_DATA_PLACEHOLDER = "{{PR_DATA_JSON}}";
+
+/**
+ * R1 (feature-pr84-r1-daemon-creds) — the default `prepareCronPrompt` for the
+ * pr-triage cron. Holds `GH_TOKEN` in the daemon's own process; fetches all
+ * open PRs, sanitizes them to a scalar payload (no raw bodies), and:
+ *   - on fetch error → `{ skip: true, reason: "pr-fetch-failed" }` (do NOT
+ *     spawn with stale/no data),
+ *   - `totalCount === 0` → `{ skip: true, reason: "no-open-prs" }` (REPLACES the
+ *     bash wake-check gate — zero PRs means no spawn, no notification),
+ *   - else → read the template once and substitute the payload JSON into the
+ *     `{{PR_DATA_JSON}}` placeholder, returning `{ skip: false, prompt }`.
+ *
+ * The fetch is bounded by `fetchTimeoutMs` (default 15s, like the old
+ * `WAKE_CHECK_TIMEOUT_MS`) so a hung GitHub call cannot wedge the 60s tick.
+ *
+ * Gated to `agentId === "pr-triage"` — any other cron with no GH_TOKEN need
+ * gets the verbatim template (the hook returns the template unchanged with no
+ * fetch). A missing `GH_TOKEN` skips the fetch with `pr-fetch-failed` so the
+ * daemon never spawns the agent with stale data.
+ *
+ * Exported for unit testability — main.test.ts drives it with an injected
+ * fetch + readFile + token.
+ */
+export function makePrTriageCronPrompt(deps: {
+	token: string | undefined;
+	fetchImpl?: typeof fetch;
+	fetchTimeoutMs?: number;
+	readTemplate?: (templatePath: string) => string;
+	nowFn?: () => number;
+}): PrepareCronPrompt {
+	const readTemplate =
+		deps.readTemplate ?? ((p: string) => fs.readFileSync(p, "utf8"));
+	const nowFn = deps.nowFn ?? (() => Date.now());
+	return async (cron: RegisteredCron) => {
+		// Only the pr-triage cron uses the daemon-fetch path. Any other cron
+		// (none today) falls back to the verbatim template — no fetch, no token.
+		if (cron.agentId !== "pr-triage") {
+			try {
+				return { skip: false, prompt: readTemplate(cron.promptTemplatePath) };
+			} catch {
+				return { skip: true, reason: "prepare-skip" };
+			}
+		}
+		const token = deps.token;
+		if (typeof token !== "string" || token.length === 0) {
+			// No credential → cannot fetch → do NOT spawn with stale data.
+			return { skip: true, reason: "pr-fetch-failed" };
+		}
+		let payload: ReturnType<typeof sanitizePrPayload>;
+		try {
+			const prs = await fetchOpenPrs(token, {
+				...(deps.fetchImpl !== undefined ? { fetchImpl: deps.fetchImpl } : {}),
+				...(deps.fetchTimeoutMs !== undefined
+					? { timeoutMs: deps.fetchTimeoutMs }
+					: {}),
+			});
+			payload = sanitizePrPayload(prs, nowFn());
+		} catch {
+			// FetchPrsError is token-free; we don't even need its message here.
+			return { skip: true, reason: "pr-fetch-failed" };
+		}
+		if (payload.totalCount === 0) {
+			// Zero open PRs → no spawn (replaces the wake-check exit-1 gate).
+			return { skip: true, reason: "no-open-prs" };
+		}
+		let template: string;
+		try {
+			template = readTemplate(cron.promptTemplatePath);
+		} catch {
+			return { skip: true, reason: "prepare-skip" };
+		}
+		const prompt = template
+			.split(PR_DATA_PLACEHOLDER)
+			.join(JSON.stringify(payload, null, 2));
+		return { skip: false, prompt };
 	};
 }
 
@@ -766,50 +1024,29 @@ export const CRON_AGENT_RESTART_BACKOFF_MS: readonly number[] = [
 ];
 
 /**
- * pr84-gap-closure (Codex H2) — the daemon-secrets a cron-driven agent
- * inherits from the daemon's own `process.env`, gated by a daemon-owned
- * trusted-agent allowlist.
+ * R1 (feature-pr84-r1-daemon-creds, D1 — agents never hold long-lived secrets)
+ * — the daemon-owned set of NON-SECRET process-level vars a trusted cron
+ * agent's PTY needs to actually run a shell.
  *
- * The pr-triage agent's bash needs `IAGO_TELEGRAM_BOT_TOKEN`,
- * `IAGO_TELEGRAM_ALLOWED_USER_IDS`, and `GH_TOKEN` to post its Telegram
- * report and query GitHub (prompt-template.md lines 113-114). The PTY
- * adapter (`claude-pty.ts`) forwards ONLY `opts.env` and is forbidden
- * from merging `process.env` (its CRITICAL #1 invariant — the daemon is
- * multi-tenant, so a generic merge would leak iaGO's creds into every
- * spawned agent, including future client agents). The daemon, as the
- * trusted orchestrator, is the layer allowed to compose its own secrets
- * into a per-agent env — but ONLY for agents in
- * `CRON_AGENT_SECRET_TRUSTED_AGENTS`, and ONLY this explicit allowlist.
- * See `composeAgentEnv` in `registerCronAgentWithRestart`.
- */
-export const CRON_AGENT_ENV_ALLOWLIST: readonly string[] = [
-	"IAGO_TELEGRAM_BOT_TOKEN",
-	"IAGO_TELEGRAM_ALLOWED_USER_IDS",
-	"GH_TOKEN",
-];
-
-/**
- * pr84-gap-closure (Codex CRITICAL #1 — non-secret base-runtime env) — the
- * daemon-owned set of NON-SECRET process-level vars a trusted cron agent's PTY
- * needs to actually run a shell. node-pty REPLACES (does not merge) the parent
- * env when `env` is supplied (claude-pty.ts spawnInternal — the deliberate
- * CRITICAL #1 multi-tenant isolation invariant). So a cron agent whose composed
- * env carries ONLY a state-root + the secret allowlist gets a shell with no
- * `PATH`/`HOME`/`SHELL`/`LANG`: it cannot resolve `gh`/`curl`/`jq`/`mv`/`sed`,
- * and node-pty may not even locate the `claude` binary. The feature is
- * non-functional on a real target without these.
+ * The pr-triage agent NO LONGER holds any secret: the daemon fetches the PRs
+ * (holding `GH_TOKEN` in its own process) and sends the Telegram summary
+ * itself (holding `IAGO_TELEGRAM_BOT_TOKEN`). The agent is a pure data-in →
+ * text-out transform — it makes no network call and reads no token. So there is
+ * NO secret-injection allowlist anymore (the former `CRON_AGENT_ENV_ALLOWLIST`
+ * of `IAGO_TELEGRAM_BOT_TOKEN` / `IAGO_TELEGRAM_ALLOWED_USER_IDS` / `GH_TOKEN`
+ * is DELETED).
  *
- * Why these are safe to forward while the `CRON_AGENT_ENV_ALLOWLIST` secrets
- * stay gated: these are NON-SECRET runtime descriptors (search path, home dir,
- * login shell, locale). Forwarding them leaks no credential and exposes nothing
- * a local shell could not already discover. The secrets (Telegram bot token, GH
- * PAT) DO leak trust, so they remain gated behind
- * `CRON_AGENT_SECRET_TRUSTED_AGENTS` exactly as before. Both lists are forwarded
- * ONLY for trusted agents — an untrusted agent still receives `baseEnv`
- * unchanged (the multi-tenant isolation invariant is NOT relaxed for it).
+ * node-pty REPLACES (does not merge) the parent env when `env` is supplied
+ * (claude-pty.ts spawnInternal — the deliberate CRITICAL #1 multi-tenant
+ * isolation invariant). So a cron agent whose composed env carries ONLY a
+ * state-root gets a shell with no `PATH`/`HOME`/`SHELL`/`LANG` and cannot
+ * resolve the `claude` binary or basic shell utilities. These are NON-SECRET
+ * runtime descriptors (search path, home dir, login shell, locale): forwarding
+ * them leaks no credential and exposes nothing a local shell could not already
+ * discover.
  *
  * `LC_ALL`/`XDG_*` are intentionally omitted — `LANG` covers locale for the
- * shell utilities pr-triage invokes, and adding `XDG_*` would forward more of
+ * shell utilities the agent invokes, and adding `XDG_*` would forward more of
  * the daemon's home-dir layout than the agent needs. Extend this list only with
  * a documented runtime need.
  */
@@ -821,66 +1058,55 @@ export const CRON_AGENT_RUNTIME_ALLOWLIST: readonly string[] = [
 ];
 
 /**
- * pr84-gap-closure (Codex H2 follow-up — spoof close) — the daemon-owned set
- * of agentIds permitted to inherit the daemon's `CRON_AGENT_ENV_ALLOWLIST`
- * secrets.
- *
- * The prior gate keyed secret injection on `agentConfig.org === "internal"`,
- * but `org` is read from the agent's OWN `agent-config.json`. The daemon
- * registers every cron entry under `agentsDir`, so a less-trusted agent could
- * self-label `org: "internal"` and inherit the daemon's Telegram/GH creds.
+ * R1 (feature-pr84-r1-daemon-creds) — the daemon-owned set of agentIds for
+ * which the daemon overlays the NON-SECRET `CRON_AGENT_RUNTIME_ALLOWLIST`
+ * runtime descriptors. (Renamed from `CRON_AGENT_SECRET_TRUSTED_AGENTS`: there
+ * are no secrets in the overlay anymore, only runtime vars.)
  *
  * `agentId` is daemon-controlled (the registration key passed to
- * `registerCronAgentWithRestart`, NOT a self-declared config field), so gating
- * on membership in THIS set fails closed: any agent not explicitly listed gets
- * ONLY its declared `agentConfig.env`, never the daemon secrets.
+ * `registerCronAgentWithRestart`, NOT a self-declared config field). The gate
+ * is now non-security-critical (runtime descriptors leak no credential) but is
+ * kept so the multi-tenant isolation contract stays crisp: an untrusted /
+ * client agent still gets `baseEnv` UNCHANGED (no PATH injection), exactly as
+ * the claude-pty isolation invariant Test 7 encodes.
  */
-export const CRON_AGENT_SECRET_TRUSTED_AGENTS: ReadonlySet<string> = new Set([
+export const CRON_AGENT_RUNTIME_TRUSTED_AGENTS: ReadonlySet<string> = new Set([
 	"pr-triage",
 ]);
 
 /**
- * pr84-gap-closure (Codex H2, dual-adversarial pass #2 I-2) — pure
- * env-composition helper extracted from the `composeAgentEnv` closure in
- * `registerCronAgentWithRestart` so the secret-injection allowlist is directly
- * unit-testable.
+ * R1 (feature-pr84-r1-daemon-creds) — pure env-composition helper. Returns
+ * `baseEnv` UNCHANGED unless `agentId` is in the daemon-owned
+ * `CRON_AGENT_RUNTIME_TRUSTED_AGENTS` set, in which case it returns a shallow
+ * copy of `baseEnv` overlaid with ONLY the `CRON_AGENT_RUNTIME_ALLOWLIST`
+ * NON-SECRET base-runtime vars (`PATH`/`HOME`/`SHELL`/`LANG`) — taking only the
+ * keys actually present (non-empty string) in `daemonEnv`. Absent/empty values
+ * are skipped so we never materialize empty-string env entries.
  *
- * Returns `baseEnv` UNCHANGED unless `agentId` is in the daemon-owned
- * `CRON_AGENT_SECRET_TRUSTED_AGENTS` set, in which case it returns a shallow
- * copy of `baseEnv` merged with (1) the `CRON_AGENT_RUNTIME_ALLOWLIST`
- * non-secret base-runtime vars (`PATH`/`HOME`/`SHELL`/`LANG`) and (2) the
- * `CRON_AGENT_ENV_ALLOWLIST` secrets — taking only the keys actually present
- * (non-empty string) in `daemonEnv`. Absent/empty values are skipped so we
- * never materialize empty-string env entries (no undefined injection).
+ * CRITICAL SECURITY PROPERTY (D1): NO secret is EVER copied into the composed
+ * agent env. The former secret allowlist is gone; `IAGO_TELEGRAM_BOT_TOKEN`,
+ * `GH_TOKEN`, and `IAGO_TELEGRAM_ALLOWED_USER_IDS` present in `daemonEnv` are
+ * NOT overlaid because they are not in `CRON_AGENT_RUNTIME_ALLOWLIST`. The
+ * daemon still holds those secrets in its OWN process.env for its own
+ * fetch/send — it just no longer hands them to any agent.
  *
- * The non-secret runtime vars are required because node-pty REPLACES the parent
- * env (claude-pty.ts), so without them the spawned shell cannot resolve
- * `gh`/`curl`/`jq` or even the `claude` binary. They leak no credential, so
- * they ride the SAME trust gate as the secrets but carry no exfil risk — see
- * `CRON_AGENT_RUNTIME_ALLOWLIST` JSDoc.
- *
- * The gate is on the daemon-controlled `agentId`, NOT the agent's
- * self-declared `org` — a less-trusted cron agent cannot opt into the daemon's
- * Telegram/GH creds (NOR the runtime vars) by self-labeling `org: "internal"`
- * in its own `agent-config.json`. An untrusted agent gets `baseEnv` UNCHANGED:
- * the multi-tenant isolation invariant is preserved for it (no PATH injection).
- * See `CRON_AGENT_SECRET_TRUSTED_AGENTS` JSDoc.
+ * The runtime-var overlay is required because node-pty REPLACES the parent env
+ * (claude-pty.ts), so without them the spawned shell cannot locate the `claude`
+ * binary. An untrusted agent gets `baseEnv` UNCHANGED: the multi-tenant
+ * isolation invariant is preserved for it (no PATH injection).
  */
 export function composeCronAgentEnv(
 	agentId: string,
 	baseEnv: Record<string, string>,
 	daemonEnv: NodeJS.ProcessEnv,
 ): Record<string, string> {
-	if (!CRON_AGENT_SECRET_TRUSTED_AGENTS.has(agentId)) return baseEnv;
+	if (!CRON_AGENT_RUNTIME_TRUSTED_AGENTS.has(agentId)) return baseEnv;
 	const merged: Record<string, string> = { ...baseEnv };
-	// Non-secret base-runtime vars first (PATH/HOME/SHELL/LANG), then the
-	// secrets — both gated on the trusted-agent check above. A declared
-	// `baseEnv` value already present for a key is overwritten by the daemon's
-	// process.env value (the daemon's runtime/creds are authoritative).
-	for (const key of [
-		...CRON_AGENT_RUNTIME_ALLOWLIST,
-		...CRON_AGENT_ENV_ALLOWLIST,
-	]) {
+	// ONLY the non-secret runtime descriptors are overlaid — NO secrets. A
+	// declared `baseEnv` value already present for a key is overwritten by the
+	// daemon's process.env value (the daemon's runtime descriptors are
+	// authoritative).
+	for (const key of CRON_AGENT_RUNTIME_ALLOWLIST) {
 		const value = daemonEnv[key];
 		if (typeof value === "string" && value.length > 0) {
 			merged[key] = value;
@@ -936,17 +1162,15 @@ export async function registerCronAgentWithRestart(deps: {
 	const { agentManager, agentId, agentConfig, isShuttingDown } = deps;
 	const backoffMs = deps.backoffMs ?? CRON_AGENT_RESTART_BACKOFF_MS;
 
-	// pr84-gap-closure (Codex H2, brief D2 + H2-follow-up) — compose the
-	// per-agent env the daemon hands to `registerAgent`. For an agent in the
-	// daemon-owned `CRON_AGENT_SECRET_TRUSTED_AGENTS` allowlist, merge the
-	// allowlisted daemon secrets that are actually present in `process.env`
-	// (skip absent/empty so we never materialize empty-string env entries).
-	// Any agent NOT in the allowlist gets ONLY its declared `agentConfig.env`.
-	// Gating on the daemon-controlled `agentId` (NOT the self-declared
-	// `agentConfig.org`) fails closed: a less-trusted cron agent cannot opt
-	// into the daemon's creds by self-labeling `org: "internal"` in its own
-	// `agent-config.json`. Used for BOTH the initial registration and the
-	// restart re-registration so a restarted agent keeps its creds.
+	// R1 (feature-pr84-r1-daemon-creds) — compose the per-agent env the daemon
+	// hands to `registerAgent`. For an agent in the daemon-owned
+	// `CRON_AGENT_RUNTIME_TRUSTED_AGENTS` set, overlay ONLY the NON-SECRET
+	// `CRON_AGENT_RUNTIME_ALLOWLIST` runtime descriptors (PATH/HOME/SHELL/LANG)
+	// present in `process.env` (skip absent/empty). NO secret is ever injected —
+	// the agent holds no token (the daemon does its own GitHub fetch + Telegram
+	// send). Any agent NOT in the set gets ONLY its declared `agentConfig.env`
+	// (multi-tenant isolation preserved). Used for BOTH the initial registration
+	// and the restart re-registration.
 	const composeAgentEnv = (): Record<string, string> =>
 		composeCronAgentEnv(agentId, agentConfig.env, process.env);
 
@@ -1535,7 +1759,15 @@ export async function startDaemon(
 			"AgentManager.startPollingLoop not found — 07b not landed or class shape changed post-compile",
 		);
 	}
-	const scheduler = new CronScheduler({ agentManager });
+	// R1 (feature-pr84-r1-daemon-creds) — the daemon owns the GitHub fetch +
+	// Telegram send. `prepareCronPrompt` runs the fetch + sanitize + payload
+	// injection for pr-triage and gates the spawn on zero PRs (replacing the
+	// retired bash wake-check). The daemon holds `GH_TOKEN` in its OWN
+	// process.env (cred-bootstrap); the agent never sees it.
+	const scheduler = new CronScheduler({
+		agentManager,
+		prepareCronPrompt: makePrTriageCronPrompt({ token: process.env.GH_TOKEN }),
+	});
 	const agentsDir = resolveAgentsDir();
 	const cronEntries = await loadCronEntries(agentsDir);
 	for (const opts of cronEntries) {
@@ -1588,6 +1820,13 @@ export async function startDaemon(
 		});
 	}
 
+	// R1 (feature-pr84-r1-daemon-creds, D4) — shared dead-letter timer closures
+	// the dispatch handler (arm-on-dispatch) and the send handler
+	// (clear-on-envelope) both use. A dispatched pr-triage PROMPT that produces
+	// no result envelope within `RESULT_TIMEOUT_MS` surfaces as
+	// `pr-triage-result-timeout` rather than a silently lost notification.
+	const { startResultTimer, clearResultTimer } = makeResultTimers({ emit });
+
 	// Plan 04d Task 3 — subscribe the dispatch handler BEFORE
 	// `startPollingLoop` (called below at the post-shutdown-guard step) so
 	// the first tick already sees a listener. C2 stress fix: the
@@ -1595,7 +1834,11 @@ export async function startDaemon(
 	// `agentManager.stopPollingLoop()` so a tick that fires during
 	// shutdown does not silently decrement via the listener-less
 	// `claimTask` fallback path.
-	const taskDispatchHandler = makeTaskDispatchHandler({ agentManager, emit });
+	const taskDispatchHandler = makeTaskDispatchHandler({
+		agentManager,
+		emit,
+		startResultTimer,
+	});
 	const taskDispatchListener = (evt: TaskDispatchEvent): void => {
 		void taskDispatchHandler(evt);
 	};
@@ -1633,6 +1876,23 @@ export async function startDaemon(
 		});
 		await bot.start();
 	}
+
+	// R1 (feature-pr84-r1-daemon-creds, D2/D4) — subscribe the send handler
+	// AFTER `bot` is constructed so it owns the live TelegramBot reference (may
+	// be null in local-dev; `sendAgentNotification` guards that). The handler
+	// sends the agent's text summary to Santiago itself and clears the
+	// dead-letter timer when the result envelope arrives. Teardown removes this
+	// listener alongside the dispatch listener in `shutdown`.
+	const taskSendHandler = makeTaskSendHandler({
+		agentManager,
+		emit,
+		telegramBot: bot,
+		clearResultTimer,
+	});
+	const taskSendListener = (evt: TaskSendEvent): void => {
+		void taskSendHandler(evt);
+	};
+	agentManager.on("task-send-needed", taskSendListener);
 
 	// `shuttingDown` is declared above (hoisted for the I-C cron-agent
 	// restart loop). All assignments happen inside `shutdown`.
@@ -1738,6 +1998,17 @@ export async function startDaemon(
 		} catch (err) {
 			console.error(
 				`[daemon] removeListener(task-dispatch-needed) failed: ${err instanceof Error ? err.message : String(err)}`,
+			);
+		}
+		// R1 (feature-pr84-r1-daemon-creds) — drop the send listener too so a
+		// tick that fires during shutdown cannot route a send envelope into a
+		// torn-down handler. Order is irrelevant relative to the dispatch
+		// listener removal; both must run before the daemon exits.
+		try {
+			agentManager.removeListener("task-send-needed", taskSendListener);
+		} catch (err) {
+			console.error(
+				`[daemon] removeListener(task-send-needed) failed: ${err instanceof Error ? err.message : String(err)}`,
 			);
 		}
 		// Opus I4: bound each stage with `withTimeout`. A hung adapter

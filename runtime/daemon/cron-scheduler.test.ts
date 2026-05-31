@@ -937,3 +937,108 @@ describe("CronScheduler — terminal listener filename filter", () => {
 		await sch.stop();
 	});
 });
+
+// R1 (feature-pr84-r1-daemon-creds): prepareCronPrompt — daemon-side
+// fetch + payload injection + zero-PR gate (replaces the bash wake-check).
+describe("CronScheduler — prepareCronPrompt (R1)", () => {
+	it("(R1-1) zero-PR skip → cron-skipped(no-open-prs), NO task file, NO wake-check spawn", async () => {
+		vi.useFakeTimers();
+		const prompt = writePromptTemplate("p.txt", "template body");
+		const sch = new CronScheduler({
+			agentManager: new EventEmitter(),
+			nowFn: () => new Date(Date.UTC(2026, 4, 18, 14, 0, 0)),
+			prepareCronPrompt: async () => ({ skip: true, reason: "no-open-prs" }),
+		});
+		sch.registerCron({
+			agentId: "pr-triage",
+			schedule: "0 14 * * *",
+			promptTemplatePath: prompt,
+			outputTaskNamePrefix: "pr-triage",
+		});
+		sch.start();
+		await sch._tickForTests();
+
+		// No bash wake-check is spawned — gating is daemon-side.
+		expect(spawnSyncMock).not.toHaveBeenCalled();
+		// No task file written.
+		const pending = await fsp.readdir(path.join(tempDir, "tasks/pending"));
+		expect(pending).toHaveLength(0);
+		const evts = await readTelemetry();
+		const skipped = evts.find((e) => e.kind === "cron-skipped");
+		expect(skipped).toBeDefined();
+		expect(skipped?.reason).toBe("no-open-prs");
+		// runningCount NOT incremented on a skip.
+		expect(sch._runningCountForTests().get("pr-triage")).toBeUndefined();
+		await sch.stop();
+	});
+
+	it("(R1-2) non-zero PRs → task file whose prompt has the injected payload and NO credentials", async () => {
+		vi.useFakeTimers();
+		const prompt = writePromptTemplate("p.txt", "ignored verbatim template");
+		const injectedPrompt =
+			'PR DATA: {"totalCount":2,"prs":[{"number":7}]}\nclassify';
+		const sch = new CronScheduler({
+			agentManager: new EventEmitter(),
+			nowFn: () => new Date(Date.UTC(2026, 4, 18, 14, 0, 0)),
+			prepareCronPrompt: async () => ({ skip: false, prompt: injectedPrompt }),
+		});
+		sch.registerCron({
+			agentId: "pr-triage",
+			schedule: "0 14 * * *",
+			promptTemplatePath: prompt,
+			outputTaskNamePrefix: "pr-triage",
+		});
+		sch.start();
+		await sch._tickForTests();
+
+		const pending = await fsp.readdir(path.join(tempDir, "tasks/pending"));
+		expect(pending).toHaveLength(1);
+		const body = await fsp.readFile(
+			path.join(tempDir, "tasks/pending", pending[0] as string),
+			"utf8",
+		);
+		const parsed = JSON.parse(body) as Record<string, unknown>;
+		expect(parsed.agentId).toBe("pr-triage");
+		expect(parsed.needsApproval).toBe(false);
+		// The injected payload (not the verbatim template) is the prompt.
+		expect(parsed.prompt).toBe(injectedPrompt);
+		expect(String(parsed.prompt)).toContain('"totalCount":2');
+		// No credential / gh / curl reference in the task body.
+		const serialized = JSON.stringify(parsed);
+		expect(serialized).not.toContain("gh ");
+		expect(serialized).not.toContain("curl");
+		expect(serialized).not.toContain("GH_TOKEN");
+		expect(serialized).not.toContain("IAGO_TELEGRAM_BOT_TOKEN");
+		// cron-fired emitted.
+		const evts = await readTelemetry();
+		expect(evts.some((e) => e.kind === "cron-fired")).toBe(true);
+		await sch.stop();
+	});
+
+	it("(R1-3) a throwing prepareCronPrompt → cron-skipped(pr-fetch-failed), no task file", async () => {
+		vi.useFakeTimers();
+		const prompt = writePromptTemplate("p.txt", "template");
+		const sch = new CronScheduler({
+			agentManager: new EventEmitter(),
+			nowFn: () => new Date(Date.UTC(2026, 4, 18, 14, 0, 0)),
+			prepareCronPrompt: async () => {
+				throw new Error("boom");
+			},
+		});
+		sch.registerCron({
+			agentId: "pr-triage",
+			schedule: "0 14 * * *",
+			promptTemplatePath: prompt,
+			outputTaskNamePrefix: "pr-triage",
+		});
+		sch.start();
+		await sch._tickForTests();
+
+		const pending = await fsp.readdir(path.join(tempDir, "tasks/pending"));
+		expect(pending).toHaveLength(0);
+		const evts = await readTelemetry();
+		const skipped = evts.find((e) => e.kind === "cron-skipped");
+		expect(skipped?.reason).toBe("pr-fetch-failed");
+		await sch.stop();
+	});
+});

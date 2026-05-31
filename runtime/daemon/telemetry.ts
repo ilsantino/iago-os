@@ -240,7 +240,20 @@ export type DaemonEvent =
 			readonly kind: "cron-skipped";
 			readonly agentId: string;
 			readonly schedule: string;
-			readonly reason: "wake-check-failed" | "wake-check-timeout";
+			/**
+			 * `wake-check-*` are the legacy bash-gate reasons. R1
+			 * (feature-pr84-r1-daemon-creds) adds the daemon-side
+			 * `prepareCronPrompt` gate reasons: `no-open-prs` (zero open PRs →
+			 * no spawn, REPLACES the wake-check exit-1 gate), `pr-fetch-failed`
+			 * (the daemon GitHub fetch threw → do NOT spawn with stale/no data),
+			 * and `prepare-skip` (a generic hook skip with no specific reason).
+			 */
+			readonly reason:
+				| "wake-check-failed"
+				| "wake-check-timeout"
+				| "no-open-prs"
+				| "pr-fetch-failed"
+				| "prepare-skip";
 			readonly exitCode: number | null;
 	  }
 	| {
@@ -400,6 +413,33 @@ export type DaemonEvent =
 			readonly filename: string;
 			readonly alertKind: string;
 			readonly details: string;
+	  }
+	| {
+			/**
+			 * R1 (feature-pr84-r1-daemon-creds, D4) — the pr-triage agent
+			 * computed an EMPTY summary and wrote a `{ noSend: true }` envelope
+			 * (or the daemon resolved a no-send result). This distinguishes
+			 * "nothing to send" from "agent died without writing an envelope"
+			 * (which surfaces as `pr-triage-result-timeout`). The send handler
+			 * claims the envelope file after recording this event.
+			 */
+			readonly kind: "pr-triage-no-send";
+			readonly agentId: string;
+			readonly filename: string;
+	  }
+	| {
+			/**
+			 * R1 (feature-pr84-r1-daemon-creds, D4 — dead-letter) — a dispatched
+			 * pr-triage PROMPT did not produce a result envelope
+			 * (`pr-triage-send__*.json`) before the result-timeout deadline. The
+			 * agent likely crashed mid-run; surface it as telemetry rather than a
+			 * silent lost notification. KNOWN LIMIT: the timer does not survive a
+			 * daemon restart (the next cron fire recovers; full durability is
+			 * deferred #5).
+			 */
+			readonly kind: "pr-triage-result-timeout";
+			readonly agentId: string;
+			readonly reason: string;
 	  }
 	| {
 			/**

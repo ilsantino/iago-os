@@ -2628,3 +2628,154 @@ describe("AgentManager / task-dispatch-needed event (Plan 04d)", () => {
 		});
 	});
 });
+
+// ============================================================
+// R1 (feature-pr84-r1-daemon-creds): task-send-needed envelope routing
+// ============================================================
+
+describe("AgentManager / task-send-needed envelope (R1)", () => {
+	it("(SE-1) a pr-triage-send__ envelope with sendText routes to 'task-send-needed', NOT dispatch, NOT poisoned", async () => {
+		const ctrl = makeMockRuntime("mock-pty-se1");
+		registerRuntime(ctrl.runtime);
+		const mgr = new AgentManager();
+		await mgr.registerAgent({
+			agentId: "pr-triage",
+			runtimeId: "mock-pty-se1",
+			cwd: "/tmp/w",
+			env: {},
+			sessionId: "sess-se1",
+		});
+
+		const filename = "pr-triage-send__1700000200-123.json";
+		writePendingTask(filename, {
+			agentId: "pr-triage",
+			sendText: "PR Triage summary\n\n3 open PRs",
+		});
+
+		const sendEvents: Array<{
+			filename: string;
+			agentId: string;
+			sendText?: string;
+		}> = [];
+		const dispatchEvents: unknown[] = [];
+		mgr.on(
+			"task-send-needed",
+			(e: { filename: string; agentId: string; sendText?: string }) => {
+				sendEvents.push(e);
+			},
+		);
+		mgr.on("task-dispatch-needed", (e: unknown) => {
+			dispatchEvents.push(e);
+		});
+
+		await mgr._pollingTickForTests();
+
+		expect(sendEvents).toHaveLength(1);
+		expect(sendEvents[0]).toMatchObject({
+			filename,
+			agentId: "pr-triage",
+			sendText: "PR Triage summary\n\n3 open PRs",
+		});
+		// Never routes into the dispatch path (would be `malformed-task`).
+		expect(dispatchEvents).toHaveLength(0);
+		// processPendingTask does NOT claim — the daemon send handler owns that.
+		await fsp.access(path.join(pathFor("tasks/pending"), filename));
+		await expect(
+			fsp.access(path.join(pathFor("tasks/poisoned"), filename)),
+		).rejects.toThrow();
+		expect(emittedEventsOfKind("pr-triage-dispatch-failed")).toHaveLength(0);
+	});
+
+	it("(SE-2) a pr-triage-send__ envelope with noSend routes to 'task-send-needed' with noSend:true", async () => {
+		const ctrl = makeMockRuntime("mock-pty-se2");
+		registerRuntime(ctrl.runtime);
+		const mgr = new AgentManager();
+		await mgr.registerAgent({
+			agentId: "pr-triage",
+			runtimeId: "mock-pty-se2",
+			cwd: "/tmp/w",
+			env: {},
+			sessionId: "sess-se2",
+		});
+
+		const filename = "pr-triage-send__1700000201-456.json";
+		writePendingTask(filename, { agentId: "pr-triage", noSend: true });
+
+		const sendEvents: Array<{ noSend?: boolean; sendText?: string }> = [];
+		mgr.on("task-send-needed", (e: { noSend?: boolean; sendText?: string }) => {
+			sendEvents.push(e);
+		});
+
+		await mgr._pollingTickForTests();
+
+		expect(sendEvents).toHaveLength(1);
+		expect(sendEvents[0].noSend).toBe(true);
+		expect(sendEvents[0].sendText).toBeUndefined();
+	});
+
+	it("(SE-3 provenance) a foreign rogue-agent__ file with a sendText body does NOT match the send branch", async () => {
+		const ctrl = makeMockRuntime("mock-pty-se3");
+		registerRuntime(ctrl.runtime);
+		const mgr = new AgentManager();
+		// Register the rogue agent so the file does not just go unrouted —
+		// we want to prove it falls through to the DISPATCH path, not send.
+		await mgr.registerAgent({
+			agentId: "rogue-agent",
+			runtimeId: "mock-pty-se3",
+			cwd: "/tmp/w",
+			env: {},
+			sessionId: "sess-se3",
+		});
+
+		const filename = "rogue-agent__1700000202-789.json";
+		writePendingTask(filename, {
+			agentId: "rogue-agent",
+			sendText: "attacker-controlled summary",
+		});
+
+		const sendEvents: unknown[] = [];
+		const dispatchEvents: unknown[] = [];
+		mgr.on("task-send-needed", (e: unknown) => sendEvents.push(e));
+		mgr.on("task-dispatch-needed", (e: unknown) => dispatchEvents.push(e));
+
+		await mgr._pollingTickForTests();
+
+		// The provenance guard (filename prefix + agentId === "pr-triage")
+		// prevents a foreign producer from triggering a daemon send.
+		expect(sendEvents).toHaveLength(0);
+		// It falls through to the normal dispatch path instead.
+		expect(dispatchEvents).toHaveLength(1);
+	});
+
+	it("(SE-4 provenance) a pr-triage-send__ file with a non-empty prompt does NOT match the send branch (falls through to dispatch)", async () => {
+		const ctrl = makeMockRuntime("mock-pty-se4");
+		registerRuntime(ctrl.runtime);
+		const mgr = new AgentManager();
+		await mgr.registerAgent({
+			agentId: "pr-triage",
+			runtimeId: "mock-pty-se4",
+			cwd: "/tmp/w",
+			env: {},
+			sessionId: "sess-se4",
+		});
+
+		const filename = "pr-triage-send__1700000203-111.json";
+		writePendingTask(filename, {
+			agentId: "pr-triage",
+			sendText: "summary",
+			prompt: "but also a prompt",
+		});
+
+		const sendEvents: unknown[] = [];
+		const dispatchEvents: unknown[] = [];
+		mgr.on("task-send-needed", (e: unknown) => sendEvents.push(e));
+		mgr.on("task-dispatch-needed", (e: unknown) => dispatchEvents.push(e));
+
+		await mgr._pollingTickForTests();
+
+		// A combined prompt+sendText shape is NOT a clean send envelope — the
+		// `!sendHasPrompt` guard routes it to dispatch.
+		expect(sendEvents).toHaveLength(0);
+		expect(dispatchEvents).toHaveLength(1);
+	});
+});

@@ -36,8 +36,11 @@ import { ensureStateDirsSync, pathFor } from "./state-paths.js";
 
 import {
 	type AgentConfigShape,
+	PR_DATA_PLACEHOLDER,
+	RESULT_TIMEOUT_MS,
 	SHUTDOWN_STAGE_TIMEOUT_MS,
 	type TaskDispatchEvent,
+	type TaskSendEvent,
 	buildFleetHealth,
 	composeCronAgentEnv,
 	computeRunUnder,
@@ -48,7 +51,10 @@ import {
 	loadAgentConfig,
 	loadPersistedConfigs,
 	makeDaemonStartupSessionId,
+	makePrTriageCronPrompt,
+	makeResultTimers,
 	makeTaskDispatchHandler,
+	makeTaskSendHandler,
 	resolveSessionId,
 	withTimeout,
 } from "./main.js";
@@ -1309,59 +1315,73 @@ describe("makeTaskDispatchHandler (Plan 04d)", () => {
 			(mgr as unknown as { _releaseCalls: string[] })._releaseCalls,
 		).toEqual([evt.filename]);
 	});
+
+	it("(DH-R1) arms the dead-letter result timer after a successful pr-triage dispatch", async () => {
+		const { runtime } = makeStubRuntime("dhr1-runtime");
+		registerRuntime(runtime);
+		const handle = makeHandleFixture("pr-triage", "dhr1-runtime");
+		const mgr = makeStubManager({ handle });
+		const emitMock = vi.fn().mockResolvedValue(undefined);
+		const timerCalls: Array<{ agentId: string; timeoutMs?: number }> = [];
+
+		const handler = makeTaskDispatchHandler({
+			agentManager: mgr,
+			emit: emitMock,
+			startResultTimer: (agentId, timeoutMs) =>
+				timerCalls.push({ agentId, timeoutMs }),
+		});
+
+		await handler({
+			filename: "pr-triage__1700000400.json",
+			agentId: "pr-triage",
+			taskContent: { prompt: "do the triage", agentId: "pr-triage" },
+		});
+
+		// Timer armed exactly once for pr-triage, with the result-timeout window.
+		expect(timerCalls).toEqual([
+			{ agentId: "pr-triage", timeoutMs: RESULT_TIMEOUT_MS },
+		]);
+	});
+
+	it("(DH-R1b) does NOT arm the timer for a non-pr-triage agent", async () => {
+		const { runtime } = makeStubRuntime("dhr1b-runtime");
+		registerRuntime(runtime);
+		const handle = makeHandleFixture("other-agent", "dhr1b-runtime");
+		const mgr = makeStubManager({ handle });
+		const emitMock = vi.fn().mockResolvedValue(undefined);
+		const timerCalls: string[] = [];
+
+		const handler = makeTaskDispatchHandler({
+			agentManager: mgr,
+			emit: emitMock,
+			startResultTimer: (agentId) => timerCalls.push(agentId),
+		});
+
+		await handler({
+			filename: "other-agent__1700000401.json",
+			agentId: "other-agent",
+			taskContent: { prompt: "do something", agentId: "other-agent" },
+		});
+
+		expect(timerCalls).toHaveLength(0);
+	});
 });
 
-describe("composeCronAgentEnv (pr84 I-2 — secret-injection allowlist)", () => {
+describe("composeCronAgentEnv (R1 — NO secrets, only non-secret runtime vars)", () => {
+	// The former secret allowlist is GONE — the agent holds no token. These
+	// secrets are present in the daemon env ONLY to prove they are NEVER copied
+	// into the composed agent env.
 	const SECRETS = {
 		IAGO_TELEGRAM_BOT_TOKEN: "tg-secret",
 		IAGO_TELEGRAM_ALLOWED_USER_IDS: "42,99",
 		GH_TOKEN: "gh-pat-secret",
 	} as const;
 
-	it("allowlisted 'pr-triage' inherits the daemon secrets, base env preserved", () => {
-		const env = composeCronAgentEnv("pr-triage", { EXISTING: "x" }, {
-			...SECRETS,
-		} as NodeJS.ProcessEnv);
-		expect(env.IAGO_TELEGRAM_BOT_TOKEN).toBe("tg-secret");
-		expect(env.IAGO_TELEGRAM_ALLOWED_USER_IDS).toBe("42,99");
-		expect(env.GH_TOKEN).toBe("gh-pat-secret");
-		expect(env.EXISTING).toBe("x");
-	});
-
-	it("a NON-allowlisted agent does NOT inherit secrets even if it self-labels org:'internal'", () => {
-		const base = { org: "internal", EXISTING: "y" };
-		const env = composeCronAgentEnv("rogue-agent", base, {
-			...SECRETS,
-		} as NodeJS.ProcessEnv);
-		// Gate is on the daemon-controlled agentId, NOT the self-declared org:
-		// the base env is returned unchanged — no daemon secrets leak.
-		expect(env).toEqual(base);
-		expect(env.IAGO_TELEGRAM_BOT_TOKEN).toBeUndefined();
-		expect(env.GH_TOKEN).toBeUndefined();
-	});
-
-	it("allowlisted but a secret ABSENT from the daemon env → that key is not injected (no empty entry)", () => {
-		const env = composeCronAgentEnv("pr-triage", {}, {
-			IAGO_TELEGRAM_BOT_TOKEN: "tg-secret",
-		} as NodeJS.ProcessEnv);
-		expect(env.IAGO_TELEGRAM_BOT_TOKEN).toBe("tg-secret");
-		expect("GH_TOKEN" in env).toBe(false);
-		expect("IAGO_TELEGRAM_ALLOWED_USER_IDS" in env).toBe(false);
-	});
-
-	it("an EMPTY-STRING secret in the daemon env is skipped (no empty-string injection)", () => {
-		const env = composeCronAgentEnv("pr-triage", {}, {
-			GH_TOKEN: "",
-		} as NodeJS.ProcessEnv);
-		expect("GH_TOKEN" in env).toBe(false);
-	});
-
-	// pr84 Codex CRITICAL #1 — node-pty REPLACES the parent env, so a trusted
-	// cron agent's composed env MUST carry the non-secret base-runtime vars
-	// (PATH/HOME/SHELL/LANG) or its shell cannot resolve gh/curl/jq/mv/sed (and
-	// node-pty may not even locate `claude`). These ride the SAME trust gate as
-	// the secrets but leak no credential.
-	it("allowlisted 'pr-triage' inherits PATH + HOME from the daemon env", () => {
+	// Test 5 (KEPT, SECRETS spread dropped) — node-pty REPLACES the parent env,
+	// so a trusted cron agent's composed env MUST carry the non-secret
+	// base-runtime vars (PATH/HOME/SHELL/LANG) or node-pty cannot locate
+	// `claude`.
+	it("trusted 'pr-triage' inherits the non-secret runtime vars (PATH/HOME/SHELL/LANG)", () => {
 		const env = composeCronAgentEnv(
 			"pr-triage",
 			{ IAGO_DAEMON_STATE_ROOT: "/state" },
@@ -1370,10 +1390,8 @@ describe("composeCronAgentEnv (pr84 I-2 — secret-injection allowlist)", () => 
 				HOME: "/home/iago",
 				SHELL: "/bin/bash",
 				LANG: "en_US.UTF-8",
-				...SECRETS,
 			} as NodeJS.ProcessEnv,
 		);
-		// (a) Non-secret runtime vars sourced from process.env.
 		expect(env.PATH).toBe("/usr/bin:/bin");
 		expect(env.HOME).toBe("/home/iago");
 		expect(env.SHELL).toBe("/bin/bash");
@@ -1382,7 +1400,9 @@ describe("composeCronAgentEnv (pr84 I-2 — secret-injection allowlist)", () => 
 		expect(env.IAGO_DAEMON_STATE_ROOT).toBe("/state");
 	});
 
-	it("allowlisted 'pr-triage' inherits ONLY the 3 secrets — no arbitrary process.env var leaks", () => {
+	// Test 6 (REWRITTEN) — the composed env is runtime-vars + declared base
+	// ONLY, and the three secrets are NEVER present even when in the daemon env.
+	it("composes ONLY runtime-vars + declared base — and NEVER any secret", () => {
 		const env = composeCronAgentEnv(
 			"pr-triage",
 			{ IAGO_DAEMON_STATE_ROOT: "/state" },
@@ -1390,36 +1410,48 @@ describe("composeCronAgentEnv (pr84 I-2 — secret-injection allowlist)", () => 
 				PATH: "/usr/bin",
 				HOME: "/home/iago",
 				...SECRETS,
-				// Arbitrary daemon-process vars that are NEITHER runtime-allowlist
-				// NOR secret-allowlist members — these must NOT cross into the
-				// composed agent env.
+				// Arbitrary daemon-process vars that are NOT runtime-allowlist
+				// members — these must NOT cross into the composed agent env.
 				AWS_SECRET_ACCESS_KEY: "must-not-leak",
 				SOME_OTHER_TOKEN: "also-must-not-leak",
 				NODE_ENV: "production",
 			} as NodeJS.ProcessEnv,
 		);
-		// Exactly the 3 intended secrets are present…
-		expect(env.IAGO_TELEGRAM_BOT_TOKEN).toBe("tg-secret");
-		expect(env.IAGO_TELEGRAM_ALLOWED_USER_IDS).toBe("42,99");
-		expect(env.GH_TOKEN).toBe("gh-pat-secret");
-		// …and no other arbitrary daemon-process var crossed over.
+		// NEW CORE SECURITY ASSERTION (R1/D1): no secret crosses into the agent
+		// env, even when present in the daemon env.
+		expect("IAGO_TELEGRAM_BOT_TOKEN" in env).toBe(false);
+		expect("GH_TOKEN" in env).toBe(false);
+		expect("IAGO_TELEGRAM_ALLOWED_USER_IDS" in env).toBe(false);
+		// No other arbitrary daemon-process var crossed over.
 		expect("AWS_SECRET_ACCESS_KEY" in env).toBe(false);
 		expect("SOME_OTHER_TOKEN" in env).toBe(false);
 		expect("NODE_ENV" in env).toBe(false);
-		// The composed env contains only: the declared base key, the 4 runtime
-		// vars, and the 3 secrets — nothing else.
+		// The composed env contains ONLY: the declared base key + the 2 runtime
+		// vars present in the daemon env — nothing else.
 		expect(Object.keys(env).sort()).toEqual(
-			[
-				"GH_TOKEN",
-				"HOME",
-				"IAGO_DAEMON_STATE_ROOT",
-				"IAGO_TELEGRAM_ALLOWED_USER_IDS",
-				"IAGO_TELEGRAM_BOT_TOKEN",
-				"PATH",
-			].sort(),
+			["HOME", "IAGO_DAEMON_STATE_ROOT", "PATH"].sort(),
 		);
 	});
 
+	// REGRESSION (R1) — a GH/Telegram secret in daemonEnv is NEVER copied into
+	// the composed agent env (the load-bearing D1 property).
+	it("a GH/Telegram secret in daemonEnv is NEVER copied into the composed agent env", () => {
+		const env = composeCronAgentEnv(
+			"pr-triage",
+			{ IAGO_DAEMON_STATE_ROOT: "/state" },
+			{ PATH: "/usr/bin", ...SECRETS } as NodeJS.ProcessEnv,
+		);
+		const serialized = JSON.stringify(env);
+		expect(serialized).not.toContain("tg-secret");
+		expect(serialized).not.toContain("gh-pat-secret");
+		expect(env.IAGO_TELEGRAM_BOT_TOKEN).toBeUndefined();
+		expect(env.GH_TOKEN).toBeUndefined();
+		expect(env.IAGO_TELEGRAM_ALLOWED_USER_IDS).toBeUndefined();
+	});
+
+	// Test 7 (KEPT, under the renamed runtime-trust gate) — an untrusted /
+	// client agent still gets baseEnv UNCHANGED (no PATH injection): the
+	// multi-tenant isolation invariant the claude-pty adapter encodes.
 	it("an UNTRUSTED agent gets baseEnv UNCHANGED — no PATH injected (isolation invariant held)", () => {
 		const base = { IAGO_DAEMON_STATE_ROOT: "/state" };
 		const env = composeCronAgentEnv("rogue-agent", base, {
@@ -1435,5 +1467,386 @@ describe("composeCronAgentEnv (pr84 I-2 — secret-injection allowlist)", () => 
 		expect("HOME" in env).toBe(false);
 		expect("IAGO_TELEGRAM_BOT_TOKEN" in env).toBe(false);
 		expect("GH_TOKEN" in env).toBe(false);
+	});
+
+	// An absent/empty runtime var is skipped (no empty-string injection).
+	it("a runtime var ABSENT from the daemon env is not injected (no empty entry)", () => {
+		const env = composeCronAgentEnv("pr-triage", {}, {
+			PATH: "/usr/bin",
+		} as NodeJS.ProcessEnv);
+		expect(env.PATH).toBe("/usr/bin");
+		expect("HOME" in env).toBe(false);
+		expect("SHELL" in env).toBe(false);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// R1 (feature-pr84-r1-daemon-creds): makeTaskSendHandler + makeResultTimers
+// ---------------------------------------------------------------------------
+
+function makeSendStubManager(): {
+	mgr: AgentManager;
+	claimCalls: Array<{ filename: string; agentId: string }>;
+} {
+	const claimCalls: Array<{ filename: string; agentId: string }> = [];
+	const mgr = {
+		claimTask: async (filename: string, agentId: string) => {
+			claimCalls.push({ filename, agentId });
+		},
+	} as unknown as AgentManager;
+	return { mgr, claimCalls };
+}
+
+function makeFakeTelegram(
+	send: (
+		text: string,
+	) => Promise<{ ok: boolean; status?: number; error?: string }>,
+): {
+	bot: { sendAgentNotification: typeof send };
+	calls: string[];
+} {
+	const calls: string[] = [];
+	const bot = {
+		sendAgentNotification: async (text: string) => {
+			calls.push(text);
+			return send(text);
+		},
+	};
+	return { bot, calls };
+}
+
+describe("makeTaskSendHandler (R1)", () => {
+	it("(TS-1) sendText envelope → sendAgentNotification + claimTask + clearResultTimer", async () => {
+		const { mgr, claimCalls } = makeSendStubManager();
+		const { bot, calls } = makeFakeTelegram(async () => ({ ok: true }));
+		const emitMock = vi.fn().mockResolvedValue(true);
+		const cleared: string[] = [];
+		const handler = makeTaskSendHandler({
+			agentManager: mgr,
+			emit: emitMock,
+			telegramBot: bot as unknown as import("../telegram/bot.js").TelegramBot,
+			clearResultTimer: (id) => cleared.push(id),
+		});
+
+		const evt: TaskSendEvent = {
+			filename: "pr-triage-send__1700000300-1.json",
+			agentId: "pr-triage",
+			sendText: "PR Triage summary",
+		};
+		await handler(evt);
+
+		expect(calls).toEqual(["PR Triage summary"]);
+		expect(claimCalls).toEqual([
+			{ filename: evt.filename, agentId: "pr-triage" },
+		]);
+		expect(cleared).toEqual(["pr-triage"]);
+		// No send-failed telemetry on the happy path.
+		const failed = emitMock.mock.calls.filter(
+			(c) =>
+				(c[0] as { kind: string }).kind === "pr-triage-telegram-send-failed",
+		);
+		expect(failed).toHaveLength(0);
+	});
+
+	it("(TS-2) failed send → pr-triage-telegram-send-failed, NO claim, timer still cleared", async () => {
+		const { mgr, claimCalls } = makeSendStubManager();
+		const { bot } = makeFakeTelegram(async () => ({
+			ok: false,
+			status: 429,
+			error: "rate",
+		}));
+		const emitMock = vi.fn().mockResolvedValue(true);
+		const cleared: string[] = [];
+		const handler = makeTaskSendHandler({
+			agentManager: mgr,
+			emit: emitMock,
+			telegramBot: bot as unknown as import("../telegram/bot.js").TelegramBot,
+			clearResultTimer: (id) => cleared.push(id),
+		});
+
+		await handler({
+			filename: "pr-triage-send__1700000301-1.json",
+			agentId: "pr-triage",
+			sendText: "summary",
+		});
+
+		// NOT claimed — the failed send re-trips next tick.
+		expect(claimCalls).toHaveLength(0);
+		const failed = emitMock.mock.calls
+			.map(
+				(c) => c[0] as { kind: string; alertKind?: string; details?: string },
+			)
+			.filter((e) => e.kind === "pr-triage-telegram-send-failed");
+		expect(failed).toHaveLength(1);
+		expect(failed[0].alertKind).toBe("pr-triage-telegram-send-failed");
+		expect(failed[0].details).toContain("429");
+		// Timer always cleared in finally.
+		expect(cleared).toEqual(["pr-triage"]);
+	});
+
+	it("(TS-3) noSend envelope → pr-triage-no-send + claim, NO send call", async () => {
+		const { mgr, claimCalls } = makeSendStubManager();
+		const { bot, calls } = makeFakeTelegram(async () => ({ ok: true }));
+		const emitMock = vi.fn().mockResolvedValue(true);
+		const handler = makeTaskSendHandler({
+			agentManager: mgr,
+			emit: emitMock,
+			telegramBot: bot as unknown as import("../telegram/bot.js").TelegramBot,
+			clearResultTimer: () => {},
+		});
+
+		await handler({
+			filename: "pr-triage-send__1700000302-1.json",
+			agentId: "pr-triage",
+			noSend: true,
+		});
+
+		expect(calls).toHaveLength(0);
+		expect(claimCalls).toEqual([
+			{ filename: "pr-triage-send__1700000302-1.json", agentId: "pr-triage" },
+		]);
+		const noSend = emitMock.mock.calls.filter(
+			(c) => (c[0] as { kind: string }).kind === "pr-triage-no-send",
+		);
+		expect(noSend).toHaveLength(1);
+	});
+
+	it("(TS-4) null telegramBot (local-dev) → records failed send, NO claim", async () => {
+		const { mgr, claimCalls } = makeSendStubManager();
+		const emitMock = vi.fn().mockResolvedValue(true);
+		const handler = makeTaskSendHandler({
+			agentManager: mgr,
+			emit: emitMock,
+			telegramBot: null,
+			clearResultTimer: () => {},
+		});
+
+		await handler({
+			filename: "pr-triage-send__1700000303-1.json",
+			agentId: "pr-triage",
+			sendText: "summary",
+		});
+
+		expect(claimCalls).toHaveLength(0);
+		const failed = emitMock.mock.calls
+			.map((c) => c[0] as { kind: string; details?: string })
+			.filter((e) => e.kind === "pr-triage-telegram-send-failed");
+		expect(failed).toHaveLength(1);
+		expect(failed[0].details).toContain("telegram-not-configured");
+	});
+
+	it("(TS-5) noSend NOT claimed when telemetry record fails to persist (durability)", async () => {
+		const { mgr, claimCalls } = makeSendStubManager();
+		const { bot } = makeFakeTelegram(async () => ({ ok: true }));
+		// emit resolves false → degraded telemetry dir.
+		const emitMock = vi.fn().mockResolvedValue(false);
+		const handler = makeTaskSendHandler({
+			agentManager: mgr,
+			emit: emitMock,
+			telegramBot: bot as unknown as import("../telegram/bot.js").TelegramBot,
+			clearResultTimer: () => {},
+		});
+
+		await handler({
+			filename: "pr-triage-send__1700000304-1.json",
+			agentId: "pr-triage",
+			noSend: true,
+		});
+
+		// Not claimed — the no-send event must re-trip next tick.
+		expect(claimCalls).toHaveLength(0);
+	});
+});
+
+describe("makeResultTimers + dispatch arming (R1 D4 dead-letter)", () => {
+	it("(RT-1) startResultTimer emits pr-triage-result-timeout after the deadline (fake timers)", async () => {
+		vi.useFakeTimers();
+		const emitMock = vi.fn().mockResolvedValue(true);
+		const { startResultTimer } = makeResultTimers({
+			emit: emitMock,
+			timeoutMs: 1000,
+		});
+
+		startResultTimer("pr-triage");
+		expect(emitMock).not.toHaveBeenCalled();
+
+		await vi.advanceTimersByTimeAsync(1000);
+
+		const timeouts = emitMock.mock.calls.filter(
+			(c) => (c[0] as { kind: string }).kind === "pr-triage-result-timeout",
+		);
+		expect(timeouts).toHaveLength(1);
+		expect(timeouts[0][0]).toMatchObject({
+			kind: "pr-triage-result-timeout",
+			agentId: "pr-triage",
+			reason: "no-envelope-before-deadline",
+		});
+	});
+
+	it("(RT-2) clearResultTimer cancels the dead-letter timer (no emit)", async () => {
+		vi.useFakeTimers();
+		const emitMock = vi.fn().mockResolvedValue(true);
+		const { startResultTimer, clearResultTimer } = makeResultTimers({
+			emit: emitMock,
+			timeoutMs: 1000,
+		});
+
+		startResultTimer("pr-triage");
+		clearResultTimer("pr-triage");
+		await vi.advanceTimersByTimeAsync(2000);
+
+		expect(
+			emitMock.mock.calls.filter(
+				(c) => (c[0] as { kind: string }).kind === "pr-triage-result-timeout",
+			),
+		).toHaveLength(0);
+	});
+
+	it("(RT-3) a re-fire overwrites the prior timer (single in-flight per agent)", async () => {
+		vi.useFakeTimers();
+		const emitMock = vi.fn().mockResolvedValue(true);
+		const { startResultTimer } = makeResultTimers({
+			emit: emitMock,
+			timeoutMs: 1000,
+		});
+
+		startResultTimer("pr-triage");
+		await vi.advanceTimersByTimeAsync(500);
+		// Re-fire resets the clock (clear-then-set).
+		startResultTimer("pr-triage");
+		await vi.advanceTimersByTimeAsync(700);
+		// 1200ms total elapsed but only 700ms since the re-fire — not yet fired.
+		expect(
+			emitMock.mock.calls.filter(
+				(c) => (c[0] as { kind: string }).kind === "pr-triage-result-timeout",
+			),
+		).toHaveLength(0);
+		await vi.advanceTimersByTimeAsync(400);
+		expect(
+			emitMock.mock.calls.filter(
+				(c) => (c[0] as { kind: string }).kind === "pr-triage-result-timeout",
+			),
+		).toHaveLength(1);
+	});
+
+	it("(RT-4) RESULT_TIMEOUT_MS default is a positive number", () => {
+		expect(typeof RESULT_TIMEOUT_MS).toBe("number");
+		expect(RESULT_TIMEOUT_MS).toBeGreaterThan(0);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// R1 (feature-pr84-r1-daemon-creds): makePrTriageCronPrompt
+// ---------------------------------------------------------------------------
+
+describe("makePrTriageCronPrompt (R1)", () => {
+	const cron = {
+		agentId: "pr-triage",
+		schedule: "0 14 * * *",
+		wakeCheck: undefined,
+		promptTemplatePath: "/tmp/template.md",
+		outputTaskNamePrefix: "pr-triage",
+		maxConcurrent: 1,
+	};
+
+	it("(CP-1) zero open PRs → { skip: true, reason: 'no-open-prs' } (replaces wake-check)", async () => {
+		const fetchImpl = vi.fn(
+			async () =>
+				new Response(JSON.stringify({ data: { search: { nodes: [] } } }), {
+					status: 200,
+				}),
+		) as unknown as typeof fetch;
+		const prepare = makePrTriageCronPrompt({
+			token: "ghp_token",
+			fetchImpl,
+			readTemplate: () => `prompt ${PR_DATA_PLACEHOLDER}`,
+		});
+		const result = await prepare(cron);
+		expect(result.skip).toBe(true);
+		expect(result.reason).toBe("no-open-prs");
+		expect(result.prompt).toBeUndefined();
+	});
+
+	it("(CP-2) non-zero PRs → { skip: false, prompt } with the payload injected and NO credentials", async () => {
+		const fetchImpl = vi.fn(
+			async () =>
+				new Response(
+					JSON.stringify({
+						data: {
+							search: {
+								nodes: [
+									{
+										number: 42,
+										title: "Fix",
+										url: "u",
+										author: { login: "ilsantino" },
+										reviewDecision: "APPROVED",
+										createdAt: "2026-05-20T00:00:00.000Z",
+										updatedAt: "2026-05-29T00:00:00.000Z",
+										body: "x",
+										labels: { nodes: [] },
+										comments: { nodes: [] },
+										statusCheckRollup: {
+											state: "SUCCESS",
+											contexts: { nodes: [] },
+										},
+									},
+								],
+							},
+						},
+					}),
+					{ status: 200 },
+				),
+		) as unknown as typeof fetch;
+		const prepare = makePrTriageCronPrompt({
+			token: "ghp_secret_token_value",
+			fetchImpl,
+			readTemplate: () => `PR DATA: ${PR_DATA_PLACEHOLDER}\nclassify it`,
+			nowFn: () => Date.parse("2026-05-31T00:00:00.000Z"),
+		});
+		const result = await prepare(cron);
+		expect(result.skip).toBe(false);
+		expect(typeof result.prompt).toBe("string");
+		const prompt = result.prompt ?? "";
+		// Payload injected.
+		expect(prompt).toContain('"totalCount": 1');
+		expect(prompt).toContain('"number": 42');
+		expect(prompt).toContain('"ageDays": 2');
+		// Placeholder consumed.
+		expect(prompt).not.toContain(PR_DATA_PLACEHOLDER);
+		// No credential / gh / curl leaks into the rendered prompt.
+		expect(prompt).not.toContain("ghp_secret_token_value");
+		expect(prompt).not.toContain("GH_TOKEN");
+		expect(prompt).not.toContain("IAGO_TELEGRAM_BOT_TOKEN");
+	});
+
+	it("(CP-3) fetch error → { skip: true, reason: 'pr-fetch-failed' } (no spawn with stale data)", async () => {
+		const fetchImpl = vi.fn(
+			async () =>
+				new Response(JSON.stringify({ message: "Bad credentials" }), {
+					status: 401,
+				}),
+		) as unknown as typeof fetch;
+		const prepare = makePrTriageCronPrompt({
+			token: "ghp_token",
+			fetchImpl,
+			readTemplate: () => "prompt",
+		});
+		const result = await prepare(cron);
+		expect(result.skip).toBe(true);
+		expect(result.reason).toBe("pr-fetch-failed");
+	});
+
+	it("(CP-4) missing GH_TOKEN → { skip: true, reason: 'pr-fetch-failed' } (no fetch attempted)", async () => {
+		const fetchImpl = vi.fn() as unknown as typeof fetch;
+		const prepare = makePrTriageCronPrompt({
+			token: undefined,
+			fetchImpl,
+			readTemplate: () => "prompt",
+		});
+		const result = await prepare(cron);
+		expect(result.skip).toBe(true);
+		expect(result.reason).toBe("pr-fetch-failed");
+		expect(fetchImpl).not.toHaveBeenCalled();
 	});
 });

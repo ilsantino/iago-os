@@ -1,41 +1,31 @@
 /**
- * Plan 04c — pr-triage end-to-end integration test.
+ * pr-triage integration test (R1 — feature-pr84-r1-daemon-creds).
  *
- * Drives the FULL Phase 2 cron→wake-check→PTY-spawn→dispatch flow with
- * external dependencies mocked. The system under test is the daemon's
- * integration of CronScheduler (07a), AgentManager polling loop + claimTask
- * (07b), pr-triage artifacts (04a), pr-triage wiring (04b), and the dispatch
- * handler (04d). The real `claude-pty` adapter is exercised end-to-end with
- * `node-pty` mocked at the module boundary (Forward-list I1 — same mock
- * pattern as runtime/agent-runtime/pty/claude-pty.test.ts).
+ * Drives the Phase 2 cron → daemon-fetch-gate → PTY-spawn → dispatch →
+ * result-envelope flow with external dependencies mocked. After R1 the agent
+ * holds NO secret and makes NO network call: the daemon fetches the PRs (holding
+ * GH_TOKEN), sanitizes them to a scalar payload, gates the spawn on zero PRs
+ * (replacing the retired bash wake-check), injects the payload, and SENDS the
+ * agent's text summary to Telegram itself. The agent is a pure data-in →
+ * text-out transform that writes a `pr-triage-send__*.json` envelope.
+ *
+ * The system under test is the daemon's integration of CronScheduler (07a) with
+ * the R1 `prepareCronPrompt` gate, AgentManager polling loop + claimTask (07b),
+ * pr-triage artifacts (04a), pr-triage wiring (04b), and the dispatch handler
+ * (04d). The real `claude-pty` adapter is exercised end-to-end with `node-pty`
+ * mocked at the module boundary.
  *
  * Anchored at `Date.UTC(1970, 0, 1, 14, 0, 0)` so the `0 14 * * *` cron in
- * crons.json matches `_tickForTests()` deterministically (Forward-list I2).
+ * crons.json matches `_tickForTests()` deterministically.
  *
- * Plan reconciliations applied (resolved during implementation):
- *
- *   - Plan asserts `parse_mode=MarkdownV2` on the Telegram POST.
- *     prompt-template.md (the canonical source — Codex high-severity fix)
- *     mandates PLAIN TEXT and explicitly forbids MarkdownV2. The curl POST
- *     runs INSIDE the spawned Claude agent's shell which is mocked — there
- *     is no observable HTTP request from Vitest. Case 2 instead verifies
- *     the daemon-level signals: runtime.send was called with the literal
- *     prompt-template body, mockSpawn (node-pty) received the right env,
- *     and the task lifecycle completed (pending → resolved + cron slot
- *     decrement).
- *
- *   - The `ndjsonAlert` record-and-resolve branch IS implemented (Codex H1
- *     close) in both `processPendingTask` (agent-manager.ts) and
- *     `makeTaskDispatchHandler` (main.ts). When the agent's Telegram POST
- *     fails it writes a prompt-less fallback envelope; the daemon branches on
- *     it BEFORE the registration check — emits
- *     `pr-triage-telegram-send-failed { alertKind, details }`, moves the file
- *     pending→resolved via claimTask, and NEVER advances to the dispatch
- *     path (so a prompt-less envelope cannot be mis-classified as
- *     malformed-task). The branch is scoped to (a) `agentId === "pr-triage"`,
- *     (b) a FILENAME matching the producer convention `pr-triage__*` (I-3),
- *     (c) a known `PR_TRIAGE_ALERT_KINDS` value, and (d) prompt-less. Cases 5,
- *     11, 12, 14, and 17 below assert this implemented contract.
+ * R1 contract verified here:
+ *   - the spawned agent env carries NO secret (no token reaches the agent);
+ *   - the daemon's `prepareCronPrompt` gates zero-PR days (`no-open-prs`) and
+ *     fetch errors (`pr-fetch-failed`), and injects the sanitized payload into
+ *     the rendered prompt;
+ *   - the agent's `pr-triage-send__*.json` envelope routes to `task-send-needed`
+ *     (the daemon owns the Telegram send), and the provenance guard rejects a
+ *     foreign-filename send body.
  */
 
 import * as fs from "node:fs";
@@ -54,10 +44,15 @@ import {
 	AgentManager,
 	JSON_PARSE_RETRY_BUDGET,
 } from "../../daemon/agent-manager.js";
-import { CronScheduler } from "../../daemon/cron-scheduler.js";
+import {
+	CronScheduler,
+	type PrepareCronPrompt,
+} from "../../daemon/cron-scheduler.js";
 import {
 	type AgentConfigShape,
+	PR_DATA_PLACEHOLDER,
 	type TaskDispatchEvent,
+	type TaskSendEvent,
 	loadAgentConfig,
 	loadCronEntries,
 	makeTaskDispatchHandler,
@@ -65,7 +60,7 @@ import {
 } from "../../daemon/main.js";
 import type { DaemonEvent } from "../../daemon/telemetry.js";
 
-// ───── node-pty mock (Forward-list I1 — copied from claude-pty.test.ts) ─────
+// ───── node-pty mock (copied from claude-pty.test.ts) ─────
 
 interface MockPty {
 	pid: number;
@@ -134,20 +129,6 @@ vi.mock("../../agent-runtime/pty/version-pin.js", () => ({
 	SUPPORTED_CLAUDE_CODE_VERSION_RANGE: ">=2.0.0 <3.0.0",
 }));
 
-// ───── spawnSync mock (wake-check.sh control) ─────
-
-const spawnSyncMock = vi.hoisted(() => vi.fn());
-vi.mock("node:child_process", async () => {
-	const actual =
-		await vi.importActual<typeof import("node:child_process")>(
-			"node:child_process",
-		);
-	return {
-		...actual,
-		spawnSync: spawnSyncMock,
-	};
-});
-
 // ───── telemetry mock (pass-through; tests inspect emitMock.mock.calls) ─────
 
 const { emitMock } = vi.hoisted(() => ({
@@ -157,21 +138,10 @@ vi.mock("../../daemon/telemetry.js", async () => {
 	const actual = await vi.importActual<
 		typeof import("../../daemon/telemetry.js")
 	>("../../daemon/telemetry.js");
-	// Opus I5: install the implementation ONCE, at module load, so emitMock is
-	// NEVER a bare mock — beforeEach uses mockClear() (call history only, impl
-	// preserved), so no test observes an unconfigured emit (a mockReset()+re-set
-	// pair previously left a window where emit dropped events).
-	//
-	// The implementation records the call and resolves `true`. The integration
-	// suite inspects emitMock.mock.calls for emitted EVENTS; it does NOT read
-	// real telemetry files (telemetry.test.ts owns persistence). The daemon's
-	// emit() now returns whether the durable write landed, and `true` is the
-	// normal case. Returning a fixed value (rather than delegating to the real
-	// writer) decouples this suite from the real telemetry writer's
-	// filesystem/env state — a cross-suite IAGO_DAEMON_STATE_ROOT race could
-	// otherwise make a real write fail and, via the ndjsonAlert durability gate
-	// (Codex Medium), wrongly flip the alert-resolution outcome. Case 12
-	// overrides this to `false` to exercise the write-failure branch.
+	// Install the implementation ONCE, at module load, so emitMock is NEVER a
+	// bare mock — beforeEach uses mockClear() (call history only, impl
+	// preserved). The implementation records the call and resolves `true` (the
+	// normal "durably recorded" case the alert/send durability gate depends on).
 	emitMock.mockImplementation(() => Promise.resolve(true));
 	return {
 		...actual,
@@ -182,21 +152,6 @@ vi.mock("../../daemon/telemetry.js", async () => {
 // ───── shared fixtures ─────
 
 const REPO_ROOT = path.resolve(__dirname, "..", "..", "..");
-// Normalize CRLF → LF so case-2's literal-prompt assertion is stable across
-// Windows checkouts (where git may materialize the file with CRLF endings
-// depending on .gitattributes / autocrlf). claude-pty.send appends "\n"
-// (LF), so the on-PTY-stdin text is always LF-suffixed; without
-// normalization the test would compare CRLF<file>\n vs LF<file>\n and miss.
-const REAL_PROMPT_TEMPLATE = fs
-	.readFileSync(
-		path.join(REPO_ROOT, "runtime/agents/pr-triage/prompt-template.md"),
-		"utf8",
-	)
-	.replace(/\r\n/g, "\n");
-const REAL_WAKE_CHECK = path.join(
-	REPO_ROOT,
-	"runtime/agents/pr-triage/wake-check.sh",
-);
 
 // Fake clock anchor: cron `0 14 * * *` matches at minute=0, hour=14.
 const CRON_MATCH_TIME = new Date(Date.UTC(1970, 0, 1, 14, 0, 0));
@@ -204,12 +159,14 @@ const CRON_MATCH_TIME = new Date(Date.UTC(1970, 0, 1, 14, 0, 0));
 let tempDir: string;
 let agentsDir: string;
 
-/** Materialize a per-test `agents/pr-triage/` fixture mirroring 04a outputs. */
+/**
+ * Materialize a per-test `agents/pr-triage/` fixture mirroring the 04a outputs,
+ * R1-updated: NO `wakeCheck` field (gating moved daemon-side) and a secret-free
+ * `env`.
+ */
 function writePrTriageFixture(scheduleOverride?: string | null): void {
 	const agentDir = path.join(agentsDir, "pr-triage");
 	fs.mkdirSync(agentDir, { recursive: true });
-	// agent-config.json — registers under the mock claude-pty runtime so
-	// the real claudePty adapter (with vi.mock'd node-pty) handles spawn.
 	fs.writeFileSync(
 		path.join(agentDir, "agent-config.json"),
 		JSON.stringify({
@@ -226,7 +183,6 @@ function writePrTriageFixture(scheduleOverride?: string | null): void {
 	);
 	const cronsBody: Record<string, unknown> = {
 		schedule: scheduleOverride === undefined ? "0 14 * * *" : scheduleOverride,
-		wakeCheck: REAL_WAKE_CHECK,
 		prompt: "runtime/agents/pr-triage/prompt-template.md",
 		outputTaskNamePrefix: "pr-triage",
 		maxConcurrent: 1,
@@ -239,12 +195,14 @@ function writePrTriageFixture(scheduleOverride?: string | null): void {
 }
 
 /**
- * Build a CronScheduler wired against the real AgentManager, register
- * pr-triage from the on-disk fixture, and return both. Mirrors the daemon
- * startup sequence in main.ts:1284-1320 without standing up the full
- * `startDaemon` flow.
+ * Build a CronScheduler + AgentManager wired against the on-disk fixture.
+ * `prepareCronPrompt` defaults to a double that injects a one-PR scalar payload
+ * (non-zero PRs → spawn); pass a custom `prepareCronPrompt` to exercise the
+ * gate (zero PRs / fetch error).
  */
-async function buildSystem(): Promise<{
+async function buildSystem(opts?: {
+	prepareCronPrompt?: PrepareCronPrompt;
+}): Promise<{
 	scheduler: CronScheduler;
 	mgr: AgentManager;
 	register: (
@@ -253,27 +211,52 @@ async function buildSystem(): Promise<{
 	) => Promise<void>;
 }> {
 	const mgr = new AgentManager();
+	const prepareCronPrompt: PrepareCronPrompt =
+		opts?.prepareCronPrompt ??
+		(async (cron) => {
+			// Default double: render the real template with one injected PR.
+			const template = fs.readFileSync(cron.promptTemplatePath, "utf8");
+			const payload = {
+				generatedAt: "2026-05-31T00:00:00.000Z",
+				totalCount: 1,
+				prs: [
+					{
+						number: 42,
+						title: "Fix the thing",
+						url: "u",
+						author: "ilsantino",
+						reviewDecision: "REVIEW_REQUIRED",
+						createdAt: "2026-05-20T00:00:00.000Z",
+						updatedAt: "2026-05-29T00:00:00.000Z",
+						ageDays: 2,
+						checksState: "SUCCESS",
+						anyCheckTimedOut: false,
+						mentionsClaude: false,
+						hasClaudeLabel: false,
+					},
+				],
+			};
+			const prompt = template
+				.split(PR_DATA_PLACEHOLDER)
+				.join(JSON.stringify(payload, null, 2));
+			return { skip: false, prompt };
+		});
 	const scheduler = new CronScheduler({
 		agentManager: mgr,
 		stateRoot: tempDir,
 		nowFn: () => CRON_MATCH_TIME,
+		prepareCronPrompt,
 	});
 	const cronEntries = await loadCronEntries(agentsDir);
-	for (const opts of cronEntries) {
-		// Translate the relative prompt path stored in crons.json to an
-		// absolute path the scheduler can read with fs.readFileSync (the
-		// real daemon does the same translation in main.ts).
-		const promptAbs = path.isAbsolute(opts.promptTemplatePath)
-			? opts.promptTemplatePath
-			: path.join(REPO_ROOT, opts.promptTemplatePath);
-		scheduler.registerCron({
-			...opts,
-			promptTemplatePath: promptAbs,
-		});
+	for (const o of cronEntries) {
+		const promptAbs = path.isAbsolute(o.promptTemplatePath)
+			? o.promptTemplatePath
+			: path.join(REPO_ROOT, o.promptTemplatePath);
+		scheduler.registerCron({ ...o, promptTemplatePath: promptAbs });
 	}
 	const register = async (
 		agentId: string,
-		opts?: { backoffMs?: readonly number[] },
+		registerOpts?: { backoffMs?: readonly number[] },
 	): Promise<void> => {
 		let cfg: AgentConfigShape;
 		try {
@@ -290,19 +273,18 @@ async function buildSystem(): Promise<{
 			agentId,
 			agentConfig: cfg,
 			isShuttingDown: () => false,
-			...(opts?.backoffMs !== undefined ? { backoffMs: opts.backoffMs } : {}),
+			...(registerOpts?.backoffMs !== undefined
+				? { backoffMs: registerOpts.backoffMs }
+				: {}),
 		});
 	};
 	return { scheduler, mgr, register };
 }
 
 /**
- * Wire a dispatch handler + auto-claim bridge so the polling loop's
- * `task-dispatch-needed` event drives the production `makeTaskDispatchHandler`
- * path (which calls runtime.send + claimTask). The returned `flush()` awaits
- * any in-flight dispatch promises so assertions land AFTER claimTask
- * resolves. Same shape as `wireAutoClaim` in agent-manager.test.ts but with
- * the real handler factory swapped in for the test-only direct claimTask.
+ * Wire the production `makeTaskDispatchHandler` so the polling loop's
+ * `task-dispatch-needed` event drives runtime.send + claimTask. `flush()`
+ * awaits any in-flight dispatch promises.
  */
 function wireDispatchHandler(mgr: AgentManager): {
 	flush: () => Promise<void>;
@@ -351,19 +333,13 @@ beforeEach(async () => {
 		fs.mkdirSync(path.join(tempDir, sub), { recursive: true });
 	}
 	agentsDir = path.join(tempDir, "agents");
+	// R1: these secrets are set on the DAEMON's process.env (the daemon holds
+	// them for its OWN fetch/send). The tests prove they are NEVER copied into
+	// the spawned agent's env.
 	process.env.IAGO_TELEGRAM_BOT_TOKEN = "test-bot-token";
 	process.env.IAGO_TELEGRAM_ALLOWED_USER_IDS = "123456,789012";
 	process.env.GH_TOKEN = "test-gh-token";
 
-	// Force a fresh claude-pty registration per test. The adapter
-	// self-registers on module load, but other test files in the same
-	// Vitest worker (e.g. runtime/agent-runtime/pty/claude-pty.test.ts)
-	// call _resetRegistryForTests() which empties the registry. Without
-	// this guard, makeTaskDispatchHandler → resolveRuntime("claude-pty")
-	// would throw "unknown runtime" when this test runs second in a worker.
-	// Use the named-export claudePty + registerRuntime (NOT vi.resetModules
-	// + dynamic import, which would create a parallel module instance and
-	// leave the cached agent-manager looking up the wrong registry).
 	_resetRegistryForTests();
 	registerRuntime(claudePty);
 
@@ -375,15 +351,6 @@ beforeEach(async () => {
 		ptyState.last = pty;
 		return pty;
 	});
-	spawnSyncMock.mockReset();
-	// Re-install emitMock's implementation EVERY test. afterEach's
-	// `vi.restoreAllMocks()` strips it (mockRestore on a vi.fn() clears the
-	// impl), so the one-time vi.mock-factory install would leave emit returning
-	// `undefined` from the 2nd test onward. The daemon's ndjsonAlert durability
-	// gate checks emit's boolean return, so emit MUST resolve `true` here (the
-	// normal "durably recorded" case). Setting it in beforeEach is
-	// synchronous — there is no window where emit lacks an impl (Opus I5).
-	// Case 12 overrides this to `false` to exercise the write-failure branch.
 	emitMock.mockClear();
 	emitMock.mockImplementation(() => Promise.resolve(true));
 	vi.spyOn(console, "error").mockImplementation(() => {});
@@ -393,11 +360,6 @@ beforeEach(async () => {
 afterEach(async () => {
 	vi.useRealTimers();
 	vi.restoreAllMocks();
-	// Computed-key `delete` (not `delete process.env.X`) truly unsets each var
-	// for test isolation while staying Biome-clean: `noDelete` flags only static
-	// member deletes, and the autofix it would apply to those (`= undefined`)
-	// coerces the value to the literal string "undefined". Matches the
-	// loop-delete idiom in daemon/config.test.ts and daemon/sighup.test.ts.
 	for (const key of [
 		"IAGO_DAEMON_STATE_ROOT",
 		"IAGO_TELEGRAM_BOT_TOKEN",
@@ -409,24 +371,14 @@ afterEach(async () => {
 	await fsp.rm(tempDir, { recursive: true, force: true }).catch(() => {});
 });
 
-describe("pr-triage integration (Plan 04c)", () => {
-	it("Case 1 — wake-check exit 1 (no PRs) → cron-skipped, no spawn, no task file", async () => {
+describe("pr-triage integration (R1 daemon-owned creds)", () => {
+	it("Case 1 — zero open PRs → cron-skipped(no-open-prs), no spawn, no task file", async () => {
 		writePrTriageFixture();
-		const { scheduler, register } = await buildSystem();
-		await register("pr-triage");
-		// Wipe spawn counter so we can assert no FURTHER spawn beyond
-		// register's startup spawn (registerCronAgentWithRestart's
-		// registerAgent path spawns the cron-owner PTY on boot).
-		const startupSpawns = mockSpawn.mock.calls.length;
-
-		spawnSyncMock.mockReturnValue({
-			status: 1,
-			signal: null,
-			stdout: "",
-			stderr: "No open PRs; skipping LLM invocation.\n",
-			pid: 0,
-			output: ["", "", ""],
+		const { scheduler, register } = await buildSystem({
+			prepareCronPrompt: async () => ({ skip: true, reason: "no-open-prs" }),
 		});
+		await register("pr-triage");
+		const startupSpawns = mockSpawn.mock.calls.length;
 
 		await scheduler._tickForTests();
 
@@ -435,179 +387,108 @@ describe("pr-triage integration (Plan 04c)", () => {
 		expect(skipped[0]).toMatchObject({
 			kind: "cron-skipped",
 			agentId: "pr-triage",
-			reason: "wake-check-failed",
-			exitCode: 1,
+			reason: "no-open-prs",
 		});
 		// No additional PTY spawn beyond the startup one.
 		expect(mockSpawn.mock.calls.length).toBe(startupSpawns);
 		// No task file written.
-		const pendingFiles = fs.readdirSync(path.join(tempDir, "tasks/pending"));
-		expect(pendingFiles).toEqual([]);
+		expect(fs.readdirSync(path.join(tempDir, "tasks/pending"))).toEqual([]);
+		await scheduler.stop();
 	});
 
-	it("Case 2 — wake-check exit 0 happy path: cron-fired → polling tick → runtime.send → resolved", async () => {
+	it("Case 2 — happy path: the spawned agent env holds NO secret; the injected payload (not a token) reaches the PTY", async () => {
 		writePrTriageFixture();
 		const { scheduler, mgr, register } = await buildSystem();
 		await register("pr-triage");
 		const startupSpawn = ptyState.last;
 		expect(startupSpawn).not.toBeNull();
-		// Verify the startup spawn forwarded the agent-config env PLUS the
-		// trusted-agent daemon secrets. agent-config.json's `env` carries only
-		// IAGO_DAEMON_STATE_ROOT, but the prompt-template (lines 113-114)
-		// needs IAGO_TELEGRAM_BOT_TOKEN + IAGO_TELEGRAM_ALLOWED_USER_IDS +
-		// GH_TOKEN to post its report and query GitHub. Because the agentId
-		// "pr-triage" is in the daemon-owned CRON_AGENT_SECRET_TRUSTED_AGENTS
-		// set, registerCronAgentWithRestart's composeAgentEnv merges those
-		// three from process.env (the CRON_AGENT_ENV_ALLOWLIST) into the spawn
-		// env. The gate is on the daemon-controlled agentId, NOT the
-		// self-declared `org` field (org:"internal" is dead config for the
-		// secret path). claude-pty.ts is untouched — its CRITICAL #1
-		// no-process.env-merge invariant holds; the daemon is the trusted layer
-		// that composes its own creds.
+
+		// R1 CORE: the spawned agent env carries the non-secret runtime
+		// descriptors + the declared state root — but NEVER a secret.
 		const startupCall = mockSpawn.mock.calls[0] as [
 			string,
 			string[],
 			{ env: Record<string, string> },
 		];
 		expect(startupCall[2].env.IAGO_DAEMON_STATE_ROOT).toBe(tempDir);
-		// agentId-gated allowlist (Codex H2 close) forwards the daemon's
-		// Telegram/GH creds into the trusted cron agent's spawn env. Values
-		// match the beforeEach fixture set on process.env.
-		expect(startupCall[2].env.IAGO_TELEGRAM_BOT_TOKEN).toBe("test-bot-token");
-		expect(startupCall[2].env.IAGO_TELEGRAM_ALLOWED_USER_IDS).toBe(
-			"123456,789012",
-		);
-		expect(startupCall[2].env.GH_TOKEN).toBe("test-gh-token");
-		// pr84 Codex CRITICAL #1: node-pty REPLACES the parent env, so the
-		// composed spawn env MUST also forward the non-secret base-runtime vars
-		// (PATH/HOME) from the daemon's process.env — without them the spawned
-		// shell cannot resolve gh/curl/jq/mv/sed and node-pty may not locate the
-		// `claude` binary. These are sourced verbatim from process.env (set by
-		// the test runner). PATH is universally present; HOME may be absent on
-		// some CI shells, so assert it only when the daemon process actually has
-		// it (composeCronAgentEnv skips absent/empty vars).
+		// The three secrets present on the daemon's process.env are NOT injected.
+		expect(startupCall[2].env.IAGO_TELEGRAM_BOT_TOKEN).toBeUndefined();
+		expect(startupCall[2].env.IAGO_TELEGRAM_ALLOWED_USER_IDS).toBeUndefined();
+		expect(startupCall[2].env.GH_TOKEN).toBeUndefined();
+		// Non-secret runtime vars still forwarded so node-pty can locate `claude`.
 		expect(startupCall[2].env.PATH).toBe(process.env.PATH);
-		if (typeof process.env.HOME === "string" && process.env.HOME.length > 0) {
-			expect(startupCall[2].env.HOME).toBe(process.env.HOME);
-		}
-		expect(startupCall[2].env.CLAUDE_CODE_SESSION_ID).toMatch(
-			/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
-		);
-
-		spawnSyncMock.mockReturnValue({
-			status: 0,
-			signal: null,
-			stdout: "Found 3 open PR(s); proceeding.\n",
-			stderr: "",
-			pid: 0,
-			output: ["", "", ""],
-		});
 
 		const dispatch = wireDispatchHandler(mgr);
 		mgr.startPollingLoop();
 
 		await scheduler._tickForTests();
 
-		// cron-fired emitted with the right shape.
+		// cron-fired emitted; task file landed with the INJECTED prompt (payload
+		// substituted), NOT the verbatim template-with-placeholder.
 		const fired = emittedEventsOfKind("cron-fired");
 		expect(fired).toHaveLength(1);
-		expect(fired[0]).toMatchObject({
-			kind: "cron-fired",
-			agentId: "pr-triage",
-			runningCount: 1,
-		});
-		// Task file landed in pending with the prompt-template body.
 		const pendingFiles = fs.readdirSync(path.join(tempDir, "tasks/pending"));
 		expect(pendingFiles).toHaveLength(1);
 		const taskFile = pendingFiles[0];
-		expect(taskFile).toBeDefined();
 		if (taskFile === undefined) throw new Error("unreachable");
 		expect(taskFile.startsWith("pr-triage__")).toBe(true);
 		const taskBody = JSON.parse(
 			fs.readFileSync(path.join(tempDir, "tasks/pending", taskFile), "utf8"),
 		) as { prompt: string; agentId: string };
 		expect(taskBody.agentId).toBe("pr-triage");
-		// Normalize CRLF→LF on both sides: cron-scheduler.ts reads the
-		// raw prompt file (preserves CRLF on Windows checkouts);
-		// REAL_PROMPT_TEMPLATE is normalized at top of file.
-		expect(taskBody.prompt.replace(/\r\n/g, "\n")).toBe(REAL_PROMPT_TEMPLATE);
+		// Payload injected; placeholder consumed.
+		expect(taskBody.prompt).toContain('"totalCount": 1');
+		expect(taskBody.prompt).not.toContain(PR_DATA_PLACEHOLDER);
+		// No secret / gh / curl reference in the rendered prompt.
+		expect(taskBody.prompt).not.toContain("test-gh-token");
+		expect(taskBody.prompt).not.toContain("test-bot-token");
+		expect(taskBody.prompt).not.toContain("GH_TOKEN");
 
-		// Drive the polling loop → dispatch handler → claimTask.
+		// Drive the polling loop → dispatch → claimTask.
 		await mgr._pollingTickForTests();
 		await dispatch.flush();
 		await mgr.stopPollingLoop();
 
-		// Plan-contradiction-resolution: instead of asserting on a
-		// MarkdownV2-shaped curl call (unobservable; agent's shell is
-		// mocked), assert the daemon piped the literal prompt-template
-		// text to the PTY's stdin. The plan body itself documents the
-		// plain-text approach — Telegram default + no parse_mode + the
-		// length-cap truncation strategy.
-		const writes = startupSpawn?.writes ?? [];
-		// claude-pty.send appends "\n" — match the normalized prompt body.
-		// Normalize the actual PTY writes too so a CRLF-checkout doesn't
-		// silently miss this assertion on Windows.
-		const normalizedWrites = writes.map((w) => w.replace(/\r\n/g, "\n"));
-		expect(normalizedWrites).toContain(`${REAL_PROMPT_TEMPLATE}\n`);
-		// And the prompt text we sent really is plain-text-mandating.
-		expect(REAL_PROMPT_TEMPLATE).toMatch(/Do NOT pass `parse_mode=MarkdownV2`/);
+		// The daemon piped the injected prompt to the PTY's stdin.
+		const writes = (startupSpawn?.writes ?? []).map((w) =>
+			w.replace(/\r\n/g, "\n"),
+		);
+		expect(writes.some((w) => w.includes('"totalCount": 1'))).toBe(true);
 
-		// File migrated pending → resolved; task-resolved emitted; cron
-		// slot decremented to 0.
-		await expect(
-			fsp.access(path.join(tempDir, "tasks/pending", taskFile)),
-		).rejects.toThrow();
+		// File migrated pending → resolved; cron slot decremented.
 		await fsp.access(path.join(tempDir, "tasks/resolved", taskFile));
 		const resolved = emittedEventsOfKind("task-resolved");
 		expect(resolved).toHaveLength(1);
-		expect(resolved[0]).toMatchObject({
-			kind: "task-resolved",
-			agentId: "pr-triage",
-			filename: taskFile,
-		});
 		expect(scheduler._runningCountForTests().get("pr-triage") ?? 0).toBe(0);
-
 		await scheduler.stop();
 	});
 
-	it("Case 3 — wake-check exit 2 (any non-zero) → cron-skipped wake-check-failed exitCode 2", async () => {
+	it("Case 3 — daemon fetch error → cron-skipped(pr-fetch-failed), no spawn, no task file", async () => {
 		writePrTriageFixture();
-		const { scheduler, register } = await buildSystem();
-		await register("pr-triage");
-
-		spawnSyncMock.mockReturnValue({
-			status: 2,
-			signal: null,
-			stdout: "",
-			stderr: "Rate-limited: HTTP/2 429\n",
-			pid: 0,
-			output: ["", "", ""],
+		const { scheduler, register } = await buildSystem({
+			prepareCronPrompt: async () => ({
+				skip: true,
+				reason: "pr-fetch-failed",
+			}),
 		});
+		await register("pr-triage");
 
 		await scheduler._tickForTests();
 
 		const skipped = emittedEventsOfKind("cron-skipped");
 		expect(skipped).toHaveLength(1);
-		// CronScheduler emits wake-check-failed for ALL non-zero, non-signal
-		// exits — there is no rate-limited variant in cron-scheduler.ts.
 		expect(skipped[0]).toMatchObject({
 			kind: "cron-skipped",
 			agentId: "pr-triage",
-			reason: "wake-check-failed",
-			exitCode: 2,
+			reason: "pr-fetch-failed",
 		});
 		expect(fs.readdirSync(path.join(tempDir, "tasks/pending"))).toEqual([]);
-
 		await scheduler.stop();
 	});
 
-	it("Case 4 — PTY crash mid-run → SIGTERM + crash marker + registerCronAgentWithRestart re-spawns", async () => {
+	it("Case 4 — PTY crash mid-run → SIGTERM + crash marker + registerCronAgentWithRestart re-spawns (NO secret on restart env)", async () => {
 		writePrTriageFixture();
 		const { mgr, register } = await buildSystem();
-		// brief D3 — inject a tiny restart backoff so the real-timer restart
-		// fires in ~10ms instead of the production 5s. Real timers stay
-		// throughout (Phase B's marker poll is real fs I/O that fake timers
-		// can't flush); only the backoff value is shortened.
 		await register("pr-triage", { backoffMs: [10] });
 		const pty = ptyState.last;
 		expect(pty).not.toBeNull();
@@ -615,20 +496,12 @@ describe("pr-triage integration (Plan 04c)", () => {
 		const initialSpawns = mockSpawn.mock.calls.length;
 		expect(initialSpawns).toBe(1);
 
-		// Phase A — crash + kill + marker. claude-pty classifies >100 bytes
-		// of unknown output as `crashed` → kills the PTY (SIGTERM) and
-		// writes a .daemon-stop crash marker (fire-and-forget; see polling
-		// loop below for the bounded flush).
+		// Phase A — crash + kill + marker.
 		const noise = "completely-unrelated-noise-XYZ ".repeat(20);
 		pty.emitData(noise);
 		expect(pty.killCalls).toContain("SIGTERM");
 
-		// Phase B — flush writeStopMarker. Real-I/O poll, not a fixed sleep:
-		// up to 200 iterations, each sleeping 10ms before re-checking, so the
-		// ceiling is 200 × 10ms = 2000ms = 2s — and it breaks the instant the
-		// .daemon-stop marker appears. Bumped from the original 500ms (50 ×
-		// 10ms) after Codex flagged that 500ms could false-pass on cold
-		// Windows runners where fdatasync stalls on antivirus.
+		// Phase B — flush writeStopMarker (real-I/O poll).
 		const markersDir = path.join(tempDir, "markers");
 		let crashMarker: string | undefined;
 		let markerBody: { reason: string } | undefined;
@@ -638,11 +511,6 @@ describe("pr-triage integration (Plan 04c)", () => {
 				.readdirSync(markersDir)
 				.find((m) => m.endsWith(".daemon-stop"));
 			if (found === undefined) continue;
-			// The marker can appear in readdir BEFORE its contents are flushed
-			// (writeStopMarker is fire-and-forget, and the restart path rewrites
-			// the same marker path), so reading too early yields an empty/partial
-			// file and `JSON.parse` throws "Unexpected end of JSON input". Poll
-			// until the marker is present AND fully parseable.
 			const raw = fs.readFileSync(path.join(markersDir, found), "utf8");
 			if (raw.trim() === "") continue;
 			try {
@@ -650,7 +518,7 @@ describe("pr-triage integration (Plan 04c)", () => {
 				crashMarker = found;
 				break;
 			} catch {
-				// partial write — retry on the next tick
+				// partial write — retry
 			}
 		}
 		expect(crashMarker).toBeDefined();
@@ -659,13 +527,7 @@ describe("pr-triage integration (Plan 04c)", () => {
 		}
 		expect(markerBody.reason).toBe("crash");
 
-		// Phase C — restart wiring (registerCronAgentWithRestart's
-		// armExitListener subscribes to onStatusChanged "crashed"|"exited"
-		// and schedules a fresh registerAgent after the injected backoff —
-		// 10ms here, not the production 5_000ms). Wait the backoff + a small
-		// grace for the scheduled registerAgent to settle, then assert a
-		// second spawn landed AND a `cron-agent-restarted` telemetry event
-		// was emitted. Asserts the restart MECHANISM, not the literal delay.
+		// Phase C — restart wiring fires after the injected backoff.
 		await new Promise((resolve) => setTimeout(resolve, 100));
 		const restartedEvents = emittedEventsOfKind("cron-agent-restarted");
 		expect(restartedEvents).toHaveLength(1);
@@ -676,144 +538,86 @@ describe("pr-triage integration (Plan 04c)", () => {
 		});
 		expect(mockSpawn.mock.calls.length).toBe(initialSpawns + 1);
 
-		// composeAgentEnv restart-env regression (pr84): the RESTART
-		// re-registration must re-compose the org-gated daemon secrets, NOT
-		// drop them — a restarted pr-triage agent that lost
-		// IAGO_TELEGRAM_BOT_TOKEN / IAGO_TELEGRAM_ALLOWED_USER_IDS / GH_TOKEN
-		// cannot post its report or query GitHub. registerCronAgentWithRestart's
-		// scheduleRestart calls registerAgent with composeAgentEnv() (same path
-		// as the initial spawn), so the LAST spawn (the restart) carries the
-		// same three creds asserted on the initial spawn in Case 2.
+		// R1: the RESTART re-registration must ALSO inject NO secret — a
+		// restarted pr-triage agent stays credential-free.
 		const restartCall = mockSpawn.mock.calls[
 			mockSpawn.mock.calls.length - 1
 		] as [string, string[], { env: Record<string, string> }];
-		expect(restartCall[2].env.IAGO_TELEGRAM_BOT_TOKEN).toBe("test-bot-token");
-		expect(restartCall[2].env.IAGO_TELEGRAM_ALLOWED_USER_IDS).toBe(
-			"123456,789012",
-		);
-		expect(restartCall[2].env.GH_TOKEN).toBe("test-gh-token");
+		expect(restartCall[2].env.IAGO_TELEGRAM_BOT_TOKEN).toBeUndefined();
+		expect(restartCall[2].env.IAGO_TELEGRAM_ALLOWED_USER_IDS).toBeUndefined();
+		expect(restartCall[2].env.GH_TOKEN).toBeUndefined();
+		// Runtime vars still forwarded on restart.
+		expect(restartCall[2].env.IAGO_DAEMON_STATE_ROOT).toBe(tempDir);
 
-		// pr84 R2: the cron restart path must route through restartAgent (reuse
-		// the stable id + teardown the dead handle), NOT a plain registerAgent
-		// (which would ADD a second handle and leave findHandleForAgent resolving
-		// the DEAD one → pr-triage permanently silent after one crash). Assert
-		// exactly ONE pr-triage handle remains tracked after the crash-restart.
+		// pr84 R2: exactly ONE live pr-triage handle after the crash-restart.
 		const liveHandles = mgr
 			.listHandles()
 			.filter((h) => h.agentId === "pr-triage");
 		expect(liveHandles).toHaveLength(1);
 	}, 15_000);
 
-	it("Case 5 — ndjsonAlert envelope → pr-triage-telegram-send-failed + resolved (Codex H1 close)", async () => {
-		// prompt-template.md lines 145-148,180: when the agent's Telegram
-		// POST fails it writes an `ndjsonAlert` fallback envelope (no
-		// `prompt`). The daemon branches on it in processPendingTask
-		// (agent-manager.ts) BEFORE the registration check — emits
-		// `pr-triage-telegram-send-failed { alertKind, details }`, moves the
-		// file pending→resolved via claimTask, and NEVER advances to the
-		// dispatch path (so the prompt-less envelope cannot be mis-classified
-		// as malformed-task). This is the FLIPPED contract: the prior
-		// revision asserted the broken malformed-task path "to stay honest"
-		// while production was wrong — Codex H1 correctly flagged that
-		// green-locks the broken path. The assertions below now assert the
-		// CORRECT behavior, so they fail against pre-change prod and pass
-		// after (they ARE the regression test for the daemon branch).
+	it("Case 5 — agent send envelope (sendText) routes to 'task-send-needed', NOT dispatch (daemon owns the send)", async () => {
 		writePrTriageFixture();
 		const { mgr, register } = await buildSystem();
 		await register("pr-triage");
-		const dispatch = wireDispatchHandler(mgr);
+		wireDispatchHandler(mgr);
 
-		const filename = "pr-triage__1700000000.json";
-		const details =
-			'429 Too Many Requests body={"ok":false,"description":"Too Many Requests"}';
+		const filename = "pr-triage-send__1700000000-7.json";
 		fs.writeFileSync(
 			path.join(tempDir, "tasks/pending", filename),
 			JSON.stringify({
 				agentId: "pr-triage",
-				ndjsonAlert: "pr-triage-telegram-send-failed",
-				details,
+				sendText: "PR Triage 2026-05-31\n\n1 open PRs across ilsantino",
 			}),
 			"utf8",
 		);
 
-		// Capture the EventEmitter event. With the short-circuit in
-		// processPendingTask the alert is handled BEFORE the
-		// `task-dispatch-needed` emit, so this listener MUST stay empty —
-		// flipped from the old toHaveLength(1) as positive proof the
-		// short-circuit fires.
+		const sendEvents: TaskSendEvent[] = [];
 		const dispatchEvents: TaskDispatchEvent[] = [];
-		mgr.on("task-dispatch-needed", (evt: TaskDispatchEvent) => {
-			dispatchEvents.push(evt);
-		});
-
-		await mgr._pollingTickForTests();
-		await dispatch.flush();
-
-		// (a) Exactly one pr-triage-telegram-send-failed; alertKind +
-		// details mirror the envelope verbatim.
-		const alerts = emittedEventsOfKind("pr-triage-telegram-send-failed");
-		expect(alerts).toHaveLength(1);
-		expect(alerts[0]).toMatchObject({
-			kind: "pr-triage-telegram-send-failed",
-			agentId: "pr-triage",
-			filename,
-			alertKind: "pr-triage-telegram-send-failed",
-			details,
-		});
-		// (b) File moved pending → resolved.
-		await fsp.access(path.join(tempDir, "tasks/resolved", filename));
-		await expect(
-			fsp.access(path.join(tempDir, "tasks/pending", filename)),
-		).rejects.toThrow();
-		// (c) NO dispatch-failed — the prompt-less alert envelope must never
-		// be mis-classified as malformed-task.
-		expect(emittedEventsOfKind("pr-triage-dispatch-failed")).toHaveLength(0);
-		// (d) Short-circuit proof: the alert never reached the dispatch path.
-		expect(dispatchEvents).toHaveLength(0);
-
-		// Idempotency / no double-resolve (Opus I3): a second polling tick
-		// must NOT re-emit or re-resolve. The file already moved to
-		// resolved/, so the next readdir of pending/ finds nothing for this
-		// filename — still exactly one alert total.
-		await mgr._pollingTickForTests();
-		await dispatch.flush();
-		expect(emittedEventsOfKind("pr-triage-telegram-send-failed")).toHaveLength(
-			1,
+		mgr.on("task-send-needed", (e: TaskSendEvent) => sendEvents.push(e));
+		mgr.on("task-dispatch-needed", (e: TaskDispatchEvent) =>
+			dispatchEvents.push(e),
 		);
+
+		await mgr._pollingTickForTests();
+
+		// Routed to the daemon send handler — NOT the dispatch path.
+		expect(sendEvents).toHaveLength(1);
+		expect(sendEvents[0]).toMatchObject({
+			filename,
+			agentId: "pr-triage",
+			sendText: "PR Triage 2026-05-31\n\n1 open PRs across ilsantino",
+		});
+		expect(dispatchEvents).toHaveLength(0);
+		// processPendingTask does NOT claim the envelope — the daemon send
+		// handler (covered by main.test.ts) owns the claim.
+		await fsp.access(path.join(tempDir, "tasks/pending", filename));
+		expect(emittedEventsOfKind("pr-triage-dispatch-failed")).toHaveLength(0);
 	});
 
-	it("Case 6 — wake-check missing GH_TOKEN (script exit 2) → cron-skipped wake-check-failed exitCode 2", async () => {
+	it("Case 6 — agent noSend envelope routes to 'task-send-needed' with noSend:true (D4)", async () => {
 		writePrTriageFixture();
-		const { scheduler, register } = await buildSystem();
+		const { mgr, register } = await buildSystem();
 		await register("pr-triage");
 
-		// Don't mutate process.env.GH_TOKEN — test isolation. spawnSyncMock
-		// simulates wake-check.sh's behavior when GH_TOKEN is absent:
-		// stderr message + exit 2 (see wake-check.sh lines 18-21).
-		spawnSyncMock.mockReturnValue({
-			status: 2,
-			signal: null,
-			stdout: "",
-			stderr: "ERROR: GH_TOKEN unset; wake-check needs it to query gh.\n",
-			pid: 0,
-			output: ["", "", ""],
-		});
+		const filename = "pr-triage-send__1700000001-8.json";
+		fs.writeFileSync(
+			path.join(tempDir, "tasks/pending", filename),
+			JSON.stringify({ agentId: "pr-triage", noSend: true }),
+			"utf8",
+		);
 
-		await scheduler._tickForTests();
+		const sendEvents: TaskSendEvent[] = [];
+		mgr.on("task-send-needed", (e: TaskSendEvent) => sendEvents.push(e));
 
-		const skipped = emittedEventsOfKind("cron-skipped");
-		expect(skipped).toHaveLength(1);
-		expect(skipped[0]).toMatchObject({
-			kind: "cron-skipped",
-			agentId: "pr-triage",
-			reason: "wake-check-failed",
-			exitCode: 2,
-		});
+		await mgr._pollingTickForTests();
 
-		await scheduler.stop();
+		expect(sendEvents).toHaveLength(1);
+		expect(sendEvents[0].noSend).toBe(true);
+		expect(sendEvents[0].sendText).toBeUndefined();
 	});
 
-	it("Case 7 — schedule never matches in tick window → no spawns, wake-check never invoked", async () => {
+	it("Case 7 — schedule never matches in tick window → no spawns, no fire", async () => {
 		writePrTriageFixture();
 		const { register } = await buildSystem();
 		await register("pr-triage");
@@ -825,35 +629,26 @@ describe("pr-triage integration (Plan 04c)", () => {
 			agentManager: mgr2,
 			stateRoot: tempDir,
 			nowFn: () => new Date(Date.UTC(1970, 0, 1, 13, 0, 0)),
+			prepareCronPrompt: async () => ({ skip: false, prompt: "x" }),
 		});
 		const cronEntries = await loadCronEntries(agentsDir);
-		for (const opts of cronEntries) {
+		for (const o of cronEntries) {
 			scheduler2.registerCron({
-				...opts,
-				promptTemplatePath: path.isAbsolute(opts.promptTemplatePath)
-					? opts.promptTemplatePath
-					: path.join(REPO_ROOT, opts.promptTemplatePath),
+				...o,
+				promptTemplatePath: path.isAbsolute(o.promptTemplatePath)
+					? o.promptTemplatePath
+					: path.join(REPO_ROOT, o.promptTemplatePath),
 			});
 		}
 
 		await scheduler2._tickForTests();
 
 		expect(emittedEventsOfKind("cron-fired")).toHaveLength(0);
-		expect(spawnSyncMock).not.toHaveBeenCalled();
 		expect(mockSpawn.mock.calls.length).toBe(startupSpawns);
-		// Codex-fix: dropped the `readdir == []` assertion. tempDir is fresh
-		// per beforeEach (mkdtemp) and only register() ran before this
-		// tick, so the directory cannot be non-empty regardless of
-		// scheduler2's behavior — the assertion was load-bearing on
-		// scheduler2 doing nothing yet probed scheduler-independent state.
-		// Real scheduler2-specific assertion: zero cron-fired emissions.
-
 		await scheduler2.stop();
 	});
 
 	it("Case 8 — schedule: null → loadCronEntries drops the entry + emits cron-skipped-null", async () => {
-		// Write a muted agent fixture alongside pr-triage so loadCronEntries
-		// sees both and only registers pr-triage.
 		writePrTriageFixture();
 		const mutedDir = path.join(agentsDir, "test-mute");
 		fs.mkdirSync(mutedDir, { recursive: true });
@@ -880,27 +675,27 @@ describe("pr-triage integration (Plan 04c)", () => {
 		});
 	});
 
-	it("Case 9 — end-to-end decrement chain across 07a + 07b + 04a + 04b + 04d", async () => {
-		// Override the standard fixture with an every-minute schedule for
-		// the 14h hour so two consecutive ticks can collide on maxConcurrent.
+	it("Case 9 — decrement chain across cron fire → overlap gate → resolve (per-filename outstanding set)", async () => {
 		writePrTriageFixture("* 14 * * *");
 
 		const mgr = new AgentManager();
-		// Walking clock so the two consecutive minutes generate distinct
-		// task filenames (`<prefix>__<unix>.json`).
 		let clockMs = Date.UTC(1970, 0, 1, 14, 0, 0);
 		const scheduler = new CronScheduler({
 			agentManager: mgr,
 			stateRoot: tempDir,
 			nowFn: () => new Date(clockMs),
+			prepareCronPrompt: async () => ({
+				skip: false,
+				prompt: "injected prompt body",
+			}),
 		});
 		const cronEntries = await loadCronEntries(agentsDir);
-		for (const opts of cronEntries) {
+		for (const o of cronEntries) {
 			scheduler.registerCron({
-				...opts,
-				promptTemplatePath: path.isAbsolute(opts.promptTemplatePath)
-					? opts.promptTemplatePath
-					: path.join(REPO_ROOT, opts.promptTemplatePath),
+				...o,
+				promptTemplatePath: path.isAbsolute(o.promptTemplatePath)
+					? o.promptTemplatePath
+					: path.join(REPO_ROOT, o.promptTemplatePath),
 			});
 		}
 		const cfg = await loadAgentConfig(agentsDir, "pr-triage");
@@ -912,54 +707,14 @@ describe("pr-triage integration (Plan 04c)", () => {
 		});
 		const dispatch = wireDispatchHandler(mgr);
 
-		spawnSyncMock.mockReturnValue({
-			status: 0,
-			signal: null,
-			stdout: "Found 1 open PR(s); proceeding.\n",
-			stderr: "",
-			pid: 0,
-			output: ["", "", ""],
-		});
-
-		// NOTE on scope (Codex: "case 9 proves send-time decrement, not
-		// real task completion"): the dispatch handler calls claimTask
-		// immediately after runtime.send (the persistent-PTY claim-on-send
-		// model documented in main.ts). The mocked PTY's `send` resolves
-		// immediately, so once `await dispatch.flush()` drains the in-flight
-		// dispatch promise, claimTask has run and `task-resolved` has been
-		// emitted — the assertions below therefore land AFTER the resolve,
-		// not on a synchronous side-effect. This test proves the runningCount
-		// slot PROTOCOL correctly increments on fire, blocks at
-		// maxConcurrent, AND releases on the terminal `task-resolved` event
-		// for the specific filename emitted by the cron fire. It does NOT
-		// prove that maxConcurrent gates a still-running real Claude agent —
-		// that's a Phase-3 concern (cron cadence shorter than agent runtime),
-		// out of scope here. The decrement-chain assertions below are
-		// structural — capture the cron filename, assert it is present in the
-		// agent's per-filename outstanding set, then assert it is removed
-		// after flush — to catch regressions in the per-filename
-		// outstanding-set filter (cron-scheduler.ts) that stops a non-cron
-		// task completion from reopening a cron slot, NOT merely the
-		// aggregate runningCount counter.
-
-		// Tick 1 — fires cleanly. runningCount: 0 → 1. Capture the
-		// emitted filename so subsequent assertions probe the SAME slot
-		// rather than relying on aggregate counter changes.
+		// Tick 1 — fires cleanly. runningCount 0 → 1.
 		await scheduler._tickForTests();
 		expect(scheduler._runningCountForTests().get("pr-triage")).toBe(1);
 		const firedAfterTick1 = emittedEventsOfKind("cron-fired");
 		expect(firedAfterTick1).toHaveLength(1);
-		const tick1TaskFilePath = (firedAfterTick1[0] as { taskFile: string })
-			.taskFile;
-		const tick1Filename = path.basename(tick1TaskFilePath);
-		// Outstanding-set structural check: the per-filename filter is
-		// what prevents non-cron task completions from reopening cron
-		// slots (cron-scheduler.ts:46-53). A regression that broke the
-		// filter would still decrement runningCount but on a different
-		// path; this assertion forces the filter to be probed.
-		expect(
-			scheduler._outstandingFilenamesForTests().get("pr-triage"),
-		).toBeDefined();
+		const tick1Filename = path.basename(
+			(firedAfterTick1[0] as { taskFile: string }).taskFile,
+		);
 		expect(
 			scheduler
 				._outstandingFilenamesForTests()
@@ -967,51 +722,26 @@ describe("pr-triage integration (Plan 04c)", () => {
 				?.has(tick1Filename),
 		).toBe(true);
 
-		// Tick 2 — one minute later, schedule still matches, but
-		// runningCount == maxConcurrent so overlap-prevented fires and
-		// the second task file is NOT written.
+		// Tick 2 — overlap prevented (runningCount == maxConcurrent).
 		clockMs += 60_000;
 		await scheduler._tickForTests();
 		expect(scheduler._runningCountForTests().get("pr-triage")).toBe(1);
-		const overlap = emittedEventsOfKind("cron-overlap-prevented");
-		expect(overlap).toHaveLength(1);
-		expect(overlap[0]).toMatchObject({
-			kind: "cron-overlap-prevented",
-			agentId: "pr-triage",
-			runningCount: 1,
-			maxConcurrent: 1,
-		});
-		// Still exactly one pending file from tick 1.
+		expect(emittedEventsOfKind("cron-overlap-prevented")).toHaveLength(1);
 		expect(fs.readdirSync(path.join(tempDir, "tasks/pending"))).toHaveLength(1);
-		// Outstanding set unchanged — overlap-prevented does not add to it.
-		expect(
-			scheduler._outstandingFilenamesForTests().get("pr-triage")?.size,
-		).toBe(1);
 
-		// Drain the polling loop → claimTask → task-resolved →
-		// runningCount decrements to 0. The per-filename outstanding
-		// entry MUST also be removed (cron-scheduler.ts:399-415 — the
-		// terminal listener probes outstanding.has(event.filename)
-		// before decrementing). Asserting BOTH the counter and the
-		// outstanding-set transition catches a regression where the
-		// counter decrements via a different code path.
+		// Drain → claimTask → task-resolved → decrement to 0.
 		await mgr._pollingTickForTests();
 		await dispatch.flush();
 		expect(scheduler._runningCountForTests().get("pr-triage") ?? 0).toBe(0);
-		const resolvedEvents = emittedEventsOfKind("task-resolved");
-		const resolvedForCron = resolvedEvents.filter(
+		const resolvedForCron = emittedEventsOfKind("task-resolved").filter(
 			(e) => (e as { filename: string }).filename === tick1Filename,
 		);
 		expect(resolvedForCron).toHaveLength(1);
-		// Outstanding entry for this agent cleared after the last
-		// outstanding filename resolved (cron-scheduler.ts:410-412).
 		expect(scheduler._outstandingFilenamesForTests().has("pr-triage")).toBe(
 			false,
 		);
 
-		// Tick 3 — another minute on, slot free again, fires cleanly with
-		// a DIFFERENT filename (positional assertion guards against a
-		// double-emit on tick 1 silently satisfying length=2).
+		// Tick 3 — slot free again, fires with a DIFFERENT filename.
 		clockMs += 60_000;
 		await scheduler._tickForTests();
 		expect(scheduler._runningCountForTests().get("pr-triage")).toBe(1);
@@ -1021,31 +751,19 @@ describe("pr-triage integration (Plan 04c)", () => {
 			(firedAfterTick3[1] as { taskFile: string }).taskFile,
 		);
 		expect(tick3Filename).not.toBe(tick1Filename);
-		expect(
-			scheduler
-				._outstandingFilenamesForTests()
-				.get("pr-triage")
-				?.has(tick3Filename),
-		).toBe(true);
 
 		await scheduler.stop();
 	});
 
-	it("Case 10 — secret gate: a non-trusted cron agent self-labeling org:internal does NOT inherit daemon secrets (Codex H2)", async () => {
-		// composeAgentEnv gates the daemon's CRON_AGENT_ENV_ALLOWLIST secrets on
-		// membership in the daemon-owned CRON_AGENT_SECRET_TRUSTED_AGENTS set,
-		// keyed on the daemon-controlled agentId — NOT on the self-declared
-		// `agentConfig.org`. A less-trusted agent that writes org:"internal" in
-		// its own agent-config must still receive ONLY its declared env, never
-		// the Telegram/GH creds. Fails pre-fix (the old `org === "internal"`
-		// gate forwarded them on the spoofed field); passes post-fix.
+	it("Case 10 — NO secret is injected into ANY agent env (trusted or untrusted)", async () => {
+		// A rogue agent self-labeling org:internal gets baseEnv unchanged…
 		const rogueDir = path.join(agentsDir, "rogue-agent");
 		fs.mkdirSync(rogueDir, { recursive: true });
 		fs.writeFileSync(
 			path.join(rogueDir, "agent-config.json"),
 			JSON.stringify({
 				runtimeId: "claude-pty",
-				org: "internal", // self-declared — must NOT be honored for secrets
+				org: "internal",
 				cwd: REPO_ROOT,
 				env: { IAGO_DAEMON_STATE_ROOT: tempDir },
 				autoStart: false,
@@ -1066,16 +784,12 @@ describe("pr-triage integration (Plan 04c)", () => {
 			string[],
 			{ env: Record<string, string> },
 		];
-		expect(rogueCall).toBeDefined();
-		// Declared env preserved…
 		expect(rogueCall[2].env.IAGO_DAEMON_STATE_ROOT).toBe(tempDir);
-		// …but NONE of the daemon secrets leak to the untrusted agent.
 		expect(rogueCall[2].env.IAGO_TELEGRAM_BOT_TOKEN).toBeUndefined();
-		expect(rogueCall[2].env.IAGO_TELEGRAM_ALLOWED_USER_IDS).toBeUndefined();
 		expect(rogueCall[2].env.GH_TOKEN).toBeUndefined();
 
-		// Positive control: the trusted pr-triage agentId DOES receive them, so
-		// the gate's effect is the trust list, not a blanket denial.
+		// …and the trusted pr-triage agent ALSO gets NO secret (R1 core change —
+		// the gate now only overlays non-secret runtime vars).
 		writePrTriageFixture();
 		const trustedCfg = await loadAgentConfig(agentsDir, "pr-triage");
 		const trustedMgr = new AgentManager();
@@ -1088,124 +802,90 @@ describe("pr-triage integration (Plan 04c)", () => {
 		const trustedCall = mockSpawn.mock.calls[
 			mockSpawn.mock.calls.length - 1
 		] as [string, string[], { env: Record<string, string> }];
-		expect(trustedCall[2].env.IAGO_TELEGRAM_BOT_TOKEN).toBe("test-bot-token");
-		expect(trustedCall[2].env.GH_TOKEN).toBe("test-gh-token");
+		expect(trustedCall[2].env.IAGO_TELEGRAM_BOT_TOKEN).toBeUndefined();
+		expect(trustedCall[2].env.GH_TOKEN).toBeUndefined();
+		// Non-secret runtime var IS forwarded for the trusted agent.
+		expect(trustedCall[2].env.IAGO_DAEMON_STATE_ROOT).toBe(tempDir);
 	});
 
-	it("Case 11 — ndjsonAlert scoping: alert branch fires ONLY for pr-triage + a known kind (Codex H1)", async () => {
-		// The record-and-resolve alert branch is scoped to (a) agentId
-		// "pr-triage", (b) a known PR_TRIAGE_ALERT_KINDS value, (c) prompt-less.
-		// tasks/pending is the SHARED task bus, so without scoping a task for
-		// another agent — or an unknown alert kind — carrying `ndjsonAlert`
-		// would skip dispatch, get silently resolved, and could release a cron
-		// slot it does not own. Both negatives below must NOT emit a
-		// telegram-send-failed alert.
+	it("Case 11 — provenance: a FOREIGN-filename send body is NOT routed to 'task-send-needed'", async () => {
 		writePrTriageFixture();
 		const { mgr, register } = await buildSystem();
 		await register("pr-triage");
 		const dispatch = wireDispatchHandler(mgr);
 
-		// (1) Foreign (unregistered) agent with a valid-looking alert envelope
-		// → alert branch skipped (agentId !== "pr-triage") → task-unrouted,
-		// file left in pending/ (NOT resolved-as-alert).
-		const foreign = "rogue-agent__1700000001.json";
+		// A foreign producer writes `rogue-agent__*.json` whose BODY claims
+		// pr-triage + a sendText. The provenance guard (agentId === "pr-triage"
+		// AND filename startsWith "pr-triage-send__") must block the send branch.
+		const foreignFilename = "rogue-agent__1700000007.json";
 		fs.writeFileSync(
-			path.join(tempDir, "tasks/pending", foreign),
-			JSON.stringify({
-				agentId: "rogue-agent",
-				ndjsonAlert: "pr-triage-telegram-send-failed",
-				details: "spoofed alert from a foreign agent",
-			}),
-			"utf8",
-		);
-		// (2) pr-triage with an UNKNOWN alert kind + no prompt → alert branch
-		// skipped (kind not in the set) → falls through to dispatch → no prompt
-		// → malformed-task, NOT a telegram-send-failed alert.
-		const unknownKind = "pr-triage__1700000002.json";
-		fs.writeFileSync(
-			path.join(tempDir, "tasks/pending", unknownKind),
+			path.join(tempDir, "tasks/pending", foreignFilename),
 			JSON.stringify({
 				agentId: "pr-triage",
-				ndjsonAlert: "totally-unknown-alert-kind",
+				sendText: "smuggled summary under a foreign filename",
 			}),
 			"utf8",
 		);
+
+		const sendEvents: TaskSendEvent[] = [];
+		mgr.on("task-send-needed", (e: TaskSendEvent) => sendEvents.push(e));
 
 		await mgr._pollingTickForTests();
 		await dispatch.flush();
 
-		// Neither envelope produced an alert resolution.
-		expect(emittedEventsOfKind("pr-triage-telegram-send-failed")).toHaveLength(
-			0,
-		);
-		// Foreign agent → task-unrouted, file untouched in pending/, never
-		// moved to resolved/.
+		// Not routed as a send — the filename did not match the provenance prefix.
+		expect(sendEvents).toHaveLength(0);
 		expect(
-			emittedEventsOfKind("task-unrouted").some(
-				(e) => (e as { filename: string }).filename === foreign,
-			),
-		).toBe(true);
-		await fsp.access(path.join(tempDir, "tasks/pending", foreign));
-		expect(fs.existsSync(path.join(tempDir, "tasks/resolved", foreign))).toBe(
-			false,
-		);
-		// Unknown-kind pr-triage envelope fell through to the dispatch path and
-		// was rejected as malformed-task (no prompt) — never resolved-as-alert.
+			fs.existsSync(path.join(tempDir, "tasks/resolved", foreignFilename)),
+		).toBe(false);
+		// It fell through to the dispatch path; with no prompt it is rejected as
+		// malformed-task (the body's agentId pr-triage is registered).
 		expect(
 			emittedEventsOfKind("pr-triage-dispatch-failed").some(
 				(e) =>
-					(e as { filename: string }).filename === unknownKind &&
+					(e as { filename: string }).filename === foreignFilename &&
 					(e as { reason: string }).reason === "malformed-task",
 			),
 		).toBe(true);
 	});
 
-	it("Case 12 — ndjsonAlert is NOT resolved when its telemetry record fails to persist (Codex Medium)", async () => {
-		// emit() returns false on a degraded telemetry dir (it swallows the
-		// append error internally). The alert branch must NOT claim/resolve the
-		// fallback file in that case — resolving would silently lose the
-		// double-failure signal AND stop the task from retrying. Simulate the
-		// failed durable write by making the telemetry mock return false for
-		// this tick, then assert the file stays in pending/.
+	it("Case 12 — provenance: a pr-triage-send__ file with a non-empty prompt does NOT route to send (falls through to dispatch)", async () => {
 		writePrTriageFixture();
 		const { mgr, register } = await buildSystem();
 		await register("pr-triage");
+		const dispatch = wireDispatchHandler(mgr);
 
-		const filename = "pr-triage__1700000003.json";
+		const filename = "pr-triage-send__1700000010-9.json";
 		fs.writeFileSync(
 			path.join(tempDir, "tasks/pending", filename),
 			JSON.stringify({
 				agentId: "pr-triage",
-				ndjsonAlert: "pr-triage-telegram-send-failed",
-				details: "telemetry-degraded path",
+				sendText: "summary",
+				prompt: "but also a prompt",
 			}),
 			"utf8",
 		);
 
-		// Telemetry write fails (returns false) for this tick.
-		emitMock.mockImplementation(() => Promise.resolve(false));
+		const sendEvents: TaskSendEvent[] = [];
+		const dispatchEvents: TaskDispatchEvent[] = [];
+		mgr.on("task-send-needed", (e: TaskSendEvent) => sendEvents.push(e));
+		mgr.on("task-dispatch-needed", (e: TaskDispatchEvent) =>
+			dispatchEvents.push(e),
+		);
 
 		await mgr._pollingTickForTests();
+		await dispatch.flush();
 
-		// The alert branch fired (attempted to record the event)…
-		expect(emittedEventsOfKind("pr-triage-telegram-send-failed")).toHaveLength(
-			1,
-		);
-		// …but the file was NOT resolved — left in pending/ for the next tick
-		// to retry, because the durable write failed.
-		await fsp.access(path.join(tempDir, "tasks/pending", filename));
-		expect(fs.existsSync(path.join(tempDir, "tasks/resolved", filename))).toBe(
-			false,
-		);
+		// A combined prompt+sendText is NOT a clean send envelope.
+		expect(sendEvents).toHaveLength(0);
+		expect(dispatchEvents).toHaveLength(1);
 	});
 
 	it.skipIf(process.platform === "win32")(
-		"Case 13 — persisted agent config is written mode 0600 (Codex H at-rest)",
+		"Case 13 — persisted agent config is written mode 0600 (POSIX at-rest)",
 		async () => {
-			// The cron-agent env allowlist injects daemon secrets (Telegram bot
-			// token, GH PAT) into the persisted config; persistAgentConfig must
-			// write it 0600 so other local users on the POSIX VPS cannot read the
-			// credentials. POSIX-only — NTFS ignores POSIX mode bits.
+			// The persisted config no longer carries secrets, but it still must be
+			// 0600 so the at-rest contract holds for any future field.
 			writePrTriageFixture();
 			const { register } = await buildSystem();
 			await register("pr-triage");
@@ -1225,75 +905,7 @@ describe("pr-triage integration (Plan 04c)", () => {
 		},
 	);
 
-	it("Case 14 — pr-triage-double-failure envelope → telemetry alertKind=double-failure + resolved (pr84 Codex H)", async () => {
-		// prompt-template.md's double-failure path (the failure-path Telegram
-		// POST ALSO returns non-200) writes a SECOND fallback envelope with
-		// `ndjsonAlert: "pr-triage-double-failure"`. There is NO distinct
-		// `agent-alert` telemetry kind — processPendingTask emits the single
-		// `pr-triage-telegram-send-failed` event whose `alertKind` field carries
-		// the verbatim `ndjsonAlert` value, so an operator filters double-
-		// failures on `alertKind === "pr-triage-double-failure"`. This mirrors
-		// Case 5's structure for the double-failure kind. Fails pre-fix (the old
-		// prompt-template promised an `agent-alert` kind that the daemon never
-		// emitted); passes after — it IS the regression test for the
-		// double-failure → telemetry contract.
-		writePrTriageFixture();
-		const { mgr, register } = await buildSystem();
-		await register("pr-triage");
-		const dispatch = wireDispatchHandler(mgr);
-
-		const filename = "pr-triage__1700000004.json";
-		const details = "gh: HTTP 502 Bad Gateway; telegram-status 500";
-		fs.writeFileSync(
-			path.join(tempDir, "tasks/pending", filename),
-			JSON.stringify({
-				agentId: "pr-triage",
-				ndjsonAlert: "pr-triage-double-failure",
-				details,
-			}),
-			"utf8",
-		);
-
-		// Short-circuit proof: the alert is handled BEFORE the dispatch emit, so
-		// this listener MUST stay empty.
-		const dispatchEvents: TaskDispatchEvent[] = [];
-		mgr.on("task-dispatch-needed", (evt: TaskDispatchEvent) => {
-			dispatchEvents.push(evt);
-		});
-
-		await mgr._pollingTickForTests();
-		await dispatch.flush();
-
-		// (a) Exactly one pr-triage-telegram-send-failed; alertKind carries the
-		// verbatim double-failure value (NOT an `agent-alert` kind).
-		const alerts = emittedEventsOfKind("pr-triage-telegram-send-failed");
-		expect(alerts).toHaveLength(1);
-		expect(alerts[0]).toMatchObject({
-			kind: "pr-triage-telegram-send-failed",
-			agentId: "pr-triage",
-			filename,
-			alertKind: "pr-triage-double-failure",
-			details,
-		});
-		// (b) File moved pending → resolved.
-		await fsp.access(path.join(tempDir, "tasks/resolved", filename));
-		await expect(
-			fsp.access(path.join(tempDir, "tasks/pending", filename)),
-		).rejects.toThrow();
-		// (c) Never mis-classified as malformed-task; never reached dispatch.
-		expect(emittedEventsOfKind("pr-triage-dispatch-failed")).toHaveLength(0);
-		expect(dispatchEvents).toHaveLength(0);
-	});
-
-	it("Case 15 — consumer tolerance: transient unparseable .json is NOT poisoned, retried, then resolves (pr84 Codex consumer-tolerance)", async () => {
-		// A producer that writes its task file directly (bypassing the atomic
-		// `.tmp`-then-`mv` discipline) can be caught mid-write by a 5s polling
-		// tick, yielding a TRANSIENT JSON.parse failure on a file that becomes
-		// valid microseconds later. Poisoning on the FIRST failure permanently
-		// loses that task. The consumer grants JSON_PARSE_RETRY_BUDGET ticks of
-		// grace: the file stays in pending/ and is re-read next tick. Fails
-		// pre-fix (first parse failure poisoned the file immediately); passes
-		// after.
+	it("Case 14 — consumer tolerance: transient unparseable .json is NOT poisoned, retried, then resolves", async () => {
 		writePrTriageFixture();
 		const { mgr, register } = await buildSystem();
 		await register("pr-triage");
@@ -1301,7 +913,6 @@ describe("pr-triage integration (Plan 04c)", () => {
 
 		const filename = "pr-triage__1700000005.json";
 		const pendingPath = path.join(tempDir, "tasks/pending", filename);
-		// Tick 1: truncated JSON (mid-write) → must NOT poison, stays in pending.
 		fs.writeFileSync(
 			pendingPath,
 			'{"agentId":"pr-triage","prompt":"do the t',
@@ -1311,16 +922,10 @@ describe("pr-triage integration (Plan 04c)", () => {
 		await mgr._pollingTickForTests();
 		await dispatch.flush();
 
-		// Not poisoned: file untouched in pending/, no task-poisoned for it.
 		await fsp.access(pendingPath);
 		expect(fs.existsSync(path.join(tempDir, "tasks/poisoned", filename))).toBe(
 			false,
 		);
-		expect(
-			emittedEventsOfKind("task-poisoned").some(
-				(e) => (e as { filename: string }).filename === filename,
-			),
-		).toBe(false);
 
 		// The "mv" lands: the file becomes valid JSON before the next tick.
 		fs.writeFileSync(
@@ -1333,7 +938,6 @@ describe("pr-triage integration (Plan 04c)", () => {
 			"utf8",
 		);
 
-		// Tick 2: parses cleanly → dispatch → claimTask → resolved.
 		await mgr._pollingTickForTests();
 		await dispatch.flush();
 		await mgr.stopPollingLoop();
@@ -1346,11 +950,7 @@ describe("pr-triage integration (Plan 04c)", () => {
 		expect(resolved).toHaveLength(1);
 	});
 
-	it("Case 16 — consumer tolerance: persistently malformed .json IS poisoned past JSON_PARSE_RETRY_BUDGET (pr84 Codex consumer-tolerance)", async () => {
-		// The grace window is BOUNDED — a genuinely-corrupt task that stays
-		// unparseable for (JSON_PARSE_RETRY_BUDGET + 1) ticks is still poisoned,
-		// so a truly broken task cannot loop forever. Proves the fix is
-		// defense-in-depth and does NOT weaken poison handling.
+	it("Case 15 — consumer tolerance: persistently malformed .json IS poisoned past JSON_PARSE_RETRY_BUDGET", async () => {
 		writePrTriageFixture();
 		const { mgr, register } = await buildSystem();
 		await register("pr-triage");
@@ -1359,8 +959,6 @@ describe("pr-triage integration (Plan 04c)", () => {
 		const pendingPath = path.join(tempDir, "tasks/pending", filename);
 		fs.writeFileSync(pendingPath, "{ irredeemably corrupt json", "utf8");
 
-		// JSON_PARSE_RETRY_BUDGET ticks of grace: the file survives each, never
-		// poisoned, never resolved.
 		for (let i = 0; i < JSON_PARSE_RETRY_BUDGET; i++) {
 			await mgr._pollingTickForTests();
 			await fsp.access(pendingPath);
@@ -1369,7 +967,6 @@ describe("pr-triage integration (Plan 04c)", () => {
 			).toBe(false);
 		}
 
-		// One more tick exceeds the budget → poisoned.
 		await mgr._pollingTickForTests();
 		await fsp.access(path.join(tempDir, "tasks/poisoned", filename));
 		await expect(fsp.access(pendingPath)).rejects.toThrow();
@@ -1384,57 +981,32 @@ describe("pr-triage integration (Plan 04c)", () => {
 		});
 	});
 
-	it("Case 17 — filename provenance: a FOREIGN-filename file with a pr-triage-shaped alert body is NOT resolved-as-alert (pr84 I-3)", async () => {
-		// The record-and-resolve alert branch now ALSO requires the FILENAME to
-		// match the pr-triage producer convention (`pr-triage__<ts>-<pid>.json`,
-		// see prompt-template.md). tasks/pending is the GENERIC shared bus; a
-		// foreign producer that writes `rogue-agent__*.json` whose BODY claims
-		// `agentId: "pr-triage"` + a known alert kind would, WITHOUT the filename
-		// guard, be silently record-and-resolved here — destroying the real
-		// producer's signal (data loss). Case 11 only covers a foreign BODY
-		// (agentId !== "pr-triage"); this covers the consistent-body /
-		// foreign-FILENAME case. The file must fall through to normal routing
-		// (the body says pr-triage which IS registered, so it advances to the
-		// dispatch path and is rejected as malformed-task for its absent prompt)
-		// — NOT moved to resolved/ as an alert.
+	it("Case 16 — the agent neither receives nor references a secret token (C2 sentinel discipline)", async () => {
 		writePrTriageFixture();
-		const { mgr, register } = await buildSystem();
+		const { scheduler, register } = await buildSystem();
 		await register("pr-triage");
-		const dispatch = wireDispatchHandler(mgr);
 
-		const foreignFilename = "rogue-agent__1700000007.json";
-		fs.writeFileSync(
-			path.join(tempDir, "tasks/pending", foreignFilename),
-			JSON.stringify({
-				agentId: "pr-triage",
-				ndjsonAlert: "pr-triage-telegram-send-failed",
-				details: "pr-triage-shaped body smuggled under a foreign filename",
-			}),
-			"utf8",
-		);
+		await scheduler._tickForTests();
 
-		await mgr._pollingTickForTests();
-		await dispatch.flush();
-
-		// (a) No alert resolution — the filename-provenance guard blocked the
-		// record-and-resolve branch.
-		expect(emittedEventsOfKind("pr-triage-telegram-send-failed")).toHaveLength(
-			0,
-		);
-		// (b) File NOT moved to resolved/ as an alert.
-		expect(
-			fs.existsSync(path.join(tempDir, "tasks/resolved", foreignFilename)),
-		).toBe(false);
-		// (c) It fell through to the dispatch path. The body's agentId is
-		// "pr-triage" (registered), so it dispatches; with no prompt it is
-		// rejected as malformed-task — proving it was NOT short-circuited as an
-		// alert.
-		expect(
-			emittedEventsOfKind("pr-triage-dispatch-failed").some(
-				(e) =>
-					(e as { filename: string }).filename === foreignFilename &&
-					(e as { reason: string }).reason === "malformed-task",
-			),
-		).toBe(true);
+		// Every spawn call's env is secret-free.
+		for (const call of mockSpawn.mock.calls) {
+			const env = (
+				call as [string, string[], { env: Record<string, string> }]
+			)[2].env;
+			expect(env.IAGO_TELEGRAM_BOT_TOKEN).toBeUndefined();
+			expect(env.GH_TOKEN).toBeUndefined();
+			expect(env.IAGO_TELEGRAM_ALLOWED_USER_IDS).toBeUndefined();
+		}
+		// The on-disk task body (the agent's entire input) contains no token.
+		const pendingFiles = fs.readdirSync(path.join(tempDir, "tasks/pending"));
+		for (const f of pendingFiles) {
+			const body = fs.readFileSync(
+				path.join(tempDir, "tasks/pending", f),
+				"utf8",
+			);
+			expect(body).not.toContain("test-gh-token");
+			expect(body).not.toContain("test-bot-token");
+		}
+		await scheduler.stop();
 	});
 });

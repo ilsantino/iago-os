@@ -151,7 +151,10 @@ export function wrapSecretToken(raw: string): SecretToken {
  * Split a long reply into Telegram-safe chunks (<=4000 chars each).
  * Splits on newline where possible to keep messages readable.
  */
-export function chunkForTelegram(text: string, limit = TELEGRAM_CHUNK_LIMIT): string[] {
+export function chunkForTelegram(
+	text: string,
+	limit = TELEGRAM_CHUNK_LIMIT,
+): string[] {
 	if (text.length <= limit) return [text];
 	const chunks: string[] = [];
 	let remaining = text;
@@ -188,7 +191,10 @@ export class TelegramBot {
 		// PR45 CRITICAL: empty allowlist would silently break command
 		// routing AND approval broadcast (chatId becomes undefined).
 		// Fail loud at startup.
-		if (!Array.isArray(opts.allowedUserIds) || opts.allowedUserIds.length === 0) {
+		if (
+			!Array.isArray(opts.allowedUserIds) ||
+			opts.allowedUserIds.length === 0
+		) {
 			void emit(
 				{
 					kind: "agent-registered",
@@ -605,7 +611,8 @@ export class TelegramBot {
 			// file-bus task for non-PTY shapes in Phase 3+). For Phase 1,
 			// `injectIntoAgent` calls into the PTY adapter directly.
 			await this.injectIntoAgent(command.agent, sanitized);
-			const note = stripped > 0 ? ` (${stripped} control byte(s) stripped)` : "";
+			const note =
+				stripped > 0 ? ` (${stripped} control byte(s) stripped)` : "";
 			await this.safeReply(
 				target,
 				`Injected into ${command.agent}${note}: ${sanitized}`,
@@ -708,6 +715,62 @@ export class TelegramBot {
 				`[telegram] sendApprovalRequest failed: ${err instanceof Error ? err.message : String(err)}`,
 			);
 		}
+	}
+
+	/**
+	 * Daemon-owned outbound notification send (R1 — plan
+	 * feature-pr84-r1-daemon-creds). The daemon fetches + sanitizes the PR
+	 * data and the pr-triage agent emits a TEXT-only summary; the daemon
+	 * sends that summary to Santiago itself so the agent never holds the bot
+	 * token nor makes a network call.
+	 *
+	 * Reuses the existing primitives: `chunkForTelegram` to split to
+	 * ≤4000-char chunks, `getChatId()` (= allowedUserIds[0], Santiago) as the
+	 * recipient, and plain-text `sendMessage` (NO `parse_mode`, matching the
+	 * current contract — the summary is plain text).
+	 *
+	 * It MUST NOT throw on a Telegram API error: it catches and returns
+	 * `{ ok: false, status?, error }` (token-free message) so the daemon
+	 * caller writes dead-letter telemetry instead of crashing the dispatch
+	 * path. `this.bot == null` (local-dev / `config.telegram` absent) →
+	 * `{ ok: false, error: "telegram-not-configured" }`.
+	 *
+	 * The token is never logged here — it lives only inside `tokenWrapper`
+	 * (redacted on inspect) and was passed to `node-telegram-bot-api` once at
+	 * `start()`; this path never unwraps it into a log.
+	 */
+	async sendAgentNotification(
+		text: string,
+	): Promise<{ ok: boolean; status?: number; error?: string }> {
+		if (this.bot === null) {
+			return { ok: false, error: "telegram-not-configured" };
+		}
+		const chatId = this.getChatId();
+		if (chatId === undefined) {
+			return { ok: false, error: "no-recipient-configured" };
+		}
+		const chunks = chunkForTelegram(text);
+		for (const chunk of chunks) {
+			try {
+				await this.bot.sendMessage(chatId, chunk);
+			} catch (err) {
+				// Never include the token; the error message from
+				// node-telegram-bot-api does not carry it, but we keep this
+				// token-free by construction. Surface an HTTP status when the
+				// library attaches one.
+				const status =
+					typeof (err as { response?: { statusCode?: unknown } })?.response
+						?.statusCode === "number"
+						? (err as { response: { statusCode: number } }).response.statusCode
+						: undefined;
+				const message = err instanceof Error ? err.message : String(err);
+				console.error(`[telegram] sendAgentNotification failed: ${message}`);
+				return status !== undefined
+					? { ok: false, status, error: message }
+					: { ok: false, error: message };
+			}
+		}
+		return { ok: true };
 	}
 
 	getChatId(): number | undefined {
