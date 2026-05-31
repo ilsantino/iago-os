@@ -39,5 +39,6 @@ const broken = {
 // Forces a runtime registration error. `registerRuntime` runs the structural
 // probe and throws because `spawn` is missing. The throw escapes the module
 // body so any importer (static or dynamic) observes a rejected import.
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+// (The `as unknown as` cast deliberately feeds a malformed adapter through the
+// typed signature to exercise the fail-isolation path.)
 registerRuntime(broken as unknown as Parameters<typeof registerRuntime>[0]);

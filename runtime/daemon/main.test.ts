@@ -38,6 +38,7 @@ import {
 	type AgentConfigShape,
 	SHUTDOWN_STAGE_TIMEOUT_MS,
 	type TaskDispatchEvent,
+	buildBotAgentManagerAdapter,
 	buildFleetHealth,
 	computeRunUnder,
 	findHandleForAgent,
@@ -130,7 +131,9 @@ describe("loadPersistedConfigs", () => {
 		// throws "Cannot redefine property" on `fsp.readdir` under Node 20.
 		await fsp.rm(pathFor("agents"), { recursive: true, force: true });
 		await fsp.writeFile(pathFor("agents"), "not a directory");
-		const errSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+		const errSpy = vi
+			.spyOn(console, "error")
+			.mockImplementation(() => undefined);
 		const result = await loadPersistedConfigs();
 		expect(result.size).toBe(0);
 		const logs = errSpy.mock.calls.map((c) => String(c[0])).join("\n");
@@ -150,7 +153,9 @@ describe("loadPersistedConfigs", () => {
 		await fsp.mkdir(path.join(pathFor("agents"), "h-eisdir.json"), {
 			recursive: true,
 		});
-		const errSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+		const errSpy = vi
+			.spyOn(console, "error")
+			.mockImplementation(() => undefined);
 		const result = await loadPersistedConfigs();
 		expect(result.size).toBe(0);
 		const logs = errSpy.mock.calls.map((c) => String(c[0])).join("\n");
@@ -160,7 +165,9 @@ describe("loadPersistedConfigs", () => {
 
 	it("logs and continues on a JSON parse error", async () => {
 		await fsp.writeFile(path.join(pathFor("agents"), "bad.json"), "{not-json");
-		const errSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+		const errSpy = vi
+			.spyOn(console, "error")
+			.mockImplementation(() => undefined);
 		const result = await loadPersistedConfigs();
 		expect(result.size).toBe(0);
 		const logs = errSpy.mock.calls.map((c) => String(c[0])).join("\n");
@@ -183,7 +190,9 @@ describe("loadPersistedConfigs", () => {
 			cwd: "/tmp",
 			sessionId: "s-1",
 		});
-		const errSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+		const errSpy = vi
+			.spyOn(console, "error")
+			.mockImplementation(() => undefined);
 		const result = await loadPersistedConfigs();
 		expect(result.size).toBe(0);
 		const logs = errSpy.mock.calls.map((c) => String(c[0])).join("\n");
@@ -293,7 +302,9 @@ describe("withTimeout", () => {
 	});
 
 	it('returns "timeout" and writes a stderr warning when the op exceeds the timeout', async () => {
-		const errSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+		const errSpy = vi
+			.spyOn(console, "error")
+			.mockImplementation(() => undefined);
 		const result = await withTimeout(
 			"slow-op",
 			() => new Promise<number>((resolve) => setTimeout(() => resolve(1), 200)),
@@ -388,6 +399,42 @@ describe("getShapeForAgent", () => {
 	it("returns null on an empty handle list", async () => {
 		const shape = await getShapeForAgent(makeManager([]), "any");
 		expect(shape).toBeNull();
+	});
+});
+
+// ---------------------------------------------------------------------------
+// buildBotAgentManagerAdapter (dual-adversarial #B — composition wiring)
+// ---------------------------------------------------------------------------
+
+describe("buildBotAgentManagerAdapter", () => {
+	it("forwards getLastStatus + isAlive (regression: bot /status liveness wiring)", async () => {
+		const handle = makeHandle({ agentId: "agent-a", shape: "pty" });
+		const getLastStatus = vi.fn(() => "running");
+		const isAlive = vi.fn(() => true);
+		const manager = {
+			getHandle: (id: string) => (id === handle.id ? handle : undefined),
+			listHandles: () => [handle],
+			shutdownAgent: vi.fn(async () => {}),
+			restartAgent: vi.fn(async () => undefined),
+			getLastStatus,
+			isAlive,
+		} as unknown as AgentManager;
+
+		const adapter = buildBotAgentManagerAdapter(manager);
+
+		// The two methods the inline literal previously DROPPED must be present
+		// AND delegate — their absence silently disabled the /status
+		// "Last status:" / "Alive:" lines in production (dual-adversarial #B).
+		expect(typeof adapter.getLastStatus).toBe("function");
+		expect(typeof adapter.isAlive).toBe("function");
+		expect(adapter.getLastStatus?.(handle.id)).toBe("running");
+		expect(adapter.isAlive?.(handle.id)).toBe(true);
+		expect(getLastStatus).toHaveBeenCalledWith(handle.id);
+		expect(isAlive).toHaveBeenCalledWith(handle.id);
+
+		// Core forwards still intact.
+		expect(adapter.getHandle(handle.id)).toBe(handle);
+		expect(await adapter.getShape("agent-a")).toBe("pty");
 	});
 });
 

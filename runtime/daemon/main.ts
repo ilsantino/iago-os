@@ -93,7 +93,7 @@ import {
 	listPendingApprovals,
 	recoverStrandedApprovals,
 } from "../telegram/approval-bus.js";
-import { TelegramBot } from "../telegram/bot.js";
+import { type AgentManagerInterface, TelegramBot } from "../telegram/bot.js";
 
 import {
 	AgentManager,
@@ -1428,18 +1428,7 @@ export async function startDaemon(
 		bot = new TelegramBot({
 			token: config.telegram.token,
 			allowedUserIds: config.telegram.allowedUserIds,
-			agentManager: {
-				getHandle: (id) => agentManager.getHandle(id),
-				listHandles: () => agentManager.listHandles(),
-				shutdownAgent: (id, signal) => agentManager.shutdownAgent(id, signal),
-				restartAgent: (id, reason) =>
-					agentManager.restartAgent(
-						id,
-						reason as "stalled" | "rss-exceeded" | "crash",
-					),
-				getShape: async (agentId: string): Promise<AgentShape | null> =>
-					getShapeForAgent(agentManager, agentId),
-			},
+			agentManager: buildBotAgentManagerAdapter(agentManager),
 			injectIntoAgent: async (agentId, text) => {
 				await injectIntoAgent(agentManager, agentId, text);
 			},
@@ -1804,6 +1793,37 @@ export async function getShapeForAgent(
 		if (h.agentId === agentId) return h.shape;
 	}
 	return null;
+}
+
+/**
+ * Build the `AgentManagerInterface` adapter the Telegram bot consumes.
+ *
+ * Extracted from the inline `new TelegramBot({ agentManager: {…} })` literal so
+ * the COMPOSITION wiring — which manager methods the bot actually receives — is
+ * a unit-testable surface. dual-adversarial #B: `getLastStatus`/`isAlive` were
+ * present on the real `AgentManager` and consumed (optionally) by the bot's
+ * `/status` renderer, but the inline literal forwarded neither, so the
+ * `Last status:`/`Alive:` lines silently never rendered in production while the
+ * mock-injected bot unit tests still passed. Forwarding them here (and pinning
+ * the forward with `buildBotAgentManagerAdapter` tests) closes that gap.
+ */
+export function buildBotAgentManagerAdapter(
+	agentManager: AgentManager,
+): AgentManagerInterface {
+	return {
+		getHandle: (id) => agentManager.getHandle(id),
+		listHandles: () => agentManager.listHandles(),
+		shutdownAgent: (id, signal) => agentManager.shutdownAgent(id, signal),
+		restartAgent: (id, reason) =>
+			agentManager.restartAgent(
+				id,
+				reason as "stalled" | "rss-exceeded" | "crash",
+			),
+		getShape: async (agentId: string): Promise<AgentShape | null> =>
+			getShapeForAgent(agentManager, agentId),
+		getLastStatus: (id) => agentManager.getLastStatus(id),
+		isAlive: (id) => agentManager.isAlive(id),
+	};
 }
 
 export async function injectIntoAgent(

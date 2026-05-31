@@ -167,12 +167,19 @@ export function parseCommand(text: string): ParseResult {
 			if (afterCmd.length === 0) {
 				return { ok: false, error: "missing argument: agent" };
 			}
-			const firstSpace = afterCmd.indexOf(" ");
-			if (firstSpace === -1) {
+			// Split agent from payload on the FIRST whitespace of ANY kind
+			// (space, tab, newline) to match tokenize()'s `\s+` semantics — a
+			// literal indexOf(" ") regressed tab/newline-separated invocations
+			// to "missing argument: text". The agent id forbids whitespace, so
+			// the first whitespace is always the agent/text boundary; slicing
+			// at firstWs+1 drops that one separator and preserves the rest of
+			// the payload (including its own whitespace) verbatim.
+			const firstWs = afterCmd.search(/\s/);
+			if (firstWs === -1) {
 				return { ok: false, error: "missing argument: text" };
 			}
-			const injectAgent = afterCmd.slice(0, firstSpace);
-			const injectText = afterCmd.slice(firstSpace + 1);
+			const injectAgent = afterCmd.slice(0, firstWs);
+			const injectText = afterCmd.slice(firstWs + 1);
 			if (injectText.length === 0) {
 				return { ok: false, error: "missing argument: text" };
 			}

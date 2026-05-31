@@ -412,6 +412,43 @@ fi
 
 rm -rf "$TMP13"
 
+# ─── Test 14: absent/empty input is fail-closed by default, soft under
+# --allow-empty (dual-adversarial Important: false-green on missing telemetry) ─
+TMP14=$(mktemp -d)
+
+# (a) Missing runs dir, no flag → exit non-zero (fail-closed).
+if (cd "$TMP14" && node "$AGGREGATOR" --last 1 >/dev/null 2>&1); then
+  nope "missing-dir: default should exit non-zero (fail-closed)"
+else
+  ok "missing-dir: default exits non-zero (fail-closed)"
+fi
+
+# (b) Missing runs dir + --allow-empty → exit 0 with 'no input files'.
+OUTPUT=$(cd "$TMP14" && node "$AGGREGATOR" --last 1 --allow-empty 2>&1)
+RC=$?
+if [[ $RC -eq 0 ]] && echo "$OUTPUT" | grep -q "no input files"; then
+  ok "missing-dir: --allow-empty exits 0 with 'no input files'"
+else
+  nope "missing-dir: --allow-empty should exit 0 + 'no input files' (rc=$RC)"
+fi
+
+# (c) Present-but-empty runs dir, no flag → exit non-zero (fail-closed).
+mkdir -p "$TMP14/.iago/state/pipeline-runs"
+if (cd "$TMP14" && node "$AGGREGATOR" --last 1 >/dev/null 2>&1); then
+  nope "empty-dir: default should exit non-zero (fail-closed)"
+else
+  ok "empty-dir: default exits non-zero (fail-closed)"
+fi
+
+# (d) Empty runs dir + --allow-empty → exit 0.
+if (cd "$TMP14" && node "$AGGREGATOR" --last 1 --allow-empty >/dev/null 2>&1); then
+  ok "empty-dir: --allow-empty exits 0"
+else
+  nope "empty-dir: --allow-empty should exit 0"
+fi
+
+rm -rf "$TMP14"
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [[ $FAIL -eq 0 ]] || exit 1

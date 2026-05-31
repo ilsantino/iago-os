@@ -33,30 +33,52 @@ import path from "node:path";
 
 const args = process.argv.slice(2);
 let lastN = 10;
+// --allow-empty: opt into a SOFT exit 0 when there is no telemetry to read
+// (a fresh checkout / nightly-cron context that legitimately has none yet).
+// Default is fail-closed (exit 1) so a broken telemetry writer, wrong CWD, or
+// wiped state root is not silently indistinguishable from "no runs yet".
+let allowEmpty = false;
 for (let i = 0; i < args.length; i++) {
   if (args[i] === "--last") {
     const v = parseInt(args[i + 1], 10);
     if (!Number.isNaN(v) && v > 0) lastN = v;
     i++;
+  } else if (args[i] === "--allow-empty") {
+    allowEmpty = true;
   }
 }
 
 const projectDir = process.cwd();
 const runsDir = path.join(projectDir, ".iago", "state", "pipeline-runs");
 
+// Absent / empty input is fail-closed by default and soft only under
+// --allow-empty (dual-adversarial Important): without the flag, a missing or
+// empty runs directory exits NON-ZERO with a descriptive stderr message so a
+// misconfigured consumer (broken writer, wrong CWD, wiped state) is caught
+// rather than reported as a healthy fresh checkout.
+const emptyExit = allowEmpty ? 0 : 1;
 let files;
 try {
   files = readdirSync(runsDir).filter((f) => f.endsWith(".ndjson"));
 } catch {
-  // Fresh checkout — runs dir absent. Exit 0 with a soft notice so this
-  // script can be wired into nightly cron / pre-merge checks without
-  // becoming a noise source.
-  console.log("no input files");
-  process.exit(0);
+  if (allowEmpty) {
+    console.log("no input files");
+  } else {
+    console.error(
+      `No pipeline runs directory at ${runsDir} (pass --allow-empty to treat this as a soft no-op).`,
+    );
+  }
+  process.exit(emptyExit);
 }
 if (files.length === 0) {
-  console.log("no input files");
-  process.exit(0);
+  if (allowEmpty) {
+    console.log("no input files");
+  } else {
+    console.error(
+      `No pipeline run files in ${runsDir} (pass --allow-empty to treat this as a soft no-op).`,
+    );
+  }
+  process.exit(emptyExit);
 }
 
 const runs = [];

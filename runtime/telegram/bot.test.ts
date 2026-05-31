@@ -1672,6 +1672,40 @@ describe("TelegramBot / dispatch validates agent id (PR45 M8)", () => {
 		expect(fake.sendMessageCalls[0]?.text).toContain("Invalid agent id");
 		await bot.stop();
 	});
+
+	it("/start with an invalid agentId is rejected and echoes at most 64 chars", async () => {
+		// dispatchStart gained validateAgentId in this diff but had no negative
+		// test (only /abort + /status did) — a regression that dropped the
+		// reject branch would have shipped silently. A 200-char id is both
+		// invalid (too long) and exercises the slice(0, 64) echo truncation.
+		const longBad = "A".repeat(200);
+		const fake = new FakeTelegramBot();
+		const manager: AgentManagerInterface = {
+			getHandle: () => undefined,
+			listHandles: () => [],
+			shutdownAgent: async () => undefined,
+			getShape: async () => "pty",
+		};
+		const bot = new TelegramBot({
+			token: "fake-token",
+			allowedUserIds: [42],
+			agentManager: manager,
+			injectIntoAgent: async () => undefined,
+			botFactory: () => fake as unknown as never,
+		});
+		await bot.start();
+		fake.emit(
+			"message",
+			fakeMessage({ userId: 42, text: `/start ${longBad}` }),
+		);
+		await waitForSendMessage(fake, 1);
+		const reply = fake.sendMessageCalls[0]?.text ?? "";
+		expect(reply).toContain("Invalid agent id");
+		// The echoed id is truncated to <=64 chars before entering the reply.
+		expect(reply).toContain("A".repeat(64));
+		expect(reply).not.toContain("A".repeat(65));
+		await bot.stop();
+	});
 });
 
 // PR45 M6 — /status surfaces optional lastStatus + isAlive
