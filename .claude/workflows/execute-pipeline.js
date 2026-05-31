@@ -229,6 +229,50 @@ function hasBlocking(findings) {
   return findings.some((f) => f.severity === 'Critical' || f.severity === 'Important')
 }
 
+// ─── Risk tiering (deterministic, ZERO LLM — the rule-based layer per 60/30/10) ─
+// Reads the plan TEXT and assigns a risk tier so a CSS tweak and a Cognito-auth
+// change do not get the identical review depth. Plans are PROSE (not structured
+// path fields), so keywords are matched case-insensitive as substrings across the
+// FULL plan text. Pure string ops — no fs, no agent(), no network. Any parse
+// failure (no `### Task` headings found) errs to Tier 1 — never Tier 0.
+//
+//   Tier 0 Fast     ≤2 tasks AND ≤3 unique files AND no risk keyword (informational)
+//   Tier 1 Normal   default — 2-leg Opus + Codex
+//   Tier 2 Complex  >8 tasks OR any tier-2 keyword → + team mode
+//   Tier 3 Security  any tier-3 keyword → Tier 2 + maxFixRounds=3
+const TIER3_KEYWORDS = ['auth', 'cognito', 'payment', 'iam', 'jwt', 'allow.owner', 'webhook']
+const TIER2_KEYWORDS = ['amplify', 'functions/', 'schema', 'gsi', 'ttl', 'migration', 'rollback']
+function classifyTier(planText) {
+  if (typeof planText !== 'string' || !planText.trim()) return 1
+  const text = planText
+  const lower = text.toLowerCase()
+  // (1) count `### Task` headings (start-of-line, case-insensitive, allow "### Task")
+  const taskMatches = text.match(/^###\s+Task/gim)
+  const taskCount = taskMatches ? taskMatches.length : 0
+  // (2) count unique paths across `- **files:**` bullets. The path list after the
+  // marker is comma/space-separated; collect every token that looks like a path.
+  const fileSet = new Set()
+  const fileLineRe = /-\s*\*\*files:\*\*(.*)$/gim
+  let m
+  while ((m = fileLineRe.exec(text)) !== null) {
+    for (const tok of m[1].split(/[,\s]+/)) {
+      const t = tok.trim().replace(/[`'".]+$/g, '').replace(/^[`'"]+/g, '')
+      if (t) fileSet.add(t)
+    }
+  }
+  const fileCount = fileSet.size
+  // (3) case-insensitive substring keyword match across the full plan text
+  const hasTier3 = TIER3_KEYWORDS.some((kw) => lower.includes(kw))
+  const hasTier2 = TIER2_KEYWORDS.some((kw) => lower.includes(kw))
+  const hasKeyword = hasTier3 || hasTier2
+  // (4) classify. Parse failure (no headings) → Tier 1 (never Tier 0).
+  if (taskCount === 0) return 1
+  if (hasTier3) return 3
+  if (hasTier2 || taskCount > 8) return 2
+  if (taskCount <= 2 && fileCount <= 3 && !hasKeyword) return 0
+  return 1
+}
+
 // ─── Prompt builders ─────────────────────────────────────────────────
 function reviewPrompt(isReReview, stressBlock, preImplSha) {
   const head = isReReview
@@ -410,19 +454,45 @@ Otherwise output exactly one comment via gh pr comment. The comment text must be
 No markdown headers, no bullets, under 300 words. Post exactly once. Return status=DONE.`
 }
 
-function summaryPrompt(preImplSha, prUrl, reviewVerdict, codexSource, rounds) {
+function summaryPrompt(preImplSha, prUrl, reviewVerdict, codexSource, rounds, tierVal, sameFamily, degraded) {
+  // Verification provenance notes (team mode only). NOT blockers — informational so the
+  // human reading the summary knows the skeptic pass was same-family (no cross-model
+  // diversity) and/or whether any skeptic failed to run (incomplete verification).
+  const verifNotes = []
+  if (sameFamily)
+    verifNotes.push(
+      'NOTE: team-mode skeptics are same-family (Opus); cross-model diversity not achieved for the skeptic pass.',
+    )
+  if (degraded)
+    verifNotes.push(
+      'WARNING: one or more skeptic agents failed to run — verification incomplete.',
+    )
+  const verifBlock = verifNotes.length ? `\n   Verification: ${verifNotes.join(' ')}` : ''
   return `${PREAMBLE}
 
 Write the pipeline summary. In ${projectDir}:
 1. mkdir -p .iago/summaries
-2. Write .iago/summaries/${planName}.md with frontmatter (plan, status: done, verified: today's UTC date via  date -u +%Y-%m-%d, pr) and sections: Pipeline Result (review verdict ${reviewVerdict}, codex source ${codexSource}, fix rounds ${rounds}, PR ${prUrl || '(none)'}) and Diff Stats (git diff --stat ${preImplSha}..HEAD).
+2. Write .iago/summaries/${planName}.md with frontmatter (plan, status: done, verified: today's UTC date via  date -u +%Y-%m-%d, pr) and sections: Pipeline Result (risk tier ${tierVal}, review verdict ${reviewVerdict}, codex source ${codexSource}, fix rounds ${rounds}, PR ${prUrl || '(none)'}${verifBlock}) and Diff Stats (git diff --stat ${preImplSha}..HEAD).
 3. Append one NDJSON line to .iago/state/pipeline-runs.ndjson (mkdir -p .iago/state first): {"plan":"${planName}","pr":"${prUrl || ''}","verdict":"${reviewVerdict}","codex":"${codexSource}","rounds":${rounds},"ts":"<date -u +%Y-%m-%dT%H:%M:%SZ>"}
 4. COMMIT the summary so the working tree is left CLEAN for the next sequential plan's prep guard: git add .iago/summaries/${planName}.md && git commit -m "docs(summary): ${planName} pipeline result". (.iago/state/* is gitignored — do NOT stage it. This commit is local bookkeeping; it is fine that it lands after the PR push and is not part of the PR.)
 Return status=DONE.`
 }
 
 // ─── Dual-adversarial pass (Opus review ∥ Codex), used initially + per fix round ─
-async function runDualAdversarial(label, isReReview, stressBlock, preImplSha) {
+// @param {object} [opts]
+// @param {('standard'|'team')} [opts.mode='standard'] review depth. 'team' (Tier ≥ 2)
+//        activates dual-adversarial.js's diverse-persona team legs + per-finding skeptic
+//        panel. Defaults to 'standard' (today's 2-leg behavior).
+// @param {string[]} [opts.lenses=[]] extra independent lens keys (see dual-adversarial LENS_DEFS).
+// @param {number}   [opts.skepticCap=8] max Critical/Important findings the skeptic panel verifies.
+async function runDualAdversarial(label, isReReview, stressBlock, preImplSha, opts = {}) {
+  const { mode = 'standard', lenses = [], skepticCap = 8 } = opts
+  // Hard stop on a tier/mode mismatch (was a silent undefined-mode fallback). A Tier ≥ 2
+  // plan that reaches review with mode !== 'team' means the per-plan locals were not
+  // threaded through — fail closed rather than silently downgrade the review depth.
+  if (tier >= 2 && mode !== 'team') {
+    throw new Error(`tier ${tier} requires mode=team (got mode="${mode}") at ${label}`)
+  }
   const [review, codex] = await parallel([
     () =>
       withRetry(
@@ -431,6 +501,13 @@ async function runDualAdversarial(label, isReReview, stressBlock, preImplSha) {
             label: `review:${label}`,
             phase: 'Review',
             schema: REVIEW_SCHEMA,
+            // Review depth — Tier ≥ 2 hands the review leg team mode + lenses +
+            // skeptic-panel cap (the diverse-persona machinery in dual-adversarial.js).
+            // Tier 0/1 keeps mode='standard' (today's 2-leg behavior). Threaded from the
+            // per-plan locals through BOTH call sites (initial + fix-loop re-review).
+            mode,
+            lenses,
+            skepticCap,
           }),
         `review:${label}`,
       ),
@@ -467,7 +544,14 @@ async function runDualAdversarial(label, isReReview, stressBlock, preImplSha) {
   const codexSource = codex.source
   for (const f of review.findings || []) findings.push({ ...f, by: 'opus' })
   for (const f of codex.findings || []) findings.push({ ...f, by: codex.source })
-  return { findings, verdict, codexSource }
+  // verificationSameFamily: STRUCTURAL fact — in team mode both skeptics are Opus, so
+  // the skeptic pass has no cross-model diversity (always true in team mode, surfaced as
+  // a NOTE, not a blocker). verificationDegraded: a REAL failure — a skeptic returned null
+  // (failed to run), so verification is incomplete (surfaced as a WARNING). Read both from
+  // the review leg's output (false when the inline review does not report them — T06).
+  const verificationSameFamily = !!(review && review.verificationSameFamily)
+  const verificationDegraded = !!(review && review.verificationDegraded)
+  return { findings, verdict, codexSource, verificationSameFamily, verificationDegraded }
 }
 
 // ─── Flow ────────────────────────────────────────────────────────────
@@ -476,15 +560,17 @@ log(`execute-pipeline v2 — plan ${planName} — project ${projectDir}`)
 // ─── Lock — atomic per-project guard ─────────────────────────────────
 // `mkdir` is atomic, so it CLOSES the TOCTOU window the PREP clean-tree check
 // cannot (two runs can both observe a clean tree before either writes — but only
-// one can create the lock dir). Released best-effort on the success path; a crashed
-// run is recovered by the 3h stale-reclaim below or a manual `rmdir`. .iago/state
-// is gitignored, so the lock never enters git. NOTE (documented tradeoff): there is
-// no finally-release — a guaranteed finally would dispatch a release agent that can
-// itself throw on the same API outage that aborted the run, masking the real error;
-// instead a thrown/crashed run leaves the lock for stale-reclaim or manual cleanup.
+// one can create the lock dir). RELEASE is now in a `finally` (T04): a single,
+// owner-checked, deterministic `execSync('rm -rf …')` (NOT an agent() call — an agent
+// in `finally` can itself throw on the same API outage that aborted the run, masking
+// the real error). The release is owner-checked so it can never delete a CONCURRENT
+// session's lock, and self-swallowing so it can never mask the original error. A
+// crashed run that somehow skips the finally is still recovered by the 3h stale-reclaim
+// or a manual `rmdir`. .iago/state is gitignored, so the lock never enters git.
 // Concurrent same-projectDir runs are discouraged regardless — use a worktree
 // (MEMORY: worktree-per-session). This lock is belt-and-suspenders for the accident.
 const LOCK_DIR = '.iago/state/.pipeline.lock.d'
+const lockAcquired = false
 const lock = await agent(
   `${PREAMBLE}
 
@@ -504,10 +590,16 @@ if (!lock || lock.status !== 'ACQUIRED') {
     `Pipeline lock not acquired (${lock ? lock.status : 'null'}): ${lock && lock.notes ? lock.notes : `another run holds ${LOCK_DIR} — clear with \`rmdir ${LOCK_DIR}\` if stale`}`,
   )
 }
+lockAcquired = true
 log(`acquired pipeline lock (${LOCK_DIR})`)
 
-// Stage 0 — Stress
-phase('Stress')
+// Everything from here through Summary runs inside a try/finally so the lock is
+// released even on a throw (T04). The `return` at the end is INSIDE the try — a return
+// still runs the finally, so the lock is released on the success path too (no separate
+// success-path release; that would double-release).
+try {
+  // Stage 0 — Stress
+  phase('Stress')
 const stress = await withRetry(
   () => agent(STRESS_PROMPT, { label: 'stress', phase: 'Stress', schema: STRESS_SCHEMA }),
   'stress',
@@ -519,6 +611,27 @@ const stressBlock =
   stress.notes && stress.notes.length
     ? `\n\nSTRESS ENFORCEMENT: a stress test produced notes. For each, confirm the implementation addresses it in code OR has a comment justifying why it does not apply. Flag any unaddressed note as Important.\nNotes:\n${stress.notes.map((n) => `- ${n}`).join('\n')}`
     : ''
+
+// ─── Risk tier (deterministic, per-plan) ─────────────────────────────
+// Classify THIS plan's risk from its text and derive per-plan review-depth locals.
+// Reading the plan is deterministic I/O (dynamic import — no static import inside the
+// function body, which would not compile under the validate-workflows vm.Script gate);
+// the tier itself is pure JS (classifyTier, zero LLM — the rule-based layer). Any read
+// failure errs to Tier 1 (the safe default — never Tier 0). These locals live INSIDE the
+// per-plan execution block, so stacked multi-plan runs re-initialize them per plan (no
+// cross-plan bleed — T03).
+let tier = 1
+try {
+  const { readFileSync } = await import('node:fs')
+  tier = classifyTier(readFileSync(plan, 'utf8'))
+} catch (e) {
+  log(`tier classify failed (${String(e).slice(0, 120)}) — defaulting to Tier 1`)
+  tier = 1
+}
+const maxFixRounds = tier >= 3 ? 3 : 2
+const reviewMode = tier >= 2 ? 'team' : 'standard'
+const reviewLenses = []
+log(`risk tier ${tier} — reviewMode=${reviewMode}, maxFixRounds=${maxFixRounds}`)
 
 // Stage 1 — Prep + Implement
 phase('Implement')
@@ -582,16 +695,22 @@ log(`committed on ${branch} @ ${commit.headSha || '?'}`)
 
 // Stage 3/4 — Dual-adversarial review (Opus ∥ Codex), then fix loop
 phase('Review')
-let { findings, verdict, codexSource } = await runDualAdversarial('r0', false, stressBlock, preImplSha)
+// Tier ≥ 2 activates team mode + lenses; pass the per-plan locals as the options object
+// (T02). The fix-loop re-review below passes the SAME options — a missed call site there
+// would silently drop team mode on rounds 1-2 (the Critical the stress test found).
+const reviewOpts = { mode: reviewMode, lenses: reviewLenses, skepticCap: 8 }
+let { findings, verdict, codexSource, verificationSameFamily, verificationDegraded } =
+  await runDualAdversarial('r0', false, stressBlock, preImplSha, reviewOpts)
 let rounds = 0
-const MAX_FIX_ROUNDS = 2
 // Loop while there is work AND it is either round 0 (always do ONE fix pass for any
 // findings — the fix agent addresses every severity, including Minor) or blocking
 // findings remain. This avoids burning a second fix+rebuild+re-review round on a
-// Minor-only result while still fixing Minors once.
+// Minor-only result while still fixing Minors once. maxFixRounds is the PER-PLAN local
+// (Tier 3 → 3, else 2 — T03): it lives in the per-plan block, so stacked multi-plan runs
+// re-initialize it per plan (no cross-plan bleed from a module const).
 while (
   actionable(findings).length > 0 &&
-  rounds < MAX_FIX_ROUNDS &&
+  rounds < maxFixRounds &&
   (rounds === 0 || hasBlocking(findings))
 ) {
   rounds++
@@ -599,7 +718,7 @@ while (
   log(`fix round ${rounds}: ${actionable(findings).length} findings (codex=${codexSource})`)
   // Single attempt — the fix agent commits its fixes; a blind retry could
   // double-commit. A transient failure here aborts the run for inspection.
-  const fix = await agent(fixPrompt(actionable(findings), rounds, MAX_FIX_ROUNDS), {
+  const fix = await agent(fixPrompt(actionable(findings), rounds, maxFixRounds), {
     label: `fix:${rounds}`,
     phase: 'Fix',
     schema: IMPL_SCHEMA,
@@ -614,16 +733,13 @@ while (
   )
   if (!rebuild.passed) throw new Error(`Build broke during fix round ${rounds}: ${rebuild.summary || ''}`)
   phase('Review')
-  ;({ findings, verdict, codexSource } = await runDualAdversarial(
-    `r${rounds}`,
-    true,
-    stressBlock,
-    preImplSha,
-  ))
+  // SAME reviewOpts as the initial call — the re-review must keep Tier ≥ 2's team mode.
+  ;({ findings, verdict, codexSource, verificationSameFamily, verificationDegraded } =
+    await runDualAdversarial(`r${rounds}`, true, stressBlock, preImplSha, reviewOpts))
 }
 if (hasBlocking(findings)) {
   throw new Error(
-    `Critical/Important findings persist after ${MAX_FIX_ROUNDS} fix rounds — stopping for manual review:\n${actionable(findings)
+    `Critical/Important findings persist after ${maxFixRounds} fix rounds — stopping for manual review:\n${actionable(findings)
       .map((f) => `- [${f.severity}] ${f.summary}`)
       .join('\n')}`,
   )
@@ -678,11 +794,14 @@ if (noPr) {
 
 // Stage 6 — Summary + telemetry
 phase('Summary')
-const summary = await agent(summaryPrompt(preImplSha, prUrl, verdict, codexSource, rounds), {
-  label: 'summary',
-  phase: 'Summary',
-  schema: IMPL_SCHEMA,
-})
+const summary = await agent(
+  summaryPrompt(preImplSha, prUrl, verdict, codexSource, rounds, tier, verificationSameFamily, verificationDegraded),
+  {
+    label: 'summary',
+    phase: 'Summary',
+    schema: IMPL_SCHEMA,
+  },
+)
 if (!summary || summary.status !== 'DONE') throw new Error('Summary agent was skipped or BLOCKED — .iago/summaries/ uncommitted, dirty tree for next plan')
 
 // Release the pipeline lock (best-effort, success path — see the lock comment above
