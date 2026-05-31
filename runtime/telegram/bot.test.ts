@@ -1589,17 +1589,40 @@ describe("TelegramBot / sendAgentNotification", () => {
 		await bot.stop();
 	});
 
-	it("chunks a >4000-char summary into multiple sendMessage calls", async () => {
+	it("(FIX A) truncates a >4096-char summary into a SINGLE message (idempotent send)", async () => {
 		const { bot, fake } = buildSendBot({});
 		await bot.start();
 		const big = "x".repeat(9000);
 		const result = await bot.sendAgentNotification(big);
 		expect(result.ok).toBe(true);
-		expect(fake.sendMessageCalls.length).toBeGreaterThan(1);
-		// Every chunk stays within Telegram's hard cap.
-		for (const call of fake.sendMessageCalls) {
-			expect(call.text.length).toBeLessThanOrEqual(4096);
-		}
+		// FIX A (idempotency): a single atomic message — NOT a multi-chunk loop —
+		// so a re-tripped send cannot re-deliver already-sent leading chunks.
+		expect(fake.sendMessageCalls).toHaveLength(1);
+		const sent = fake.sendMessageCalls[0].text;
+		expect(sent.length).toBeLessThanOrEqual(4096);
+		expect(sent).toContain("(truncated; see dashboard)");
+		await bot.stop();
+	});
+
+	it("(Important-1) scrubs the bot token from result.error when a transport error echoes the request URL", async () => {
+		vi.spyOn(console, "error").mockImplementation(() => {});
+		const { bot } = buildSendBot({
+			sendMessage: async () => {
+				// A transport-layer failure (DNS/socket/abort) can surface the
+				// request URL, which embeds the token:
+				// https://api.telegram.org/bot<TOKEN>/sendMessage
+				throw new Error(
+					`connect ECONNREFUSED https://api.telegram.org/bot${TOKEN}/sendMessage`,
+				);
+			},
+		});
+		await bot.start();
+		const result = await bot.sendAgentNotification("summary");
+		expect(result.ok).toBe(false);
+		// The raw token must NEVER cross into result.error — it reaches the
+		// daemon's on-disk telemetry as `details`. It is scrubbed to [REDACTED].
+		expect(result.error).not.toContain(TOKEN);
+		expect(result.error).toContain("[REDACTED]");
 		await bot.stop();
 	});
 

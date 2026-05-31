@@ -724,10 +724,12 @@ export class TelegramBot {
 	 * sends that summary to Santiago itself so the agent never holds the bot
 	 * token nor makes a network call.
 	 *
-	 * Reuses the existing primitives: `chunkForTelegram` to split to
-	 * ≤4000-char chunks, `getChatId()` (= allowedUserIds[0], Santiago) as the
-	 * recipient, and plain-text `sendMessage` (NO `parse_mode`, matching the
-	 * current contract — the summary is plain text).
+	 * Sends the summary as a SINGLE atomic plain-text message (NO `parse_mode`,
+	 * matching the agent's contract) to `getChatId()` (= allowedUserIds[0],
+	 * Santiago). A single message (vs. a multi-chunk loop) keeps a re-tripped
+	 * send idempotent — there is no partial-delivery state to duplicate (FIX A).
+	 * The summary is soft-capped at 3500 chars upstream; over Telegram's 4096
+	 * limit it is truncated with a marker rather than split into chunks.
 	 *
 	 * It MUST NOT throw on a Telegram API error: it catches and returns
 	 * `{ ok: false, status?, error }` (token-free message) so the daemon
@@ -749,28 +751,66 @@ export class TelegramBot {
 		if (chatId === undefined) {
 			return { ok: false, error: "no-recipient-configured" };
 		}
-		const chunks = chunkForTelegram(text);
-		for (const chunk of chunks) {
-			try {
-				await this.bot.sendMessage(chatId, chunk);
-			} catch (err) {
-				// Never include the token; the error message from
-				// node-telegram-bot-api does not carry it, but we keep this
-				// token-free by construction. Surface an HTTP status when the
-				// library attaches one.
-				const status =
-					typeof (err as { response?: { statusCode?: unknown } })?.response
-						?.statusCode === "number"
-						? (err as { response: { statusCode: number } }).response.statusCode
-						: undefined;
-				const message = err instanceof Error ? err.message : String(err);
-				console.error(`[telegram] sendAgentNotification failed: ${message}`);
-				return status !== undefined
-					? { ok: false, status, error: message }
-					: { ok: false, error: message };
-			}
+		// FIX A (R1 dual-adversarial Important — idempotency): send the summary as
+		// a SINGLE atomic message rather than a multi-chunk loop. The old loop
+		// returned { ok: false } on a mid-loop chunk failure AFTER delivering the
+		// leading chunks; because the send handler leaves the envelope in pending/
+		// to re-trip, the retry re-sent those already-delivered chunks → duplicate
+		// messages to Santiago. One message has no partial-delivery state, so a
+		// re-trip is fully idempotent. The pr-triage summary is soft-capped at 3500
+		// chars upstream; this hard cap (Telegram's 4096 limit) is a rare safety net.
+		const TELEGRAM_MAX = 4096;
+		const TRUNC_MARKER = "… (truncated; see dashboard)";
+		const body =
+			text.length > TELEGRAM_MAX
+				? text.slice(0, TELEGRAM_MAX - TRUNC_MARKER.length) + TRUNC_MARKER
+				: text;
+		try {
+			await this.bot.sendMessage(chatId, body);
+		} catch (err) {
+			// Never include the token; node-telegram-bot-api's clean HTTP-4xx body
+			// is token-free, but a transport-layer failure can echo the request URL
+			// (which embeds the token) — `scrubTokenFromError` strips it before it
+			// can reach the daemon's on-disk telemetry. Surface an HTTP status when
+			// the library attaches one.
+			const status =
+				typeof (err as { response?: { statusCode?: unknown } })?.response
+					?.statusCode === "number"
+					? (err as { response: { statusCode: number } }).response.statusCode
+					: undefined;
+			const message = this.scrubTokenFromError(
+				err instanceof Error ? err.message : String(err),
+			);
+			console.error(`[telegram] sendAgentNotification failed: ${message}`);
+			return status !== undefined
+				? { ok: false, status, error: message }
+				: { ok: false, error: message };
 		}
 		return { ok: true };
+	}
+
+	/**
+	 * R1 dual-adversarial round-1 Important fix: strip any bot-token substring
+	 * (and the generic `api.telegram.org/bot<...>/` URL embedding) from a raw
+	 * error message BEFORE it crosses into the daemon's on-disk telemetry as the
+	 * `error`/`details` field. The clean HTTP-4xx ETELEGRAM body path from
+	 * node-telegram-bot-api is token-free, but a TRANSPORT-layer failure (DNS,
+	 * socket, abort) can surface the request URL
+	 * `https://api.telegram.org/bot<TOKEN>/sendMessage`, embedding the token.
+	 * This mirrors the deliberate status-only stripping on the FETCH leg
+	 * (`FetchPrsError`) and the PR's central agents-never-hold-secrets goal:
+	 * a secret must never land at rest in a daemon-owned log.
+	 */
+	private scrubTokenFromError(message: string): string {
+		let scrubbed = message;
+		const rawToken = this.tokenWrapper.reveal();
+		if (rawToken.length > 0) {
+			scrubbed = scrubbed.split(rawToken).join("[REDACTED]");
+		}
+		// Defense-in-depth: redact any `bot<token>` URL segment even if the raw
+		// token does not match verbatim (e.g. URL-encoded).
+		scrubbed = scrubbed.replace(/bot[0-9]+:[A-Za-z0-9_-]+/g, "bot[REDACTED]");
+		return scrubbed;
 	}
 
 	getChatId(): number | undefined {

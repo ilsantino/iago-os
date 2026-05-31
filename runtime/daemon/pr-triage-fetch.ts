@@ -5,10 +5,18 @@
  * the pr-triage agent must NEVER hold a long-lived secret and NEVER make a
  * network call. The DAEMON (trusted code holding `GH_TOKEN` in its own
  * `process.env`) fetches all open PRs across Santiago's account, then reduces
- * every attacker-writable field (raw PR body, raw comment bodies) to a small
- * set of pre-computed scalar booleans/strings — the `PrTriagePayload`. Only
- * those scalars enter the agent prompt, so the agent's entire information need
- * is met with ZERO prompt-injection surface (D3/D5).
+ * every attacker-writable field to a small set of pre-computed scalars — the
+ * `PrTriagePayload`. Only those scalars enter the agent prompt (D3/D5).
+ *
+ * Prompt-injection posture (scoped, NOT "zero surface"):
+ *   - STRUCTURAL ELIMINATION applies to body + comments ONLY: the raw PR body
+ *     and every raw comment body are reduced to the single `mentionsClaude`
+ *     boolean. No attacker-authored body/comment text ever reaches the prompt.
+ *   - `title`, `author`, and `url` are free-form and attacker-influenced
+ *     (anyone can open a PR with a crafted title). They are NOT eliminated:
+ *     they are control-stripped + length-capped (`scrubScalarField`, FIX B) and
+ *     passed as delimited UNTRUSTED data the agent is told to treat as data,
+ *     never instructions. That is defense-in-depth, not a zero-surface claim.
  *
  * No new deps: Node 20 global `fetch` + `AbortController`. The GraphQL query is
  * the EXACT query the agent used to run via `gh api graphql` (see the prior
@@ -19,6 +27,8 @@
  * the listed scalar fields — never a raw `body`, raw `comments`, or any
  * token-shaped field.
  */
+
+import { sanitizeInjectText } from "../telegram/bot.js";
 
 const GITHUB_GRAPHQL_ENDPOINT = "https://api.github.com/graphql";
 const DEFAULT_FETCH_TIMEOUT_MS = 15_000;
@@ -32,10 +42,17 @@ const CLAUDE_MENTION = "@claude";
  * (org repos included), unlike `user:` which is owner-scoped. `type: ISSUE` is
  * required for the PR search; the `... on PullRequest` inline fragment narrows
  * the nodes.
+ *
+ * `issueCount` is the TRUE total of open PRs across the account; `nodes` is
+ * capped at the `first: 50` page (the inspected ceiling — see
+ * `sanitizePrPayload`). `comments(last: 100)` (not 20): the iaGO pipeline tags
+ * @claude via a PR comment that can sit well below the last 20 on a long review
+ * thread, so a narrow window would miss the `mentionsClaude` signal.
  */
 export const PR_TRIAGE_GRAPHQL_QUERY = `
 query {
   search(query: "author:ilsantino is:pr is:open", type: ISSUE, first: 50) {
+    issueCount
     nodes {
       ... on PullRequest {
         number
@@ -47,7 +64,7 @@ query {
         updatedAt
         body
         labels(first: 20) { nodes { name } }
-        comments(last: 20) {
+        comments(last: 100) {
           nodes {
             author { login }
             body
@@ -146,6 +163,17 @@ export interface FetchPrsDeps {
 	readonly timeoutMs?: number;
 }
 
+/**
+ * Result of `fetchOpenPrs`: the ≤50 inspected PR nodes plus the TRUE total
+ * open-PR count (`issueCount`) reported by the GraphQL `search`. `issueCount`
+ * can exceed `nodes.length` when more than 50 PRs are open — `nodes` is capped
+ * at the `first: 50` page, `issueCount` is not.
+ */
+export interface FetchPrsResult {
+	readonly nodes: RawPullRequest[];
+	readonly issueCount: number;
+}
+
 function asString(v: unknown): string {
 	return typeof v === "string" ? v : "";
 }
@@ -155,15 +183,44 @@ function asStringOrNull(v: unknown): string | null {
 }
 
 /**
+ * FIX B (R1 dual-adversarial Important) — defense-in-depth scrub for the
+ * free-form, attacker-influenced string fields (`title`, `author`, `url`).
+ * Anyone can open a PR with a crafted title, and these three are the only
+ * fields passed VERBATIM into the agent prompt (every other signal is reduced
+ * to a boolean). This is NOT the structural-elimination guarantee that covers
+ * body/comments (those collapse to `mentionsClaude`); it is a length-cap +
+ * control-strip so a hostile title cannot smuggle newlines / control bytes /
+ * unbounded length into the delimited untrusted-data block.
+ *
+ * Strips C0/C1 control chars AND newlines/CR (a delimited data field is
+ * single-line by contract), then hard-caps to `cap` chars. Reuses
+ * `sanitizeInjectText` (exported from the telegram bot) for the control-strip,
+ * adding the newline/CR strip + length cap here.
+ */
+function scrubScalarField(v: unknown, cap: number): string {
+	const raw = asString(v);
+	if (raw.length === 0) return "";
+	// `sanitizeInjectText` keeps tab/newline/CR; for a single-line delimited
+	// field we additionally drop \t/\n/\r.
+	const controlStripped = sanitizeInjectText(raw).sanitized.replace(
+		/[\t\n\r]/g,
+		" ",
+	);
+	return controlStripped.slice(0, cap);
+}
+
+/**
  * POST the PR-triage GraphQL query to GitHub holding `token` in the
  * `Authorization` header. Bounded by an `AbortController` timeout (default
  * 15s). On non-200 / network error throws `FetchPrsError` carrying the status
- * but NEVER the token. Returns `data.search.nodes` (the raw PR array).
+ * but NEVER the token. Returns `{ nodes, issueCount }`: `data.search.nodes`
+ * (the ≤50 inspected PR array) plus `data.search.issueCount` (the TRUE total
+ * open-PR count, which may exceed `nodes.length`).
  */
 export async function fetchOpenPrs(
 	token: string,
 	deps: FetchPrsDeps = {},
-): Promise<RawPullRequest[]> {
+): Promise<FetchPrsResult> {
 	const fetchImpl = deps.fetchImpl ?? fetch;
 	const timeoutMs = deps.timeoutMs ?? DEFAULT_FETCH_TIMEOUT_MS;
 	const controller = new AbortController();
@@ -205,10 +262,40 @@ export async function fetchOpenPrs(
 	} catch {
 		throw new FetchPrsError("github-graphql-fetch invalid JSON body", 200);
 	}
-	const nodes = (json as { data?: { search?: { nodes?: unknown } } })?.data
-		?.search?.nodes;
+	// R1 dual-adversarial round-1 Critical fix: GitHub's GraphQL API returns
+	// HTTP 200 even for query-level failures (auth-scope errors, RATE_LIMITED,
+	// schema drift), with body `{ data: null, errors: [...] }`. The prior code
+	// only read `data.search.nodes`; on such a response `nodes` is not an array,
+	// so it returned `[]` — INDISTINGUISHABLE from a genuinely empty search.
+	// `makePrTriageCronPrompt` then saw `totalCount === 0` and skipped the daily
+	// run with the benign `no-open-prs` reason instead of `pr-fetch-failed`,
+	// silently leaving real PRs un-triaged on a transient auth/rate-limit/schema
+	// failure. Detect a non-empty top-level `errors` array and require
+	// `data.search.nodes` to be an array; throw `FetchPrsError` so the scheduler
+	// emits `pr-fetch-failed`. Return `[]` ONLY for a valid empty `nodes` array.
+	const body = json as {
+		data?: { search?: { nodes?: unknown; issueCount?: unknown } } | null;
+		errors?: unknown;
+	} | null;
+	const errors = body?.errors;
+	if (Array.isArray(errors) && errors.length > 0) {
+		// Token-free: surface only that the GraphQL layer reported errors, never
+		// the error payload (it could echo a query fragment or header context).
+		throw new FetchPrsError(
+			`github-graphql-fetch query-level errors (${errors.length})`,
+			200,
+		);
+	}
+	const nodes = body?.data?.search?.nodes;
 	if (!Array.isArray(nodes)) {
-		return [];
+		// A 200 with no errors array but a missing/non-array `nodes` is a
+		// malformed/unexpected shape (e.g. `data: null` without `errors`), NOT a
+		// valid empty result. Throw so it surfaces as `pr-fetch-failed` rather
+		// than being misread as zero open PRs.
+		throw new FetchPrsError(
+			"github-graphql-fetch missing or malformed data.search.nodes",
+			200,
+		);
 	}
 	const out: RawPullRequest[] = [];
 	for (const node of nodes) {
@@ -216,7 +303,15 @@ export async function fetchOpenPrs(
 			out.push(node as RawPullRequest);
 		}
 	}
-	return out;
+	// `issueCount` is the TRUE total open-PR count (not capped at the 50-node
+	// page). Fall back to the inspected count if GitHub omits it (older schema /
+	// unexpected shape) so `totalCount` never reports fewer than we inspected.
+	const issueCountRaw = body?.data?.search?.issueCount;
+	const issueCount =
+		typeof issueCountRaw === "number" && Number.isFinite(issueCountRaw)
+			? issueCountRaw
+			: out.length;
+	return { nodes: out, issueCount };
 }
 
 /**
@@ -230,12 +325,24 @@ export async function fetchOpenPrs(
  *                          AND the PR body
  *   - `hasClaudeLabel`   = labels include `claude-review-requested`
  *
+ * `title`, `author`, and `url` are the only free-form, attacker-influenced
+ * fields that pass VERBATIM into the prompt — they are control-stripped +
+ * length-capped via `scrubScalarField` (FIX B) and emitted inside a delimited
+ * untrusted-data block, NOT as instructions (defense-in-depth, not the
+ * structural-elimination guarantee that covers body/comments).
+ *
+ * `totalCount` is the TRUE open-PR count from GitHub's `search.issueCount`
+ * (passed in by the caller), which may EXCEED `prs.length` — `prs` is capped at
+ * the GraphQL `first: 50` page (the inspected ceiling). When omitted it falls
+ * back to `prs.length` (legacy / direct-test callers).
+ *
  * The output MUST NOT contain a raw `body`, raw `comments`, or any
  * token-shaped field — only the listed scalars (D3/D5).
  */
 export function sanitizePrPayload(
 	prs: RawPullRequest[],
 	nowMs: number,
+	totalCount: number = prs.length,
 ): PrTriagePayload {
 	const scalars: PrScalar[] = prs.map((pr) => {
 		const updatedAt = asStringOrNull(pr.updatedAt);
@@ -271,9 +378,11 @@ export function sanitizePrPayload(
 
 		return {
 			number,
-			title: asString(pr.title),
-			url: asString(pr.url),
-			author: asString(pr.author?.login),
+			// FIX B: free-form attacker-influenced fields — control-stripped +
+			// length-capped (title 200, author 64, url 300).
+			title: scrubScalarField(pr.title, 200),
+			url: scrubScalarField(pr.url, 300),
+			author: scrubScalarField(pr.author?.login, 64),
 			reviewDecision: asStringOrNull(pr.reviewDecision),
 			createdAt: asStringOrNull(pr.createdAt),
 			updatedAt,
@@ -286,7 +395,10 @@ export function sanitizePrPayload(
 	});
 	return {
 		generatedAt: new Date(nowMs).toISOString(),
-		totalCount: scalars.length,
+		// FIX C: honest total from `search.issueCount` (the inspected list `prs`
+		// caps at 50; `totalCount` is the true open-PR count). Never report fewer
+		// than we actually inspected.
+		totalCount: Math.max(totalCount, scalars.length),
 		prs: scalars,
 	};
 }

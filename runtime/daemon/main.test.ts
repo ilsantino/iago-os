@@ -1487,14 +1487,22 @@ describe("composeCronAgentEnv (R1 — NO secrets, only non-secret runtime vars)"
 function makeSendStubManager(): {
 	mgr: AgentManager;
 	claimCalls: Array<{ filename: string; agentId: string }>;
+	releaseCalls: string[];
 } {
 	const claimCalls: Array<{ filename: string; agentId: string }> = [];
+	const releaseCalls: string[] = [];
 	const mgr = {
 		claimTask: async (filename: string, agentId: string) => {
 			claimCalls.push({ filename, agentId });
 		},
+		// R1 Critical-1 fix: the send handler ALWAYS releases the per-filename
+		// in-flight guard in its `finally`. The stub records the release so tests
+		// can assert the slot is freed on every outcome (success/failure/noSend).
+		releaseSendSlot: (filename: string) => {
+			releaseCalls.push(filename);
+		},
 	} as unknown as AgentManager;
-	return { mgr, claimCalls };
+	return { mgr, claimCalls, releaseCalls };
 }
 
 function makeFakeTelegram(
@@ -1517,7 +1525,7 @@ function makeFakeTelegram(
 
 describe("makeTaskSendHandler (R1)", () => {
 	it("(TS-1) sendText envelope → sendAgentNotification + claimTask + clearResultTimer", async () => {
-		const { mgr, claimCalls } = makeSendStubManager();
+		const { mgr, claimCalls, releaseCalls } = makeSendStubManager();
 		const { bot, calls } = makeFakeTelegram(async () => ({ ok: true }));
 		const emitMock = vi.fn().mockResolvedValue(true);
 		const cleared: string[] = [];
@@ -1540,6 +1548,8 @@ describe("makeTaskSendHandler (R1)", () => {
 			{ filename: evt.filename, agentId: "pr-triage" },
 		]);
 		expect(cleared).toEqual(["pr-triage"]);
+		// Critical-1: the in-flight send guard is released on the happy path.
+		expect(releaseCalls).toEqual([evt.filename]);
 		// No send-failed telemetry on the happy path.
 		const failed = emitMock.mock.calls.filter(
 			(c) =>
@@ -1549,7 +1559,7 @@ describe("makeTaskSendHandler (R1)", () => {
 	});
 
 	it("(TS-2) failed send → pr-triage-telegram-send-failed, NO claim, timer still cleared", async () => {
-		const { mgr, claimCalls } = makeSendStubManager();
+		const { mgr, claimCalls, releaseCalls } = makeSendStubManager();
 		const { bot } = makeFakeTelegram(async () => ({
 			ok: false,
 			status: 429,
@@ -1582,6 +1592,9 @@ describe("makeTaskSendHandler (R1)", () => {
 		expect(failed[0].details).toContain("429");
 		// Timer always cleared in finally.
 		expect(cleared).toEqual(["pr-triage"]);
+		// Critical-1: the in-flight send guard is released even on a FAILED send,
+		// so the envelope (left in pending/) can re-trip on a later tick.
+		expect(releaseCalls).toEqual(["pr-triage-send__1700000301-1.json"]);
 	});
 
 	it("(TS-3) noSend envelope → pr-triage-no-send + claim, NO send call", async () => {

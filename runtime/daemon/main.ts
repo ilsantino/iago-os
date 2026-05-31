@@ -667,6 +667,12 @@ export function makeTaskSendHandler(deps: {
 				details: `send-handler-exception ${err instanceof Error ? err.message : String(err)}`,
 			});
 		} finally {
+			// R1 dual-adversarial round-1 Critical fix: ALWAYS release the
+			// per-filename send in-flight guard, regardless of send outcome.
+			// Without this, the next polling tick would suppress every
+			// subsequent `task-send-needed` emit for this filename — a failed
+			// send (left in `pending/` to re-trip) would never fire again.
+			agentManager.releaseSendSlot(evt.filename);
 			clearResultTimer(evt.agentId);
 		}
 	};
@@ -958,13 +964,15 @@ export function makePrTriageCronPrompt(deps: {
 		}
 		let payload: ReturnType<typeof sanitizePrPayload>;
 		try {
-			const prs = await fetchOpenPrs(token, {
+			const { nodes, issueCount } = await fetchOpenPrs(token, {
 				...(deps.fetchImpl !== undefined ? { fetchImpl: deps.fetchImpl } : {}),
 				...(deps.fetchTimeoutMs !== undefined
 					? { timeoutMs: deps.fetchTimeoutMs }
 					: {}),
 			});
-			payload = sanitizePrPayload(prs, nowFn());
+			// FIX C: pass the TRUE open-PR count (search.issueCount) so the summary's
+			// reported total is honest past the 50-node inspected page, not capped.
+			payload = sanitizePrPayload(nodes, nowFn(), issueCount);
 		} catch {
 			// FetchPrsError is token-free; we don't even need its message here.
 			return { skip: true, reason: "pr-fetch-failed" };
@@ -1055,6 +1063,14 @@ export const CRON_AGENT_RUNTIME_ALLOWLIST: readonly string[] = [
 	"HOME",
 	"SHELL",
 	"LANG",
+	// FIX D (R1 dual-adversarial Minor) — the result-envelope rendezvous dir.
+	// The cron agent writes its `pr-triage-send__*.json` envelope under
+	// `$IAGO_DAEMON_STATE_ROOT/tasks/pending/`, and the daemon polls its OWN
+	// resolved `IAGO_DAEMON_STATE_ROOT`. Overlaying the daemon's value (non-secret
+	// config, present in the production systemd `Environment=`) onto the agent env
+	// keeps the two in lockstep so a notification can't be silently written to a
+	// directory the daemon never reads. Non-secret: a state-dir path, no credential.
+	"IAGO_DAEMON_STATE_ROOT",
 ];
 
 /**
@@ -1079,9 +1095,10 @@ export const CRON_AGENT_RUNTIME_TRUSTED_AGENTS: ReadonlySet<string> = new Set([
  * `baseEnv` UNCHANGED unless `agentId` is in the daemon-owned
  * `CRON_AGENT_RUNTIME_TRUSTED_AGENTS` set, in which case it returns a shallow
  * copy of `baseEnv` overlaid with ONLY the `CRON_AGENT_RUNTIME_ALLOWLIST`
- * NON-SECRET base-runtime vars (`PATH`/`HOME`/`SHELL`/`LANG`) — taking only the
- * keys actually present (non-empty string) in `daemonEnv`. Absent/empty values
- * are skipped so we never materialize empty-string env entries.
+ * NON-SECRET base-runtime vars (`PATH`/`HOME`/`SHELL`/`LANG` + the
+ * `IAGO_DAEMON_STATE_ROOT` rendezvous dir) — taking only the keys actually
+ * present (non-empty string) in `daemonEnv`. Absent/empty values are skipped so
+ * we never materialize empty-string env entries.
  *
  * CRITICAL SECURITY PROPERTY (D1): NO secret is EVER copied into the composed
  * agent env. The former secret allowlist is gone; `IAGO_TELEGRAM_BOT_TOKEN`,

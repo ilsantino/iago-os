@@ -317,6 +317,22 @@ export class AgentManager extends EventEmitter {
 	 */
 	private readonly dispatchInFlight = new Set<string>();
 	/**
+	 * R1 dual-adversarial round-1 Critical fix: per-filename guard preventing
+	 * duplicate `'task-send-needed'` emits — the SEND-path analogue of
+	 * `dispatchInFlight`. The send branch in `processPendingTask` emits and
+	 * returns WITHOUT claiming the file (the daemon's `makeTaskSendHandler`
+	 * claims only AFTER `telegramBot.sendAgentNotification` completes a network
+	 * round-trip). Without this guard, a Telegram send slower than one polling
+	 * interval (network latency, a 429 rate-limit, a multi-chunk send) lets the
+	 * next tick re-read the SAME still-present `pr-triage-send__*.json` and emit
+	 * `task-send-needed` AGAIN → two handlers both call `sendAgentNotification`
+	 * → Santiago receives the same PR summary twice. Population is in
+	 * `processPendingTask` just before `this.emit("task-send-needed", ...)`;
+	 * clearing is the send listener's responsibility via `releaseSendSlot`,
+	 * called from the listener's `finally` block.
+	 */
+	private readonly sendInFlight = new Set<string>();
+	/**
 	 * pr84 CRITICAL (consumer tolerance): per-filename count of consecutive
 	 * JSON.parse failures. A producer that writes a `.json` file directly
 	 * (instead of the atomic `.tmp`-then-rename discipline) can be caught
@@ -1946,6 +1962,21 @@ export class AgentManager extends EventEmitter {
 			(hasSendText || isNoSend) &&
 			!sendHasPrompt
 		) {
+			// R1 dual-adversarial round-1 Critical fix: per-filename in-flight
+			// guard, mirroring the dispatch branch's `dispatchInFlight`. The send
+			// handler claims the envelope ONLY after an awaited
+			// `telegramBot.sendAgentNotification` network round-trip; the handler
+			// is invoked fire-and-forget, so `processPendingTask` returns
+			// immediately and the file stays in `pending/` until that claim lands.
+			// Without this guard, a send slower than one polling interval would let
+			// the next tick re-emit `task-send-needed` for the SAME file, firing a
+			// SECOND `sendAgentNotification` → DUPLICATE Telegram notification to
+			// Santiago + racing `claimTask` calls. The send listener clears the
+			// slot via `releaseSendSlot` from its `finally` block.
+			if (this.sendInFlight.has(filename)) {
+				return;
+			}
+			this.sendInFlight.add(filename);
 			this.emit("task-send-needed", {
 				filename,
 				agentId,
@@ -2018,6 +2049,21 @@ export class AgentManager extends EventEmitter {
 	 */
 	releaseDispatchSlot(filename: string): void {
 		this.dispatchInFlight.delete(filename);
+	}
+
+	/**
+	 * R1 dual-adversarial round-1 Critical fix: clear the per-filename SEND
+	 * in-flight guard after the send handler resolves (success OR failure). MUST
+	 * be called from the handler's `finally` block — otherwise the slot leaks and
+	 * the next polling tick suppresses every subsequent send for that filename
+	 * (a failed send would never re-trip). The analogue of `releaseDispatchSlot`
+	 * for the `task-send-needed` path.
+	 *
+	 * Public so `makeTaskSendHandler` (which lives in `main.ts`) can release
+	 * without a circular import.
+	 */
+	releaseSendSlot(filename: string): void {
+		this.sendInFlight.delete(filename);
 	}
 
 	private async poisonTask(

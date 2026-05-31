@@ -2713,6 +2713,41 @@ describe("AgentManager / task-send-needed envelope (R1)", () => {
 		expect(sendEvents[0].sendText).toBeUndefined();
 	});
 
+	it("(SE-5 dedup, Critical-1) two ticks while the send is in-flight emit 'task-send-needed' only ONCE; releaseSendSlot re-arms it", async () => {
+		const ctrl = makeMockRuntime("mock-pty-se5");
+		registerRuntime(ctrl.runtime);
+		const mgr = new AgentManager();
+		await mgr.registerAgent({
+			agentId: "pr-triage",
+			runtimeId: "mock-pty-se5",
+			cwd: "/tmp/w",
+			env: {},
+			sessionId: "sess-se5",
+		});
+
+		const filename = "pr-triage-send__1700000205-555.json";
+		writePendingTask(filename, { agentId: "pr-triage", sendText: "summary" });
+
+		const sendEvents: unknown[] = [];
+		mgr.on("task-send-needed", (e: unknown) => sendEvents.push(e));
+
+		// The daemon send handler (which awaits the Telegram round-trip THEN claims)
+		// is NOT wired here, so the envelope stays in pending/ across ticks — exactly
+		// the slow-send window. Critical-1: the `sendInFlight` guard must suppress the
+		// duplicate emit so the daemon never fires a SECOND Telegram send for the
+		// same summary while the first is still in flight.
+		await mgr._pollingTickForTests();
+		await mgr._pollingTickForTests();
+		expect(sendEvents).toHaveLength(1);
+
+		// Once the send handler resolves (success OR failure) it releases the slot
+		// in its `finally`; a later tick may then legitimately re-emit (a failed send
+		// left in pending/ re-trips). Proves the guard is released, not leaked.
+		mgr.releaseSendSlot(filename);
+		await mgr._pollingTickForTests();
+		expect(sendEvents).toHaveLength(2);
+	});
+
 	it("(SE-3 provenance) a foreign rogue-agent__ file with a sendText body does NOT match the send branch", async () => {
 		const ctrl = makeMockRuntime("mock-pty-se3");
 		registerRuntime(ctrl.runtime);
