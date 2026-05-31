@@ -108,13 +108,22 @@ export type CronAgentManager = EventEmitter;
  *   - `{ skip: false, prompt }` — the rendered prompt with the sanitized
  *     payload JSON substituted into the `{{PR_DATA_JSON}}` placeholder.
  *
+ * Minor (R1 dual-adversarial) — an optional `exitCode` lets a skip carry the
+ * token-free HTTP status of the failed fetch (e.g. 401 vs 403 vs 429) into the
+ * `cron-skipped` telemetry's `exitCode` field, so an operator can distinguish a
+ * revoked PAT from a rate-limit without server-side logs. Omitted (or `null`)
+ * for skips with no HTTP status (zero PRs, network error, template read).
+ *
  * `cron` is the registered entry (read `promptTemplatePath` to load the
  * template). Bounded by the implementation's own timeout so a hung GitHub call
  * cannot wedge the 60s tick (the seam is already `async fire()`).
  */
-export type PrepareCronPrompt = (
-	cron: RegisteredCron,
-) => Promise<{ skip: boolean; reason?: string; prompt?: string }>;
+export type PrepareCronPrompt = (cron: RegisteredCron) => Promise<{
+	skip: boolean;
+	reason?: string;
+	prompt?: string;
+	exitCode?: number | null;
+}>;
 
 /**
  * R1 (feature-pr84-r1-daemon-creds) — clamp a `prepareCronPrompt` hook's
@@ -677,7 +686,12 @@ export class CronScheduler {
 			// no spawn, no task file, matching the old wake-check exit-1
 			// behavior). A fetch error returns `{ skip: true }` so we never
 			// spawn with stale/no data.
-			let prepared: { skip: boolean; reason?: string; prompt?: string };
+			let prepared: {
+				skip: boolean;
+				reason?: string;
+				prompt?: string;
+				exitCode?: number | null;
+			};
 			try {
 				prepared = await this.prepareCronPrompt(cron);
 			} catch (err) {
@@ -703,7 +717,11 @@ export class CronScheduler {
 					agentId: cron.agentId,
 					schedule: cron.schedule,
 					reason: narrowPrepareSkipReason(prepared.reason),
-					exitCode: null,
+					// Minor (fetch-error observability): forward the token-free HTTP
+					// status the hook surfaced (e.g. 401/403/429) so the operator can
+					// tell a revoked PAT from a rate-limit. `null` when the skip has no
+					// HTTP status (zero PRs, network error, template read).
+					exitCode: prepared.exitCode ?? null,
 				});
 				return;
 			}

@@ -119,7 +119,11 @@ import {
 } from "./cron-scheduler.js";
 import { HeartbeatController } from "./heartbeat.js";
 import { IpcServer } from "./ipc-server.js";
-import { fetchOpenPrs, sanitizePrPayload } from "./pr-triage-fetch.js";
+import {
+	FetchPrsError,
+	fetchOpenPrs,
+	sanitizePrPayload,
+} from "./pr-triage-fetch.js";
 import { ensureStateDirsSync, getStateRoot, pathFor } from "./state-paths.js";
 import { type DaemonEvent, PR_TRIAGE_ALERT_KINDS, emit } from "./telemetry.js";
 
@@ -544,6 +548,25 @@ export interface TaskSendEvent {
 export const RESULT_TIMEOUT_MS = 120_000;
 
 /**
+ * F3 (R1 dual-adversarial Important) — bounded retry backoff (ms) for the
+ * daemon's Telegram send in `makeTaskSendHandler`. The envelope is CLAIMED
+ * (pending→resolved) before the send (at-most-once: prevents the duplicate-send
+ * storm), so a SINGLE transient `{ ok: false }` (429 / network blip) would
+ * otherwise permanently drop the day's summary with no retry. These delays add a
+ * BOUNDED in-handler retry — at most `1 + length` total send attempts — before
+ * the `pr-triage-telegram-send-failed` telemetry fires, so a transient blip is
+ * retried rather than lost. Strictly bounded (no unbounded loop, no storm); the
+ * delays are `await`ed inside the already-fire-and-forget send handler so the
+ * poll loop is not blocked (`processPendingTask` returned before the handler
+ * ran). Exported so the regression test can advance fake timers deterministically.
+ *
+ *   attempt 1 fails → wait 250ms  → attempt 2
+ *   attempt 2 fails → wait 1000ms → attempt 3
+ *   attempt 3 fails → emit pr-triage-telegram-send-failed (give up; at-most-once)
+ */
+export const TELEGRAM_SEND_RETRY_BACKOFF_MS: readonly number[] = [250, 1000];
+
+/**
  * R1 (feature-pr84-r1-daemon-creds, D4) — build the shared result-timer
  * closures the dispatch handler and the send handler both use. `maxConcurrent:
  * 1` means a single in-flight dispatch per pr-triage agent, so a single-key map
@@ -592,28 +615,50 @@ export function makeResultTimers(deps: {
  * network call.
  *
  * Behavior per event (mirrors the alert branch's durability rule):
- *   - `noSend` → emit `pr-triage-no-send` (D4: distinguishes "nothing to send"
- *     from "agent died").
- *   - else → `telegramBot.sendAgentNotification(sendText)`; on `!ok` emit the
- *     existing Plan-04d `pr-triage-telegram-send-failed` kind.
- *   - claim (resolve) the envelope file ONLY after the telemetry/send outcome is
- *     RECORDED — on a degraded telemetry dir leave it in `pending/` to re-trip.
+ *   - `noSend`, or an EMPTY `sendText` (Minor: an empty string is "nothing to
+ *     send", never deliver a blank Telegram message) → emit `pr-triage-no-send`
+ *     (D4: distinguishes "nothing to send" from "agent died").
+ *   - else → BOUNDED-RETRY-THEN-AT-MOST-ONCE. CLAIM (resolve) the envelope
+ *     BEFORE sending (at-most-once — prevents the duplicate-send storm), then
+ *     call `telegramBot.sendAgentNotification(sendText)` with a BOUNDED retry
+ *     (`TELEGRAM_SEND_RETRY_BACKOFF_MS`): a transient `{ ok: false }` (429 /
+ *     network blip) is retried up to `1 + backoff.length` total attempts before
+ *     the existing `pr-triage-telegram-send-failed` telemetry fires. The retry
+ *     is strictly bounded (no unbounded loop, no storm); the inter-attempt
+ *     delays are `await`ed inside this already-fire-and-forget handler so the
+ *     poll loop never blocks. After the budget is spent the day's summary is
+ *     lost (at-most-once, recorded as telemetry, surfaced next daily run).
+ *   - claim (resolve) the envelope file BEFORE the send (at-most-once); on a
+ *     degraded telemetry dir the noSend branch leaves it in `pending/` to re-trip.
  *   - always `clearResultTimer(agentId)` in a `finally` (the agent produced a
  *     result, so the dead-letter timer is no longer relevant).
  *
  * `telegramBot` may be null in local-dev (`config.telegram` absent);
  * `sendAgentNotification` already guards that and returns `{ ok: false }`.
+ *
+ * `backoffMs` is an injectable test seam (defaults to
+ * `TELEGRAM_SEND_RETRY_BACKOFF_MS`) so the regression test can drive the bounded
+ * retry under fake timers without the production 250ms/1000ms waits.
  */
 export function makeTaskSendHandler(deps: {
 	agentManager: AgentManager;
 	emit: (event: DaemonEvent) => Promise<unknown>;
 	telegramBot: TelegramBot | null;
 	clearResultTimer: (agentId: string) => void;
+	backoffMs?: readonly number[];
 }): (evt: TaskSendEvent) => Promise<void> {
 	const { agentManager, emit, telegramBot, clearResultTimer } = deps;
+	const backoffMs = deps.backoffMs ?? TELEGRAM_SEND_RETRY_BACKOFF_MS;
 	return async (evt: TaskSendEvent): Promise<void> => {
 		try {
-			if (evt.noSend === true) {
+			// Minor (empty-summary guard): treat an explicit `noSend` OR an
+			// empty/whitespace-only `sendText` as "nothing to send" — never deliver
+			// a blank Telegram message. An agent that computes an empty summary but
+			// forgets the `noSend` discriminator must not produce a blank push.
+			const isEmptySendText =
+				evt.noSend !== true &&
+				(evt.sendText === undefined || evt.sendText.trim().length === 0);
+			if (evt.noSend === true || isEmptySendText) {
 				// D4: empty summary — record-and-resolve, no send.
 				const recorded = await emit({
 					kind: "pr-triage-no-send",
@@ -625,19 +670,21 @@ export function makeTaskSendHandler(deps: {
 				}
 				return;
 			}
-			// AT-MOST-ONCE (pass#2 Critical fix). The Telegram send is an
-			// IRREVERSIBLE side effect, so CLAIM the envelope (move pending→resolved)
-			// BEFORE sending. `claimTask` returns false if the rename failed (disk
-			// fault): then we do NOT send — the envelope stays in pending/ for a
-			// later retry, with NO duplicate because no send happened. Once the
-			// envelope is durably out of pending/, a post-send fault can never
-			// re-trip a SECOND send (the prior bug: send-then-claim re-sent the same
-			// summary every 5s when the claim rename failed, because claimTask
-			// swallowed the error and returned). The cost is at-most-once delivery:
-			// a transient send failure AFTER a successful claim loses this run's
-			// summary (recorded as telemetry, surfaced next daily run) — acceptable
-			// for a notification, and it also eliminates the unbounded re-trip /
-			// telemetry storm on a persistently-undeliverable envelope.
+			// BOUNDED-RETRY-THEN-AT-MOST-ONCE (pass#2 Critical fix + F3 retry). The
+			// Telegram send is an IRREVERSIBLE side effect, so CLAIM the envelope
+			// (move pending→resolved) BEFORE sending. `claimTask` returns false if
+			// the rename failed (disk fault): then we do NOT send — the envelope
+			// stays in pending/ for a later retry, with NO duplicate because no send
+			// happened. Once the envelope is durably out of pending/, a post-send
+			// fault can never re-trip a SECOND send (the prior bug: send-then-claim
+			// re-sent the same summary every 5s when the claim rename failed, because
+			// claimTask swallowed the error and returned). To avoid losing the day's
+			// summary on a SINGLE transient blip (F3), the send below runs a BOUNDED
+			// in-handler retry (`TELEGRAM_SEND_RETRY_BACKOFF_MS`) before giving up.
+			// After the bounded retry is exhausted the run's summary is lost
+			// (recorded as telemetry, surfaced next daily run) — acceptable for a
+			// notification, and it still eliminates the unbounded re-trip / telemetry
+			// storm on a persistently-undeliverable envelope.
 			const claimed = await agentManager.claimTask(evt.filename, evt.agentId);
 			if (!claimed) {
 				// Rename failed — leave in pending/ for a later retry. No send
@@ -657,11 +704,27 @@ export function makeTaskSendHandler(deps: {
 				return;
 			}
 			const sendText = evt.sendText ?? "";
-			const r = await telegramBot.sendAgentNotification(sendText);
+			// F3: BOUNDED retry around the send. The envelope is already claimed
+			// (at-most-once), so a transient `{ ok: false }` (429 / network blip)
+			// would otherwise lose the day's summary with no retry. Try once, then
+			// retry up to `backoffMs.length` more times with short awaited delays.
+			// Strictly bounded (max `1 + backoffMs.length` attempts) so it can never
+			// storm; only after the budget is spent does the send-failed telemetry
+			// fire (give up — at-most-once). The delays are awaited inside this
+			// fire-and-forget handler, so the poll loop is not blocked.
+			let r = await telegramBot.sendAgentNotification(sendText);
+			for (let attempt = 0; !r.ok && attempt < backoffMs.length; attempt++) {
+				await new Promise<void>((resolve) => {
+					const t = setTimeout(resolve, backoffMs[attempt]);
+					if (typeof t.unref === "function") t.unref();
+				});
+				r = await telegramBot.sendAgentNotification(sendText);
+			}
 			if (!r.ok) {
-				// Envelope already resolved (at-most-once). Record the failed
-				// delivery; do NOT re-trip (which would duplicate or storm). REUSE
-				// the Plan-04d kind; `details` is a token-free status/error label.
+				// Bounded retry exhausted. Envelope already resolved (at-most-once).
+				// Record the failed delivery; do NOT re-trip (which would duplicate
+				// or storm). REUSE the Plan-04d kind; `details` is a token-free
+				// status/error label.
 				await emit({
 					kind: "pr-triage-telegram-send-failed",
 					agentId: evt.agentId,
@@ -993,9 +1056,18 @@ export function makePrTriageCronPrompt(deps: {
 			// FIX C: pass the TRUE open-PR count (search.issueCount) so the summary's
 			// reported total is honest past the 50-node inspected page, not capped.
 			payload = sanitizePrPayload(nodes, nowFn(), issueCount);
-		} catch {
-			// FetchPrsError is token-free; we don't even need its message here.
-			return { skip: true, reason: "pr-fetch-failed" };
+		} catch (err) {
+			// Minor (fetch-error observability): FetchPrsError is token-free but
+			// carries the HTTP status (401 vs 403 vs 429 vs null for a network /
+			// timeout error). Surface it via `exitCode` so the `cron-skipped`
+			// telemetry distinguishes a revoked PAT from a rate-limit without
+			// server-side logs. We still never echo the error message (it could
+			// carry context); only the numeric status flows out.
+			const status =
+				err instanceof FetchPrsError && typeof err.status === "number"
+					? err.status
+					: null;
+			return { skip: true, reason: "pr-fetch-failed", exitCode: status };
 		}
 		if (payload.totalCount === 0) {
 			// Zero open PRs → no spawn (replaces the wake-check exit-1 gate).
@@ -1231,6 +1303,16 @@ export async function registerCronAgentWithRestart(deps: {
 		});
 	};
 
+	// DEFERRED (F2, dual-adversarial pass#3 — feature-daemon-recovery-hardening):
+	// this cron-restart loop and the heartbeat-driven recycle path
+	// (`AgentManager.restartAgent` / `doRestart`) are two independent restart
+	// subsystems that can race or double-restart the same agentId, and a
+	// heartbeat-initiated recycle does NOT re-arm THIS loop's exit listener — so
+	// after a recycle the cron agent can exit again with no cron-side restart.
+	// That pre-existing coupling is intentionally NOT fixed here; it is tracked in
+	// the feature-daemon-recovery-hardening work. Do not "fix" it inline — a
+	// partial fix here would interleave with the heartbeat recycle and is exactly
+	// the foot-gun that feature is scoped to resolve holistically.
 	const scheduleRestart = async (attempt: number): Promise<void> => {
 		if (isShuttingDown()) return;
 		if (attempt > backoffMs.length) {
@@ -1258,8 +1340,11 @@ export async function registerCronAgentWithRestart(deps: {
 			// down and re-spawns under the SAME stable id (SpawnOpts.restoreId),
 			// guaranteeing exactly ONE live handle per agentId. The env is
 			// RE-COMPOSED here (envOverride) so the respawn picks up the current
-			// org-gated daemon secrets — and because the handle id is stable, no
-			// new `<handleId>.json` accumulates (the twin orphan-secret finding).
+			// NON-SECRET runtime descriptors (PATH/HOME/SHELL/LANG + the state-root
+			// rendezvous dir) from the daemon's live `process.env` — under R1 the
+			// agent holds NO secret, so this is a runtime-descriptor refresh, not a
+			// secret refresh. Because the handle id is stable, no new
+			// `<handleId>.json` accumulates (the twin orphan-config finding).
 			const deadHandle = findHandleForAgent(agentManager, agentId);
 			let handle: AgentHandle;
 			if (deadHandle !== null) {

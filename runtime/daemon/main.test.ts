@@ -39,6 +39,7 @@ import {
 	PR_DATA_PLACEHOLDER,
 	RESULT_TIMEOUT_MS,
 	SHUTDOWN_STAGE_TIMEOUT_MS,
+	TELEGRAM_SEND_RETRY_BACKOFF_MS,
 	type TaskDispatchEvent,
 	type TaskSendEvent,
 	buildFleetHealth,
@@ -1723,6 +1724,148 @@ describe("makeTaskSendHandler (R1)", () => {
 		expect(claimCalls).toHaveLength(1);
 		expect(calls).toHaveLength(0);
 		expect(releaseCalls).toEqual(["pr-triage-send__1700000306-1.json"]);
+	});
+
+	it("(TS-7, F3) a transient {ok:false} then {ok:true} → exactly ONE delivery, claimed once, no duplicate (fake timers)", async () => {
+		vi.useFakeTimers();
+		try {
+			const { mgr, claimCalls, releaseCalls } = makeSendStubManager();
+			// First attempt fails (429), second succeeds — the bounded retry must
+			// absorb the blip rather than losing the day's summary.
+			const responses: Array<{
+				ok: boolean;
+				status?: number;
+				error?: string;
+			}> = [{ ok: false, status: 429, error: "rate" }, { ok: true }];
+			const { bot, calls } = makeFakeTelegram(async () => {
+				const next = responses.shift();
+				return next ?? { ok: true };
+			});
+			const emitMock = vi.fn().mockResolvedValue(true);
+			const cleared: string[] = [];
+			const handler = makeTaskSendHandler({
+				agentManager: mgr,
+				emit: emitMock,
+				telegramBot: bot as unknown as import("../telegram/bot.js").TelegramBot,
+				clearResultTimer: (id) => cleared.push(id),
+				backoffMs: [10, 20],
+			});
+
+			const p = handler({
+				filename: "pr-triage-send__1700000307-1.json",
+				agentId: "pr-triage",
+				sendText: "summary",
+			});
+			// Drain the awaited backoff delay between attempt 1 and attempt 2.
+			await vi.advanceTimersByTimeAsync(10);
+			await p;
+
+			// Exactly two send attempts (fail → retry → success); ONE delivery to
+			// the user (the second call) and never a duplicate.
+			expect(calls).toHaveLength(2);
+			// Claimed exactly once — the at-most-once claim happens before the
+			// first attempt and is NOT repeated on retry.
+			expect(claimCalls).toHaveLength(1);
+			// No send-failed telemetry: the retry recovered.
+			const failed = emitMock.mock.calls.filter(
+				(c) =>
+					(c[0] as { kind: string }).kind === "pr-triage-telegram-send-failed",
+			);
+			expect(failed).toHaveLength(0);
+			expect(cleared).toEqual(["pr-triage"]);
+			expect(releaseCalls).toEqual(["pr-triage-send__1700000307-1.json"]);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("(TS-8, F3) a persistent {ok:false} → BOUNDED attempts then ONE send-failed + resolved, no infinite loop (fake timers)", async () => {
+		vi.useFakeTimers();
+		try {
+			const { mgr, claimCalls, releaseCalls } = makeSendStubManager();
+			// Every attempt fails — the loop MUST give up after the bounded budget,
+			// never spin forever.
+			const { bot, calls } = makeFakeTelegram(async () => ({
+				ok: false,
+				status: 500,
+				error: "server",
+			}));
+			const emitMock = vi.fn().mockResolvedValue(true);
+			const backoff = [10, 20];
+			const handler = makeTaskSendHandler({
+				agentManager: mgr,
+				emit: emitMock,
+				telegramBot: bot as unknown as import("../telegram/bot.js").TelegramBot,
+				clearResultTimer: () => {},
+				backoffMs: backoff,
+			});
+
+			const p = handler({
+				filename: "pr-triage-send__1700000308-1.json",
+				agentId: "pr-triage",
+				sendText: "summary",
+			});
+			// Advance past every backoff delay so all retries resolve.
+			await vi.advanceTimersByTimeAsync(10 + 20 + 1);
+			await p;
+
+			// BOUNDED: exactly 1 + backoff.length total attempts, never more.
+			expect(calls).toHaveLength(1 + backoff.length);
+			// Claimed exactly once (at-most-once before the first attempt).
+			expect(claimCalls).toHaveLength(1);
+			// EXACTLY ONE send-failed telemetry after the budget is exhausted —
+			// not one-per-attempt, and not an unbounded storm.
+			const failed = emitMock.mock.calls.filter(
+				(c) =>
+					(c[0] as { kind: string }).kind === "pr-triage-telegram-send-failed",
+			);
+			expect(failed).toHaveLength(1);
+			expect(releaseCalls).toEqual(["pr-triage-send__1700000308-1.json"]);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("(TS-9, Minor) an empty sendText is treated as noSend → pr-triage-no-send, NO blank delivery", async () => {
+		const { mgr, claimCalls } = makeSendStubManager();
+		const { bot, calls } = makeFakeTelegram(async () => ({ ok: true }));
+		const emitMock = vi.fn().mockResolvedValue(true);
+		const handler = makeTaskSendHandler({
+			agentManager: mgr,
+			emit: emitMock,
+			telegramBot: bot as unknown as import("../telegram/bot.js").TelegramBot,
+			clearResultTimer: () => {},
+		});
+
+		await handler({
+			filename: "pr-triage-send__1700000309-1.json",
+			agentId: "pr-triage",
+			sendText: "   ",
+		});
+
+		// No blank message delivered.
+		expect(calls).toHaveLength(0);
+		// Recorded as no-send and resolved (durability gate satisfied).
+		const noSend = emitMock.mock.calls.filter(
+			(c) => (c[0] as { kind: string }).kind === "pr-triage-no-send",
+		);
+		expect(noSend).toHaveLength(1);
+		expect(claimCalls).toHaveLength(1);
+		// Must NOT emit a send-failed for an empty summary.
+		const failed = emitMock.mock.calls.filter(
+			(c) =>
+				(c[0] as { kind: string }).kind === "pr-triage-telegram-send-failed",
+		);
+		expect(failed).toHaveLength(0);
+	});
+
+	it("(TS-10) TELEGRAM_SEND_RETRY_BACKOFF_MS is a bounded, non-empty positive schedule", () => {
+		expect(Array.isArray(TELEGRAM_SEND_RETRY_BACKOFF_MS)).toBe(true);
+		expect(TELEGRAM_SEND_RETRY_BACKOFF_MS.length).toBeGreaterThan(0);
+		for (const d of TELEGRAM_SEND_RETRY_BACKOFF_MS) {
+			expect(typeof d).toBe("number");
+			expect(d).toBeGreaterThan(0);
+		}
 	});
 });
 

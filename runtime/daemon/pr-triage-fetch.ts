@@ -34,7 +34,30 @@ const GITHUB_GRAPHQL_ENDPOINT = "https://api.github.com/graphql";
 const DEFAULT_FETCH_TIMEOUT_MS = 15_000;
 const MS_PER_DAY = 86_400_000;
 const CLAUDE_LABEL = "claude-review-requested";
-const CLAUDE_MENTION = "@claude";
+
+/**
+ * Word-boundary `@claude` matcher (Minor — R1 dual-adversarial). The bucketer's
+ * `mentionsClaude` signal must fire on a genuine `@claude` mention but NOT on
+ * `@claudette`, `@claude-bot`, or an email like `user@claude.example.com`. A
+ * plain substring `includes("@claude")` would false-positive on all three.
+ *
+ * The mention is canonical only when `@claude`:
+ *   - is NOT immediately preceded by a word char or another `@` — this excludes
+ *     an email local-part (`user@claude…`) while still allowing a leading space
+ *     or start-of-text; AND
+ *   - is NOT immediately followed by `[\w-]` — this excludes `@claudette` and
+ *     `@claude-bot`. A trailing `.` is allowed (sentence punctuation like
+ *     `ping @claude.`); the email case is already excluded by the preceding
+ *     word-char guard, so a domain dot cannot slip through.
+ *
+ * Matched against the lowercased text so the literal `claude` also covers any
+ * casing of the original (no `i` flag needed once lowercased).
+ */
+const CLAUDE_MENTION_RE = /(?<![\w@])@claude(?![\w-])/;
+
+function mentionsClaudeIn(text: string): boolean {
+	return CLAUDE_MENTION_RE.test(text.toLowerCase());
+}
 
 /**
  * The EXACT GraphQL query the agent previously ran via `gh api graphql`.
@@ -142,6 +165,21 @@ export interface PrScalar {
 export interface PrTriagePayload {
 	readonly generatedAt: string;
 	readonly totalCount: number;
+	/**
+	 * FIX F4 (R1 dual-adversarial Important) — the number of PRs actually
+	 * inspected (`prs.length`), which is capped at the GraphQL `first: 50` page.
+	 * `totalCount` is the TRUE open-PR count and can EXCEED this when more than
+	 * 50 PRs are open. Surfaced so the agent's summary can honestly say
+	 * "inspected first N of M" instead of falsely implying every open PR was
+	 * classified.
+	 */
+	readonly inspectedCount: number;
+	/**
+	 * FIX F4 — `true` when `totalCount > inspectedCount`, i.e. open PRs exist
+	 * beyond the inspected page and were silently dropped. The agent MUST flag
+	 * this in its summary so a "63 open PRs" header is not read as "63 triaged".
+	 */
+	readonly truncated: boolean;
 	readonly prs: PrScalar[];
 }
 
@@ -321,8 +359,9 @@ export async function fetchOpenPrs(
  *   - `ageDays`          = whole days since `updatedAt`
  *   - `checksState`      = `statusCheckRollup.state` (or null)
  *   - `anyCheckTimedOut` = any rollup context `conclusion === "TIMED_OUT"`
- *   - `mentionsClaude`   = case-insensitive `@claude` across ALL comment bodies
- *                          AND the PR body
+ *   - `mentionsClaude`   = case-insensitive, word-boundary `@claude` across ALL
+ *                          comment bodies AND the PR body (does NOT fire on
+ *                          `@claudette` / `@claude-bot` / `user@claude.example.com`)
  *   - `hasClaudeLabel`   = labels include `claude-review-requested`
  *
  * `title`, `author`, and `url` are the only free-form, attacker-influenced
@@ -363,11 +402,9 @@ export function sanitizePrPayload(
 		);
 
 		const commentNodes = pr.comments?.nodes ?? [];
-		const bodyHasMention = asString(pr.body)
-			.toLowerCase()
-			.includes(CLAUDE_MENTION);
+		const bodyHasMention = mentionsClaudeIn(asString(pr.body));
 		const commentHasMention = commentNodes.some((c) =>
-			asString(c?.body).toLowerCase().includes(CLAUDE_MENTION),
+			mentionsClaudeIn(asString(c?.body)),
 		);
 		const mentionsClaude = bodyHasMention || commentHasMention;
 
@@ -396,12 +433,18 @@ export function sanitizePrPayload(
 			hasClaudeLabel,
 		};
 	});
+	// FIX C: honest total from `search.issueCount` (the inspected list `prs`
+	// caps at 50; `totalCount` is the true open-PR count). Never report fewer
+	// than we actually inspected.
+	const honestTotal = Math.max(totalCount, scalars.length);
 	return {
 		generatedAt: new Date(nowMs).toISOString(),
-		// FIX C: honest total from `search.issueCount` (the inspected list `prs`
-		// caps at 50; `totalCount` is the true open-PR count). Never report fewer
-		// than we actually inspected.
-		totalCount: Math.max(totalCount, scalars.length),
+		totalCount: honestTotal,
+		// FIX F4: surface the inspected/truncated split so the agent's summary can
+		// say "inspected first N of M" rather than implying every open PR was
+		// classified when the list was capped at the `first: 50` page.
+		inspectedCount: scalars.length,
+		truncated: honestTotal > scalars.length,
 		prs: scalars,
 	};
 }

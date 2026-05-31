@@ -29,7 +29,9 @@ The payload shape is:
 ```
 {
   "generatedAt": "<ISO-8601 UTC timestamp>",
-  "totalCount": <int — total open PRs inspected>,
+  "totalCount": <int — TRUE total of open PRs across the account>,
+  "inspectedCount": <int — how many PRs are in `prs` below; capped at 50>,
+  "truncated": <bool — true when totalCount > inspectedCount (PRs beyond page 1 were not classified)>,
   "prs": [
     {
       "number": <int>,
@@ -73,6 +75,21 @@ PR Triage <generatedAt>
 
 <totalCount> open PRs across ilsantino
 
+Merge Ready (n)
+- #NN <title> — <author> — <url>
+```
+
+When `truncated === true`, the daemon could only inspect the first `inspectedCount` of `totalCount` open PRs (the GraphQL page caps at 50). Replace the count line with the honest inspected/total split so the header is not read as "every open PR triaged":
+
+```
+<totalCount> open PRs across ilsantino (inspected first <inspectedCount>; <N> beyond page 1 not classified — see dashboard)
+```
+
+where `N` is `totalCount - inspectedCount`. When `truncated === false`, use the plain `<totalCount> open PRs across ilsantino` line above.
+
+The remaining bucket sections are unchanged:
+
+```
 Merge Ready (n)
 - #NN <title> — <author> — <url>
 

@@ -219,6 +219,29 @@ describe("sanitizePrPayload", () => {
 		expect(payload.prs[0].mentionsClaude).toBe(true);
 	});
 
+	it("(Minor) requires a word boundary: @claude fires, @claudette/@claude-bot/email do NOT", () => {
+		// Genuine mention at end-of-text and followed by punctuation → fires.
+		for (const text of ["please @claude", "ping @claude.", "@claude, look"]) {
+			const payload = sanitizePrPayload(
+				[rawPr({ body: text, comments: { nodes: [] } })],
+				NOW,
+			);
+			expect(payload.prs[0].mentionsClaude).toBe(true);
+		}
+		// Longer handle / domain — must NOT false-positive on the substring.
+		for (const text of [
+			"cc @claudette",
+			"see @claude-bot for the run",
+			"reach me at user@claude.example.com",
+		]) {
+			const payload = sanitizePrPayload(
+				[rawPr({ body: text, comments: { nodes: [] } })],
+				NOW,
+			);
+			expect(payload.prs[0].mentionsClaude).toBe(false);
+		}
+	});
+
 	it("detects the claude-review-requested label", () => {
 		const payload = sanitizePrPayload(
 			[rawPr({ labels: { nodes: [{ name: "claude-review-requested" }] } })],
@@ -329,5 +352,33 @@ describe("sanitizePrPayload", () => {
 		// Never under-reports below the inspected count even if a bad total is passed.
 		const floored = sanitizePrPayload([rawPr()], NOW, 0);
 		expect(floored.totalCount).toBe(1);
+	});
+
+	it("(FIX F4) flags truncated + inspectedCount when issueCount exceeds the inspected node count", () => {
+		// 2 inspected PRs but the server reports 63 open total — the >50 page
+		// case. The summary must be able to say "inspected first 2 of 63" rather
+		// than implying all 63 were classified (the falsely-reassuring triage).
+		const payload = sanitizePrPayload(
+			[rawPr(), rawPr({ number: 43 })],
+			NOW,
+			63,
+		);
+		expect(payload.totalCount).toBe(63);
+		expect(payload.inspectedCount).toBe(2);
+		expect(payload.truncated).toBe(true);
+	});
+
+	it("(FIX F4) does NOT flag truncation when the full open-PR set fits the inspected page (<=50)", () => {
+		// issueCount === nodes.length: every open PR was inspected, no page 2.
+		const payload = sanitizePrPayload([rawPr(), rawPr({ number: 43 })], NOW, 2);
+		expect(payload.totalCount).toBe(2);
+		expect(payload.inspectedCount).toBe(2);
+		expect(payload.truncated).toBe(false);
+
+		// Legacy/direct callers omitting totalCount default to prs.length — also
+		// non-truncated.
+		const defaulted = sanitizePrPayload([rawPr()], NOW);
+		expect(defaulted.inspectedCount).toBe(1);
+		expect(defaulted.truncated).toBe(false);
 	});
 });

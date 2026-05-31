@@ -1009,4 +1009,190 @@ describe("pr-triage integration (R1 daemon-owned creds)", () => {
 		}
 		await scheduler.stop();
 	});
+
+	// F1 (dual-adversarial pass#3) — direct coverage of the ndjsonAlert
+	// record-and-resolve branch in AgentManager.processPendingTask. Before this
+	// test the branch had only the INERT mirror in makeTaskDispatchHandler
+	// (main.test.ts DH-8); the load-bearing PRODUCTION branch — which fires
+	// BEFORE isAgentRegistered and is the one that actually resolves alert
+	// envelopes — was exercised by no test. These cases drive a real
+	// `pr-triage__*.json` alert envelope through `_pollingTickForTests()`.
+	it("Case 17 (F1) — ndjsonAlert envelope: emits pr-triage-telegram-send-failed + claims when telemetry records", async () => {
+		writePrTriageFixture();
+		const { mgr, register } = await buildSystem();
+		await register("pr-triage");
+		const dispatch = wireDispatchHandler(mgr);
+
+		// A real pr-triage alert envelope (prompt-less, daemon-owned kind, correct
+		// filename prefix). The producer is the legacy alert path; the branch is
+		// retired but kept as defensive handling and MUST still record-and-resolve.
+		const filename = "pr-triage__1700000020.json";
+		fs.writeFileSync(
+			path.join(tempDir, "tasks/pending", filename),
+			JSON.stringify({
+				agentId: "pr-triage",
+				ndjsonAlert: "pr-triage-telegram-send-failed",
+				details: "429 rate",
+			}),
+			"utf8",
+		);
+
+		const sendEvents: TaskSendEvent[] = [];
+		const dispatchEvents: TaskDispatchEvent[] = [];
+		mgr.on("task-send-needed", (e: TaskSendEvent) => sendEvents.push(e));
+		mgr.on("task-dispatch-needed", (e: TaskDispatchEvent) =>
+			dispatchEvents.push(e),
+		);
+
+		await mgr._pollingTickForTests();
+		await dispatch.flush();
+
+		// (a) telemetry emitted with the alert kind + token-free details, mirrored.
+		const failed = emittedEventsOfKind("pr-triage-telegram-send-failed").filter(
+			(e) => (e as { filename: string }).filename === filename,
+		);
+		expect(failed).toHaveLength(1);
+		expect(failed[0]).toMatchObject({
+			kind: "pr-triage-telegram-send-failed",
+			agentId: "pr-triage",
+			filename,
+			alertKind: "pr-triage-telegram-send-failed",
+			details: "429 rate",
+		});
+		// (b) record-and-resolve: with telemetry durable (emitMock → true), the
+		// file is claimed (moved pending → resolved).
+		await fsp.access(path.join(tempDir, "tasks/resolved", filename));
+		await expect(
+			fsp.access(path.join(tempDir, "tasks/pending", filename)),
+		).rejects.toThrow();
+		// It NEVER reached the dispatch / send path (a prompt-less alert must not
+		// be mis-classified as malformed-task).
+		expect(sendEvents).toHaveLength(0);
+		expect(dispatchEvents).toHaveLength(0);
+		expect(emittedEventsOfKind("pr-triage-dispatch-failed")).toHaveLength(0);
+	});
+
+	it("Case 18 (F1) — durability gate: an alert envelope is NOT claimed when the telemetry emit does NOT record", async () => {
+		writePrTriageFixture();
+		const { mgr, register } = await buildSystem();
+		await register("pr-triage");
+
+		const filename = "pr-triage__1700000021.json";
+		const pendingPath = path.join(tempDir, "tasks/pending", filename);
+		fs.writeFileSync(
+			pendingPath,
+			JSON.stringify({
+				agentId: "pr-triage",
+				ndjsonAlert: "pr-triage-telegram-send-failed",
+				details: "500 server",
+			}),
+			"utf8",
+		);
+
+		// Degraded telemetry dir: the next emit reports a NON-durable write.
+		emitMock.mockResolvedValueOnce(false);
+
+		await mgr._pollingTickForTests();
+
+		// Telemetry was attempted...
+		expect(
+			emittedEventsOfKind("pr-triage-telegram-send-failed").filter(
+				(e) => (e as { filename: string }).filename === filename,
+			),
+		).toHaveLength(1);
+		// ...but the claim did NOT happen — the alert must re-trip next tick rather
+		// than be silently resolved without surfacing the signal.
+		await fsp.access(pendingPath);
+		expect(fs.existsSync(path.join(tempDir, "tasks/resolved", filename))).toBe(
+			false,
+		);
+	});
+
+	it("Case 19 (F1) — provenance: a foreign-FILENAME alert body FALLS THROUGH (NOT record-and-resolved)", async () => {
+		writePrTriageFixture();
+		const { mgr, register } = await buildSystem();
+		await register("pr-triage");
+		const dispatch = wireDispatchHandler(mgr);
+
+		// A foreign producer writes `rogue-agent__*.json` whose BODY claims
+		// pr-triage + an alert kind. The filename-provenance guard must block the
+		// record-and-resolve branch so a foreign file cannot destroy the real
+		// producer's signal.
+		const foreignFilename = "rogue-agent__1700000022.json";
+		const foreignPath = path.join(tempDir, "tasks/pending", foreignFilename);
+		fs.writeFileSync(
+			foreignPath,
+			JSON.stringify({
+				agentId: "pr-triage",
+				ndjsonAlert: "pr-triage-telegram-send-failed",
+				details: "smuggled",
+			}),
+			"utf8",
+		);
+
+		await mgr._pollingTickForTests();
+		await dispatch.flush();
+
+		// Did NOT record-and-resolve: no telegram-send-failed telemetry for the
+		// foreign file, and it was not moved to resolved/. (It falls through to the
+		// dispatch path and, being prompt-less, is rejected as malformed-task.)
+		expect(
+			emittedEventsOfKind("pr-triage-telegram-send-failed").filter(
+				(e) => (e as { filename: string }).filename === foreignFilename,
+			),
+		).toHaveLength(0);
+		expect(
+			fs.existsSync(path.join(tempDir, "tasks/resolved", foreignFilename)),
+		).toBe(false);
+		expect(
+			emittedEventsOfKind("pr-triage-dispatch-failed").some(
+				(e) =>
+					(e as { filename: string }).filename === foreignFilename &&
+					(e as { reason: string }).reason === "malformed-task",
+			),
+		).toBe(true);
+	});
+
+	it("Case 20 (F1) — provenance: a foreign alert KIND on a pr-triage__ file FALLS THROUGH (NOT record-and-resolved)", async () => {
+		writePrTriageFixture();
+		const { mgr, register } = await buildSystem();
+		await register("pr-triage");
+		const dispatch = wireDispatchHandler(mgr);
+
+		// Correct filename prefix + agentId, but an alert kind NOT in the
+		// daemon-owned PR_TRIAGE_ALERT_KINDS set. The kind-membership guard must
+		// block the record-and-resolve branch.
+		const filename = "pr-triage__1700000023.json";
+		const pendingPath = path.join(tempDir, "tasks/pending", filename);
+		fs.writeFileSync(
+			pendingPath,
+			JSON.stringify({
+				agentId: "pr-triage",
+				ndjsonAlert: "some-unknown-kind",
+				details: "x",
+			}),
+			"utf8",
+		);
+
+		await mgr._pollingTickForTests();
+		await dispatch.flush();
+
+		// No record-and-resolve for an out-of-set kind.
+		expect(
+			emittedEventsOfKind("pr-triage-telegram-send-failed").filter(
+				(e) => (e as { filename: string }).filename === filename,
+			),
+		).toHaveLength(0);
+		expect(fs.existsSync(path.join(tempDir, "tasks/resolved", filename))).toBe(
+			false,
+		);
+		// Falls through; prompt-less → malformed-task.
+		expect(
+			emittedEventsOfKind("pr-triage-dispatch-failed").some(
+				(e) =>
+					(e as { filename: string }).filename === filename &&
+					(e as { reason: string }).reason === "malformed-task",
+			),
+		).toBe(true);
+	});
 });
