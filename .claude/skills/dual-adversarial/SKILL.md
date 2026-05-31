@@ -32,7 +32,30 @@ Santiago merges.**
 
 2. **Size the diff.** Run `git diff --shortstat <base>...HEAD`. If empty AND no PR number, tell the user there is nothing to review and stop.
 
-3. **Ask which lenses, depth, and post-findings action.** Call `AskUserQuestion` ONCE with FOUR questions (the tool allows up to 4 questions, each with ≤4 options). Q1 and Q2 are `multiSelect: true`; Q3 and Q4 are single-select. The two adversarial core legs (Opus 4.8 ∥ Codex GPT-5.5) ALWAYS run — Q1/Q2 only add extra **independent** lenses on top. Collect the selected keys from Q1 and Q2 into one `lenses` array, capture Q3 as `mode`, and capture Q4 as the post-findings action, all for step 4 / step 5.
+3. **Run the gate (DEFAULT = zero prompts).** The default run issues NO questions: it
+   auto-derives the extra lenses from the diff, runs **Team** depth (the final pre-merge
+   gate always runs Team), and is **report-only**. Two flags change this:
+   - `--interactive` → restore the original four-question flow (see "Interactive branch" below).
+   - `--fix` → after the gate, resolve the verified-KEPT blocking findings (see step 5).
+
+   **DEFAULT (no flags).** Invoke the Workflow once, with `lenses` OMITTED so it
+   auto-derives from the changed-file paths, `mode: "team"`, and report-only:
+   ```
+   Workflow({ scriptPath: "<IAGO_ROOT>/.claude/workflows/dual-adversarial.js",  // IAGO_ROOT = repo root, same value as the iagoRoot arg below
+              args: { projectDir, iagoRoot, base, prNumber, mode: "team" } })
+   ```
+   With `lenses` absent (or the literal string `"auto"`), the Workflow derives the extra
+   lenses from the diff: `amplify/**` → `amplify`; `src/**` or any `*.tsx` → `frontend`;
+   any `auth`/`authz`/`cognito`/`payment`/`billing` path → `security`; plus `codeQuality`
+   and `completeness` ALWAYS. `perf` and `tests` are NOT auto-derived — add them via
+   `--interactive`. Then go to step 4.
+
+   **`--interactive` branch.** Call `AskUserQuestion` ONCE with FOUR questions (the tool
+   allows up to 4 questions, each with ≤4 options). Q1 and Q2 are `multiSelect: true`; Q3
+   and Q4 are single-select. The two adversarial core legs (Opus 4.8 ∥ Codex GPT-5.5)
+   ALWAYS run — Q1/Q2 only add extra **independent** lenses on top. Collect the selected
+   keys from Q1 and Q2 into one `lenses` array, capture Q3 as `mode`, and capture Q4 as the
+   post-findings action, all for step 4 / step 5.
 
    **Question 1 — "Extra review lenses"** (`multiSelect: true`):
    - **Security review** (`security`) — auth/authz bypass, injection, secret leakage, crypto, tenant isolation, IAM. Same depth as `/security-review`. *Pre-select when the diff touches auth or payments.*
@@ -53,35 +76,46 @@ Santiago merges.**
    - **Report only (read-only)** — DEFAULT — surface findings for the human; never touch the branch.
    - **Fix verified findings** — run the fix workflow on the confirmed (verified-KEPT) blocking findings, commit the fixes to the branch, then re-run the gate. **Never merges.**
 
-4. **Run the gate.** Invoke the Workflow once with the selected lenses and depth:
+   In the `--interactive` branch, run the Workflow with the collected answers:
    ```
-   Workflow({ scriptPath: "<IAGO_ROOT>/.claude/workflows/dual-adversarial.js",  // IAGO_ROOT = repo root, same value as the iagoRoot arg below
+   Workflow({ scriptPath: "<IAGO_ROOT>/.claude/workflows/dual-adversarial.js",
               args: { projectDir, iagoRoot, base, prNumber, mode: "<standard|team from Q3>", lenses: [<selected lens keys>] } })
    ```
-   Lens keys: `"security"`, `"codeQuality"`, `"tests"`, `"completeness"`, `"frontend"`, `"amplify"`, `"perf"`. Merge the selected keys from Q1 and Q2 into one `lenses` array. Pass `lenses: []` if none selected. Pass `mode: "standard"` if Q3 was not answered.
+   Lens keys: `"security"`, `"codeQuality"`, `"tests"`, `"completeness"`, `"frontend"`, `"amplify"`, `"perf"`. Merge the selected keys from Q1 and Q2 into one `lenses` array. Pass `lenses: []` if none selected (an explicit `[]` runs ZERO extra lenses — it does NOT auto-derive; only an ABSENT `lenses` or `"auto"` triggers derivation). Pass `mode: "standard"` if Q3 was not answered. Then go to step 4.
 
-5. **Resolve** (only if Q4 = "Fix verified findings" AND `blocking > 0`). Forward ONLY the gate's Team-confirmed (KEPT) blocking findings — the `findings` array the gate returned, filtered to `severity` Critical/Important (Team mode already dropped both-refuted false positives into `filtered`; never pass `filtered` findings to the fixer, and never re-derive findings from the raw legs — only the verified-KEPT set goes forward). Invoke the fix Workflow on them:
+4. **Read the gate result.** Whichever branch (default or `--interactive`) ran the Workflow, it returns the result object consumed by steps 5 and 6.
+
+5. **Resolve** (only if `--fix` was passed OR `--interactive` Q4 = "Fix verified findings", AND `blocking > 0`). The default run is report-only — skip this step entirely unless `--fix`/Q4-fix applies. Forward ONLY the gate's Team-confirmed (KEPT) blocking findings — the `findings` array the gate returned, filtered to `severity` Critical/Important (Team mode already dropped both-refuted false positives into `filtered`; never pass `filtered` findings to the fixer, and never re-derive findings from the raw legs — only the verified-KEPT set goes forward). Invoke the fix Workflow on them:
    ```
    Workflow({ scriptPath: "<IAGO_ROOT>/.claude/workflows/dual-adversarial-fix.js",
-              args: { projectDir, iagoRoot, base, findings: <the gate's confirmed blocking findings from step 4> } })
+              args: { projectDir, iagoRoot, base, findings: <the gate's confirmed blocking findings from step 3> } })
    ```
-   Then **RE-RUN the dual-adversarial gate ONCE** (step 4, same `mode`/`lenses`) to confirm the fixes resolved the findings without regression.
+   Then **RE-RUN the dual-adversarial gate ONCE** (re-invoke the step-3 Workflow with the SAME `mode`/`lenses` it ran with — for a default run that is `mode: "team"` and `lenses` omitted) to confirm the fixes resolved the findings without regression.
 
    **Carry a suppress-list across cycles.** On a 2nd cycle, do NOT re-forward a finding the previous cycle already resolved, nor any finding Team verification dropped into `filtered` (that the re-gate may re-raise). Before the cycle-2 fix call, build a suppress-list = {every finding sent to the cycle-1 fixer} ∪ {every `filtered` finding from cycle-1's gate AND cycle-1's re-gate}, matching on `summary` + `file`. Forward to the cycle-2 fixer ONLY the re-gate's confirmed-KEPT blocking findings that are NOT in the suppress-list. A finding that keeps re-surfacing despite a prior fix is a manual-review signal, not a re-fix target.
 
-   **The fix→re-gate cycle cap of 2 is enforced HERE, by you, the orchestrator — NOT by either Workflow** (each Workflow invocation does exactly one pass; neither holds cycle state). Track the cycle count explicitly: cycle 1 = first fix + re-gate; cycle 2 = second fix + re-gate (only if cycle 1's re-gate still reported `blocking > 0`). **After 2 completed cycles, STOP unconditionally** — do not invoke the fix Workflow a third time even if `blocking > 0`; report the residual findings for manual review. **NEVER run `gh pr merge` — Santiago merges.** If Q4 = "Report only" or `blocking === 0`, skip this step entirely.
+   **The fix→re-gate cycle cap of 2 is enforced HERE, by you, the orchestrator — NOT by either Workflow** (each Workflow invocation does exactly one pass; neither holds cycle state). Track the cycle count explicitly: cycle 1 = first fix + re-gate; cycle 2 = second fix + re-gate (only if cycle 1's re-gate still reported `blocking > 0`). **After 2 completed cycles, STOP unconditionally** — do not invoke the fix Workflow a third time even if `blocking > 0`; report the residual findings for manual review. **NEVER run `gh pr merge` — Santiago merges.** If the run is report-only (no `--fix` and `--interactive` Q4 = "Report only") or `blocking === 0`, skip this step entirely.
 
 6. **Report.** The Workflow returns `{ clean, mode, gateStatus, incompleteLegs, verdict, codexSource, crossModelDegraded, verificationDegraded, filtered, findings, blocking }`. **Lead with `clean` — it is the authoritative merge signal. Do NOT lead with `verdict`:** `verdict` reflects the Opus leg ONLY, so it can read `PASS` while the Codex leg surfaced a Critical (in that case `clean` is `false` and `blocking > 0`). State the `mode` used (`standard` or `team`). If `filtered` is non-empty (Team mode only), report how many false-positive findings the Team verification dropped AND list each dropped finding with its skeptic `reasons` — a dropped finding is the one audit trail the human has at the merge decision, so surface it, never silently omit it. If `verificationDegraded === true` (Team mode only), add the caveat that the skeptics were same-family Opus (not a true cross-model verification), exactly as you would for `crossModelDegraded`. Route on `clean` first, then `gateStatus`:
    - **`gateStatus === 'INCOMPLETE'`** (a core leg failed — see `incompleteLegs`) → the gate did NOT complete. Tell Santiago the gate is incomplete and **re-run the Workflow**. Do NOT offer `/iago-prfix` — a failed leg is not a fixable code defect, and `/iago-prfix` will not run the missing leg.
    - **`clean === true`** → tell Santiago it is safe to merge. If `crossModelDegraded === true` (codexSource is `claude-fallback`), add a caveat: the cross-model GPT-5.5 leg fell back to a same-family Claude pass, so there was no true cross-model coverage — re-run the gate if a hard GPT-5.5 second opinion is required before merge.
-   - **`clean === false` AND `gateStatus === 'COMPLETE'`** (`blocking > 0`) → surface findings grouped by severity. If Q4 = "Fix verified findings", step 5 already ran the fix→re-gate cycle (report its outcome); otherwise offer `/iago-prfix` to fix. **Never run `gh pr merge` — Santiago merges.**
+   - **`clean === false` AND `gateStatus === 'COMPLETE'`** (`blocking > 0`) → surface findings grouped by severity. If `--fix` (or `--interactive` Q4 = "Fix verified findings") was set, step 5 already ran the fix→re-gate cycle (report its outcome); otherwise (the report-only default) offer `--fix` or `/iago-prfix` to fix. **Never run `gh pr merge` — Santiago merges.**
 
 ## Guarantees
+- **Auto-config by default.** The default run issues ZERO prompts: the extra lenses
+  auto-derive from the changed-file paths — `amplify/**` → `amplify`; `src/**` OR any
+  `*.tsx` (even outside `src/`) → `frontend`; any `auth`/`authz`/`cognito`/`payment`/`billing`
+  path → `security`; plus `codeQuality` and `completeness` ALWAYS. `perf` and `tests` are
+  never auto-derived (opt in via `--interactive`). Default depth is **Team** and default
+  action is **report-only**. An explicit `lenses` array (including an empty `[]` for zero
+  extra lenses) or `--interactive` overrides the derivation entirely — only an absent
+  `lenses` or the literal string `"auto"` triggers it. If the changed-files probe degrades
+  (empty diff or a failed fetch), the gate falls back to the two base lenses and never throws.
 - **Independent.** The Opus and Codex legs (and every extra lens) run as separate fresh subagents inside one `parallel()` call — no leg is primed with another's findings; results are merged only after all legs finish.
 - **Aggressive.** Every leg defaults to skepticism, gives no credit for good intent or likely follow-up work, and treats happy-path-only behavior as a real weakness.
 - **Model-pinned.** The reviewer leg is pinned to Opus (`model: 'opus'` = Opus 4.8); the cross-model leg uses Codex GPT-5.5 via `codex-companion.mjs` (model pinned in `~/.codex/config.toml`). A core leg that fails forces `clean = false` AND `gateStatus = 'INCOMPLETE'` (a re-run condition, not a `/iago-prfix` finding — see the Report step); a failed extra lens is non-blocking (logged, not blocking).
 - **Cross-model honesty.** If the Codex leg falls back to a same-family Claude pass, `codexSource` is `claude-fallback` and `crossModelDegraded` is `true` — the gate can still report `clean` but with no true GPT-5.5 coverage. The Report step requires surfacing this caveat to the human at the merge decision.
 - **Team mode filters false positives.** In `mode: "team"`, every Critical/Important finding is adversarially verified by 2 independent skeptics before it can block or be fixed; a finding is dropped as a false positive ONLY when BOTH skeptics refute it WITH a concrete code citation (a confident-but-uncited refute does not count — it is treated as a confirm, so the finding is kept). A single confirm keeps the finding (false-negative bias is worse than dropping a real bug). Dropped findings are recorded in `filtered` with their skeptic `reasons` and surfaced at the merge decision (Report step) — never silently discarded. Verification runs BEFORE anything blocks or is fixed — a dropped finding never reaches the fix flow.
 - **Verification honesty.** The Team skeptics are same-family Opus, not a true cross-model verification. When verification ran (Team mode, ≥1 blocking finding), `verificationDegraded` is `true` and the Report step surfaces it to the human — the verification analogue of `crossModelDegraded`.
-- **Fix mode commits but NEVER pushes or merges.** The Fix flow (Q4 = "Fix verified findings") resolves only the verified-KEPT blocking findings and commits them to the current branch. It never pushes, never opens or updates a PR, and never runs `gh pr merge`. Santiago merges.
-- **Read-only is the default.** "Report only (read-only)" is the default Q4 action: the gate touches no files, makes no commits, and the branch is unchanged. The Fix flow is opt-in per run.
+- **Fix mode commits but NEVER pushes or merges.** The Fix flow (`--fix`, or `--interactive` Q4 = "Fix verified findings") resolves only the verified-KEPT blocking findings and commits them to the current branch. It never pushes, never opens or updates a PR, and never runs `gh pr merge`. Santiago merges.
+- **Read-only is the default.** Report-only is the default action (no `--fix`, `--interactive` Q4 = "Report only"): the gate touches no files, makes no commits, and the branch is unchanged. The Fix flow is opt-in per run via `--fix`.

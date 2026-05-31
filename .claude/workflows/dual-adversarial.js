@@ -38,7 +38,10 @@ async function withRetry(fn, label, tries = 2) {
 
 // args = { projectDir (required), base (required, e.g. "origin/main" or PR base branch),
 //          iagoRoot (required), prNumber (optional, context only),
-//          lenses (optional — extra independent lenses: array | csv | {key:true} map) }
+//          lenses (optional — extra independent lenses: array | csv | {key:true} map.
+//            ABSENT/null/undefined or the literal string "auto" → the lenses AUTO-DERIVE
+//            from the changed-file paths (see deriveLenses); an explicit array (incl. [])
+//            or csv/map is honored verbatim and never triggers derivation) }
 // args may arrive parsed OR as a JSON string in this harness build — normalize.
 function parseArgs(a) {
   if (a == null) return {}
@@ -112,6 +115,13 @@ const SNAPSHOT_SCHEMA = {
   type: 'object',
   required: ['head', 'porcelain'],
   properties: { head: { type: 'string' }, porcelain: { type: 'string' } },
+}
+// AUTO-DERIVE — the workflow vm cannot shell out (no fs/child_process in the body), so
+// the changed-file list comes from a structured agent that runs `git diff --name-only`.
+const CHANGED_FILES_SCHEMA = {
+  type: 'object',
+  required: ['files'],
+  properties: { files: { type: 'array', items: { type: 'string' } } },
 }
 
 const PREAMBLE = `You are a read-only adversarial reviewer (pre-merge gate, pass #2). Work in ${projectDir}. Do NOT edit files, commit, push, or merge — only review and report.
@@ -197,9 +207,92 @@ function normalizeLenses(l) {
   const dropped = raw.filter((k) => !Object.prototype.hasOwnProperty.call(LENS_DEFS, k))
   return { keys, requested: raw.length, dropped }
 }
-const { keys: lenses, requested: lensesRequested, dropped: lensesDropped } = normalizeLenses(A.lenses)
+
+// AUTO-DERIVE the extra lenses from the changed-file paths so the DEFAULT run issues zero
+// prompts. Pure + deterministic so the test harness can assert exact arrays. Emits a
+// fixed-precedence, deduped order so callers/tests get a stable result. Only ever emits
+// keys that exist in LENS_DEFS (the caller still re-filters through normalizeLenses for
+// belt-and-suspenders). `perf`/`tests` are intentionally NOT auto-emitted — they stay
+// opt-in via --interactive. A non-array or empty input returns exactly the two base lenses
+// (this is the guard for "no files changed" / "changed-files agent degraded").
+function deriveLenses(changedFiles) {
+  // Fixed precedence so the result order is stable and assertable in tests.
+  const PRECEDENCE = ['security', 'amplify', 'frontend', 'codeQuality', 'completeness']
+  const matched = new Set(['codeQuality', 'completeness']) // base lenses ALWAYS included
+  if (Array.isArray(changedFiles)) {
+    for (const raw of changedFiles) {
+      if (typeof raw !== 'string' || !raw) continue
+      const p = raw.replace(/\\/g, '/') // normalize Windows separators before path checks
+      const lower = p.toLowerCase()
+      // amplify/** (top-level or nested) → amplify lens
+      if (p.startsWith('amplify/') || p.includes('/amplify/')) matched.add('amplify')
+      // src/** OR any *.tsx (even outside src/, e.g. packages/ui/Button.tsx) → frontend lens
+      if (p.startsWith('src/') || p.includes('/src/') || p.endsWith('.tsx')) matched.add('frontend')
+      // any auth / authz / cognito / payment / billing path → security lens
+      if (/auth|authz|cognito|payment|billing/.test(lower)) matched.add('security')
+    }
+  }
+  return PRECEDENCE.filter((k) => matched.has(k))
+}
+
+// Resolve the extra lenses. THREE sources, picked in this order:
+//  1. A.lenses is an Array (incl. an explicit empty []) → EXPLICIT path: honor it via
+//     normalizeLenses exactly as before, no derivation, no changed-files agent. This is
+//     the legacy / --interactive zero-lens path — an explicit [] must NOT auto-derive.
+//  2. A.lenses is absent/null/undefined OR the literal string "auto" → AUTO path: dispatch
+//     ONE structured changed-files agent and run deriveLenses over the result.
+//  3. Any other non-array value (e.g. a csv string or {key:true} map) → treat as EXPLICIT
+//     via normalizeLenses (back-compat with the pre-auto string/map callers).
+const lensesIsAuto =
+  A.lenses === undefined || A.lenses === null || (typeof A.lenses === 'string' && A.lenses.trim() === 'auto')
+let lenses
+let lensesRequested
+let lensesDropped = []
+let lensSource
+if (Array.isArray(A.lenses) || (!lensesIsAuto && A.lenses != null)) {
+  // EXPLICIT — honor the caller's lenses unchanged (array, csv, or map).
+  const n = normalizeLenses(A.lenses)
+  lenses = n.keys
+  lensesRequested = n.requested
+  lensesDropped = n.dropped
+  lensSource = 'explicit'
+} else {
+  // AUTO — fetch changed files via a structured agent (the workflow body cannot shell out),
+  // then derive. On agent failure we fall back to deriveLenses([]) (= the two base lenses)
+  // and log the degradation — never throw. The two collapse points (real "no files changed"
+  // vs degraded fetch) are logged DISTINCTLY so an operator can tell them apart (stress note 4).
+  const filesResult = await withRetry(
+    () =>
+      agent(
+        `${PREAMBLE}\n\nREAD-ONLY changed-files probe (for lens auto-config). In ${projectDir} run exactly:\n  git diff --name-only ${base}...HEAD\nReturn files = the list of changed paths (one per line in the git output), as an array of strings. Empty array if the diff is empty. Do NOT edit, stage, commit, or run anything else.`,
+        { label: 'changed-files', phase: 'Review', schema: CHANGED_FILES_SCHEMA, model: 'opus' },
+      ),
+    'changed-files',
+  )
+  const changedFiles = filesResult && Array.isArray(filesResult.files) ? filesResult.files : []
+  // Re-filter through normalizeLenses so an unknown key can never reach the dispatch loop
+  // (deriveLenses already constrains to LENS_DEFS keys; this is belt-and-suspenders).
+  const n = normalizeLenses(deriveLenses(changedFiles))
+  lenses = n.keys
+  lensesRequested = n.requested
+  lensesDropped = n.dropped
+  lensSource = 'auto'
+  if (!filesResult) {
+    // Agent FAILED (null) — degraded fetch. Base lenses, but flagged distinctly from
+    // a genuine no-change diff so an operator can tell "git fetch degraded" apart.
+    log(
+      `WARNING: changed-files probe failed — auto-deriving lenses from an EMPTY file list (DEGRADED fetch, not a confirmed no-change diff); using base lenses [${lenses.join(', ')}]`,
+    )
+  } else if (changedFiles.length === 0) {
+    // Agent SUCCEEDED but returned no files — a real no-change diff vs base. Distinct log.
+    log(`changed-files probe returned 0 files (no diff vs ${base}); auto-deriving base lenses [${lenses.join(', ')}]`)
+  } else {
+    log(`auto-derived lenses from ${changedFiles.length} changed file(s): [${lenses.join(', ')}]`)
+  }
+}
 // Fail-loud on SKILL/workflow lens-key drift: an unrecognized lens key would otherwise
-// be silently dropped and the operator would believe the lens ran.
+// be silently dropped and the operator would believe the lens ran. (deriveLenses can never
+// produce drift, so this fires only on the EXPLICIT path.)
 if (lensesDropped.length) {
   log(
     `WARNING: lens drift — requested ${lensesRequested}, recognized ${lenses.length}; dropped unknown keys [${lensesDropped.join(', ')}] (not in LENS_DEFS — check SKILL/workflow sync)`,
@@ -318,7 +411,7 @@ for (const def of teamDefs) {
   )
 }
 log(
-  `dual-adversarial #2 starting (${mode} mode): ${2 + lenses.length + teamDefs.length} independent legs (opus review ∥ codex${lenses.length ? ' + lenses: ' + lenses.join(', ') : ''}${teamDefs.length ? ' + team: ' + teamDefs.map((d) => d.key).join(', ') : ''})`,
+  `dual-adversarial #2 starting (${mode} mode, lenses ${lensSource}): ${2 + lenses.length + teamDefs.length} independent legs (opus review ∥ codex${lenses.length ? ' + lenses: ' + lenses.join(', ') : ''}${teamDefs.length ? ' + team: ' + teamDefs.map((d) => d.key).join(', ') : ''})`,
 )
 
 const results = await parallel(legs)

@@ -51,6 +51,14 @@ function buildWorkflow() {
 
 // A scripted-agent mock: each call is matched against a list of {match, reply}
 // rules by the agent label. parallel just runs the leg fns concurrently.
+//
+// AUTO-DERIVE default (stress note 1): under the auto-config path the workflow now
+// dispatches a `changed-files` agent before building the lens legs whenever `lenses`
+// is absent/null/"auto". Tests that exercise the auto path but do not care about the
+// derived set get a default `changed-files` rule here returning `{ files: [] }` (→ the
+// two base lenses), so the 8 pre-existing tests that omit `lenses` stay green without a
+// per-test mock. A test that needs a specific derived set supplies its own
+// `changed-files` rule, which is matched FIRST (rules are checked before this default).
 function makeHarness(rules, opts = {}) {
   const calls = []
   const logs = []
@@ -62,6 +70,12 @@ function makeHarness(rules, opts = {}) {
         return typeof r.reply === 'function' ? r.reply({ label, prompt, options }) : r.reply
       }
     }
+    // Default changed-files probe → empty diff → base lenses. Caller rules above win.
+    if (label === 'changed-files') return { files: [] }
+    // The auto-derive path ALWAYS appends the two base lenses (codeQuality + completeness),
+    // whose leg labels are LENS_DEFS[key].title. Give them clean empty-findings defaults so
+    // auto-path tests that don't care about lens output don't see them as incomplete legs.
+    if (label === 'code quality' || label === 'completeness critic') return { findings: [] }
     if (opts.defaultReply !== undefined) return opts.defaultReply
     throw new Error(`mock agent: no rule for label "${label}"`)
   }
@@ -99,7 +113,9 @@ await test('standard mode returns the original shape (no team semantics)', async
   assert.strictEqual(out.blocking, 0, 'blocking')
   assert.strictEqual(out.verdict, 'PASS', 'verdict')
   assert.deepStrictEqual(out.incompleteLegs, [], 'incompleteLegs')
-  assert.deepStrictEqual(out.lenses, [], 'lenses')
+  // baseArgs omits `lenses` → auto-derive path. The default changed-files mock returns
+  // an empty diff, so deriveLenses([]) yields exactly the two base lenses.
+  assert.deepStrictEqual(out.lenses, ['codeQuality', 'completeness'], 'lenses (auto-derived base)')
   // standard mode must report mode "standard" and NOT run verification.
   assert.strictEqual(out.mode, 'standard', 'mode flag')
   assert.deepStrictEqual(out.filtered, [], 'filtered empty in standard mode')
@@ -346,6 +362,139 @@ await test('a review leg that dirties the tree fails the gate, does not report c
     assert.ok(/side.?effect|dirtied|mutat|porcelain|tree/i.test(e.message), 'error names the side-effect')
   }
   assert.ok(threw, 'a dirtied tree must throw, never report clean')
+})
+
+// ── Auto-derive lens path (lenses absent / "auto") ──────────────────────
+// The DEFAULT run omits `lenses`, so the workflow dispatches a `changed-files` agent and
+// derives the extra lenses from the diff. Lens leg labels are LENS_DEFS[key].title:
+//   security → "security", amplify → "amplify bug-bounty", frontend → "frontend bug-bounty",
+//   codeQuality → "code quality", completeness → "completeness critic".
+const LENS_TITLE = {
+  security: 'security',
+  amplify: 'amplify bug-bounty',
+  frontend: 'frontend bug-bounty',
+  codeQuality: 'code quality',
+  completeness: 'completeness critic',
+  perf: 'performance & cost',
+  tests: 'test coverage',
+}
+// Build a harness that resolves the two core legs + a controlled changed-files probe +
+// clean empty-findings replies for every lens leg, so we can assert on the dispatched set.
+function autoHarness(files, extraRules = []) {
+  return makeHarness([
+    { match: (l) => l === 'review', reply: { verdict: 'PASS', findings: [] } },
+    { match: (l) => l === 'codex', reply: { source: 'codex', findings: [] } },
+    { match: (l) => l === 'changed-files', reply: { files } },
+    // every possible lens leg → empty findings (we assert on which ran, not their output)
+    { match: (l) => Object.values(LENS_TITLE).includes(l), reply: { findings: [] } },
+    ...extraRules,
+  ])
+}
+// Which lens KEYS were dispatched as legs, derived from the captured call labels.
+function dispatchedLensKeys(calls) {
+  const titles = new Set(calls.map((c) => c.label))
+  return Object.keys(LENS_TITLE).filter((k) => titles.has(LENS_TITLE[k]))
+}
+
+await test('auto-derive: amplify/** path → amplify + base lenses, no frontend/security', async () => {
+  const h = autoHarness(['amplify/data/resource.ts'])
+  const wf = buildWorkflow()
+  const out = await wf(h.agent, h.parallel, null, h.log, h.phase, { ...baseArgs }, null, null)
+  assert.deepStrictEqual(out.lenses, ['amplify', 'codeQuality', 'completeness'], 'exact derived set + order')
+  assert.deepStrictEqual(dispatchedLensKeys(h.calls).sort(), ['amplify', 'codeQuality', 'completeness'], 'dispatched legs')
+  assert.ok(!out.lenses.includes('frontend'), 'no frontend')
+  assert.ok(!out.lenses.includes('security'), 'no security')
+})
+
+await test('auto-derive: src/**/*.tsx path → frontend + base lenses', async () => {
+  const h = autoHarness(['src/features/x/Widget.tsx'])
+  const wf = buildWorkflow()
+  const out = await wf(h.agent, h.parallel, null, h.log, h.phase, { ...baseArgs }, null, null)
+  assert.deepStrictEqual(out.lenses, ['frontend', 'codeQuality', 'completeness'], 'frontend + base')
+})
+
+await test('auto-derive: .tsx OUTSIDE src/ (packages/ui/Button.tsx) → frontend', async () => {
+  const h = autoHarness(['packages/ui/Button.tsx'])
+  const wf = buildWorkflow()
+  const out = await wf(h.agent, h.parallel, null, h.log, h.phase, { ...baseArgs }, null, null)
+  assert.ok(out.lenses.includes('frontend'), '.tsx anywhere maps to frontend')
+  assert.deepStrictEqual(out.lenses, ['frontend', 'codeQuality', 'completeness'], 'frontend + base, exact')
+})
+
+await test('auto-derive: amplify auth handler → amplify AND security + base', async () => {
+  const h = autoHarness(['amplify/functions/auth/handler.ts'])
+  const wf = buildWorkflow()
+  const out = await wf(h.agent, h.parallel, null, h.log, h.phase, { ...baseArgs }, null, null)
+  // fixed precedence: security, amplify, frontend, codeQuality, completeness
+  assert.deepStrictEqual(out.lenses, ['security', 'amplify', 'codeQuality', 'completeness'], 'security+amplify+base, ordered')
+})
+
+await test('auto-derive: no rule matches (docs/readme.md) → exactly the two base lenses', async () => {
+  const h = autoHarness(['docs/readme.md'])
+  const wf = buildWorkflow()
+  const out = await wf(h.agent, h.parallel, null, h.log, h.phase, { ...baseArgs }, null, null)
+  assert.deepStrictEqual(out.lenses, ['codeQuality', 'completeness'], 'base lenses only')
+  assert.deepStrictEqual(dispatchedLensKeys(h.calls).sort(), ['codeQuality', 'completeness'], 'only base legs dispatched')
+})
+
+await test('auto-derive: lenses:"auto" string triggers the same derivation as absent', async () => {
+  const h = autoHarness(['src/main.tsx'])
+  const wf = buildWorkflow()
+  const out = await wf(h.agent, h.parallel, null, h.log, h.phase, { ...baseArgs, lenses: 'auto' }, null, null)
+  assert.deepStrictEqual(out.lenses, ['frontend', 'codeQuality', 'completeness'], '"auto" derives like absent')
+  assert.ok(h.calls.some((c) => c.label === 'changed-files'), 'changed-files agent ran for "auto"')
+})
+
+await test('auto-derive: empty diff (changed-files returns []) → base lenses, distinct no-change log', async () => {
+  const h = autoHarness([])
+  const wf = buildWorkflow()
+  const out = await wf(h.agent, h.parallel, null, h.log, h.phase, { ...baseArgs }, null, null)
+  assert.deepStrictEqual(out.lenses, ['codeQuality', 'completeness'], 'base lenses on empty diff')
+  // stress note 4: the real no-change diff must log DISTINCTLY from a degraded fetch.
+  assert.ok(h.logs.some((m) => /no diff vs/i.test(m)), 'logs a no-change diff message')
+  assert.ok(!h.logs.some((m) => /DEGRADED fetch/i.test(m)), 'does NOT log a degraded-fetch message')
+})
+
+await test('auto-derive: changed-files agent fails (null) → base lenses, distinct DEGRADED log, no throw', async () => {
+  // No changed-files rule and skip the makeHarness default by returning null explicitly →
+  // withRetry exhausts and yields null → degraded fetch path.
+  const h = makeHarness([
+    { match: (l) => l === 'review', reply: { verdict: 'PASS', findings: [] } },
+    { match: (l) => l === 'codex', reply: { source: 'codex', findings: [] } },
+    { match: (l) => l === 'changed-files', reply: null },
+    { match: (l) => l === 'code quality' || l === 'completeness critic', reply: { findings: [] } },
+  ])
+  const wf = buildWorkflow()
+  const out = await wf(h.agent, h.parallel, null, h.log, h.phase, { ...baseArgs }, null, null)
+  assert.deepStrictEqual(out.lenses, ['codeQuality', 'completeness'], 'falls back to base lenses')
+  assert.strictEqual(out.clean, true, 'degraded fetch does not throw or block')
+  assert.ok(h.logs.some((m) => /DEGRADED fetch/i.test(m)), 'logs a degraded-fetch message')
+  assert.ok(!h.logs.some((m) => /no diff vs/i.test(m)), 'does NOT log the no-change-diff message')
+})
+
+await test('explicit override: lenses:["perf"] (Array) bypasses derivation — no changed-files agent', async () => {
+  const h = makeHarness([
+    { match: (l) => l === 'review', reply: { verdict: 'PASS', findings: [] } },
+    { match: (l) => l === 'codex', reply: { source: 'codex', findings: [] } },
+    { match: (l) => l === 'performance & cost', reply: { findings: [] } },
+  ])
+  const wf = buildWorkflow()
+  const out = await wf(h.agent, h.parallel, null, h.log, h.phase, { ...baseArgs, lenses: ['perf'] }, null, null)
+  assert.deepStrictEqual(out.lenses, ['perf'], 'explicit array honored verbatim, no base lenses added')
+  assert.ok(!h.calls.some((c) => c.label === 'changed-files'), 'explicit array never dispatches changed-files')
+})
+
+await test('explicit empty []: legacy/interactive zero-lens path — no derivation, no changed-files', async () => {
+  // stress note 2: an explicit [] must NOT collapse into the auto path — it means "run zero
+  // extra lenses" (the --interactive "none selected" case), distinct from absent → auto.
+  const h = makeHarness([
+    { match: (l) => l === 'review', reply: { verdict: 'PASS', findings: [] } },
+    { match: (l) => l === 'codex', reply: { source: 'codex', findings: [] } },
+  ])
+  const wf = buildWorkflow()
+  const out = await wf(h.agent, h.parallel, null, h.log, h.phase, { ...baseArgs, lenses: [] }, null, null)
+  assert.deepStrictEqual(out.lenses, [], 'explicit [] = zero lenses, NOT auto-derived')
+  assert.ok(!h.calls.some((c) => c.label === 'changed-files'), 'explicit [] never dispatches changed-files')
 })
 
 console.log(`\n${passed} passed, ${failed} failed`)
