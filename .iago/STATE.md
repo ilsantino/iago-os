@@ -1,6 +1,6 @@
 # State — iaGO-OS
 
-> **Phase:** v2-phase-2-vps-bootstrap | **Status:** Phase 2 ~87% (13/15 plans merged: #60/#61/#62/#63/#64/#65/#67/#68/#72/#74 (06)/#76 (04b)/#80 (04d)). **Cutover NOT yet executed** — human-triggered step; the tentative 2026-05-25 target slipped. Remaining: PR #84 open (04c integration test + pr84 gap-closure); 05a/05b evidence template+checker+e2e not started. **In flight 2026-05-30:** orphan-coverage recovery (#87) + `/industry-patterns` restore (#88) + daemon-recovery-hardening plan (post-#87 merge). **In parallel (doc-only):** feature-mwp-restructure-docs plans written 2026-05-25; awaiting `/iago-execute`. **Side-quest planned 2026-05-28:** feature-lead-hunt-scrapling — Scrapling MCP + `/lead-hunt` skill + Apollo enrichment runbook.
+> **Phase:** v2-phase-2-vps-bootstrap | **Status:** Phase 2 ~80% (12/15 plans merged: #60/#61/#62/#63/#64/#65/#67/#68/#72/#74 (06)/#76 (04b)/#80 (04d)). **Cutover NOT yet executed** — human-triggered step; the tentative 2026-05-25 target slipped. Remaining: PR #84 open (04c integration test + pr84 gap-closure); 05a/05b evidence template+checker+e2e not started. **In flight 2026-05-30:** orphan-coverage recovery (#87) + `/industry-patterns` restore (#88) + daemon-recovery-hardening plan (post-#87 merge). **In parallel (doc-only):** feature-mwp-restructure-docs plans written 2026-05-25; awaiting `/iago-execute`. **Side-quest planned 2026-05-28:** feature-lead-hunt-scrapling — Scrapling MCP + `/lead-hunt` skill + Apollo enrichment runbook.
 > **Tag:** v0.1.0 | **Updated:** 2026-05-30
 
 ## Active

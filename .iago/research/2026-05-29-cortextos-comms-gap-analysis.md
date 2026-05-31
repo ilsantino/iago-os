@@ -118,7 +118,7 @@ Three fields beyond the original four were added by the 2026-05-29 council (see 
 ## 7. Ordered plan-change list
 
 1. **Approval gate** — Santiago re-locks §5.1 (comms refine), confirms §5.2 (one-bot KEEP) and §5.3 (chief = role flag). No plan executes before this.
-2. **Apply doc amendments** (additive, dated) to `vision.md`, `master-prompt.md`, `feature-v2-phase-1-daemon/CONTEXT.md`; append ADR addendum to `.iago/decisions/2026-05-15-agent-shape-taxonomy.md`; create `.iago/decisions/2026-05-29-per-agent-identity-and-chief-tier.md`; add STATE.md row.
+2. **Apply doc amendments** (additive, dated) to `vision.md`, `master-prompt.md`, `feature-v2-phase-1-daemon/CONTEXT.md`; append ADR addendum to `.iago/decisions/2026-05-15-agent-shape-taxonomy.md`; create `.iago/decisions/2026-05-29-per-agent-identity-and-chief-tier.md`; add STATE.md row. *(SUPERSEDED 2026-05-30: the separate `2026-05-15` addendum and the standalone `2026-05-29-per-agent-identity-and-chief-tier.md` file were never written — the 2026-05-29 stance was re-locked the next day and captured in ADR `.iago/decisions/2026-05-30-per-agent-bots-and-chief-tier.md` instead. Do not look for those two artifacts; cite the 05-30 ADR.)*
 3. **Ship now (no lock dependency):** sticky `/agent <id>` default-target — `/iago-quick` or `/iago-fast`.
 4. **Phase 3:** `feature-v2-shape2-langchain-home` + `feature-v2-codex-cohabitation` (cohabitation — no spec change) + `feature-v2-supervisor-role`.
 5. **Phase 3.5:** `feature-v2-agent-comms-channel` (after a second runtime exists).

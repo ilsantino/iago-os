@@ -14,7 +14,7 @@ This stage produces 1–3 plan files realizing master-prompt Mission #5 ('the su
 - `docs/specs/iago-os-v2-master-prompt.md` § Mission #5 (line 62, 2026-05-29 chief-role amendment) + P1 item 5a
 - `docs/specs/iago-os-v2-vision.md` § Agent Shape Taxonomy (Supervisor/chief subsection) + line 74 (Paperclip org-chart rejection — chief is mechanical, not titled)
 - `.iago/research/2026-05-29-cortextos-comms-gap-analysis.md`
-- `.iago/decisions/2026-05-15-agent-shape-taxonomy.md` (subagent-spawn adoption + 2026-05-29 addendum)
+- `.iago/decisions/2026-05-15-agent-shape-taxonomy.md` (subagent-spawn adoption; the 2026-05-29/30 changes were NOT written as an addendum here — see `.iago/research/2026-05-29-cortextos-comms-gap-analysis.md` + ADR `.iago/decisions/2026-05-30-per-agent-bots-and-chief-tier.md`)
 - `runtime/daemon/agent-manager.ts` (spawnSubagent:529, parentChildren linkage, getCostSummary:605 — REUSE)
 - `runtime/daemon/cron-scheduler.ts` (fire() producer pattern) + `runtime/daemon/file-bus.ts` (O_EXCL + validateAgentId)
 - `CLAUDE.md` (L0) + `.claude/rules/tdd.md` + `.claude/rules/execution-pipeline.md`

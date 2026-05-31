@@ -14,7 +14,7 @@ This stage produces 2–4 plan files that ship the cortextOS-video 'agents messa
 - `docs/specs/iago-os-v2-vision.md` § What this is NOT (line 476, 2026-05-29 refinement) + § Agent Shape Taxonomy (new Supervisor/chief + comms-channel subsection)
 - `docs/specs/iago-os-v2-master-prompt.md` § anti-scope (line 177, 2026-05-29) + P1 item 5a (supervisor/chief role + comms channel)
 - `.iago/research/2026-05-29-cortextos-comms-gap-analysis.md` (this stage's decision artifact)
-- `.iago/decisions/2026-05-15-agent-shape-taxonomy.md` (with 2026-05-29 addendum)
+- `.iago/decisions/2026-05-15-agent-shape-taxonomy.md` (the 2026-05-29/30 changes were NOT written as an addendum here — they live in `.iago/research/2026-05-29-cortextos-comms-gap-analysis.md` + ADR `.iago/decisions/2026-05-30-per-agent-bots-and-chief-tier.md`)
 - `runtime/daemon/file-bus.ts` (O_EXCL claim + atomicRenameStaleDest + validateAgentId — the producer/claim primitives to reuse)
 - `runtime/daemon/cron-scheduler.ts` (fire() at lines 653-662 — the canonical producer pattern to mirror)
 - `runtime/daemon/telemetry.ts` (NDJSON emit pattern to mirror for comms/<date>.ndjson)
