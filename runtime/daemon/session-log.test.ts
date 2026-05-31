@@ -279,9 +279,7 @@ describe("session-log / two-phase replay", () => {
 		await controller.pauseIntake();
 
 		// Queue 3 events while paused.
-		const queued = ["B", "C", "D"].map((name) =>
-			appendEvent(handleId, { name }),
-		);
+		const queued = ["B", "C", "D"].map((name) => appendEvent(handleId, { name }));
 
 		// Start resume and concurrently queue Z while the backlog drain is running.
 		// Z arrives while paused=true so it lands in the late-queue, gets flushed
@@ -409,9 +407,7 @@ describe("session-log / cancelPendingAppends (C6)", () => {
 		const controller = new ReplayController(handleId);
 		await controller.pauseIntake();
 
-		const queued = ["B", "C", "D"].map((name) =>
-			appendEvent(handleId, { name }),
-		);
+		const queued = ["B", "C", "D"].map((name) => appendEvent(handleId, { name }));
 
 		const start = Date.now();
 		cancelPendingAppends(handleId, "daemon-shutdown");

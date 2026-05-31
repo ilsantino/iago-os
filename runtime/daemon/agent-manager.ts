@@ -315,6 +315,21 @@ export class AgentManager extends EventEmitter {
 		}
 	}
 
+	/**
+	 * Persistence order: `runtime.spawn` → `trackHandle` → `persistAgentConfig`.
+	 * `persistAgentConfig` is keyed on `handle.id`, which does not exist until
+	 * `spawn` returns, so persist-before-spawn is structurally impossible.
+	 *
+	 * Partial-state windows:
+	 *   - If `spawn` throws, no handle id exists yet — nothing is tracked and
+	 *     nothing is persisted. The caller sees the throw; there is no orphan.
+	 *   - If `persistAgentConfig` throws AFTER a successful spawn, the live
+	 *     process is tracked in-memory but has NO persisted `<handle.id>.json`.
+	 *     A daemon crash before the next persist would strand that process
+	 *     (boot recovery's `knownConfigs` would not include it). `persistAgentConfig`
+	 *     itself swallows write errors (logs to stderr, resolves) so this
+	 *     window is narrow — registration still returns the live handle.
+	 */
 	async registerAgent(config: RegisterAgentConfig): Promise<AgentHandle> {
 		assertSafeIdentifier(config.agentId, "agentId");
 		assertSafeIdentifier(config.sessionId, "sessionId");
@@ -376,6 +391,55 @@ export class AgentManager extends EventEmitter {
 
 	listHandles(): AgentHandle[] {
 		return Array.from(this.handles.values()).map((t) => t.handle);
+	}
+
+	/**
+	 * Last status observed for this handle (per status-callback wiring in
+	 * `trackHandle`). Returns `undefined` if the handle is unknown.
+	 * Synchronous read of the in-memory tracked record — safe to call
+	 * from the Telegram bot's `/status` reply path. PR45 M6.
+	 */
+	getLastStatus(handleId: string): string | undefined {
+		return this.handles.get(handleId)?.lastStatus;
+	}
+
+	/**
+	 * Synchronous liveness derivation from the tracked `lastStatus`.
+	 * Returns `undefined` for unknown handles, `true` for `running` /
+	 * `idle` (the runtime considers the process alive even when blocked
+	 * on input), `false` for `exited` / `crashed`, and `undefined` for
+	 * `unknown` (the adapter has not reported yet — caller should not
+	 * assume either state). Async liveness probes registered via
+	 * `registerLivenessProbe` deliberately bypass this method; they are
+	 * consumed by the heartbeat loop, not the bot. PR45 M6.
+	 *
+	 * CACHED-STATUS SEMANTICS (dual-adversarial Important — explicit by
+	 * design): this reads the last value pushed by the adapter's
+	 * `onStatusChanged` callback, NOT the authoritative async
+	 * `runtime.isAlive(handle)` probe. For adapters whose status callback
+	 * fires only on transitions, the cached value is stale between
+	 * transitions. Concretely, a PTY handle that stays in `running` for
+	 * the whole duration of a long operation (e.g. `git clone`) reports
+	 * `true` here even after the underlying process has died, until the
+	 * adapter emits the next `exited`/`crashed` callback. This method is
+	 * the synchronous, best-effort signal for the bot's `/status` reply
+	 * (no await on the hot path); callers needing ground-truth liveness
+	 * must await `runtime.isAlive(handle)` (the heartbeat loop already
+	 * does, via the per-handle probe wired in `trackHandle`).
+	 */
+	isAlive(handleId: string): boolean | undefined {
+		const tracked = this.handles.get(handleId);
+		if (tracked === undefined) return undefined;
+		switch (tracked.lastStatus) {
+			case "running":
+			case "idle":
+				return true;
+			case "exited":
+			case "crashed":
+				return false;
+			case "unknown":
+				return undefined;
+		}
 	}
 
 	async shutdownAgent(
@@ -1062,7 +1126,35 @@ export class AgentManager extends EventEmitter {
 		const cfg = knownConfigs.get(handleId);
 		if (cfg === undefined) return null;
 
-		const runtime = resolveRuntime(cfg.runtimeId);
+		// CRITICAL (dual-adversarial): isolate a missing-runtime failure per
+		// persisted handle. `resolveRuntime` THROWS when the runtime was not
+		// registered — the common case after a prior run left persisted
+		// configs AND the built-in adapter failed to load
+		// (`loadAdapterFailIsolated` only WARNS, it does not register the
+		// adapter). Without this catch the throw propagates through
+		// `bootRecovery` → `startDaemon` and the daemon crashes on boot
+		// instead of booting degraded — defeating the advertised
+		// fail-isolation in exactly the recovery scenario it exists for.
+		// We emit `recovery-skipped { reason: "runtime-not-registered" }`
+		// for this handle and return null so the remaining handles still
+		// get processed.
+		let runtime: AgentRuntime;
+		try {
+			runtime = resolveRuntime(cfg.runtimeId);
+		} catch (err) {
+			console.error(
+				`[agent-manager] bootRecovery skipping ${handleId}: runtime "${cfg.runtimeId}" is not registered — ${
+					err instanceof Error ? err.message : String(err)
+				}`,
+			);
+			await emitTelemetry({
+				kind: "recovery-skipped",
+				handleId,
+				runtimeId: cfg.runtimeId,
+				reason: "runtime-not-registered",
+			});
+			return null;
+		}
 
 		// IMPORTANT #7: adapter-version drift detection. The persisted
 		// config records `runtimeVersion` at registration time; on

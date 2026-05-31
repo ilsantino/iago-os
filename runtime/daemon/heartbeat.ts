@@ -189,10 +189,7 @@ export class HeartbeatController {
 				status.rssBytes > this.rssLimitBytes
 			) {
 				reason = "rss-exceeded";
-			} else if (
-				this.now() - status.lastStatusChangeMs >
-				this.stallThresholdMs
-			) {
+			} else if (this.now() - status.lastStatusChangeMs > this.stallThresholdMs) {
 				reason = "stalled";
 			}
 

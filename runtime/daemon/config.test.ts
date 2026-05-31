@@ -131,9 +131,7 @@ describe("daemon/config loadConfig", () => {
 	});
 
 	it("env overrides file when both are present", async () => {
-		const tempDir = await fsp.mkdtemp(
-			path.join(os.tmpdir(), "iago-config-ovr-"),
-		);
+		const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), "iago-config-ovr-"));
 		tempDirs.push(tempDir);
 		const cfgPath = path.join(tempDir, "daemon-config.json");
 		const payload = {
@@ -161,9 +159,7 @@ describe("daemon/config loadConfig", () => {
 	});
 
 	it("malformed JSON in config file throws an error mentioning the path", async () => {
-		const tempDir = await fsp.mkdtemp(
-			path.join(os.tmpdir(), "iago-config-bad-"),
-		);
+		const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), "iago-config-bad-"));
 		tempDirs.push(tempDir);
 		const cfgPath = path.join(tempDir, "daemon-config.json");
 		await fsp.writeFile(cfgPath, "{this is not json", "utf8");

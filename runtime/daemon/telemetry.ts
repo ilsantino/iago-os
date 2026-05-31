@@ -34,6 +34,18 @@
  *   Cost is bounded — fires only on Windows when EEXIST/EPERM recovers
  *   a stale dest. Phase 7 will use the collected window data to decide
  *   whether to harden the Windows path to a strictly-atomic primitive.
+ *
+ * Plan feature-phase-1-deferred-hardening/04 added:
+ *   `runtime-registration-failed` — emitted from `daemon/main.ts` when an
+ *   adapter side-effect import throws at the import boundary. Fields:
+ *     - `adapterModule` (the module specifier that failed to load — e.g.,
+ *       `"../agent-runtime/pty/claude-pty.js"`)
+ *     - `message` (Error.message; non-Error values get `String(value)`)
+ *     - `stackTrace` (first 3 lines of the stack — truncated to avoid
+ *       blowing up the NDJSON line and to keep PII surface low)
+ *   Fail-isolated: the daemon continues with the remaining registered
+ *   runtimes. Operators monitor this event to triage adapter regressions
+ *   without scraping stderr.
  */
 
 import * as fsp from "node:fs/promises";
@@ -457,6 +469,31 @@ export type DaemonEvent =
 			readonly filename: string;
 			readonly errno?: string;
 			readonly message: string;
+	  }
+	| {
+			readonly kind: "runtime-registration-failed";
+			readonly adapterModule: string;
+			readonly message: string;
+			readonly stackTrace: string;
+	  }
+	| {
+			/**
+			 * Emitted by `AgentManager.attemptCrashReplay` when boot recovery
+			 * cannot resolve the runtime a persisted/known config references —
+			 * the runtime was never registered (the common case after a prior
+			 * run left persisted configs AND the built-in adapter failed to
+			 * load; `loadAdapterFailIsolated` only warns, it does not register
+			 * the adapter). The handle is skipped from replay and the rest of
+			 * the recovery set continues — the daemon boots degraded with
+			 * telemetry rather than crashing on boot. Fields:
+			 *   - `handleId` (the persisted handle that could not be replayed)
+			 *   - `runtimeId` (the runtime id that was not registered)
+			 *   - `reason` (currently only `"runtime-not-registered"`)
+			 */
+			readonly kind: "recovery-skipped";
+			readonly handleId: string;
+			readonly runtimeId: string;
+			readonly reason: "runtime-not-registered";
 	  };
 
 let missingSessionIdWarned = false;
