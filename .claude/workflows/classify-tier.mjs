@@ -19,7 +19,7 @@
 // in the body is the one that actually runs; THIS module is the unit-tested twin. The
 // colocated test classifyTier.test.mjs asserts the two copies have not drifted, so a
 // silent divergence fails CI rather than shipping. Edit BOTH in lockstep.
-export const TIER3_KEYWORDS = ['auth', 'cognito', 'payment', 'iam', 'jwt', 'allow.owner', 'webhook']
+export const TIER3_KEYWORDS = ['auth', 'cognito', 'oauth', 'payment', 'iam', 'jwt', 'allow.owner', 'webhook']
 export const TIER2_KEYWORDS = ['amplify', 'functions/', 'schema', 'gsi', 'ttl', 'migration', 'rollback']
 export function classifyTier(planText) {
   const text = typeof planText === 'string' ? planText : ''

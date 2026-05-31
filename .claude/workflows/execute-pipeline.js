@@ -258,7 +258,7 @@ function hasBlocking(findings) {
 // ERR_VM_DYNAMIC_IMPORT_CALLBACK_MISSING), so the RUNNING copy must live here;
 // classify-tier.mjs is the unit-tested twin and classifyTier.test.mjs asserts the two
 // copies have not drifted. Edit BOTH in lockstep.
-const TIER3_KEYWORDS = ['auth', 'cognito', 'payment', 'iam', 'jwt', 'allow.owner', 'webhook']
+const TIER3_KEYWORDS = ['auth', 'cognito', 'oauth', 'payment', 'iam', 'jwt', 'allow.owner', 'webhook']
 const TIER2_KEYWORDS = ['amplify', 'functions/', 'schema', 'gsi', 'ttl', 'migration', 'rollback']
 function classifyTier(planText) {
   const text = typeof planText === 'string' ? planText : ''
@@ -527,7 +527,7 @@ async function runDualAdversarial(label, isReReview, stressBlock, preImplSha, op
         )
         return {
           findings: da.findings,
-          verdict: da.verdict || (da.clean ? 'PASS' : 'FAIL'),
+          verdict: da.clean ? 'PASS' : (da.blocking > 0 ? 'FAIL' : 'PASS_WITH_CONCERNS'),
           codexSource: da.codexSource || 'unavailable',
           verificationSameFamily: da.verificationSameFamily === true,
           verificationDegraded: da.verificationDegraded === true,
@@ -645,6 +645,9 @@ const planRead = await withRetry(
   () => agent(PLANREAD_PROMPT, { label: 'plan-read', phase: 'Stress', schema: PLANTEXT_SCHEMA }),
   'plan-read',
 )
+if (planRead && planRead.status !== 'DONE') {
+  log(`WARNING: plan-read ${planRead.status} — tier classifier running on empty text, defaulting to Tier 1 (team gate will NOT be used even if the plan is security-sensitive)`)
+}
 const tier = classifyTier(planRead && planRead.status === 'DONE' ? planRead.text || '' : '')
 const maxFixRounds = tier >= 3 ? 3 : 2
 const reviewMode = tier >= 2 ? 'team' : 'standard'
@@ -715,7 +718,7 @@ log(`committed on ${branch} @ ${commit.headSha || '?'}`)
 // review DELEGATES to the dual-adversarial.js team gate (diverse personas + skeptic panel).
 phase('Review')
 const reviewOpts = { mode: reviewMode, lenses: reviewLenses, skepticCap: 8, tier }
-let { findings, verdict, codexSource } = await runDualAdversarial('r0', false, stressBlock, preImplSha, reviewOpts)
+let { findings, verdict, codexSource, verificationSameFamily, verificationDegraded } = await runDualAdversarial('r0', false, stressBlock, preImplSha, reviewOpts)
 let rounds = 0
 // maxFixRounds is the per-plan local from the tier classifier (Tier 3 → 3, else 2) — a
 // per-plan local, NOT a module const, so a stacked multi-plan run cannot bleed one plan's
@@ -753,7 +756,7 @@ while (
   // Re-review MUST inherit the same tier opts as the initial review — otherwise a Tier 2/3
   // re-review would silently drop back to the inline 2-leg and "validate" the fixes with a
   // shallower gate than the one that found them.
-  ;({ findings, verdict, codexSource } = await runDualAdversarial(
+  ;({ findings, verdict, codexSource, verificationSameFamily, verificationDegraded } = await runDualAdversarial(
     `r${rounds}`,
     true,
     stressBlock,
@@ -843,4 +846,6 @@ return {
   codexSource,
   fixRounds: rounds,
   minorRemaining,
+  verificationSameFamily,
+  verificationDegraded,
 }

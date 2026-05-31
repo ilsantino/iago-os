@@ -106,6 +106,11 @@ const TIER1_PLAN = `# Plan
 ### Task T02
 - **files:** c.ts, d.ts`
 
+// A tier-3 plan (contains a tier-3 keyword like 'jwt') → reviewMode 'team', maxFixRounds=3.
+const TIER3_PLAN = `# Plan
+### Task T01
+Add JWT auth middleware to verify bearer tokens against Cognito.`
+
 await test('Tier 2 delegates to the team gate on BOTH the initial review AND the fix-loop re-review', async () => {
   // workflow() (the team gate) returns a blocking finding first → triggers a fix round →
   // re-review must call workflow() AGAIN with mode='team'; second call is clean.
@@ -147,6 +152,27 @@ await test('Tier 1 runs the inline 2-leg and NEVER delegates to the team gate', 
   assert.ok(h.calls.some((c) => c.label === 'review:r0'), 'inline opus review ran')
   assert.ok(h.calls.some((c) => c.label === 'codex:r0'), 'inline codex leg ran')
   assert.strictEqual(out.reviewVerdict, 'PASS')
+})
+
+await test('Tier 3 delegates to team gate AND allows 3 fix rounds (not capped at 2)', async () => {
+  // teamGate blocks on calls 1-3, clean on call 4. Tier 2 (maxFixRounds=2) would throw
+  // after call 3 still blocking; Tier 3 (maxFixRounds=3) runs a third fix round instead.
+  const teamGate = (n) =>
+    n <= 3
+      ? { clean: false, blocking: 1, verdict: 'FAIL', codexSource: 'codex', verificationSameFamily: true, verificationDegraded: false, findings: [{ severity: 'Critical', summary: 'jwt validation missing', by: 'opus' }] }
+      : { clean: true, blocking: 0, verdict: 'PASS', codexSource: 'codex', verificationSameFamily: true, verificationDegraded: false, findings: [] }
+  const h = makeHarness(stageRules(TIER3_PLAN), teamGate)
+  const wf = buildWorkflow()
+  const out = await wf(h.agent, h.parallel, null, h.log, h.phase, { ...baseArgs }, null, h.workflow)
+
+  // 1 initial (r0) + 3 fix-loop re-reviews (r1, r2, r3) = 4 workflow() invocations
+  assert.strictEqual(h.workflowCalls.length, 4, 'team gate invoked 4 times (initial + 3 re-reviews for maxFixRounds=3)')
+  for (const c of h.workflowCalls) {
+    assert.strictEqual(c.wargs.mode, 'team', 'all delegations pass mode=team')
+  }
+  assert.ok(!h.calls.some((c) => /^review:/.test(c.label) || /^codex:/.test(c.label)), 'no inline 2-leg in team mode')
+  assert.strictEqual(out.fixRounds, 3, 'three fix rounds ran (Tier 3 maxFixRounds)')
+  assert.strictEqual(out.reviewVerdict, 'PASS', 'final verdict clean after 3rd fix round')
 })
 
 console.log(`\n${passed} passed, ${failed} failed`)
