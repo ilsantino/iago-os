@@ -116,7 +116,13 @@ Read these two environment variables from the spawned shell (both are inherited 
 Concrete invocation pattern (run from inside the agent's PTY shell):
 
 ```
-: > /tmp/tg-resp.json   # ensure file exists before either branch writes/reads it
+# Capture the Telegram response in a PRIVATE temp file (mktemp → mode 0600,
+# owner-only) with a cleanup trap — NOT a fixed world-readable path. Telegram
+# error bodies can echo the bot token back; a 0022-umask /tmp/tg-resp.json would
+# expose that secret to every local user and never clean it up. mktemp + trap
+# keeps the raw (pre-redaction) body daemon-private and removes it on exit.
+TG_RESP=$(mktemp "${TMPDIR:-/tmp}/tg-resp.XXXXXX")
+trap 'rm -f "$TG_RESP"' EXIT
 FIRST_ID=$(echo "$IAGO_TELEGRAM_ALLOWED_USER_IDS" | cut -d, -f1)
 if [ -z "$FIRST_ID" ]; then
   # IAGO_TELEGRAM_ALLOWED_USER_IDS unset or empty — skip the POST and
@@ -124,7 +130,7 @@ if [ -z "$FIRST_ID" ]; then
   # a misconfiguration alert instead of burning a wasted Telegram 400.
   HTTP_STATUS=000
 else
-  HTTP_STATUS=$(curl -sS -w "%{http_code}" -o /tmp/tg-resp.json \
+  HTTP_STATUS=$(curl -sS -w "%{http_code}" -o "$TG_RESP" \
     --data-urlencode "chat_id=$FIRST_ID" \
     --data-urlencode "text=$SUMMARY" \
     "https://api.telegram.org/bot${IAGO_TELEGRAM_BOT_TOKEN}/sendMessage")
@@ -150,7 +156,7 @@ TASK_FILE="$STATE_ROOT/tasks/pending/pr-triage__$(date +%s%3N)-$$.json"
 # Redact BEFORE truncating: `head -c` first could cut a token across the 256-byte
 # boundary, leaving an unmatched fragment that escapes into the on-disk envelope
 # + the daemon telemetry NDJSON.
-RESP=$(cat /tmp/tg-resp.json)
+RESP=$(cat "$TG_RESP")
 [ -n "$IAGO_TELEGRAM_BOT_TOKEN" ] && RESP="${RESP//"$IAGO_TELEGRAM_BOT_TOKEN"/[REDACTED]}"
 DETAILS=$(printf '%s' "$RESP" | head -c 256)
 # Atomic publish: write to a `.tmp` sibling, then `mv` into place. The
