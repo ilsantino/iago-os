@@ -235,6 +235,31 @@ function deriveLenses(changedFiles) {
   return PRECEDENCE.filter((k) => matched.has(k))
 }
 
+// The full set of lenses the AUTO path can ever select (== deriveLenses precedence). On a
+// DEGRADED changed-files probe we cannot know what changed, so we fall back to ALL of these
+// rather than the two base lenses — coverage must never SHRINK on probe failure (a transient
+// or skipped probe on an auth/payment/amplify/frontend diff would otherwise silently drop the
+// exact specialized lens that diff needs and still report clean).
+const AUTO_SELECTABLE_LENSES = ['security', 'amplify', 'frontend', 'codeQuality', 'completeness']
+
+// SIDE-EFFECT GUARD (I1) — this workflow is READ-ONLY. Snapshot the worktree BEFORE any agent
+// leg runs (including the changed-files probe in the AUTO lens path below); re-snapshot at the
+// end and assert nothing moved. A leg that mutated the tree (and still reported clean) is the
+// worst outcome, so we fail the gate loudly instead. Read-only itself. NOTE: this MUST be
+// captured before the changed-files probe — otherwise a probe that dirtied the tree would
+// become the baseline and the run could still report clean.
+async function treeSnapshot(when) {
+  return withRetry(
+    () =>
+      agent(
+        `${PREAMBLE}\n\nREAD-ONLY tree snapshot (${when}). In ${projectDir} run exactly:\n  git rev-parse HEAD\n  git status --porcelain\nReturn head (the rev-parse output, trimmed) and porcelain (the FULL git status --porcelain output, empty string if clean). Do NOT edit, stage, commit, or run anything else.`,
+        { label: `side-effect-snapshot:${when}`, phase: 'Review', schema: SNAPSHOT_SCHEMA, model: 'opus' },
+      ),
+    `side-effect-snapshot:${when}`,
+  )
+}
+const startSnap = await treeSnapshot('start')
+
 // Resolve the extra lenses. THREE sources, picked in this order:
 //  1. A.lenses is an Array (incl. an explicit empty []) → EXPLICIT path: honor it via
 //     normalizeLenses exactly as before, no derivation, no changed-files agent. This is
@@ -244,7 +269,9 @@ function deriveLenses(changedFiles) {
 //  3. Any other non-array value (e.g. a csv string or {key:true} map) → treat as EXPLICIT
 //     via normalizeLenses (back-compat with the pre-auto string/map callers).
 const lensesIsAuto =
-  A.lenses === undefined || A.lenses === null || (typeof A.lenses === 'string' && A.lenses.trim() === 'auto')
+  A.lenses === undefined ||
+  A.lenses === null ||
+  (typeof A.lenses === 'string' && A.lenses.trim().toLowerCase() === 'auto')
 let lenses
 let lensesRequested
 let lensesDropped = []
@@ -270,18 +297,25 @@ if (Array.isArray(A.lenses) || (!lensesIsAuto && A.lenses != null)) {
     'changed-files',
   )
   const changedFiles = filesResult && Array.isArray(filesResult.files) ? filesResult.files : []
+  // On a DEGRADED probe (null) we do NOT know what changed, so deriving from an empty list
+  // would silently shrink coverage to the two base lenses — dropping security/amplify/frontend
+  // on a sensitive diff while still reporting clean. Fall back CONSERVATIVELY to every
+  // auto-selectable lens instead, so coverage can only ever grow (never shrink) on probe
+  // failure. A successful probe (incl. a genuine empty diff) still derives precisely.
+  const derived = filesResult ? deriveLenses(changedFiles) : AUTO_SELECTABLE_LENSES
   // Re-filter through normalizeLenses so an unknown key can never reach the dispatch loop
-  // (deriveLenses already constrains to LENS_DEFS keys; this is belt-and-suspenders).
-  const n = normalizeLenses(deriveLenses(changedFiles))
+  // (deriveLenses / AUTO_SELECTABLE_LENSES already constrain to LENS_DEFS keys; belt-and-suspenders).
+  const n = normalizeLenses(derived)
   lenses = n.keys
   lensesRequested = n.requested
   lensesDropped = n.dropped
   lensSource = 'auto'
   if (!filesResult) {
-    // Agent FAILED (null) — degraded fetch. Base lenses, but flagged distinctly from
-    // a genuine no-change diff so an operator can tell "git fetch degraded" apart.
+    // Agent FAILED (null) — degraded fetch. Run the FULL auto-selectable lens set (not just the
+    // base two) so a transient/skipped probe on a sensitive diff cannot strip the specialized
+    // lenses. Flagged distinctly from a genuine no-change diff so an operator can tell them apart.
     log(
-      `WARNING: changed-files probe failed — auto-deriving lenses from an EMPTY file list (DEGRADED fetch, not a confirmed no-change diff); using base lenses [${lenses.join(', ')}]`,
+      `WARNING: changed-files probe failed — cannot determine changed paths (DEGRADED fetch, not a confirmed no-change diff); falling back to the FULL auto-selectable lens set so coverage does not shrink: [${lenses.join(', ')}]`,
     )
   } else if (changedFiles.length === 0) {
     // Agent SUCCEEDED but returned no files — a real no-change diff vs base. Distinct log.
@@ -375,21 +409,9 @@ function refuteHasEvidence(reason) {
   return citesCode
 }
 
-// SIDE-EFFECT GUARD (I1) — this workflow is READ-ONLY. Snapshot the worktree before
-// any review/verification leg runs; re-snapshot at the end and assert nothing moved.
-// A leg that mutated the tree (and still reported clean) is the worst outcome, so we
-// fail the gate loudly instead. Read-only itself.
-async function treeSnapshot(when) {
-  return withRetry(
-    () =>
-      agent(
-        `${PREAMBLE}\n\nREAD-ONLY tree snapshot (${when}). In ${projectDir} run exactly:\n  git rev-parse HEAD\n  git status --porcelain\nReturn head (the rev-parse output, trimmed) and porcelain (the FULL git status --porcelain output, empty string if clean). Do NOT edit, stage, commit, or run anything else.`,
-        { label: `side-effect-snapshot:${when}`, phase: 'Review', schema: SNAPSHOT_SCHEMA, model: 'opus' },
-      ),
-    `side-effect-snapshot:${when}`,
-  )
-}
-const startSnap = await treeSnapshot('start')
+// NOTE: treeSnapshot + the `startSnap` capture were moved ABOVE the lens-resolution block
+// (just after deriveLenses) so the start snapshot is taken BEFORE the changed-files probe
+// runs — a probe that dirtied the tree must not become the read-only baseline. See there.
 
 const legs = [
   () => withRetry(() => agent(reviewPrompt, { label: 'review', phase: 'Review', schema: REVIEW_SCHEMA, model: 'opus' }), 'review'),
