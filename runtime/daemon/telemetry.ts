@@ -475,6 +475,25 @@ export type DaemonEvent =
 			readonly adapterModule: string;
 			readonly message: string;
 			readonly stackTrace: string;
+	  }
+	| {
+			/**
+			 * Emitted by `AgentManager.attemptCrashReplay` when boot recovery
+			 * cannot resolve the runtime a persisted/known config references —
+			 * the runtime was never registered (the common case after a prior
+			 * run left persisted configs AND the built-in adapter failed to
+			 * load; `loadAdapterFailIsolated` only warns, it does not register
+			 * the adapter). The handle is skipped from replay and the rest of
+			 * the recovery set continues — the daemon boots degraded with
+			 * telemetry rather than crashing on boot. Fields:
+			 *   - `handleId` (the persisted handle that could not be replayed)
+			 *   - `runtimeId` (the runtime id that was not registered)
+			 *   - `reason` (currently only `"runtime-not-registered"`)
+			 */
+			readonly kind: "recovery-skipped";
+			readonly handleId: string;
+			readonly runtimeId: string;
+			readonly reason: "runtime-not-registered";
 	  };
 
 let missingSessionIdWarned = false;

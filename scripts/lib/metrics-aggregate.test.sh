@@ -308,6 +308,110 @@ fi
 
 rm -rf "$TMP10"
 
+# ─── Test 11: orchestrator-less run — pipeline_init folds into the run's
+# synthesized session, not split into _unsessioned (dual-adversarial #2/#6) ──
+# An orchestrator-less run emits pipeline_init with an EMPTY outer_session_id
+# while stage + finalize records carry the SYNTHESIZED sessionId. The init MUST
+# bucket WITH the stages under the synthesized sid — not strand in a phantom
+# _unsessioned row that splits the run across two rows.
+TMP11=$(mktemp -d)
+RUNS_DIR="$TMP11/.iago/state/pipeline-runs"
+mkdir -p "$RUNS_DIR"
+
+cat > "$RUNS_DIR/20260530-000001-plan-orchless.ndjson" <<'EOF'
+{"type":"pipeline_init","plan":"plan","run_id":"r9","outer_session_id":"","ts":"2026-05-30T00:00:01Z"}
+{"type":"stage_start","stage":"implement","sessionId":"claude-r9-orchless","ts":"2026-05-30T00:00:02Z"}
+{"type":"stage_end","stage":"implement","exit":"0","duration_ms":1000,"timed_out":false,"sessionId":"claude-r9-orchless","ts":"2026-05-30T00:00:03Z"}
+{"type":"pipeline_finalize","plan":"plan","pipeline_exit":"0","duration_ms":1001,"sessionId":"claude-r9-orchless","ts":"2026-05-30T00:00:03Z"}
+EOF
+
+OUTPUT=$(cd "$TMP11" && node "$AGGREGATOR" --last 1 2>&1) || true
+OL_LINE=$(echo "$OUTPUT" | grep '^claude-r9-orchless ' | head -1 || echo "")
+if [[ -n "$OL_LINE" ]]; then
+  read -r _sid _starts _ends _inits _rest <<<"$(echo "$OL_LINE" | tr -s ' ')"
+  if [[ "$_inits" == "1" && "$_starts" == "1" && "$_ends" == "1" ]]; then
+    ok "by_session: orchestrator-less init folds into synthesized session (i=$_inits starts=$_starts ends=$_ends)"
+  else
+    nope "by_session: orchestrator-less run split (i=$_inits starts=$_starts ends=$_ends, expected 1/1/1)"
+    echo "$OUTPUT" | sed 's/^/  /'
+  fi
+else
+  nope "by_session: synthesized-session row missing — init may have stranded in _unsessioned"
+  echo "$OUTPUT" | sed 's/^/  /'
+fi
+if echo "$OUTPUT" | grep -qE '^_unsessioned '; then
+  nope "by_session: phantom _unsessioned row present — init was not folded (#2/#6)"
+else
+  ok "by_session: no phantom _unsessioned row (init folded into resolved session)"
+fi
+
+rm -rf "$TMP11"
+
+# ─── Test 12: crashed run (pipeline_init, no pipeline_finalize) surfaces in
+# by_session next to a complete run (dual-adversarial #7) ───────────────────
+TMP12=$(mktemp -d)
+RUNS_DIR="$TMP12/.iago/state/pipeline-runs"
+mkdir -p "$RUNS_DIR"
+
+# A complete run …
+cat > "$RUNS_DIR/20260530-000001-plan-ok.ndjson" <<'EOF'
+{"type":"pipeline_init","plan":"plan","run_id":"ok","outer_session_id":"sess-ok","ts":"2026-05-30T00:00:01Z"}
+{"type":"stage_start","stage":"implement","sessionId":"sess-ok","ts":"2026-05-30T00:00:02Z"}
+{"type":"stage_end","stage":"implement","exit":"0","duration_ms":1000,"timed_out":false,"sessionId":"sess-ok","ts":"2026-05-30T00:00:03Z"}
+{"type":"pipeline_finalize","plan":"plan","pipeline_exit":"0","duration_ms":1001,"sessionId":"sess-ok","ts":"2026-05-30T00:00:03Z"}
+EOF
+
+# … and a crashed run: emitted pipeline_init, then died with no finalize.
+cat > "$RUNS_DIR/20260530-000002-plan-crash.ndjson" <<'EOF'
+{"type":"pipeline_init","plan":"plan","run_id":"crash","outer_session_id":"sess-crash","ts":"2026-05-30T00:01:01Z"}
+{"type":"stage_start","stage":"implement","sessionId":"sess-crash","ts":"2026-05-30T00:01:02Z"}
+EOF
+
+OUTPUT=$(cd "$TMP12" && node "$AGGREGATOR" --last 5 2>&1) || true
+CRASH_LINE=$(echo "$OUTPUT" | grep '^sess-crash ' | head -1 || echo "")
+if [[ -n "$CRASH_LINE" ]]; then
+  read -r _sid _starts _ends _inits _fins _rest <<<"$(echo "$CRASH_LINE" | tr -s ' ')"
+  if [[ "$_inits" == "1" && "$_fins" == "0" ]]; then
+    ok "by_session: crashed run (init, no finalize) surfaces (i=$_inits f=$_fins)"
+  else
+    nope "by_session: crashed run counts wrong (i=$_inits f=$_fins, expected 1/0)"
+  fi
+else
+  nope "by_session: crashed run dropped from by_session (#7 regression)"
+  echo "$OUTPUT" | sed 's/^/  /'
+fi
+
+rm -rf "$TMP12"
+
+# ─── Test 13: all runs crashed (init, no finalize) — by_session still shows
+# them on stdout AND the aggregator still exits non-zero (no complete runs,
+# preserving the Test 3 contract) (dual-adversarial #7) ─────────────────────
+TMP13=$(mktemp -d)
+RUNS_DIR="$TMP13/.iago/state/pipeline-runs"
+mkdir -p "$RUNS_DIR"
+
+cat > "$RUNS_DIR/20260530-000001-plan-allcrash.ndjson" <<'EOF'
+{"type":"pipeline_init","plan":"plan","run_id":"ac","outer_session_id":"sess-ac","ts":"2026-05-30T00:00:01Z"}
+{"type":"stage_start","stage":"implement","sessionId":"sess-ac","ts":"2026-05-30T00:00:02Z"}
+EOF
+
+# stdout (by_session) must still carry the crashed run …
+OUTPUT=$(cd "$TMP13" && node "$AGGREGATOR" --last 5 2>/dev/null) || true
+if echo "$OUTPUT" | grep -qE '^sess-ac '; then
+  ok "by_session: all-crashed window still surfaces crashed runs on stdout"
+else
+  nope "by_session: all-crashed window produced no crashed-run row"
+  echo "$OUTPUT" | sed 's/^/  /'
+fi
+# … and the exit code must remain non-zero (no complete runs — stats contract).
+if (cd "$TMP13" && node "$AGGREGATOR" --last 5 >/dev/null 2>&1); then
+  nope "all-crashed: aggregator should still exit non-zero (no complete runs)"
+else
+  ok "all-crashed: aggregator exits non-zero while still printing by_session"
+fi
+
+rm -rf "$TMP13"
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [[ $FAIL -eq 0 ]] || exit 1

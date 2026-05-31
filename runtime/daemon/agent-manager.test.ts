@@ -72,18 +72,31 @@ type ReadFileFn = (
 	path: import("node:fs").PathLike,
 	options: BufferEncoding | { encoding: BufferEncoding; flag?: string },
 ) => Promise<string>;
-const { renameMock, renameState, readFileMock, readFileState } = vi.hoisted(
-	() => ({
-		renameMock: vi.fn(),
-		renameState: { real: null as RenameFn | null },
-		readFileMock: vi.fn(),
-		readFileState: { real: null as ReadFileFn | null },
-	}),
-);
+type WriteFileFn = (
+	path: import("node:fs").PathLike,
+	data: string | Uint8Array,
+	options?: unknown,
+) => Promise<void>;
+const {
+	renameMock,
+	renameState,
+	readFileMock,
+	readFileState,
+	writeFileMock,
+	writeFileState,
+} = vi.hoisted(() => ({
+	renameMock: vi.fn(),
+	renameState: { real: null as RenameFn | null },
+	readFileMock: vi.fn(),
+	readFileState: { real: null as ReadFileFn | null },
+	writeFileMock: vi.fn(),
+	writeFileState: { real: null as WriteFileFn | null },
+}));
 vi.mock("node:fs/promises", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("node:fs/promises")>();
 	renameState.real = actual.rename as RenameFn;
 	readFileState.real = actual.readFile as unknown as ReadFileFn;
+	writeFileState.real = actual.writeFile as unknown as WriteFileFn;
 	return {
 		...actual,
 		rename: (
@@ -94,6 +107,11 @@ vi.mock("node:fs/promises", async (importOriginal) => {
 			p: import("node:fs").PathLike,
 			options: BufferEncoding | { encoding: BufferEncoding; flag?: string },
 		) => readFileMock(p, options),
+		writeFile: (
+			p: import("node:fs").PathLike,
+			data: string | Uint8Array,
+			options?: unknown,
+		) => writeFileMock(p, data, options),
 	};
 });
 
@@ -123,6 +141,13 @@ beforeEach(async () => {
 			throw new Error("readFileState.real not initialized by vi.mock factory");
 		}
 		return readFileState.real(p, options);
+	});
+	writeFileMock.mockReset();
+	writeFileMock.mockImplementation((p, data, options) => {
+		if (writeFileState.real === null) {
+			throw new Error("writeFileState.real not initialized by vi.mock factory");
+		}
+		return writeFileState.real(p, data, options);
 	});
 	vi.spyOn(console, "error").mockImplementation(() => {});
 });
@@ -156,7 +181,9 @@ interface CostQueueState {
 	queue: CostEvent[];
 	resolvers: Array<
 		(
-			value: { value: CostEvent; done: false } | { value: undefined; done: true },
+			value:
+				| { value: CostEvent; done: false }
+				| { value: undefined; done: true },
 		) => void
 	>;
 	closed: boolean;
@@ -236,7 +263,9 @@ function makeMockRuntime(id: string): MockRuntimeControls {
 			// moment shutdown was invoked — used by ordering assertions.
 			let markerSeen = false;
 			try {
-				await fsp.access(path.join(pathFor("markers"), `${handle.id}.daemon-stop`));
+				await fsp.access(
+					path.join(pathFor("markers"), `${handle.id}.daemon-stop`),
+				);
 				markerSeen = true;
 			} catch {
 				markerSeen = false;
@@ -380,6 +409,116 @@ describe("AgentManager / registerAgent", () => {
 		expect(spawnOpts?.org).toBe("org-1");
 		expect(hbRegister).toHaveBeenCalledWith(handle.id, expect.any(Function));
 	});
+
+	it("persist-fail after spawn: handle is tracked in-memory but no config persisted (orphan window)", async () => {
+		// Dual-adversarial Important (Finding 4): the documented partial-state
+		// window. spawn succeeds, persistAgentConfig's writeFile fails. The
+		// process is live + tracked in-memory and registerAgent still resolves
+		// with the handle (persistAgentConfig swallows the write error), but no
+		// `<handle.id>.json` lands on disk — the real orphan risk.
+		const ctrl = makeMockRuntime("mock-pty-persist-fail");
+		registerRuntime(ctrl.runtime);
+		const mgr = new AgentManager();
+
+		const agentsDir = pathFor("agents");
+		// Reject ONLY the persistAgentConfig write (under agents/), so the
+		// session-log/marker writes from spawn/track are unaffected.
+		writeFileMock.mockImplementation((p, data, options) => {
+			if (String(p).startsWith(agentsDir)) {
+				return Promise.reject(
+					Object.assign(new Error("simulated ENOSPC"), { code: "ENOSPC" }),
+				);
+			}
+			if (writeFileState.real === null) {
+				throw new Error(
+					"writeFileState.real not initialized by vi.mock factory",
+				);
+			}
+			return writeFileState.real(p, data, options);
+		});
+
+		// registerAgent MUST NOT throw — persistAgentConfig logs + resolves.
+		const handle = await mgr.registerAgent({
+			agentId: "persist-orphan",
+			runtimeId: "mock-pty-persist-fail",
+			cwd: "/tmp/work",
+			env: {},
+			sessionId: "sess-po",
+		});
+
+		// The live process is tracked in-memory.
+		expect(mgr.getHandle(handle.id)).toBeDefined();
+		expect(ctrl.spawnCalls).toHaveLength(1);
+
+		// But NO persisted config file exists on disk — the orphan window.
+		const configPath = path.join(agentsDir, `${handle.id}.json`);
+		await expect(fsp.access(configPath)).rejects.toBeDefined();
+	});
+});
+
+describe("AgentManager / getLastStatus + isAlive (PR45 M6)", () => {
+	it("getLastStatus returns undefined for unknown handle and tracks status transitions", async () => {
+		const ctrl = makeMockRuntime("mock-pty-status-a");
+		registerRuntime(ctrl.runtime);
+		const mgr = new AgentManager();
+
+		expect(mgr.getLastStatus("never-registered")).toBeUndefined();
+
+		const handle = await mgr.registerAgent({
+			agentId: "status-track",
+			runtimeId: "mock-pty-status-a",
+			cwd: "/tmp/work",
+			env: {},
+			sessionId: "sess-st",
+		});
+
+		// trackHandle seeds lastStatus = "running".
+		expect(mgr.getLastStatus(handle.id)).toBe("running");
+
+		ctrl.emitStatus(handle.id, "idle", 0);
+		await waitForCondition(() => mgr.getLastStatus(handle.id) === "idle");
+		expect(mgr.getLastStatus(handle.id)).toBe("idle");
+	});
+
+	it("isAlive pins every status branch against a real AgentManager", async () => {
+		const ctrl = makeMockRuntime("mock-pty-status-b");
+		registerRuntime(ctrl.runtime);
+		const mgr = new AgentManager();
+
+		// unknown handle → undefined
+		expect(mgr.isAlive("never-registered")).toBeUndefined();
+
+		const handle = await mgr.registerAgent({
+			agentId: "alive-branches",
+			runtimeId: "mock-pty-status-b",
+			cwd: "/tmp/work",
+			env: {},
+			sessionId: "sess-al",
+		});
+
+		// running (seeded) → true
+		expect(mgr.isAlive(handle.id)).toBe(true);
+
+		// idle → true
+		ctrl.emitStatus(handle.id, "idle");
+		await waitForCondition(() => mgr.getLastStatus(handle.id) === "idle");
+		expect(mgr.isAlive(handle.id)).toBe(true);
+
+		// unknown status → undefined (adapter has not reported a real state)
+		ctrl.emitStatus(handle.id, "unknown");
+		await waitForCondition(() => mgr.getLastStatus(handle.id) === "unknown");
+		expect(mgr.isAlive(handle.id)).toBeUndefined();
+
+		// exited → false
+		ctrl.emitStatus(handle.id, "exited", 0);
+		await waitForCondition(() => mgr.getLastStatus(handle.id) === "exited");
+		expect(mgr.isAlive(handle.id)).toBe(false);
+
+		// crashed → false
+		ctrl.emitStatus(handle.id, "crashed", 1);
+		await waitForCondition(() => mgr.getLastStatus(handle.id) === "crashed");
+		expect(mgr.isAlive(handle.id)).toBe(false);
+	});
 });
 
 describe("AgentManager / status persistence", () => {
@@ -500,7 +639,9 @@ describe("AgentManager / spawnSubagent", () => {
 		await waitForCondition(() =>
 			ctrl.shutdownCalls.some((c) => c.handleId === child.id),
 		);
-		const childShutdown = ctrl.shutdownCalls.find((c) => c.handleId === child.id);
+		const childShutdown = ctrl.shutdownCalls.find(
+			(c) => c.handleId === child.id,
+		);
 		expect(childShutdown).toBeDefined();
 	});
 });
@@ -583,7 +724,10 @@ describe("AgentManager / bootRecovery", () => {
 				org: undefined,
 				parentHandleId: undefined,
 				spawnedAt: Date.now(),
-				markerPath: path.join(pathFor("markers"), `${crashHandleId}.daemon-stop`),
+				markerPath: path.join(
+					pathFor("markers"),
+					`${crashHandleId}.daemon-stop`,
+				),
 			};
 		});
 
@@ -867,7 +1011,9 @@ describe("AgentManager / shutdown cascade without status callback (Codex H2)", (
 		// callback semantics.
 		await mgr.shutdownAgent(parent.id, "SIGTERM");
 
-		const childShutdown = ctrl.shutdownCalls.find((s) => s.handleId === child.id);
+		const childShutdown = ctrl.shutdownCalls.find(
+			(s) => s.handleId === child.id,
+		);
 		expect(childShutdown).toBeDefined();
 		expect(mgr.getHandle(child.id)).toBeUndefined();
 		expect(mgr.getHandle(parent.id)).toBeUndefined();
@@ -897,7 +1043,9 @@ describe("AgentManager / shutdown cascade without status callback (Codex H2)", (
 		// Child handle was shut down and removed; the new parent
 		// generation has no children linked (application layer must
 		// respawn).
-		const childShutdown = ctrl.shutdownCalls.find((s) => s.handleId === child.id);
+		const childShutdown = ctrl.shutdownCalls.find(
+			(s) => s.handleId === child.id,
+		);
 		expect(childShutdown).toBeDefined();
 		expect(mgr.getHandle(child.id)).toBeUndefined();
 		const link = mgr
@@ -942,7 +1090,10 @@ describe("AgentManager / bootRecovery crash without marker (Codex H1)", () => {
 				org: undefined,
 				parentHandleId: undefined,
 				spawnedAt: Date.now(),
-				markerPath: path.join(pathFor("markers"), `${crashedHandleId}.daemon-stop`),
+				markerPath: path.join(
+					pathFor("markers"),
+					`${crashedHandleId}.daemon-stop`,
+				),
 			};
 		});
 
@@ -974,6 +1125,133 @@ describe("AgentManager / bootRecovery crash without marker (Codex H1)", () => {
 		);
 		expect(replayedSend).toBeDefined();
 		expect(result.recovered).toContain(crashedHandleId);
+	});
+});
+
+describe("AgentManager / bootRecovery with unregistered runtime (dual-adversarial Critical)", () => {
+	it("boots degraded and emits recovery-skipped when a known crash config references a runtime that failed to register", async () => {
+		// Deliberately DO NOT register any runtime — mirrors the production
+		// scenario where the built-in adapter (e.g. claude-pty) failed to load
+		// via loadAdapterFailIsolated (which only WARNS, never registers) AND a
+		// prior daemon run left a persisted config pointing at that runtimeId.
+		const mgr = new AgentManager();
+
+		const crashHandleId = "unregistered-runtime-crash";
+		await writeStopMarker(crashHandleId, "crash");
+
+		const knownConfigs = new Map([
+			[
+				crashHandleId,
+				{
+					agentId: "orphaned",
+					runtimeId: "claude-pty", // never registered in this test
+					cwd: "/tmp/work",
+					env: {},
+					sessionId: "sess-orphan",
+				},
+			],
+		]);
+
+		// MUST NOT throw — the daemon boots degraded rather than crashing.
+		const result = await mgr.bootRecovery({ knownConfigs });
+
+		// The crash candidate is still categorized as a crash, but it is NOT
+		// recovered (no runtime to resolve/replay against).
+		expect(result.crashes).toContain(crashHandleId);
+		expect(result.recovered).not.toContain(crashHandleId);
+
+		// A recovery-skipped telemetry event fired for that handle.
+		const skipped = emitMock.mock.calls
+			.map((c) => c[0] as DaemonEvent)
+			.filter((e) => e.kind === "recovery-skipped");
+		expect(skipped).toHaveLength(1);
+		expect(skipped[0]).toMatchObject({
+			kind: "recovery-skipped",
+			handleId: crashHandleId,
+			runtimeId: "claude-pty",
+			reason: "runtime-not-registered",
+		});
+
+		// The marker is cleared so the next boot does not re-trip on it.
+		const after = await readStopMarker(crashHandleId);
+		expect(after).toBeNull();
+	});
+
+	it("isolates per-handle: an unregistered-runtime crash does not block recovery of a sibling with a registered runtime", async () => {
+		// One sibling HAS a registered runtime and a resumable session; the
+		// other references an unregistered runtime. Recovery must process both
+		// — the unregistered one is skipped, the registered one is recovered.
+		const ctrl = makeMockRuntime("mock-pty-sibling");
+		registerRuntime(ctrl.runtime);
+		const mgr = new AgentManager();
+
+		const badHandleId = "sibling-bad-runtime";
+		const goodHandleId = "sibling-good-runtime";
+		await writeStopMarker(badHandleId, "crash");
+		await writeStopMarker(goodHandleId, "crash");
+
+		await appendEvent(goodHandleId, {
+			kind: "prompt",
+			payload: { text: "resume-good" },
+		});
+		const goodStat = await fsp.stat(
+			path.join(pathFor("session-logs"), `${goodHandleId}.jsonl`),
+		);
+		await setHWM(goodHandleId, { byteOffset: goodStat.size, sequence: 1 });
+
+		ctrl.setRestoreFromMarker(async () => ({
+			id: goodHandleId,
+			runtime: "mock-pty-sibling",
+			shape: "pty",
+			agentId: "good",
+			sessionId: "sess-good",
+			generationToken: 1,
+			org: undefined,
+			parentHandleId: undefined,
+			spawnedAt: Date.now(),
+			markerPath: path.join(pathFor("markers"), `${goodHandleId}.daemon-stop`),
+		}));
+
+		const knownConfigs = new Map([
+			[
+				badHandleId,
+				{
+					agentId: "bad",
+					runtimeId: "never-registered-runtime",
+					cwd: "/tmp/work",
+					env: {},
+					sessionId: "sess-bad",
+				},
+			],
+			[
+				goodHandleId,
+				{
+					agentId: "good",
+					runtimeId: "mock-pty-sibling",
+					cwd: "/tmp/work",
+					env: {},
+					sessionId: "sess-good",
+				},
+			],
+		]);
+
+		const result = await mgr.bootRecovery({ knownConfigs });
+
+		// Bad one skipped, good one recovered — per-handle isolation holds.
+		expect(result.crashes).toContain(badHandleId);
+		expect(result.crashes).toContain(goodHandleId);
+		expect(result.recovered).not.toContain(badHandleId);
+		expect(result.recovered).toContain(goodHandleId);
+
+		const skipped = emitMock.mock.calls
+			.map((c) => c[0] as DaemonEvent)
+			.filter((e) => e.kind === "recovery-skipped");
+		expect(skipped).toHaveLength(1);
+		expect(skipped[0]).toMatchObject({
+			kind: "recovery-skipped",
+			handleId: badHandleId,
+			runtimeId: "never-registered-runtime",
+		});
 	});
 });
 
@@ -1055,7 +1333,9 @@ describe("AgentManager / EC5 cost event after parent teardown", () => {
 			provider: "anthropic",
 			model: "claude-opus-4-8",
 		});
-		await waitForCondition(() => mgr.getCostSummary(parent.id).rolledUpCost > 0);
+		await waitForCondition(
+			() => mgr.getCostSummary(parent.id).rolledUpCost > 0,
+		);
 		expect(mgr.getCostSummary(parent.id).rolledUpCost).toBeCloseTo(0.1, 6);
 
 		// Shut down the parent — cascade tears down the child too.
