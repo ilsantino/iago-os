@@ -64,12 +64,21 @@ import {
 export interface AgentManagerInterface {
 	getHandle(handleId: string): AgentHandle | undefined;
 	listHandles(): AgentHandle[];
-	shutdownAgent(
-		handleId: string,
-		signal?: "SIGTERM" | "SIGKILL",
-	): Promise<void>;
+	shutdownAgent(handleId: string, signal?: "SIGTERM" | "SIGKILL"): Promise<void>;
 	restartAgent?(handleId: string, reason: string): Promise<unknown>;
 	getShape(agent: string): Promise<AgentShape | null>;
+	/**
+	 * Last observed status from the runtime adapter (e.g. "running",
+	 * "exited", "spawning"). Optional — bot uses defensively. Phase 3+
+	 * runtimes that don't expose status return undefined and the bot
+	 * omits the field from `/status` replies.
+	 */
+	getLastStatus?(handleId: string): string | undefined;
+	/**
+	 * Liveness probe — true if the runtime considers the handle alive.
+	 * Optional for the same reason as getLastStatus.
+	 */
+	isAlive?(handleId: string): boolean | undefined;
 }
 
 export interface TelegramBotOpts {
@@ -227,8 +236,7 @@ export class TelegramBot {
 		this.agentManager = opts.agentManager;
 		this.injectIntoAgent = opts.injectIntoAgent;
 		this.botFactory =
-			opts.botFactory ??
-			((token, options) => new TelegramBotApi(token, options));
+			opts.botFactory ?? ((token, options) => new TelegramBotApi(token, options));
 	}
 
 	/**
@@ -475,6 +483,14 @@ export class TelegramBot {
 		command: Extract<Command, { name: "start" }>,
 		target: ReplyTarget,
 	): Promise<void> {
+		const validation = validateAgentId(command.agent);
+		if (!validation.valid) {
+			await this.safeReply(
+				target,
+				`Invalid agent id "${command.agent.slice(0, 64)}": ${validation.reason}.`,
+			);
+			return;
+		}
 		await this.safeReply(
 			target,
 			`Phase 1 hello-world: agent "${command.agent}" must be pre-registered in config. Dynamic spawn lands in Phase 3.`,
@@ -551,10 +567,7 @@ export class TelegramBot {
 		}
 		const handle = this.findHandleByAgentId(command.agent);
 		if (handle === null) {
-			await this.safeReply(
-				target,
-				`No handle found for agent ${command.agent}.`,
-			);
+			await this.safeReply(target, `No handle found for agent ${command.agent}.`);
 			return;
 		}
 		try {
@@ -645,6 +658,17 @@ export class TelegramBot {
 			lines.push(
 				`Agent ${command.agent} → handle ${handle.id} (shape ${handle.shape}, gen ${handle.generationToken})`,
 			);
+			// PR45 M6: surface runtime adapter status defensively. Both
+			// methods are optional on AgentManagerInterface — Phase 3+
+			// adapters that don't expose them simply omit these lines.
+			const lastStatus = this.agentManager.getLastStatus?.(handle.id);
+			if (lastStatus !== undefined) {
+				lines.push(`Last status: ${lastStatus}`);
+			}
+			const alive = this.agentManager.isAlive?.(handle.id);
+			if (alive !== undefined) {
+				lines.push(`Alive: ${alive}`);
+			}
 		}
 		try {
 			const pending = await listPendingApprovals();

@@ -233,9 +233,7 @@ describe("state-paths", () => {
 
 	describe("assertSafeIdentifier", () => {
 		it("accepts an opaque random-style taskId", () => {
-			expect(() =>
-				assertSafeIdentifier("alpha__abc-123", "taskId"),
-			).not.toThrow();
+			expect(() => assertSafeIdentifier("alpha__abc-123", "taskId")).not.toThrow();
 		});
 
 		it("rejects empty string", () => {
@@ -257,15 +255,11 @@ describe("state-paths", () => {
 		});
 
 		it("rejects '..' substring", () => {
-			expect(() => assertSafeIdentifier("foo..bar", "taskId")).toThrow(
-				TypeError,
-			);
+			expect(() => assertSafeIdentifier("foo..bar", "taskId")).toThrow(TypeError);
 		});
 
 		it("rejects NUL byte", () => {
-			expect(() => assertSafeIdentifier("foo\0bar", "taskId")).toThrow(
-				TypeError,
-			);
+			expect(() => assertSafeIdentifier("foo\0bar", "taskId")).toThrow(TypeError);
 		});
 
 		it("rejects identifier longer than 200 chars", () => {

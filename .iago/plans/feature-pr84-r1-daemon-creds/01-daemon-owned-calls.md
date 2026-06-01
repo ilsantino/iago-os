@@ -40,15 +40,28 @@ emit its summary as a structured file-bus envelope. Update PR #84 in place on
   that crashes without writing an envelope must surface as telemetry, never a silent
   lost notification. `noSend` distinguishes "nothing to send" from "agent died".
 - **D5 — Security invariant (1+1 coherence):** `sendText` derives only from the clean
-  scalar payload, so the Telegram message the daemon sends is attacker-text-free (no
-  content-spoofing of Santiago's own notifications).
+  scalar payload (counts, enums, and the repo/title strings GitHub returns) — a
+  **defense-in-depth reduction** of the content-spoofing surface, **not a zero-surface
+  claim**: any string field GitHub returns (e.g. a PR title) still flows into the
+  message, so this narrows rather than eliminates attacker-influenced text in Santiago's
+  own notifications.
 
 ## Out of scope (deferred — do NOT implement here)
 
 - **G3** daemon at-rest secret encryption (systemd `LoadCredential`/tmpfs) — pre-cutover
   gate, separate decision.
-- **#5** restart re-persist durability (`persistAgentConfig` swallow) — folds into
-  `feature-daemon-recovery-hardening`, runs after #87 merges.
+- **#5** restart re-persist durability (`persistAgentConfig` error-swallow) — folds into
+  `feature-daemon-recovery-hardening` **Task 1** (registerAgent durability hole), runs
+  after #87 merges. This is the *persist* finding — **distinct from #1 below** (result-
+  envelope correlation); do not conflate them.
+- **#1** result-envelope run-correlation + dead-letter durability (`makeResultTimers`
+  single-key `agentId` map, `.unref()`'d / non-durable across daemon restart; claim-on-
+  send keyed by bare `agentId`) — deferred to `feature-daemon-recovery-hardening`
+  **Task 6**.
+- **#2** unbounded GraphQL PR-fetch body (`pr-triage-fetch.ts:299` `res.json()` —
+  time-bounded by the 15s `AbortController` but NOT byte-bounded; a large/hostile
+  response can exhaust daemon memory) — deferred to `feature-daemon-recovery-hardening`
+  **Task 7**.
 - The daemon is **NOT deployed** (OpenClaw still runs) — this is a pre-cutover hardening
   change, not a live incident.
 

@@ -42,6 +42,7 @@ import {
 	TELEGRAM_SEND_RETRY_BACKOFF_MS,
 	type TaskDispatchEvent,
 	type TaskSendEvent,
+	buildBotAgentManagerAdapter,
 	buildFleetHealth,
 	composeCronAgentEnv,
 	computeRunUnder,
@@ -413,6 +414,42 @@ describe("getShapeForAgent", () => {
 	it("returns null on an empty handle list", async () => {
 		const shape = await getShapeForAgent(makeManager([]), "any");
 		expect(shape).toBeNull();
+	});
+});
+
+// ---------------------------------------------------------------------------
+// buildBotAgentManagerAdapter (dual-adversarial #B — composition wiring)
+// ---------------------------------------------------------------------------
+
+describe("buildBotAgentManagerAdapter", () => {
+	it("forwards getLastStatus + isAlive (regression: bot /status liveness wiring)", async () => {
+		const handle = makeHandle({ agentId: "agent-a", shape: "pty" });
+		const getLastStatus = vi.fn(() => "running");
+		const isAlive = vi.fn(() => true);
+		const manager = {
+			getHandle: (id: string) => (id === handle.id ? handle : undefined),
+			listHandles: () => [handle],
+			shutdownAgent: vi.fn(async () => {}),
+			restartAgent: vi.fn(async () => undefined),
+			getLastStatus,
+			isAlive,
+		} as unknown as AgentManager;
+
+		const adapter = buildBotAgentManagerAdapter(manager);
+
+		// The two methods the inline literal previously DROPPED must be present
+		// AND delegate — their absence silently disabled the /status
+		// "Last status:" / "Alive:" lines in production (dual-adversarial #B).
+		expect(typeof adapter.getLastStatus).toBe("function");
+		expect(typeof adapter.isAlive).toBe("function");
+		expect(adapter.getLastStatus?.(handle.id)).toBe("running");
+		expect(adapter.isAlive?.(handle.id)).toBe(true);
+		expect(getLastStatus).toHaveBeenCalledWith(handle.id);
+		expect(isAlive).toHaveBeenCalledWith(handle.id);
+
+		// Core forwards still intact.
+		expect(adapter.getHandle(handle.id)).toBe(handle);
+		expect(await adapter.getShape("agent-a")).toBe("pty");
 	});
 });
 

@@ -1,0 +1,232 @@
+[21:35:10] STRESS TEST — skipped (plan already stress-tested)
+[21:35:10] IMPLEMENT — 03-integration-harness-and-aggregator-projection
+[21:39:18] Implementation complete
+[21:39:18] BUILD GATE — attempt 1 [mode: sequential]
+[21:39:19] Build passed (tsc 0ms / vite 0ms / mode sequential)
+[21:39:19] CONSOLE GATE — skipped (no Vite config)
+[21:39:19] REVIEW — 03-integration-harness-and-aggregator-projection
+warning: in the working copy of '.iago/learnings/patterns.md', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of '.iago/summaries/_dispatch-c-02.log', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of '.iago/learnings/README.md', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of '.iago/summaries/02-clean-tree-guard-and-adversarial-fallback-sentinel.md', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of '.iago/summaries/_dispatch-c-03.log', LF will be replaced by CRLF the next time Git touches it
+[21:39:20]   review-checks: all modules loaded (209 lines)
+[21:41:43] Review output:
+I've read the plan, diff, and all five changed/source files. Now producing the three-pass review.
+
+---
+
+## PASS 1 — PLAN COMPLIANCE
+
+| Task | Required | Status |
+|------|---------|--------|
+| 1 — Integration harness | `scripts/test-phase-1b-integration.sh`, 4 sections + matrix, 220–280 lines | ✓ 381 lines (over but acceptable); all 4 sections + matrix present |
+| 2 — Aggregator extension | `by_session` projection, sessionId grouping, new event kinds, JSDoc, backward-compat | ✓ All present; legacy → `_unsessioned`; preserves prior output; soft-exit on empty |
+| 3 — Aggregator tests | 5 new tests (groups, legacy, mixed, event-kinds, timed_out) | ✓ Tests 5–9 added |
+| 4 — README.md | 80–130 lines, ≥5 top-level sections, env-var matrix, telemetry events, promotion procedure | ✓ 106 lines, 6 `## ` headers, ≥3 writer/env references |
+| 5 — Dogfood patterns.md entry | Single `phase-1b-orthogonal-fix-batching` entry written via writer | ✓ Entry present (count 1) with ISO timestamp + key + body |
+
+Stress fixes applied:
+- **C1** (Section 1 references Plan 01 contract explicitly): ✓ line 62–65
+- **C2** (Task 5 fail-loud): writer succeeded; fail-loud guard inherent in writer's exit-1 path
+- **I1** (top-level trap): ✓ `cleanup_all` at line 34, runs on EXIT
+- **I2** (sort before assert): ✓ aggregator sorts keys (line 260); tests assert presence not order
+- **I3** (cross-ref `.writer-contract.md`): ✓ README lines 11–13, 21, 104
+- **I4** (Section 4 backtick sub-test): ✓ test 4d at line 340–343
+- **I5** (reuse parse output, don't re-parse): ✓ aggregator iterates `taken[i].records` (line 234)
+
+## PASS 2 — DOMAIN ROUTING
+
+Diff touches: bash scripts (telemetry/learnings/clean-tree/adversarial harness), an `.mjs` aggregator (Node, read-only), and markdown docs. No React/TSX, no `amplify/`, no Lambda handlers, no API clients, no Spanish strings, no auth code.
+
+**Selected domains:** Baseline + Pattern Consistency (always-on). Light Data-Integrity lens on the aggregator counts because they feed an operational "dashboard-like" table.
+
+**Skipped (do not apply):** Amplify Gen 2, API, Auth, Backend (Lambda), i18n, Infra, React.
+
+## PASS 3 — ADVERSARIAL
+
+### Cross-cutting
+
+- **Auth bypass / data loss / races / rollback:** N/A or clean. Writer uses append (`>>`); aggregator is read-only; harness uses isolated mktemp dirs with EXIT-trap cleanup; chmod-restore protects against undeletable cruft on perm-tested dirs.
+
+### Findings
+
+**Minor — broken `--help` regex** (`scripts/test-phase-1b-integration.sh:26`)
+```bash
+-h|--help) sed -n '2,/^set -euo/p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+```
+Script uses `set -uo pipefail` (line 17), not `set -euo`. The address `/^set -euo/` never matches, so `sed` prints lines 2-EOF — the full script dumps as "help". Fix: change pattern to `/^set -uo/`.
+
+**Minor — `REPO_ROOT` unused dead code** (`scripts/test-phase-1b-integration.sh:20`)
+```bash
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+```
+Computed once, never read. Either delete or use (no callers reference it).
+
+**Minor — README env-var count mismatch** (`.iago/learnings/README.md:49`)
+Body text says "The writer reads its behavior from **two** env vars" but the table immediately below lists **three** (`LEARNINGS_WRITE_MODE`, `LEARNINGS_FALLBACK_DIR`, `PROJECT_DIR`). Fix wording to "three".
+
+**Minor — defensive double-default** (`scripts/metrics-aggregate.mjs:249`)
+```js
+e.event_counts[t] = (e.event_counts[t] || 0) + 1;
+```
+`ensure()` already pre-fills every key in `NEW_EVENT_KINDS` to 0, so `|| 0` is dead. Pure style nit; safe to leave.
+
+### Baseline / Pattern Consistency
+
+- Aggregator extension matches existing module style (Map + named consts + `console.log` formatting). ✓
+- Test 5–9 follow the established `ok` / `nope` helpers + per-test mktemp+rm-rf pattern. ✓
+- No silent failure: writer surfaces FAIL to stderr; harness exits non-zero on any section FAIL; aggregator's only soft-exit is the explicit "no input files" case (intentional per plan).
+- No magic numbers introduced beyond stable constants (`tail -n 10`, fallback timestamp format) — all already justified inline.
+- Aggregator math: counts and sums are integer + filtered; no NaN/Infinity risk; no `reduce` over null fields.
+
+### Verification of Plan 02 anchor guard
+
+Test 4d writes a single line: `` `===VERDICT: CLEAN===` `` (with backticks). `parse_adversarial_verdict` strips trailing whitespace only, then does literal `[[ "$line" == "$SENTINEL" ]]`. The backtick prefix prevents match → returns UNKNOWN. Confirmed correct against `adversarial-verdict.sh:65-69`.
+
+---
+
+Verdict: PASS_WITH_CONCERNS
+[21:41:43] Findings detected — dispatching fix session (round 1)
+[21:43:30] Fix output (exit 0):
+All 12 tests pass. --help output is correctly truncated at the `set -uo pipefail` line.
+
+**Summary of fixes:**
+- `scripts/test-phase-1b-integration.sh:26` — regex `/^set -euo/` → `/^set -uo/` (fixes `--help` dumping full script)
+- `scripts/test-phase-1b-integration.sh:20` — deleted unused `REPO_ROOT`
+- `.iago/learnings/README.md:49` — "two env vars" → "three env vars"
+- `scripts/metrics-aggregate.mjs:249` — removed dead `|| 0` (ensure() pre-fills)
+warning: in the working copy of '.iago/learnings/README.md', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of '.iago/summaries/_dispatch-c-03.log', LF will be replaced by CRLF the next time Git touches it
+[21:43:30]   review-checks: all modules loaded (209 lines)
+[21:44:36] Re-review output:
+All 4 previous Minor findings resolved:
+
+1. **`--help` regex** (`test-phase-1b-integration.sh:25`) — now `/^set -uo/` (matches actual `set -uo pipefail` on line 17). ✓
+2. **`REPO_ROOT` unused** — removed from script header. ✓
+3. **README env-var count** (`README.md:49`) — now reads "three env vars" matching the 3-row table. ✓
+4. **Defensive double-default** (`metrics-aggregate.mjs:249`) — now `e.event_counts[t] += 1;` (ensure() pre-fills). ✓
+
+Cross-cutting re-check:
+- **Auth bypass:** N/A — bash/Node tooling, no auth surface.
+- **Data loss:** writer uses append; aggregator is read-only; harness isolated to `mktemp -d` with EXIT-trap cleanup + chmod-restore.
+- **Races:** single-process per section; no shared state.
+- **Rollback safety:** no real-repo mutation in the harness; aggregator change preserves prior output and adds new `by_session` section beneath.
+
+Stress fixes (C1, C2, I1–I5) all confirmed present in current diff. No regressions; no new findings.
+
+Verdict: PASS
+[21:44:37] Review passed
+[21:44:37] CODEX REVIEW — 03-integration-harness-and-aggregator-projection
+[21:44:37] Running codex-companion adversarial-review (model from ~/.codex/config.toml)
+[21:47:02] Codex findings:
+(node:13956) [DEP0190] DeprecationWarning: Passing args to a child process with shell option true can lead to security vulnerabilities, as the arguments are not escaped, only concatenated.
+(Use `node --trace-deprecation ...` to show where the warning was created)
+[codex] Starting Codex task thread.
+[codex] Thread ready (019e392f-a21b-7e43-9d42-d5705ca564a6).
+[codex] Turn started (019e392f-a559-7993-8b2a-207f6e82e298).
+[codex] Assistant message captured: {"verdict":"needs-attention","summary":"I’ll verify the actual branch diff against the reques...
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git diff --stat 46...
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git status --short'
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git diff --name-on...
+[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git status --short' (exit 0)
+[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git diff --name-on... (exit 0)
+[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git diff --stat 46... (exit 0)
+[codex] Assistant message captured: {"verdict":"needs-attention","summary":"The workspace does have a diff against the base. I’m ...
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git diff --unified...
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git diff --unified...
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git diff --unified...
+[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git diff --unified... (exit 0)
+[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git diff --unified... (exit 0)
+[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git diff --unified... (exit 0)
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'Get-Content -Path ...
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'Get-Content -Path ...
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'Get-Content -Path ...
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'Get-Content -Path ...
+[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'Get-Content -Path ... (exit 0)
+[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'Get-Content -Path ... (exit 0)
+[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'Get-Content -Path ... (exit 0)
+[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'Get-Content -Path ... (exit 0)
+[codex] Assistant message captured: {"verdict":"needs-attention","summary":"The integration script is testing behavior that has a...
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'bash scripts/lib/m...
+[codex] Command declined: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'bash scripts/lib/m... (exit -1)
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'bash scripts/test-...
+[codex] Command declined: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'bash scripts/test-... (exit -1)
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'bash scripts/test-...
+[codex] Command declined: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'bash scripts/test-... (exit -1)
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'rg -n "by_session|...
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command '$i=1; Get-Content ...
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command '$i=1; Get-Content ...
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command '$i=1; Get-Content ...
+[codex] Command declined: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command '$i=1; Get-Content ... (exit -1)
+[codex] Command declined: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command '$i=1; Get-Content ... (exit -1)
+[codex] Command declined: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command '$i=1; Get-Content ... (exit -1)
+[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'rg -n "by_session|... (exit 0)
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command "rg -n \"for \\(con...
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'rg -n "expected ≥3...
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'rg -n "test_by_ses...
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command "rg -n \"unset|sess...
+[codex] Command declined: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command "rg -n \"unset|sess... (exit -1)
+[codex] Command failed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command "rg -n \"for \\(con... (exit 1)
+[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'rg -n "test_by_ses... (exit 0)
+[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'rg -n "expected ≥3... (exit 0)
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command "rg -n 'sessionId\"...
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command "rg -n \"NEW_EVENT_...
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command "rg -n \"No pipelin...
+[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command "rg -n \"NEW_EVENT_... (exit 0)
+[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command "rg -n \"No pipelin... (exit 0)
+[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command "rg -n 'sessionId\"... (exit 0)
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'Get-Content script...
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'Get-Content script...
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'Get-Content script...
+[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'Get-Content script... (exit 0)
+[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'Get-Content script... (exit 0)
+[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'Get-Content script... (exit 0)
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git diff --unified...
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'node --check scrip...
+[codex] Command declined: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'node --check scrip... (exit -1)
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'bash -n scripts/te...
+[codex] Running command: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'bash -n scripts/li...
+[codex] Command declined: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'bash -n scripts/te... (exit -1)
+[codex] Command declined: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'bash -n scripts/li... (exit -1)
+[codex] Command completed: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'git diff --unified... (exit 0)
+[codex] Assistant message captured: {"verdict":"needs-attention","summary":"No-ship: the new acceptance harness can skip the writ...
+[codex] Turn completion inferred after the main thread finished and subagent work drained.
+# Codex Adversarial Review
+
+Target: branch diff against 46b8e2b5ab6a52a5ab5f6326beb65effdefa8d6a
+Verdict: needs-attention
+
+No-ship: the new acceptance harness can skip the write-loss paths on Windows, and the new session rollup can hide completed runs that only surface through lifecycle records.
+
+Findings:
+- [high] Write-failure acceptance tests skip on the default Windows filesystem (scripts/test-phase-1b-integration.sh:42-57)
+  Section 2 is supposed to prove the fail-loud and fallback behavior for learnings write failures, but both sad-path checks are gated on chmod actually denying writes. On Windows/NTFS via Git Bash the probe explicitly sets CHMOD_DENIES to non-yes, so tests 2b and 2c only print SKIP while the section can still pass. That leaves the original high-cost failure mode, silent loss of learnings/fallback telemetry, untested in the environment this repo is being exercised from.
+  Recommendation: Replace the chmod-only failure injection with a cross-platform deterministic failure, for example pre-create $PROJECT_DIR/.iago/learnings/patterns.md as a directory so append fails everywhere, then assert fail-loud and fallback behavior without skipping. Keep chmod as an extra platform-specific case if desired.
+- [medium] by_session drops lifecycle records, hiding completed sessions without stage events (scripts/metrics-aggregate.mjs:234-249)
+  The by_session code only creates buckets for stage_start, stage_end, and the four new event kinds. It ignores pipeline_init and pipeline_finalize even though the file doc lists them as record types for the projection and complete runs are defined by pipeline_finalize. A completed run that fails before emitting a stage, or whose only useful failure signal is pipeline_finalize.pipeline_exit, will show no session row at all, making the new operational rollup falsely look empty.
+  Recommendation: Handle pipeline_init and pipeline_finalize in the session projection: create the session bucket for those records, add init/finalize counts, and include failed finalize/pipeline_exit counts so completed failed sessions cannot disappear from by_session.
+
+Next steps:
+- Block shipping until Section 2 exercises write failures on Windows-compatible fixtures.
+- Extend by_session to account for lifecycle records and add a regression fixture with a completed run containing pipeline_finalize but no stage_end.
+[21:47:02] Codex review complete
+[21:47:02] CODEX FIX — fixing findings before PR
+[21:49:45] Codex fix output (exit 0):
+Both Codex findings fixed and verified live.
+
+**Fix 1 [HIGH] — `scripts/test-phase-1b-integration.sh`:**
+Replaced chmod-based fail injection (which SKIPped on Windows/NTFS) with patterns.md-as-directory trick. Section 2's 2b/2c now actually exercise the fail-loud and fallback paths on every platform. Removed the `chmod_denies_writes` probe and `CHMOD_DENIES` gating.
+
+**Fix 2 [MED] — `scripts/metrics-aggregate.mjs`:**
+Extended `by_session` to handle `pipeline_init` (keyed off `outer_session_id`) and `pipeline_finalize` (keyed off `sessionId`). Added `pipeline_init_count`, `pipeline_finalize_count`, `failed_finalize_count` columns so completed-but-no-stage-events runs no longer disappear. Updated `metrics-aggregate.test.sh`: shifted column positions in tests 8/9, added test 10 — lifecycle-only regression with init + non-zero finalize.
+
+**Verification:**
+- `scripts/lib/metrics-aggregate.test.sh` — 13/13 pass (was 12, added lifecycle regression)
+- `scripts/test-phase-1b-integration.sh` — 16/16 acceptance checks pass, all 4 sections PASS
+- Live aggregator against real pipeline-runs/ shows new lifecycle columns populating correctly (2 failed_finalizes surfaced from prior crashed runs)
+SessionEnd hook [node "${CLAUDE_PLUGIN_ROOT}/scripts/session-lifecycle-hook.mjs" SessionEnd] failed: Hook cancelled
+[21:49:45] BUILD GATE (post-codex-fix)
+[21:49:45] Build passed after Codex fix
+warning: in the working copy of '.iago/summaries/_dispatch-c-03.log', LF will be replaced by CRLF the next time Git touches it
+[21:49:46] CREATE PR — 03-integration-harness-and-aggregator-projection

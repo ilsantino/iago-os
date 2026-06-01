@@ -34,50 +34,7 @@ Large (multi-feature, phased)    → /iago-init → /iago-plan → /iago-execute
 
 ## Delivery Pipeline (the full workflow)
 
-For large, phased projects with a ROADMAP:
-
-```
-/iago-init          Create .iago/, PROJECT.md, ROADMAP.md, STATE.md
-       |
-/iago-discuss       Clarify gray areas for a phase (interactive Q&A)
-       |
-/iago-plan          Break phase into plans with tasks + stress test
-       |
-/iago-execute       Run plans through 8-stage pipeline (implement → build → review → PR)
-       |
-/iago-verify        Verify phase against success criteria
-```
-
-For standalone features (no ROADMAP needed):
-
-```
-/iago-plan --feature "description"     Plan from a prompt
-/iago-plan --feature path/to/file      Plan from a PDF, MD, or spec file
-       |
-/iago-execute feature-{slug}           Run through pipeline
-```
-
-Flags that work across the pipeline:
-- `--research` — scan codebase before planning
-- `--discuss` — inline clarification before planning (feature/spec mode)
-- `--no-stress` — defer stress test to pipeline step 0
-- `--no-review` — skip @claude PR tagging (local review still runs)
-
-### Pipeline Stages (automatic, per plan)
-
-Every plan goes through these stages in `scripts/execute-pipeline.sh`:
-
-| # | Stage | What it does |
-|---|-------|-------------|
-| 0 | Stress test | Adversarial review of the plan (skipped if already stress-tested) |
-| 1 | Implement | Fresh claude session writes code from the plan |
-| 2 | Build gate | `tsc --noEmit && vite build` (max 2 retries) |
-| 3 | Review | Plan compliance + domain routing + adversarial (Critical/Important/Minor) |
-| 4 | Codex adversarial | Cross-model check: auth, data loss, races, rollback |
-| 4b | Codex fix | Fix all Codex findings (skipped if clean) |
-| 5 | Create PR | Stage, commit, push, create PR via gh |
-| 5b | Tag @claude | Post review request on PR (triggers async fix loop) |
-| 6 | Summary | Write results to .iago/summaries/ |
+The full delivery workflow (init → discuss → plan → execute → verify), the standalone-feature path, the pipeline flags, and the per-plan pipeline stage table live in `CLAUDE.md` (Workflow + Execution Path) and `.claude/rules/execution-pipeline.md`. See those for the canonical sequence and stages.
 
 ## All Skills
 
@@ -166,6 +123,7 @@ The pipeline already runs the highest-leverage rules from these skills on every 
 | `/codex:result` | Retrieve output from finished Codex job |
 | `/codex:cancel` | Cancel active background Codex job |
 | `/codex:setup` | Check Codex CLI readiness, manage review gate |
+| `/dual-adversarial` | Final pre-merge Opus 4.8 ∥ Codex GPT-5.5 gate over a PR/branch diff, independent + aggressive, optional security/code/test/completeness lenses; read-only, never merges |
 
 ### Built-in (Claude Code native)
 
@@ -191,17 +149,4 @@ The pipeline already runs the highest-leverage rules from these skills on every 
 
 ## Agent Architecture
 
-Internal implementation detail. Skills dispatch agents automatically — you don't
-need to know this to use the system. See `.claude/agents/` for definitions.
-
-**3 bases** (tool access tiers): executor (read+write+run), analyst (read+run), operator (read+run+web)
-
-**12 profiles** (pre-composed base + capabilities):
-fullstack, frontend, backend, review-single, review-full, security-audit, research,
-e2e, infra, schema, content, debug
-
-**13 capability modules** (injected into agent prompts):
-react-19, dynamodb, lambda, cognito, tdd, security, e2e, review-spec, review-quality,
-content, infra, forms, animation
-
-Hub-and-spoke: only the orchestrator dispatches agents — agents never spawn agents.
+Internal implementation detail. Skills dispatch agents automatically — you don't need to know this to use the system. The base/profile/capability composition and hub-and-spoke dispatch model are documented in `CLAUDE.md` (Agents + Model Routing); the authoritative definitions and live counts are in `.claude/agents/`.

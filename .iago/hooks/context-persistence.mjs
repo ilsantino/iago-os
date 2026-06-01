@@ -5,7 +5,7 @@
 import { readInput } from "./lib/stdin.mjs";
 import { isDisabled } from "./lib/flags.mjs";
 import { extractDecisions, getFilesModified } from "./lib/transcript.mjs";
-import { readFileSync, writeFileSync, readdirSync, renameSync, mkdirSync, existsSync, statSync } from "fs";
+import { readFileSync, writeFileSync, readdirSync, renameSync, mkdirSync, existsSync, statSync, unlinkSync } from "fs";
 import { join } from "path";
 import { execSync } from "child_process";
 

@@ -594,6 +594,12 @@ async function readResolvedDecision(
  * SECURITY: `approvalId` is validated; an invalid id returns
  * `{ timedOut: true }` after `timeoutMs` (callers treat invalid as
  * never-resolved).
+ *
+ * TODO(2026-Q3): accept an optional `AbortSignal` so the caller can
+ * cancel on agent shutdown. Currently the loop runs to `timeoutMs` even
+ * after the requesting agent is shut down. Acceptable for Phase 1
+ * timeouts (≤30s typical); revisit when `agent-manager.shutdownAgent`
+ * gains a "cancel pending waiters" path. See `adv-pr45 M1`.
  */
 export async function waitForApproval(
 	approvalId: string,

@@ -71,8 +71,11 @@ relaying to user), Minor (note in output).
 
 ## Loading
 
-This module loads automatically into the `operator` base agent (which has
-`WebFetch` and `WebSearch` tools). Other base agents (`executor`, `analyst`)
-should load it explicitly when a task involves external content — e.g., a
-research profile that uses Context7, or an executor that downloads a file
-from a URL.
+Load this module explicitly in the operator-based profiles
+(`research`, `content`, `infra`) — the `operator` base has `WebFetch` and
+`WebSearch` tools but no auto-load mechanism, so each profile wires
+`trust-boundary` in via its `capabilities` field (or, for `research`, an
+ALWAYS-inject line in its Dynamic Capability Selection section). Other base
+agents (`executor`, `analyst`) should also load it explicitly when a task
+involves external content — e.g., a profile that uses Context7, or an executor
+that downloads a file from a URL.
