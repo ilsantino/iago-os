@@ -36,10 +36,15 @@ import { ensureStateDirsSync, pathFor } from "./state-paths.js";
 
 import {
 	type AgentConfigShape,
+	PR_DATA_PLACEHOLDER,
+	RESULT_TIMEOUT_MS,
 	SHUTDOWN_STAGE_TIMEOUT_MS,
+	TELEGRAM_SEND_RETRY_BACKOFF_MS,
 	type TaskDispatchEvent,
+	type TaskSendEvent,
 	buildBotAgentManagerAdapter,
 	buildFleetHealth,
+	composeCronAgentEnv,
 	computeRunUnder,
 	findHandleForAgent,
 	getShapeForAgent,
@@ -48,7 +53,10 @@ import {
 	loadAgentConfig,
 	loadPersistedConfigs,
 	makeDaemonStartupSessionId,
+	makePrTriageCronPrompt,
+	makeResultTimers,
 	makeTaskDispatchHandler,
+	makeTaskSendHandler,
 	resolveSessionId,
 	withTimeout,
 } from "./main.js";
@@ -70,7 +78,13 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
-	delete process.env.IAGO_DAEMON_STATE_ROOT;
+	// Computed-key `delete` (not `delete process.env.X`) stays Biome-clean:
+	// `noDelete` flags only static member deletes, and the autofix it would
+	// apply (`= undefined`) coerces the value to the literal string "undefined",
+	// breaking isolation. Matches the loop-delete idiom in config.test.ts /
+	// sighup.test.ts.
+	const stateRootKey = "IAGO_DAEMON_STATE_ROOT";
+	delete process.env[stateRootKey];
 	process.argv = originalArgv;
 	vi.restoreAllMocks();
 	vi.useRealTimers();
@@ -243,14 +257,15 @@ describe("loadPersistedConfigs", () => {
 		});
 		const result = await loadPersistedConfigs();
 		expect(result.size).toBe(1);
-		const entry = result.get("h-valid")!;
-		expect(entry.agentId).toBe("agent-good");
-		expect(entry.runtimeId).toBe("claude-pty");
-		expect(entry.cwd).toBe("/tmp/wd");
-		expect(entry.sessionId).toBe("session-1");
-		expect(entry.org).toBe("org-a");
+		const entry = result.get("h-valid");
+		expect(entry).toBeDefined();
+		expect(entry?.agentId).toBe("agent-good");
+		expect(entry?.runtimeId).toBe("claude-pty");
+		expect(entry?.cwd).toBe("/tmp/wd");
+		expect(entry?.sessionId).toBe("session-1");
+		expect(entry?.org).toBe("org-a");
 		// Non-string env values were skipped; string ones preserved.
-		expect(entry.env).toEqual({ FOO: "bar", KEEP: "yes" });
+		expect(entry?.env).toEqual({ FOO: "bar", KEEP: "yes" });
 	});
 
 	it("treats env as empty when env field is not an object", async () => {
@@ -263,7 +278,7 @@ describe("loadPersistedConfigs", () => {
 		});
 		const result = await loadPersistedConfigs();
 		expect(result.size).toBe(1);
-		expect(result.get("h-bad-env")!.env).toEqual({});
+		expect(result.get("h-bad-env")?.env).toEqual({});
 	});
 
 	it("treats env as empty when env field is null", async () => {
@@ -276,7 +291,7 @@ describe("loadPersistedConfigs", () => {
 		});
 		const result = await loadPersistedConfigs();
 		expect(result.size).toBe(1);
-		expect(result.get("h-null-env")!.env).toEqual({});
+		expect(result.get("h-null-env")?.env).toEqual({});
 	});
 
 	it("accepts a record with no env field at all (defaults to empty)", async () => {
@@ -287,7 +302,7 @@ describe("loadPersistedConfigs", () => {
 			sessionId: "session-1",
 		});
 		const result = await loadPersistedConfigs();
-		expect(result.get("h-no-env")!.env).toEqual({});
+		expect(result.get("h-no-env")?.env).toEqual({});
 	});
 });
 
@@ -370,9 +385,9 @@ describe("buildFleetHealth", () => {
 			expect(row).toHaveProperty("generationToken");
 			expect(row).toHaveProperty("spawnedAt");
 		}
-		expect(result[0]!.handleId).toBe("h-1");
-		expect(result[1]!.agentId).toBe("agent-b");
-		expect(result[1]!.shape).toBe("http");
+		expect(result[0]?.handleId).toBe("h-1");
+		expect(result[1]?.agentId).toBe("agent-b");
+		expect(result[1]?.shape).toBe("http");
 	});
 });
 
@@ -508,11 +523,11 @@ describe("injectIntoAgent", () => {
 		});
 		await injectIntoAgent(makeManager([handle]), "agent-a", "hello world");
 		expect(rt.sendCalls).toHaveLength(1);
-		expect(rt.sendCalls[0]!.message).toEqual({
+		expect(rt.sendCalls[0]?.message).toEqual({
 			kind: "inject",
 			payload: { text: "hello world" },
 		});
-		expect(rt.sendCalls[0]!.handle.id).toBe(handle.id);
+		expect(rt.sendCalls[0]?.handle.id).toBe(handle.id);
 	});
 
 	it("propagates send() failures from the runtime", async () => {
@@ -594,7 +609,7 @@ describe("isDirectlyExecuted", () => {
 		// Compute main.ts's own URL from this test file's location.
 		const mainUrl = new URL("./main.ts", import.meta.url).href;
 		const mainPath = fileURLToPath(mainUrl);
-		process.argv = [process.argv[0]!, mainPath];
+		process.argv = [process.argv[0] ?? "node", mainPath];
 		// Note: the test is meaningful only when main.ts is loaded as a
 		// .ts module under vitest. If the bundled .js path is loaded
 		// instead (production), the comparison would still equal because
@@ -605,14 +620,14 @@ describe("isDirectlyExecuted", () => {
 	it("returns false when process.argv[1] points to an unrelated file", () => {
 		// Use a real path that's not main.ts so pathToFileURL succeeds but
 		// the URL does NOT match import.meta.url.
-		process.argv = [process.argv[0]!, path.join(tempDir, "other.ts")];
+		process.argv = [process.argv[0] ?? "node", path.join(tempDir, "other.ts")];
 		expect(isDirectlyExecuted()).toBe(false);
 	});
 
 	it("returns false when pathToFileURL throws on argv[1]", () => {
 		// NUL byte is rejected by pathToFileURL (ERR_INVALID_ARG_VALUE).
 		// Cover the catch branch without mocking node:url.
-		process.argv = [process.argv[0]!, "\x00"];
+		process.argv = [process.argv[0] ?? "node", "\x00"];
 		expect(isDirectlyExecuted()).toBe(false);
 	});
 
@@ -621,7 +636,7 @@ describe("isDirectlyExecuted", () => {
 		// only on non-Node engines; node argv[1] = "" is a defined string,
 		// so pathToFileURL(\"\") triggers ERR_INVALID_FILE_URL_PATH on
 		// most platforms — that throw is caught and false returned.
-		process.argv = [process.argv[0]!, ""];
+		process.argv = [process.argv[0] ?? "node", ""];
 		// Empty string is a falsy but non-undefined string so the first
 		// guard does not return false; pathToFileURL throws → catch → false.
 		// (On platforms where pathToFileURL accepts \"\" and returns the
@@ -1264,5 +1279,851 @@ describe("makeTaskDispatchHandler (Plan 04d)", () => {
 		expect(
 			(mgr as unknown as { _releaseCalls: string[] })._releaseCalls,
 		).toEqual([evt.filename]);
+	});
+
+	it("(DH-8/H1) ndjsonAlert envelope: emits pr-triage-telegram-send-failed + claims, NOT malformed-task", async () => {
+		// pr84-gap-closure (Codex H1) — the mirror branch. In production the
+		// polling path short-circuits an ndjsonAlert envelope in
+		// AgentManager.processPendingTask BEFORE the task-dispatch-needed
+		// emit, so this handler branch is exercised only by a direct
+		// invocation (this test). A prompt-less alert envelope must
+		// record-and-resolve (emit pr-triage-telegram-send-failed +
+		// claimTask), NEVER fall through to the malformed-task path on its
+		// absent `prompt`.
+		const { runtime, sendCalls } = makeStubRuntime("dh8-runtime");
+		registerRuntime(runtime);
+		const handle = makeHandleFixture("pr-triage", "dh8-runtime");
+		const mgr = makeStubManager({ handle });
+		const emitMock = vi.fn().mockResolvedValue(true); // pr84: durable write -> mirror durability-gate claims (main.ts)
+
+		const handler = makeTaskDispatchHandler({
+			agentManager: mgr,
+			emit: emitMock,
+		});
+
+		const details =
+			'429 Too Many Requests body={"ok":false,"description":"Too Many Requests"}';
+		const evt: TaskDispatchEvent = {
+			filename: "pr-triage__1700000208.json",
+			agentId: "pr-triage",
+			taskContent: {
+				agentId: "pr-triage",
+				ndjsonAlert: "pr-triage-telegram-send-failed",
+				details,
+			},
+		};
+
+		await handler(evt);
+
+		// Record-and-resolve, not dispatch — nothing sent to the runtime.
+		expect(sendCalls).toHaveLength(0);
+
+		// Exactly one pr-triage-telegram-send-failed, payload mirrored from
+		// the envelope (alertKind = the verbatim ndjsonAlert value).
+		const alertCalls = emitMock.mock.calls
+			.map((c) => c[0])
+			.filter(
+				(e) =>
+					(e as { kind: string }).kind === "pr-triage-telegram-send-failed",
+			);
+		expect(alertCalls).toHaveLength(1);
+		expect(alertCalls[0]).toMatchObject({
+			kind: "pr-triage-telegram-send-failed",
+			agentId: "pr-triage",
+			filename: evt.filename,
+			alertKind: "pr-triage-telegram-send-failed",
+			details,
+		});
+
+		// NOT mis-classified as malformed-task (or any dispatch-failed).
+		const failedCalls = emitMock.mock.calls
+			.map((c) => c[0])
+			.filter(
+				(e) => (e as { kind: string }).kind === "pr-triage-dispatch-failed",
+			);
+		expect(failedCalls).toHaveLength(0);
+
+		// File claimed (pending → resolved).
+		expect((mgr as unknown as { _claimCalls: unknown[] })._claimCalls).toEqual([
+			{ filename: evt.filename, agentId: "pr-triage" },
+		]);
+
+		// C-1: dispatch slot released on the alert branch too.
+		expect(
+			(mgr as unknown as { _releaseCalls: string[] })._releaseCalls,
+		).toEqual([evt.filename]);
+	});
+
+	it("(DH-R1) arms the dead-letter result timer after a successful pr-triage dispatch", async () => {
+		const { runtime } = makeStubRuntime("dhr1-runtime");
+		registerRuntime(runtime);
+		const handle = makeHandleFixture("pr-triage", "dhr1-runtime");
+		const mgr = makeStubManager({ handle });
+		const emitMock = vi.fn().mockResolvedValue(undefined);
+		const timerCalls: Array<{ agentId: string; timeoutMs?: number }> = [];
+
+		const handler = makeTaskDispatchHandler({
+			agentManager: mgr,
+			emit: emitMock,
+			startResultTimer: (agentId, timeoutMs) =>
+				timerCalls.push({ agentId, timeoutMs }),
+		});
+
+		await handler({
+			filename: "pr-triage__1700000400.json",
+			agentId: "pr-triage",
+			taskContent: { prompt: "do the triage", agentId: "pr-triage" },
+		});
+
+		// Timer armed exactly once for pr-triage, with the result-timeout window.
+		expect(timerCalls).toEqual([
+			{ agentId: "pr-triage", timeoutMs: RESULT_TIMEOUT_MS },
+		]);
+	});
+
+	it("(DH-R1b) does NOT arm the timer for a non-pr-triage agent", async () => {
+		const { runtime } = makeStubRuntime("dhr1b-runtime");
+		registerRuntime(runtime);
+		const handle = makeHandleFixture("other-agent", "dhr1b-runtime");
+		const mgr = makeStubManager({ handle });
+		const emitMock = vi.fn().mockResolvedValue(undefined);
+		const timerCalls: string[] = [];
+
+		const handler = makeTaskDispatchHandler({
+			agentManager: mgr,
+			emit: emitMock,
+			startResultTimer: (agentId) => timerCalls.push(agentId),
+		});
+
+		await handler({
+			filename: "other-agent__1700000401.json",
+			agentId: "other-agent",
+			taskContent: { prompt: "do something", agentId: "other-agent" },
+		});
+
+		expect(timerCalls).toHaveLength(0);
+	});
+});
+
+describe("composeCronAgentEnv (R1 — NO secrets, only non-secret runtime vars)", () => {
+	// The former secret allowlist is GONE — the agent holds no token. These
+	// secrets are present in the daemon env ONLY to prove they are NEVER copied
+	// into the composed agent env.
+	const SECRETS = {
+		IAGO_TELEGRAM_BOT_TOKEN: "tg-secret",
+		IAGO_TELEGRAM_ALLOWED_USER_IDS: "42,99",
+		GH_TOKEN: "gh-pat-secret",
+	} as const;
+
+	// Test 5 (KEPT, SECRETS spread dropped) — node-pty REPLACES the parent env,
+	// so a trusted cron agent's composed env MUST carry the non-secret
+	// base-runtime vars (PATH/HOME/SHELL/LANG) or node-pty cannot locate
+	// `claude`.
+	it("trusted 'pr-triage' inherits the non-secret runtime vars (PATH/HOME/SHELL/LANG)", () => {
+		const env = composeCronAgentEnv(
+			"pr-triage",
+			{ IAGO_DAEMON_STATE_ROOT: "/state" },
+			{
+				PATH: "/usr/bin:/bin",
+				HOME: "/home/iago",
+				SHELL: "/bin/bash",
+				LANG: "en_US.UTF-8",
+			} as NodeJS.ProcessEnv,
+		);
+		expect(env.PATH).toBe("/usr/bin:/bin");
+		expect(env.HOME).toBe("/home/iago");
+		expect(env.SHELL).toBe("/bin/bash");
+		expect(env.LANG).toBe("en_US.UTF-8");
+		// Declared base env preserved.
+		expect(env.IAGO_DAEMON_STATE_ROOT).toBe("/state");
+	});
+
+	// Test 6 (REWRITTEN) — the composed env is runtime-vars + declared base
+	// ONLY, and the three secrets are NEVER present even when in the daemon env.
+	it("composes ONLY runtime-vars + declared base — and NEVER any secret", () => {
+		const env = composeCronAgentEnv(
+			"pr-triage",
+			{ IAGO_DAEMON_STATE_ROOT: "/state" },
+			{
+				PATH: "/usr/bin",
+				HOME: "/home/iago",
+				...SECRETS,
+				// Arbitrary daemon-process vars that are NOT runtime-allowlist
+				// members — these must NOT cross into the composed agent env.
+				AWS_SECRET_ACCESS_KEY: "must-not-leak",
+				SOME_OTHER_TOKEN: "also-must-not-leak",
+				NODE_ENV: "production",
+			} as NodeJS.ProcessEnv,
+		);
+		// NEW CORE SECURITY ASSERTION (R1/D1): no secret crosses into the agent
+		// env, even when present in the daemon env.
+		expect("IAGO_TELEGRAM_BOT_TOKEN" in env).toBe(false);
+		expect("GH_TOKEN" in env).toBe(false);
+		expect("IAGO_TELEGRAM_ALLOWED_USER_IDS" in env).toBe(false);
+		// No other arbitrary daemon-process var crossed over.
+		expect("AWS_SECRET_ACCESS_KEY" in env).toBe(false);
+		expect("SOME_OTHER_TOKEN" in env).toBe(false);
+		expect("NODE_ENV" in env).toBe(false);
+		// The composed env contains ONLY: the declared base key + the 2 runtime
+		// vars present in the daemon env — nothing else.
+		expect(Object.keys(env).sort()).toEqual(
+			["HOME", "IAGO_DAEMON_STATE_ROOT", "PATH"].sort(),
+		);
+	});
+
+	// REGRESSION (R1) — a GH/Telegram secret in daemonEnv is NEVER copied into
+	// the composed agent env (the load-bearing D1 property).
+	it("a GH/Telegram secret in daemonEnv is NEVER copied into the composed agent env", () => {
+		const env = composeCronAgentEnv(
+			"pr-triage",
+			{ IAGO_DAEMON_STATE_ROOT: "/state" },
+			{ PATH: "/usr/bin", ...SECRETS } as NodeJS.ProcessEnv,
+		);
+		const serialized = JSON.stringify(env);
+		expect(serialized).not.toContain("tg-secret");
+		expect(serialized).not.toContain("gh-pat-secret");
+		expect(env.IAGO_TELEGRAM_BOT_TOKEN).toBeUndefined();
+		expect(env.GH_TOKEN).toBeUndefined();
+		expect(env.IAGO_TELEGRAM_ALLOWED_USER_IDS).toBeUndefined();
+	});
+
+	// pass#2 FIX D — the daemon's resolved IAGO_DAEMON_STATE_ROOT is overlaid onto
+	// the agent env, OVERWRITING any agent-config default, so the agent writes its
+	// pr-triage-send__ result envelope to the SAME directory the daemon polls.
+	it("(FIX D) overlays the daemon's IAGO_DAEMON_STATE_ROOT (rendezvous coherence)", () => {
+		const env = composeCronAgentEnv(
+			"pr-triage",
+			{ IAGO_DAEMON_STATE_ROOT: "/var/lib/iago-os/daemon-state" },
+			{
+				PATH: "/usr/bin",
+				IAGO_DAEMON_STATE_ROOT: "/resolved/daemon/root",
+			} as NodeJS.ProcessEnv,
+		);
+		// The daemon's resolved value WINS over the agent-config default so the
+		// agent's envelope-write dir and the daemon's poll dir cannot diverge.
+		expect(env.IAGO_DAEMON_STATE_ROOT).toBe("/resolved/daemon/root");
+	});
+
+	// Test 7 (KEPT, under the renamed runtime-trust gate) — an untrusted /
+	// client agent still gets baseEnv UNCHANGED (no PATH injection): the
+	// multi-tenant isolation invariant the claude-pty adapter encodes.
+	it("an UNTRUSTED agent gets baseEnv UNCHANGED — no PATH injected (isolation invariant held)", () => {
+		const base = { IAGO_DAEMON_STATE_ROOT: "/state" };
+		const env = composeCronAgentEnv("rogue-agent", base, {
+			PATH: "/usr/bin:/bin",
+			HOME: "/home/iago",
+			SHELL: "/bin/bash",
+			LANG: "en_US.UTF-8",
+			...SECRETS,
+		} as NodeJS.ProcessEnv);
+		// baseEnv returned unchanged — neither runtime vars NOR secrets injected.
+		expect(env).toEqual(base);
+		expect("PATH" in env).toBe(false);
+		expect("HOME" in env).toBe(false);
+		expect("IAGO_TELEGRAM_BOT_TOKEN" in env).toBe(false);
+		expect("GH_TOKEN" in env).toBe(false);
+	});
+
+	// An absent/empty runtime var is skipped (no empty-string injection).
+	it("a runtime var ABSENT from the daemon env is not injected (no empty entry)", () => {
+		const env = composeCronAgentEnv("pr-triage", {}, {
+			PATH: "/usr/bin",
+		} as NodeJS.ProcessEnv);
+		expect(env.PATH).toBe("/usr/bin");
+		expect("HOME" in env).toBe(false);
+		expect("SHELL" in env).toBe(false);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// R1 (feature-pr84-r1-daemon-creds): makeTaskSendHandler + makeResultTimers
+// ---------------------------------------------------------------------------
+
+function makeSendStubManager(opts?: { claimSucceeds?: boolean }): {
+	mgr: AgentManager;
+	claimCalls: Array<{ filename: string; agentId: string }>;
+	releaseCalls: string[];
+} {
+	const claimSucceeds = opts?.claimSucceeds ?? true;
+	const claimCalls: Array<{ filename: string; agentId: string }> = [];
+	const releaseCalls: string[] = [];
+	const mgr = {
+		// pass#2 Critical fix: claimTask now reports whether the pending→resolved
+		// rename succeeded. The send handler claims the envelope BEFORE the
+		// irreversible Telegram send (at-most-once); a false return means the
+		// rename failed and NO send must happen.
+		claimTask: async (filename: string, agentId: string) => {
+			claimCalls.push({ filename, agentId });
+			return claimSucceeds;
+		},
+		// R1 Critical-1 fix: the send handler ALWAYS releases the per-filename
+		// in-flight guard in its `finally`. The stub records the release so tests
+		// can assert the slot is freed on every outcome (success/failure/noSend).
+		releaseSendSlot: (filename: string) => {
+			releaseCalls.push(filename);
+		},
+	} as unknown as AgentManager;
+	return { mgr, claimCalls, releaseCalls };
+}
+
+function makeFakeTelegram(
+	send: (
+		text: string,
+	) => Promise<{ ok: boolean; status?: number; error?: string }>,
+): {
+	bot: { sendAgentNotification: typeof send };
+	calls: string[];
+} {
+	const calls: string[] = [];
+	const bot = {
+		sendAgentNotification: async (text: string) => {
+			calls.push(text);
+			return send(text);
+		},
+	};
+	return { bot, calls };
+}
+
+describe("makeTaskSendHandler (R1)", () => {
+	it("(TS-1) sendText envelope → sendAgentNotification + claimTask + clearResultTimer", async () => {
+		const { mgr, claimCalls, releaseCalls } = makeSendStubManager();
+		const { bot, calls } = makeFakeTelegram(async () => ({ ok: true }));
+		const emitMock = vi.fn().mockResolvedValue(true);
+		const cleared: string[] = [];
+		const handler = makeTaskSendHandler({
+			agentManager: mgr,
+			emit: emitMock,
+			telegramBot: bot as unknown as import("../telegram/bot.js").TelegramBot,
+			clearResultTimer: (id) => cleared.push(id),
+		});
+
+		const evt: TaskSendEvent = {
+			filename: "pr-triage-send__1700000300-1.json",
+			agentId: "pr-triage",
+			sendText: "PR Triage summary",
+		};
+		await handler(evt);
+
+		expect(calls).toEqual(["PR Triage summary"]);
+		expect(claimCalls).toEqual([
+			{ filename: evt.filename, agentId: "pr-triage" },
+		]);
+		expect(cleared).toEqual(["pr-triage"]);
+		// Critical-1: the in-flight send guard is released on the happy path.
+		expect(releaseCalls).toEqual([evt.filename]);
+		// No send-failed telemetry on the happy path.
+		const failed = emitMock.mock.calls.filter(
+			(c) =>
+				(c[0] as { kind: string }).kind === "pr-triage-telegram-send-failed",
+		);
+		expect(failed).toHaveLength(0);
+	});
+
+	it("(TS-2) failed send → claimed FIRST (at-most-once), send-failed telemetry, no re-trip", async () => {
+		const { mgr, claimCalls, releaseCalls } = makeSendStubManager();
+		const { bot } = makeFakeTelegram(async () => ({
+			ok: false,
+			status: 429,
+			error: "rate",
+		}));
+		const emitMock = vi.fn().mockResolvedValue(true);
+		const cleared: string[] = [];
+		const handler = makeTaskSendHandler({
+			agentManager: mgr,
+			emit: emitMock,
+			telegramBot: bot as unknown as import("../telegram/bot.js").TelegramBot,
+			clearResultTimer: (id) => cleared.push(id),
+		});
+
+		await handler({
+			filename: "pr-triage-send__1700000301-1.json",
+			agentId: "pr-triage",
+			sendText: "summary",
+		});
+
+		// AT-MOST-ONCE: claimed (resolved) BEFORE the send, so a failed send does
+		// NOT re-trip (which would duplicate or storm) — it is recorded instead.
+		expect(claimCalls).toHaveLength(1);
+		const failed = emitMock.mock.calls
+			.map(
+				(c) => c[0] as { kind: string; alertKind?: string; details?: string },
+			)
+			.filter((e) => e.kind === "pr-triage-telegram-send-failed");
+		expect(failed).toHaveLength(1);
+		expect(failed[0].alertKind).toBe("pr-triage-telegram-send-failed");
+		expect(failed[0].details).toContain("429");
+		// Timer always cleared in finally.
+		expect(cleared).toEqual(["pr-triage"]);
+		// The in-flight send guard is released in finally.
+		expect(releaseCalls).toEqual(["pr-triage-send__1700000301-1.json"]);
+	});
+
+	it("(TS-3) noSend envelope → pr-triage-no-send + claim, NO send call", async () => {
+		const { mgr, claimCalls } = makeSendStubManager();
+		const { bot, calls } = makeFakeTelegram(async () => ({ ok: true }));
+		const emitMock = vi.fn().mockResolvedValue(true);
+		const handler = makeTaskSendHandler({
+			agentManager: mgr,
+			emit: emitMock,
+			telegramBot: bot as unknown as import("../telegram/bot.js").TelegramBot,
+			clearResultTimer: () => {},
+		});
+
+		await handler({
+			filename: "pr-triage-send__1700000302-1.json",
+			agentId: "pr-triage",
+			noSend: true,
+		});
+
+		expect(calls).toHaveLength(0);
+		expect(claimCalls).toEqual([
+			{ filename: "pr-triage-send__1700000302-1.json", agentId: "pr-triage" },
+		]);
+		const noSend = emitMock.mock.calls.filter(
+			(c) => (c[0] as { kind: string }).kind === "pr-triage-no-send",
+		);
+		expect(noSend).toHaveLength(1);
+	});
+
+	it("(TS-4) null telegramBot (local-dev) → claimed FIRST (no re-trip storm), records non-delivery", async () => {
+		const { mgr, claimCalls } = makeSendStubManager();
+		const emitMock = vi.fn().mockResolvedValue(true);
+		const handler = makeTaskSendHandler({
+			agentManager: mgr,
+			emit: emitMock,
+			telegramBot: null,
+			clearResultTimer: () => {},
+		});
+
+		await handler({
+			filename: "pr-triage-send__1700000303-1.json",
+			agentId: "pr-triage",
+			sendText: "summary",
+		});
+
+		// AT-MOST-ONCE: claimed (resolved) before the null-bot check, so a
+		// token-less local-dev run records the non-delivery ONCE and does NOT
+		// re-trip every 5s (the unbounded-retry storm the gate flagged).
+		expect(claimCalls).toHaveLength(1);
+		const failed = emitMock.mock.calls
+			.map((c) => c[0] as { kind: string; details?: string })
+			.filter((e) => e.kind === "pr-triage-telegram-send-failed");
+		expect(failed).toHaveLength(1);
+		expect(failed[0].details).toContain("telegram-not-configured");
+	});
+
+	it("(TS-5) noSend NOT claimed when telemetry record fails to persist (durability)", async () => {
+		const { mgr, claimCalls } = makeSendStubManager();
+		const { bot } = makeFakeTelegram(async () => ({ ok: true }));
+		// emit resolves false → degraded telemetry dir.
+		const emitMock = vi.fn().mockResolvedValue(false);
+		const handler = makeTaskSendHandler({
+			agentManager: mgr,
+			emit: emitMock,
+			telegramBot: bot as unknown as import("../telegram/bot.js").TelegramBot,
+			clearResultTimer: () => {},
+		});
+
+		await handler({
+			filename: "pr-triage-send__1700000304-1.json",
+			agentId: "pr-triage",
+			noSend: true,
+		});
+
+		// Not claimed — the no-send event must re-trip next tick.
+		expect(claimCalls).toHaveLength(0);
+	});
+
+	it("(TS-6, Critical) a failed claim (rename fault) does NOT send — no duplicate-send vector", async () => {
+		const { mgr, claimCalls, releaseCalls } = makeSendStubManager({
+			claimSucceeds: false,
+		});
+		const { bot, calls } = makeFakeTelegram(async () => ({ ok: true }));
+		const emitMock = vi.fn().mockResolvedValue(true);
+		const handler = makeTaskSendHandler({
+			agentManager: mgr,
+			emit: emitMock,
+			telegramBot: bot as unknown as import("../telegram/bot.js").TelegramBot,
+			clearResultTimer: () => {},
+		});
+
+		await handler({
+			filename: "pr-triage-send__1700000306-1.json",
+			agentId: "pr-triage",
+			sendText: "summary",
+		});
+
+		// Claim was ATTEMPTED but FAILED → the envelope stays in pending/ for a
+		// later retry and the Telegram send is NEVER attempted, so a post-send
+		// claim failure can never produce a duplicate user-visible send (the
+		// pass#2 Critical). The in-flight slot is still released so a later tick
+		// can retry the claim.
+		expect(claimCalls).toHaveLength(1);
+		expect(calls).toHaveLength(0);
+		expect(releaseCalls).toEqual(["pr-triage-send__1700000306-1.json"]);
+	});
+
+	it("(TS-7, F3) a transient {ok:false} then {ok:true} → exactly ONE delivery, claimed once, no duplicate (fake timers)", async () => {
+		vi.useFakeTimers();
+		try {
+			const { mgr, claimCalls, releaseCalls } = makeSendStubManager();
+			// First attempt fails (429), second succeeds — the bounded retry must
+			// absorb the blip rather than losing the day's summary.
+			const responses: Array<{
+				ok: boolean;
+				status?: number;
+				error?: string;
+			}> = [{ ok: false, status: 429, error: "rate" }, { ok: true }];
+			const { bot, calls } = makeFakeTelegram(async () => {
+				const next = responses.shift();
+				return next ?? { ok: true };
+			});
+			const emitMock = vi.fn().mockResolvedValue(true);
+			const cleared: string[] = [];
+			const handler = makeTaskSendHandler({
+				agentManager: mgr,
+				emit: emitMock,
+				telegramBot: bot as unknown as import("../telegram/bot.js").TelegramBot,
+				clearResultTimer: (id) => cleared.push(id),
+				backoffMs: [10, 20],
+			});
+
+			const p = handler({
+				filename: "pr-triage-send__1700000307-1.json",
+				agentId: "pr-triage",
+				sendText: "summary",
+			});
+			// Drain the awaited backoff delay between attempt 1 and attempt 2.
+			await vi.advanceTimersByTimeAsync(10);
+			await p;
+
+			// Exactly two send attempts (fail → retry → success); ONE delivery to
+			// the user (the second call) and never a duplicate.
+			expect(calls).toHaveLength(2);
+			// Claimed exactly once — the at-most-once claim happens before the
+			// first attempt and is NOT repeated on retry.
+			expect(claimCalls).toHaveLength(1);
+			// No send-failed telemetry: the retry recovered.
+			const failed = emitMock.mock.calls.filter(
+				(c) =>
+					(c[0] as { kind: string }).kind === "pr-triage-telegram-send-failed",
+			);
+			expect(failed).toHaveLength(0);
+			expect(cleared).toEqual(["pr-triage"]);
+			expect(releaseCalls).toEqual(["pr-triage-send__1700000307-1.json"]);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("(TS-8, F3) a persistent {ok:false} → BOUNDED attempts then ONE send-failed + resolved, no infinite loop (fake timers)", async () => {
+		vi.useFakeTimers();
+		try {
+			const { mgr, claimCalls, releaseCalls } = makeSendStubManager();
+			// Every attempt fails — the loop MUST give up after the bounded budget,
+			// never spin forever.
+			const { bot, calls } = makeFakeTelegram(async () => ({
+				ok: false,
+				status: 500,
+				error: "server",
+			}));
+			const emitMock = vi.fn().mockResolvedValue(true);
+			const backoff = [10, 20];
+			const handler = makeTaskSendHandler({
+				agentManager: mgr,
+				emit: emitMock,
+				telegramBot: bot as unknown as import("../telegram/bot.js").TelegramBot,
+				clearResultTimer: () => {},
+				backoffMs: backoff,
+			});
+
+			const p = handler({
+				filename: "pr-triage-send__1700000308-1.json",
+				agentId: "pr-triage",
+				sendText: "summary",
+			});
+			// Advance past every backoff delay so all retries resolve.
+			await vi.advanceTimersByTimeAsync(10 + 20 + 1);
+			await p;
+
+			// BOUNDED: exactly 1 + backoff.length total attempts, never more.
+			expect(calls).toHaveLength(1 + backoff.length);
+			// Claimed exactly once (at-most-once before the first attempt).
+			expect(claimCalls).toHaveLength(1);
+			// EXACTLY ONE send-failed telemetry after the budget is exhausted —
+			// not one-per-attempt, and not an unbounded storm.
+			const failed = emitMock.mock.calls.filter(
+				(c) =>
+					(c[0] as { kind: string }).kind === "pr-triage-telegram-send-failed",
+			);
+			expect(failed).toHaveLength(1);
+			expect(releaseCalls).toEqual(["pr-triage-send__1700000308-1.json"]);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("(TS-9, Minor) an empty sendText is treated as noSend → pr-triage-no-send, NO blank delivery", async () => {
+		const { mgr, claimCalls } = makeSendStubManager();
+		const { bot, calls } = makeFakeTelegram(async () => ({ ok: true }));
+		const emitMock = vi.fn().mockResolvedValue(true);
+		const handler = makeTaskSendHandler({
+			agentManager: mgr,
+			emit: emitMock,
+			telegramBot: bot as unknown as import("../telegram/bot.js").TelegramBot,
+			clearResultTimer: () => {},
+		});
+
+		await handler({
+			filename: "pr-triage-send__1700000309-1.json",
+			agentId: "pr-triage",
+			sendText: "   ",
+		});
+
+		// No blank message delivered.
+		expect(calls).toHaveLength(0);
+		// Recorded as no-send and resolved (durability gate satisfied).
+		const noSend = emitMock.mock.calls.filter(
+			(c) => (c[0] as { kind: string }).kind === "pr-triage-no-send",
+		);
+		expect(noSend).toHaveLength(1);
+		expect(claimCalls).toHaveLength(1);
+		// Must NOT emit a send-failed for an empty summary.
+		const failed = emitMock.mock.calls.filter(
+			(c) =>
+				(c[0] as { kind: string }).kind === "pr-triage-telegram-send-failed",
+		);
+		expect(failed).toHaveLength(0);
+	});
+
+	it("(TS-10) TELEGRAM_SEND_RETRY_BACKOFF_MS is a bounded, non-empty positive schedule", () => {
+		expect(Array.isArray(TELEGRAM_SEND_RETRY_BACKOFF_MS)).toBe(true);
+		expect(TELEGRAM_SEND_RETRY_BACKOFF_MS.length).toBeGreaterThan(0);
+		for (const d of TELEGRAM_SEND_RETRY_BACKOFF_MS) {
+			expect(typeof d).toBe("number");
+			expect(d).toBeGreaterThan(0);
+		}
+	});
+});
+
+describe("makeResultTimers + dispatch arming (R1 D4 dead-letter)", () => {
+	it("(RT-1) startResultTimer emits pr-triage-result-timeout after the deadline (fake timers)", async () => {
+		vi.useFakeTimers();
+		const emitMock = vi.fn().mockResolvedValue(true);
+		const { startResultTimer } = makeResultTimers({
+			emit: emitMock,
+			timeoutMs: 1000,
+		});
+
+		startResultTimer("pr-triage");
+		expect(emitMock).not.toHaveBeenCalled();
+
+		await vi.advanceTimersByTimeAsync(1000);
+
+		const timeouts = emitMock.mock.calls.filter(
+			(c) => (c[0] as { kind: string }).kind === "pr-triage-result-timeout",
+		);
+		expect(timeouts).toHaveLength(1);
+		expect(timeouts[0][0]).toMatchObject({
+			kind: "pr-triage-result-timeout",
+			agentId: "pr-triage",
+			reason: "no-envelope-before-deadline",
+		});
+	});
+
+	it("(RT-2) clearResultTimer cancels the dead-letter timer (no emit)", async () => {
+		vi.useFakeTimers();
+		const emitMock = vi.fn().mockResolvedValue(true);
+		const { startResultTimer, clearResultTimer } = makeResultTimers({
+			emit: emitMock,
+			timeoutMs: 1000,
+		});
+
+		startResultTimer("pr-triage");
+		clearResultTimer("pr-triage");
+		await vi.advanceTimersByTimeAsync(2000);
+
+		expect(
+			emitMock.mock.calls.filter(
+				(c) => (c[0] as { kind: string }).kind === "pr-triage-result-timeout",
+			),
+		).toHaveLength(0);
+	});
+
+	it("(RT-3) a re-fire overwrites the prior timer (single in-flight per agent)", async () => {
+		vi.useFakeTimers();
+		const emitMock = vi.fn().mockResolvedValue(true);
+		const { startResultTimer } = makeResultTimers({
+			emit: emitMock,
+			timeoutMs: 1000,
+		});
+
+		startResultTimer("pr-triage");
+		await vi.advanceTimersByTimeAsync(500);
+		// Re-fire resets the clock (clear-then-set).
+		startResultTimer("pr-triage");
+		await vi.advanceTimersByTimeAsync(700);
+		// 1200ms total elapsed but only 700ms since the re-fire — not yet fired.
+		expect(
+			emitMock.mock.calls.filter(
+				(c) => (c[0] as { kind: string }).kind === "pr-triage-result-timeout",
+			),
+		).toHaveLength(0);
+		await vi.advanceTimersByTimeAsync(400);
+		expect(
+			emitMock.mock.calls.filter(
+				(c) => (c[0] as { kind: string }).kind === "pr-triage-result-timeout",
+			),
+		).toHaveLength(1);
+	});
+
+	it("(RT-4) RESULT_TIMEOUT_MS default is a positive number", () => {
+		expect(typeof RESULT_TIMEOUT_MS).toBe("number");
+		expect(RESULT_TIMEOUT_MS).toBeGreaterThan(0);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// R1 (feature-pr84-r1-daemon-creds): makePrTriageCronPrompt
+// ---------------------------------------------------------------------------
+
+describe("makePrTriageCronPrompt (R1)", () => {
+	const cron = {
+		agentId: "pr-triage",
+		schedule: "0 14 * * *",
+		wakeCheck: undefined,
+		promptTemplatePath: "/tmp/template.md",
+		outputTaskNamePrefix: "pr-triage",
+		maxConcurrent: 1,
+	};
+
+	it("(CP-1) zero open PRs → { skip: true, reason: 'no-open-prs' } (replaces wake-check)", async () => {
+		const fetchImpl = vi.fn(
+			async () =>
+				new Response(JSON.stringify({ data: { search: { nodes: [] } } }), {
+					status: 200,
+				}),
+		) as unknown as typeof fetch;
+		const prepare = makePrTriageCronPrompt({
+			token: "ghp_token",
+			fetchImpl,
+			readTemplate: () => `prompt ${PR_DATA_PLACEHOLDER}`,
+		});
+		const result = await prepare(cron);
+		expect(result.skip).toBe(true);
+		expect(result.reason).toBe("no-open-prs");
+		expect(result.prompt).toBeUndefined();
+	});
+
+	it("(CP-3, FIX C) reads GH_TOKEN lazily via getToken at fire-time (picks up SIGHUP rotation)", async () => {
+		let currentToken: string | undefined = "ghp_old_token";
+		const seenAuth: Array<string | undefined> = [];
+		const fetchImpl = vi.fn(
+			async (_url: string | URL | Request, init?: RequestInit) => {
+				const auth = (init?.headers as Record<string, string> | undefined)
+					?.Authorization;
+				seenAuth.push(auth);
+				return new Response(
+					JSON.stringify({ data: { search: { nodes: [] } } }),
+					{ status: 200 },
+				);
+			},
+		) as unknown as typeof fetch;
+		const prepare = makePrTriageCronPrompt({
+			getToken: () => currentToken,
+			fetchImpl,
+			readTemplate: () => `prompt ${PR_DATA_PLACEHOLDER}`,
+		});
+		await prepare(cron);
+		// Simulate a SIGHUP credential rotation between daily fires.
+		currentToken = "ghp_rotated_token";
+		await prepare(cron);
+		// The SECOND fetch used the ROTATED token — the closure read it at fire
+		// time rather than capturing a value once at startDaemon.
+		expect(seenAuth[0]).toBe("Bearer ghp_old_token");
+		expect(seenAuth[1]).toBe("Bearer ghp_rotated_token");
+	});
+
+	it("(CP-2) non-zero PRs → { skip: false, prompt } with the payload injected and NO credentials", async () => {
+		const fetchImpl = vi.fn(
+			async () =>
+				new Response(
+					JSON.stringify({
+						data: {
+							search: {
+								nodes: [
+									{
+										number: 42,
+										title: "Fix",
+										url: "u",
+										author: { login: "ilsantino" },
+										reviewDecision: "APPROVED",
+										createdAt: "2026-05-20T00:00:00.000Z",
+										updatedAt: "2026-05-29T00:00:00.000Z",
+										body: "x",
+										labels: { nodes: [] },
+										comments: { nodes: [] },
+										statusCheckRollup: {
+											state: "SUCCESS",
+											contexts: { nodes: [] },
+										},
+									},
+								],
+							},
+						},
+					}),
+					{ status: 200 },
+				),
+		) as unknown as typeof fetch;
+		const prepare = makePrTriageCronPrompt({
+			token: "ghp_secret_token_value",
+			fetchImpl,
+			readTemplate: () => `PR DATA: ${PR_DATA_PLACEHOLDER}\nclassify it`,
+			nowFn: () => Date.parse("2026-05-31T00:00:00.000Z"),
+		});
+		const result = await prepare(cron);
+		expect(result.skip).toBe(false);
+		expect(typeof result.prompt).toBe("string");
+		const prompt = result.prompt ?? "";
+		// Payload injected.
+		expect(prompt).toContain('"totalCount": 1');
+		expect(prompt).toContain('"number": 42');
+		expect(prompt).toContain('"ageDays": 2');
+		// Placeholder consumed.
+		expect(prompt).not.toContain(PR_DATA_PLACEHOLDER);
+		// No credential / gh / curl leaks into the rendered prompt.
+		expect(prompt).not.toContain("ghp_secret_token_value");
+		expect(prompt).not.toContain("GH_TOKEN");
+		expect(prompt).not.toContain("IAGO_TELEGRAM_BOT_TOKEN");
+	});
+
+	it("(CP-3) fetch error → { skip: true, reason: 'pr-fetch-failed' } (no spawn with stale data)", async () => {
+		const fetchImpl = vi.fn(
+			async () =>
+				new Response(JSON.stringify({ message: "Bad credentials" }), {
+					status: 401,
+				}),
+		) as unknown as typeof fetch;
+		const prepare = makePrTriageCronPrompt({
+			token: "ghp_token",
+			fetchImpl,
+			readTemplate: () => "prompt",
+		});
+		const result = await prepare(cron);
+		expect(result.skip).toBe(true);
+		expect(result.reason).toBe("pr-fetch-failed");
+	});
+
+	it("(CP-4) missing GH_TOKEN → { skip: true, reason: 'pr-fetch-failed' } (no fetch attempted)", async () => {
+		const fetchImpl = vi.fn() as unknown as typeof fetch;
+		const prepare = makePrTriageCronPrompt({
+			token: undefined,
+			fetchImpl,
+			readTemplate: () => "prompt",
+		});
+		const result = await prepare(cron);
+		expect(result.skip).toBe(true);
+		expect(result.reason).toBe("pr-fetch-failed");
+		expect(fetchImpl).not.toHaveBeenCalled();
 	});
 });

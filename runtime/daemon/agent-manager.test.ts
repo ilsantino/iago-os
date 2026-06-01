@@ -1948,6 +1948,11 @@ describe("AgentManager / polling-loop (Plan 07b)", () => {
 		const filename = "pr-triage__1700000001.json";
 		writePendingTask(filename, "{ not valid json");
 
+		// pr84 consumer-tolerance: a JSON.parse failure is granted
+		// JSON_PARSE_RETRY_BUDGET (=1) tick(s) of grace (transient mid-write
+		// protection) and only poisoned on the FOLLOWING tick. Run budget+1
+		// ticks so this persistently-malformed file lands in poisoned/.
+		await mgr._pollingTickForTests();
 		await mgr._pollingTickForTests();
 
 		// Pending no longer has the file; poisoned has it.
@@ -2157,6 +2162,9 @@ describe("AgentManager / polling-loop (Plan 07b)", () => {
 
 		// Polling tick: malformed JSON → poisonTask → emits task-poisoned with
 		// derived agentId "pr-triage" → CronScheduler decrements runningCount.
+		// pr84 consumer-tolerance: 1 tick of grace before poisoning, so run
+		// budget+1 (=2) ticks for the persistently-corrupt file to be poisoned.
+		await mgr._pollingTickForTests();
 		await mgr._pollingTickForTests();
 		expect(scheduler._runningCountForTests().get("pr-triage") ?? 0).toBe(0);
 
@@ -2223,6 +2231,12 @@ describe("AgentManager / polling-loop (Plan 07b)", () => {
 			needsApproval: false,
 		});
 
+		// pr84: persistAgentConfig now publishes the agent config via an atomic
+		// temp-file rename during registerAgent (above), which calls renameMock
+		// once. Clear that setup call so the count assertion below reflects ONLY
+		// the claimTask rename under test.
+		renameMock.mockClear();
+
 		// Force the next fsp.rename to throw EACCES. The polling tick for a
 		// valid+routed task hits exactly one rename (claimTask), so the
 		// once-rejection fires precisely at the claim attempt; subsequent
@@ -2270,6 +2284,215 @@ describe("AgentManager / polling-loop (Plan 07b)", () => {
 		await expect(
 			fsp.access(path.join(pathFor("tasks/resolved"), filename)),
 		).rejects.toThrow();
+	});
+});
+
+// ============================================================
+// pr84 IMPORTANT — persistAgentConfig at-rest secret race on OVERWRITE
+// ============================================================
+
+describe("AgentManager / persistAgentConfig overwrite-mode (pr84 Codex at-rest)", () => {
+	it.skipIf(process.platform === "win32")(
+		"persists <handleId>.json at mode 0600 even when the dest PRE-EXISTS at 0644",
+		async () => {
+			// `fsp.writeFile`'s `mode` option is honored ONLY on file CREATION.
+			// On OVERWRITE (e.g. a re-registration reusing the same handleId →
+			// same filename) the prior — possibly looser — mode would persist
+			// unless the write path forces 0600. The fix writes a FRESH 0600 temp
+			// file then atomic-renames over the dest, so the published file is
+			// always 0600 regardless of any prior mode. This test fails pre-fix
+			// (the dest kept its 0644 mode through the overwrite window) and
+			// passes after. POSIX-only — NTFS ignores POSIX mode bits.
+			//
+			// A custom mock runtime returns a FIXED handle id so the second
+			// registerAgent OVERWRITES the first's persisted `<handleId>.json`
+			// (same agentId + same org re-registration is permitted; see the
+			// CRITICAL #1 "same org" test above).
+			const fixedHandleId = "overwrite-fixed-h";
+			const ctrl = makeMockRuntime("mock-pty-overwrite");
+			ctrl.runtime.spawn = async (opts: SpawnOpts): Promise<AgentHandle> => {
+				ctrl.spawnCalls.push(opts);
+				return {
+					id: fixedHandleId,
+					runtime: "mock-pty-overwrite",
+					shape: "pty",
+					agentId: opts.agentId,
+					sessionId: opts.sessionId,
+					generationToken: 0,
+					org: opts.org,
+					parentHandleId: opts.parentHandle?.id,
+					spawnedAt: Date.now(),
+					markerPath: path.join(
+						pathFor("markers"),
+						`${fixedHandleId}.daemon-stop`,
+					),
+				};
+			};
+			registerRuntime(ctrl.runtime);
+			const mgr = new AgentManager();
+
+			const persistedFile = path.join(
+				pathFor("agents"),
+				`${fixedHandleId}.json`,
+			);
+
+			// First registration creates the persisted config at 0600.
+			await mgr.registerAgent({
+				agentId: "overwrite-agent",
+				runtimeId: "mock-pty-overwrite",
+				org: "org-1",
+				cwd: "/tmp/w",
+				env: { IAGO_TELEGRAM_BOT_TOKEN: "secret-token" },
+				sessionId: "sess-ow-1",
+			});
+			expect((await fsp.stat(persistedFile)).mode & 0o777).toBe(0o600);
+
+			// Simulate an older build / a leak: loosen the dest to 0644 so the
+			// OVERWRITE path is exercised on the next registerAgent.
+			await fsp.chmod(persistedFile, 0o644);
+			expect((await fsp.stat(persistedFile)).mode & 0o777).toBe(0o644);
+
+			// Re-register (same agentId + same org) → persistAgentConfig OVERWRITES
+			// the pre-existing 0644 file. The fix re-tightens it to 0600.
+			await mgr.registerAgent({
+				agentId: "overwrite-agent",
+				runtimeId: "mock-pty-overwrite",
+				org: "org-1",
+				cwd: "/tmp/w",
+				env: { IAGO_TELEGRAM_BOT_TOKEN: "secret-token" },
+				sessionId: "sess-ow-2",
+			});
+
+			expect((await fsp.stat(persistedFile)).mode & 0o777).toBe(0o600);
+			// No stray temp file left behind by the atomic-rename publish.
+			await expect(fsp.stat(`${persistedFile}.tmp`)).rejects.toThrow();
+		},
+	);
+
+	it("swallows a persist write/rename failure and cleans up the secret-bearing .tmp (pr84 Finding 3)", async () => {
+		// Finding 3 (pr84 dual-adversarial, Important — coverage gap): the
+		// persist path writes a fresh 0o600 temp file then atomic-renames it
+		// over the dest. If the write/chmod/rename throws (ENOSPC/EACCES/
+		// ENOTDIR), the catch MUST (a) best-effort unlink the stray
+		// secret-bearing `.tmp` so a Telegram token + GH PAT are not left on
+		// disk, and (b) SWALLOW the error so a transient persist failure does
+		// not crash `registerAgent`. Only the success path was tested before.
+		// Platform-agnostic: asserts cleanup + non-throw, not POSIX mode bits.
+		const fixedHandleId = "persist-fail-fixed-h";
+		const ctrl = makeMockRuntime("mock-pty-persist-fail");
+		ctrl.runtime.spawn = async (opts: SpawnOpts): Promise<AgentHandle> => {
+			ctrl.spawnCalls.push(opts);
+			return {
+				id: fixedHandleId,
+				runtime: "mock-pty-persist-fail",
+				shape: "pty",
+				agentId: opts.agentId,
+				sessionId: opts.sessionId,
+				generationToken: 0,
+				org: opts.org,
+				parentHandleId: opts.parentHandle?.id,
+				spawnedAt: Date.now(),
+				markerPath: path.join(
+					pathFor("markers"),
+					`${fixedHandleId}.daemon-stop`,
+				),
+			};
+		};
+		registerRuntime(ctrl.runtime);
+		const mgr = new AgentManager();
+
+		const persistedFile = path.join(pathFor("agents"), `${fixedHandleId}.json`);
+		const tmpFile = `${persistedFile}.tmp`;
+
+		// Force ONLY the persist rename (`<tmp>` -> `<handleId>.json`) to fail,
+		// passing every OTHER rename through to the real fs so the rest of
+		// registration is unaffected (deterministic regardless of call order).
+		renameMock.mockImplementation((source, dest) => {
+			if (String(dest).endsWith(`${fixedHandleId}.json`)) {
+				return Promise.reject(
+					Object.assign(new Error("ENOSPC: no space left on device, rename"), {
+						code: "ENOSPC",
+					}),
+				);
+			}
+			if (renameState.real === null) {
+				throw new Error("renameState.real not initialized by vi.mock factory");
+			}
+			return renameState.real(source, dest);
+		});
+
+		// (b) registerAgent RESOLVES despite the persist failure — error swallowed.
+		await expect(
+			mgr.registerAgent({
+				agentId: "persist-fail-agent",
+				runtimeId: "mock-pty-persist-fail",
+				org: "org-1",
+				cwd: "/tmp/w",
+				env: { IAGO_TELEGRAM_BOT_TOKEN: "secret-token", GH_TOKEN: "gh-pat" },
+				sessionId: "sess-persist-fail",
+			}),
+		).resolves.toBeDefined();
+
+		// (a) The stray secret-bearing `.tmp` was cleaned up by the catch's unlink.
+		await expect(fsp.stat(tmpFile)).rejects.toThrow();
+		// The dest config was never published (the rename failed before publish).
+		await expect(fsp.stat(persistedFile)).rejects.toThrow();
+	});
+});
+
+describe("AgentManager / restartAgent reuse-id + env re-compose (pr84 R2)", () => {
+	it("reuses the stable handle id, tears down the dead handle, and overwrites the config with the re-composed env", async () => {
+		// pr84 R2 + twin: on a cron crash-restart the daemon must reuse the
+		// STABLE handle id (teardown the dead handle, re-spawn via restoreId) so
+		// exactly ONE handle remains and `findHandleForAgent` resolves the LIVE
+		// one — a plain re-register would ADD a second handle and route every
+		// dispatch to the DEAD one. Reusing the id also OVERWRITES the same
+		// `<handleId>.json`, so secret-bearing orphan configs do not accumulate
+		// and a rotated cred replaces the stale one on disk.
+		const ctrl = makeMockRuntime("mock-pty-r2");
+		registerRuntime(ctrl.runtime);
+		const mgr = new AgentManager();
+		const h1 = await mgr.registerAgent({
+			agentId: "pr-triage",
+			runtimeId: "mock-pty-r2",
+			org: "internal",
+			cwd: "/tmp/w",
+			env: { GH_TOKEN: "old-pat" },
+			sessionId: "sess-r2",
+		});
+		const agentsDir = pathFor("agents");
+		const jsonAfterRegister = (await fsp.readdir(agentsDir)).filter((f) =>
+			f.endsWith(".json"),
+		);
+		expect(jsonAfterRegister).toHaveLength(1);
+
+		// Restart with a RE-COMPOSED env (simulates the cron loop re-running
+		// composeCronAgentEnv against rotated daemon creds).
+		const h2 = await mgr.restartAgent(h1.id, "crash", {
+			envOverride: { GH_TOKEN: "new-pat" },
+		});
+
+		// (1) Same stable id — restoreId reuse, not a fresh id.
+		expect(h2.id).toBe(h1.id);
+		// (2) Exactly ONE handle for the agent — the dead handle was torn down,
+		// not left to coexist (the R2 routing defect).
+		const live = mgr.listHandles().filter((h) => h.agentId === "pr-triage");
+		expect(live).toHaveLength(1);
+		expect(live[0]?.id).toBe(h1.id);
+		expect(mgr.getHandle(h1.id)).toBeDefined();
+		// (3) No orphan config accumulation — still ONE file (overwritten), now
+		// carrying the ROTATED cred (boot-recovery rebuilds from current creds).
+		const jsonAfterRestart = (await fsp.readdir(agentsDir)).filter((f) =>
+			f.endsWith(".json"),
+		);
+		expect(jsonAfterRestart).toHaveLength(1);
+		const persisted = JSON.parse(
+			await fsp.readFile(
+				path.join(agentsDir, jsonAfterRestart[0] as string),
+				"utf8",
+			),
+		) as { env?: Record<string, string> };
+		expect(persisted.env?.GH_TOKEN).toBe("new-pat");
 	});
 });
 
@@ -2665,5 +2888,191 @@ describe("AgentManager / task-dispatch-needed event (Plan 04d)", () => {
 			filename,
 			reason: "missing-agent-id",
 		});
+	});
+});
+
+// ============================================================
+// R1 (feature-pr84-r1-daemon-creds): task-send-needed envelope routing
+// ============================================================
+
+describe("AgentManager / task-send-needed envelope (R1)", () => {
+	it("(SE-1) a pr-triage-send__ envelope with sendText routes to 'task-send-needed', NOT dispatch, NOT poisoned", async () => {
+		const ctrl = makeMockRuntime("mock-pty-se1");
+		registerRuntime(ctrl.runtime);
+		const mgr = new AgentManager();
+		await mgr.registerAgent({
+			agentId: "pr-triage",
+			runtimeId: "mock-pty-se1",
+			cwd: "/tmp/w",
+			env: {},
+			sessionId: "sess-se1",
+		});
+
+		const filename = "pr-triage-send__1700000200-123.json";
+		writePendingTask(filename, {
+			agentId: "pr-triage",
+			sendText: "PR Triage summary\n\n3 open PRs",
+		});
+
+		const sendEvents: Array<{
+			filename: string;
+			agentId: string;
+			sendText?: string;
+		}> = [];
+		const dispatchEvents: unknown[] = [];
+		mgr.on(
+			"task-send-needed",
+			(e: { filename: string; agentId: string; sendText?: string }) => {
+				sendEvents.push(e);
+			},
+		);
+		mgr.on("task-dispatch-needed", (e: unknown) => {
+			dispatchEvents.push(e);
+		});
+
+		await mgr._pollingTickForTests();
+
+		expect(sendEvents).toHaveLength(1);
+		expect(sendEvents[0]).toMatchObject({
+			filename,
+			agentId: "pr-triage",
+			sendText: "PR Triage summary\n\n3 open PRs",
+		});
+		// Never routes into the dispatch path (would be `malformed-task`).
+		expect(dispatchEvents).toHaveLength(0);
+		// processPendingTask does NOT claim — the daemon send handler owns that.
+		await fsp.access(path.join(pathFor("tasks/pending"), filename));
+		await expect(
+			fsp.access(path.join(pathFor("tasks/poisoned"), filename)),
+		).rejects.toThrow();
+		expect(emittedEventsOfKind("pr-triage-dispatch-failed")).toHaveLength(0);
+	});
+
+	it("(SE-2) a pr-triage-send__ envelope with noSend routes to 'task-send-needed' with noSend:true", async () => {
+		const ctrl = makeMockRuntime("mock-pty-se2");
+		registerRuntime(ctrl.runtime);
+		const mgr = new AgentManager();
+		await mgr.registerAgent({
+			agentId: "pr-triage",
+			runtimeId: "mock-pty-se2",
+			cwd: "/tmp/w",
+			env: {},
+			sessionId: "sess-se2",
+		});
+
+		const filename = "pr-triage-send__1700000201-456.json";
+		writePendingTask(filename, { agentId: "pr-triage", noSend: true });
+
+		const sendEvents: Array<{ noSend?: boolean; sendText?: string }> = [];
+		mgr.on("task-send-needed", (e: { noSend?: boolean; sendText?: string }) => {
+			sendEvents.push(e);
+		});
+
+		await mgr._pollingTickForTests();
+
+		expect(sendEvents).toHaveLength(1);
+		expect(sendEvents[0].noSend).toBe(true);
+		expect(sendEvents[0].sendText).toBeUndefined();
+	});
+
+	it("(SE-5 dedup, Critical-1) two ticks while the send is in-flight emit 'task-send-needed' only ONCE; releaseSendSlot re-arms it", async () => {
+		const ctrl = makeMockRuntime("mock-pty-se5");
+		registerRuntime(ctrl.runtime);
+		const mgr = new AgentManager();
+		await mgr.registerAgent({
+			agentId: "pr-triage",
+			runtimeId: "mock-pty-se5",
+			cwd: "/tmp/w",
+			env: {},
+			sessionId: "sess-se5",
+		});
+
+		const filename = "pr-triage-send__1700000205-555.json";
+		writePendingTask(filename, { agentId: "pr-triage", sendText: "summary" });
+
+		const sendEvents: unknown[] = [];
+		mgr.on("task-send-needed", (e: unknown) => sendEvents.push(e));
+
+		// The daemon send handler (which awaits the Telegram round-trip THEN claims)
+		// is NOT wired here, so the envelope stays in pending/ across ticks — exactly
+		// the slow-send window. Critical-1: the `sendInFlight` guard must suppress the
+		// duplicate emit so the daemon never fires a SECOND Telegram send for the
+		// same summary while the first is still in flight.
+		await mgr._pollingTickForTests();
+		await mgr._pollingTickForTests();
+		expect(sendEvents).toHaveLength(1);
+
+		// Once the send handler resolves (success OR failure) it releases the slot
+		// in its `finally`; a later tick may then legitimately re-emit (a failed send
+		// left in pending/ re-trips). Proves the guard is released, not leaked.
+		mgr.releaseSendSlot(filename);
+		await mgr._pollingTickForTests();
+		expect(sendEvents).toHaveLength(2);
+	});
+
+	it("(SE-3 provenance) a foreign rogue-agent__ file with a sendText body does NOT match the send branch", async () => {
+		const ctrl = makeMockRuntime("mock-pty-se3");
+		registerRuntime(ctrl.runtime);
+		const mgr = new AgentManager();
+		// Register the rogue agent so the file does not just go unrouted —
+		// we want to prove it falls through to the DISPATCH path, not send.
+		await mgr.registerAgent({
+			agentId: "rogue-agent",
+			runtimeId: "mock-pty-se3",
+			cwd: "/tmp/w",
+			env: {},
+			sessionId: "sess-se3",
+		});
+
+		const filename = "rogue-agent__1700000202-789.json";
+		writePendingTask(filename, {
+			agentId: "rogue-agent",
+			sendText: "attacker-controlled summary",
+		});
+
+		const sendEvents: unknown[] = [];
+		const dispatchEvents: unknown[] = [];
+		mgr.on("task-send-needed", (e: unknown) => sendEvents.push(e));
+		mgr.on("task-dispatch-needed", (e: unknown) => dispatchEvents.push(e));
+
+		await mgr._pollingTickForTests();
+
+		// The provenance guard (filename prefix + agentId === "pr-triage")
+		// prevents a foreign producer from triggering a daemon send.
+		expect(sendEvents).toHaveLength(0);
+		// It falls through to the normal dispatch path instead.
+		expect(dispatchEvents).toHaveLength(1);
+	});
+
+	it("(SE-4 provenance) a pr-triage-send__ file with a non-empty prompt does NOT match the send branch (falls through to dispatch)", async () => {
+		const ctrl = makeMockRuntime("mock-pty-se4");
+		registerRuntime(ctrl.runtime);
+		const mgr = new AgentManager();
+		await mgr.registerAgent({
+			agentId: "pr-triage",
+			runtimeId: "mock-pty-se4",
+			cwd: "/tmp/w",
+			env: {},
+			sessionId: "sess-se4",
+		});
+
+		const filename = "pr-triage-send__1700000203-111.json";
+		writePendingTask(filename, {
+			agentId: "pr-triage",
+			sendText: "summary",
+			prompt: "but also a prompt",
+		});
+
+		const sendEvents: unknown[] = [];
+		const dispatchEvents: unknown[] = [];
+		mgr.on("task-send-needed", (e: unknown) => sendEvents.push(e));
+		mgr.on("task-dispatch-needed", (e: unknown) => dispatchEvents.push(e));
+
+		await mgr._pollingTickForTests();
+
+		// A combined prompt+sendText shape is NOT a clean send envelope — the
+		// `!sendHasPrompt` guard routes it to dispatch.
+		expect(sendEvents).toHaveLength(0);
+		expect(dispatchEvents).toHaveLength(1);
 	});
 });

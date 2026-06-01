@@ -63,8 +63,13 @@ import {
 	appendEvent,
 	cancelPendingAppends,
 } from "./session-log.js";
-import { assertSafeIdentifier, getErrnoCode, pathFor } from "./state-paths.js";
-import { emit as emitTelemetry } from "./telemetry.js";
+import {
+	assertSafeIdentifier,
+	atomicRenameStaleDest,
+	getErrnoCode,
+	pathFor,
+} from "./state-paths.js";
+import { PR_TRIAGE_ALERT_KINDS, emit as emitTelemetry } from "./telemetry.js";
 
 export interface AgentManagerOpts {
 	readonly heartbeat?: HeartbeatController;
@@ -85,6 +90,22 @@ export interface SpawnSubagentOpts {
 	readonly runtimeId: string;
 	readonly sessionId: string;
 	readonly env?: Record<string, string>;
+}
+
+/**
+ * Optional inputs for {@link AgentManager.restartAgent}.
+ *
+ * `envOverride` lets a restart RE-COMPOSE the spawn env from current sources
+ * (e.g. the cron restart loop re-running `composeCronAgentEnv` against the
+ * live `process.env`) instead of reusing the env captured at the first spawn.
+ * When omitted, the existing env is preserved verbatim — heartbeat-, IPC-, and
+ * Telegram-triggered restarts deliberately reuse the prior creds. When
+ * supplied, the on-disk `<handleId>.json` config is also re-persisted so
+ * boot-recovery rebuilds the spawn env from the rotated creds, not a stale
+ * snapshot (pr84 R2/twin).
+ */
+export interface RestartAgentOpts {
+	readonly envOverride?: Record<string, string>;
 }
 
 export interface BootRecoveryResult {
@@ -148,6 +169,17 @@ export class AgentIdAlreadyRegisteredError extends Error {
  * AgentManager memory by writing a 1GB task. Exported for test access.
  */
 export const TASK_PAYLOAD_MAX_BYTES = 1_048_576;
+
+/**
+ * pr84 CRITICAL (consumer tolerance): number of consecutive polling ticks a
+ * `.json` task file may fail `JSON.parse` before it is poisoned. A
+ * non-atomically-written file caught mid-write parses on a later tick; a
+ * genuinely-malformed file exhausts the budget and is poisoned. Set to 1 so
+ * a single transient failure is tolerated (the file is re-read next tick) but
+ * a persistently-broken file poisons promptly on the second failure — bounding
+ * the retry so a corrupt task cannot loop forever. Exported for test access.
+ */
+export const JSON_PARSE_RETRY_BUDGET = 1;
 
 /**
  * Plan 04d Task 1 — typed shape of the `taskContent` payload carried on
@@ -284,6 +316,41 @@ export class AgentManager extends EventEmitter {
 	 * called from the listener's `finally` block.
 	 */
 	private readonly dispatchInFlight = new Set<string>();
+	/**
+	 * R1 dual-adversarial round-1 Critical fix: per-filename guard preventing
+	 * duplicate `'task-send-needed'` emits — the SEND-path analogue of
+	 * `dispatchInFlight`. The send branch in `processPendingTask` emits and
+	 * returns WITHOUT claiming the file (the daemon's `makeTaskSendHandler`
+	 * claims only AFTER `telegramBot.sendAgentNotification` completes a network
+	 * round-trip). Without this guard, a Telegram send slower than one polling
+	 * interval (network latency, a 429 rate-limit, a multi-chunk send) lets the
+	 * next tick re-read the SAME still-present `pr-triage-send__*.json` and emit
+	 * `task-send-needed` AGAIN → two handlers both call `sendAgentNotification`
+	 * → Santiago receives the same PR summary twice. Population is in
+	 * `processPendingTask` just before `this.emit("task-send-needed", ...)`;
+	 * clearing is the send listener's responsibility via `releaseSendSlot`,
+	 * called from the listener's `finally` block.
+	 */
+	private readonly sendInFlight = new Set<string>();
+	/**
+	 * pr84 CRITICAL (consumer tolerance): per-filename count of consecutive
+	 * JSON.parse failures. A producer that writes a `.json` file directly
+	 * (instead of the atomic `.tmp`-then-rename discipline) can be caught
+	 * mid-write by a polling tick, yielding a TRANSIENT parse error on a
+	 * file that becomes valid microseconds later. Poisoning on the first
+	 * failure permanently LOSES that task (it moves to `tasks/poisoned/`).
+	 * The consumer instead grants `JSON_PARSE_RETRY_BUDGET` ticks of grace:
+	 * a parse failure increments the counter and leaves the file in
+	 * `pending/` for the next tick; only once the budget is exhausted is a
+	 * genuinely-malformed file poisoned. A successful parse clears the
+	 * counter. `stopPollingLoop` clears the whole map.
+	 *
+	 * This is defense-in-depth — the root fix is the atomic producer
+	 * (`agents/pr-triage/prompt-template.md`). It does NOT weaken poison
+	 * handling: a file that stays unparseable for the full budget is still
+	 * poisoned, so a truly corrupt task does not loop forever.
+	 */
+	private readonly jsonParseRetries = new Map<string, number>();
 
 	constructor(opts?: AgentManagerOpts) {
 		super();
@@ -499,6 +566,7 @@ export class AgentManager extends EventEmitter {
 	async restartAgent(
 		handleId: string,
 		reason: ForceRestartReason | "crash",
+		opts?: RestartAgentOpts,
 	): Promise<AgentHandle> {
 		// M1: hand back the in-flight promise instead of throwing during the
 		// teardown→track window. Concurrent callers receive the new
@@ -510,7 +578,7 @@ export class AgentManager extends EventEmitter {
 		if (existing === undefined) {
 			throw new Error(`No handle to restart: ${handleId}`);
 		}
-		const promise = this.doRestart(handleId, reason, existing);
+		const promise = this.doRestart(handleId, reason, existing, opts);
 		this.restartingPromises.set(handleId, promise);
 		try {
 			return await promise;
@@ -523,6 +591,7 @@ export class AgentManager extends EventEmitter {
 		handleId: string,
 		reason: ForceRestartReason | "crash",
 		existing: TrackedHandle,
+		opts?: RestartAgentOpts,
 	): Promise<AgentHandle> {
 		const markerReason: StopMarkerReason =
 			reason === "crash" || reason === "dead" ? "crash" : "recycle";
@@ -545,6 +614,21 @@ export class AgentManager extends EventEmitter {
 		}
 		this.teardown(handleId);
 
+		// pr84 R2/twin: a caller (the cron restart loop) may supply a freshly
+		// RE-COMPOSED env so a restart picks up rotated daemon secrets instead
+		// of reusing the stale snapshot captured at the first spawn. When no
+		// override is given (heartbeat / IPC / Telegram restarts) the existing
+		// env is preserved verbatim — those paths intentionally reuse creds.
+		const envOverride = opts?.envOverride;
+		const respawnSpawnOpts: SpawnOpts =
+			envOverride === undefined
+				? existing.spawnOpts
+				: { ...existing.spawnOpts, env: { ...envOverride } };
+		const respawnConfig: RegisterAgentConfig =
+			envOverride === undefined
+				? existing.config
+				: { ...existing.config, env: { ...envOverride } };
+
 		// CRITICAL #3: re-spawn with the SAME handle id via SpawnOpts.restoreId
 		// so the new handle is keyed identically — `getHandle(handleId)` after
 		// restart returns the new generation, and any external reference
@@ -553,7 +637,7 @@ export class AgentManager extends EventEmitter {
 		// session.jsonl is continuous; the generation increment is the only
 		// signal callers should use to discriminate generations.
 		const restoreSpawnOpts: SpawnOpts = {
-			...existing.spawnOpts,
+			...respawnSpawnOpts,
 			restoreId: handleId,
 		};
 		const freshHandle = await existing.runtime.spawn(restoreSpawnOpts);
@@ -582,11 +666,21 @@ export class AgentManager extends EventEmitter {
 		await this.trackHandle({
 			handle: newGeneration,
 			runtime: existing.runtime,
-			spawnOpts: existing.spawnOpts,
-			config: existing.config,
+			spawnOpts: respawnSpawnOpts,
+			config: respawnConfig,
 			org: existing.org,
 			parentHandleId: existing.parentHandleId,
 		});
+		// pr84 twin: when the env was re-composed, re-persist the on-disk
+		// `<handleId>.json` so boot-recovery's `restoreFromMarker` rebuilds the
+		// spawn env from CURRENT creds — not the stale tokens captured at first
+		// register. The filename is keyed on the stable handleId (restoreId), so
+		// this OVERWRITES the same file: no orphan `<oldHandleId>.json`
+		// accumulates across restarts (atomic 0o600 temp-then-rename in
+		// persistAgentConfig). Skipped when env is unchanged (nothing to rewrite).
+		if (envOverride !== undefined) {
+			await this.persistAgentConfig(handleId, respawnConfig, existing.runtime);
+		}
 		return newGeneration;
 	}
 
@@ -751,7 +845,7 @@ export class AgentManager extends EventEmitter {
 	 */
 	async bootRecovery(opts?: BootRecoveryOpts): Promise<BootRecoveryResult> {
 		if (this.bootRecoveryPromise !== null) return this.bootRecoveryPromise;
-		this.bootRecoveryPromise = (async () => {
+		const bootRecoveryPromise = (async (): Promise<BootRecoveryResult> => {
 			this.bootRecoveryRan = true;
 
 			const recovered: string[] = [];
@@ -845,8 +939,11 @@ export class AgentManager extends EventEmitter {
 			this.cachedBootRecovery = result;
 			return result;
 		})();
-		// bootRecoveryPromise was just assigned above; non-null assertion is safe.
-		return this.bootRecoveryPromise!;
+		// Assigned synchronously (no await precedes this), so the guard above
+		// memoizes correctly for concurrent callers. Return the local to avoid
+		// a non-null assertion on the nullable field.
+		this.bootRecoveryPromise = bootRecoveryPromise;
+		return bootRecoveryPromise;
 	}
 
 	/**
@@ -1353,18 +1450,49 @@ export class AgentManager extends EventEmitter {
 			// in some scenarios, leaving restoreFromMarker no env source at
 			// all.
 			//
-			// Security tradeoff (documented in daemon/README.md "Env
-			// persistence" section): Phase 2 wraps this file in systemd
-			// `LoadCredential=` for at-rest encryption. Until then the file
-			// is mode 0600 via state-paths defaults and lives under
-			// `pathFor("agents")` which is daemon-private. Operators are
-			// responsible for not running the daemon with secrets the
-			// host filesystem cannot protect.
+			// Security (R1 — feature-pr84-r1-daemon-creds): under R1 the DAEMON
+			// owns all Telegram/GitHub calls, so this per-agent `env` no longer
+			// carries daemon-owned secrets — the Telegram bot token and GH PAT
+			// were removed from the cron-agent env allowlist (see
+			// `composeCronAgentEnv`: "the former secret allowlist is gone").
+			// The 0o600-temp-file + atomic-rename hardening below (inside the
+			// `agents/` dir created+chmod'd mode 0700 by state-paths
+			// `ensureStateDirsSync`) is RETAINED as defense-in-depth for any
+			// future secret-bearing agent type and for non-secret env that
+			// still should not be world-readable: a fresh 0o600 temp file then
+			// atomic rename means other local users cannot read it and there is
+			// no overwrite window where the dest briefly carries a looser mode
+			// (pr84). systemd `LoadCredential=` would add at-rest ENCRYPTION in
+			// Phase 2 IF a secret-bearing agent type is ever (re)introduced
+			// (perms protect against other local users; encryption protects
+			// disk images / backups).
 			env: config.env,
 		};
+		// pr84 IMPORTANT (at-rest secret race on overwrite): write to a FRESH
+		// temp file at 0o600, then atomic-rename over the dest. `fsp.writeFile`'s
+		// `mode` option is honored only on file CREATION; on OVERWRITE (restore
+		// reuses the same handleId → same filename) the prior — possibly
+		// looser — mode persists until the trailing chmod, a window where the
+		// secret is world-readable. A fresh temp file is always created (so 0o600
+		// is enforced at creation, never inherited), and the rename publishes it
+		// atomically — the dest never exists in a partially-written or
+		// loose-mode state. `atomicRenameStaleDest` is correct here: the prior
+		// `<handleId>.json` is by definition stale (same logical agent,
+		// superseded config), so destructive replace is the intended semantics.
+		// No-op security difference on Windows (NTFS ignores POSIX bits) — the
+		// daemon's at-rest target is the POSIX VPS.
+		const tmpFile = path.join(dir, `${handleId}.json.tmp`);
 		try {
-			await fsp.writeFile(file, JSON.stringify(payload));
+			await fsp.writeFile(tmpFile, JSON.stringify(payload), { mode: 0o600 });
+			// Guard against an inherited loose mode if the tmp file somehow
+			// pre-existed (e.g., a crash between a prior write and rename) — the
+			// `mode` above would not have applied to an already-present file.
+			await fsp.chmod(tmpFile, 0o600);
+			await atomicRenameStaleDest(tmpFile, file);
 		} catch (err) {
+			// Best-effort cleanup of the temp file so a failed write does not
+			// leave a stray secret-bearing `.tmp` on disk.
+			await fsp.unlink(tmpFile).catch(() => undefined);
 			console.error(
 				`[agent-manager] persistAgentConfig for ${handleId} failed: ${
 					err instanceof Error ? err.message : String(err)
@@ -1558,7 +1686,7 @@ export class AgentManager extends EventEmitter {
 	 * as a design gap; this is documented intentional scope, not an
 	 * implementation bug.
 	 */
-	async claimTask(filename: string, agentId: string): Promise<void> {
+	async claimTask(filename: string, agentId: string): Promise<boolean> {
 		assertSafeIdentifier(filename, "filename");
 		assertSafeIdentifier(agentId, "agentId");
 		const src = path.join(pathFor("tasks/pending"), filename);
@@ -1575,7 +1703,13 @@ export class AgentManager extends EventEmitter {
 				errno,
 				message,
 			});
-			return;
+			// R1 dual-adversarial pass#2 Critical fix: REPORT the rename failure to
+			// the caller (was silently `return`). The pr-triage send path claims the
+			// envelope BEFORE the irreversible Telegram send and uses this boolean to
+			// decide whether to send — so a failed claim must be observable, not
+			// swallowed. Callers that ignore the return (dispatch / noSend / alert
+			// paths) are unaffected: those paths have no external side effect.
+			return false;
 		}
 		await emitTelemetry({ kind: "task-resolved", agentId, filename });
 		// EventEmitter emit comes AFTER telemetry so a subscriber crash
@@ -1584,6 +1718,8 @@ export class AgentManager extends EventEmitter {
 		// caller — but the file is already moved and telemetry already
 		// flushed, so the only observable side-effect is the throw.
 		this.emit("task-resolved", { agentId, filename });
+		// The envelope was durably moved pending→resolved.
+		return true;
 	}
 
 	/**
@@ -1656,6 +1792,7 @@ export class AgentManager extends EventEmitter {
 		}
 		this.unroutedSet.clear();
 		this.unroutedSetOverflowed = false;
+		this.jsonParseRetries.clear();
 	}
 
 	/**
@@ -1769,7 +1906,11 @@ export class AgentManager extends EventEmitter {
 		} catch (err) {
 			const errno = getErrnoCode(err);
 			if (errno === "ENOENT") {
-				// Concurrent claim moved it out from under us — fine.
+				// Concurrent claim moved it out from under us — fine. Clear any
+				// transient parse-retry tally for this filename so a file that
+				// failed parse once then vanished does not leak a map entry
+				// forever (M-1: unbounded jsonParseRetries growth).
+				this.jsonParseRetries.delete(filename);
 				return;
 			}
 			throw err;
@@ -1784,6 +1925,9 @@ export class AgentManager extends EventEmitter {
 		} catch (err) {
 			const errno = getErrnoCode(err);
 			if (errno === "ENOENT") {
+				// Same M-1 concern as the stat ENOENT branch above: a file that
+				// failed parse once then vanished must not leak its retry tally.
+				this.jsonParseRetries.delete(filename);
 				return;
 			}
 			throw err;
@@ -1792,9 +1936,25 @@ export class AgentManager extends EventEmitter {
 		try {
 			parsed = JSON.parse(raw);
 		} catch (err) {
+			// pr84 CRITICAL (consumer tolerance): a non-atomically-written
+			// `.json` file can be caught mid-write, yielding a TRANSIENT parse
+			// failure on a file that is valid microseconds later. Grant a
+			// bounded grace window before poisoning so an alert envelope from a
+			// producer that wrote the final path directly is NOT permanently
+			// lost. The file stays in `pending/` and is re-read next tick; only
+			// once the per-filename failure count exceeds JSON_PARSE_RETRY_BUDGET
+			// is the file poisoned as genuinely malformed.
+			const priorFailures = this.jsonParseRetries.get(filename) ?? 0;
+			if (priorFailures < JSON_PARSE_RETRY_BUDGET) {
+				this.jsonParseRetries.set(filename, priorFailures + 1);
+				return;
+			}
+			this.jsonParseRetries.delete(filename);
 			await this.poisonTask(filename, "json-parse-error", getErrnoCode(err));
 			return;
 		}
+		// Parse succeeded — clear any transient-failure tally for this file.
+		this.jsonParseRetries.delete(filename);
 		if (
 			typeof parsed !== "object" ||
 			parsed === null ||
@@ -1810,6 +1970,129 @@ export class AgentManager extends EventEmitter {
 		// (filenames, log lines, telemetry) are not.
 		if (agentId.length > 255) {
 			await this.poisonTask(filename, "missing-agent-id");
+			return;
+		}
+		// pr84-gap-closure (Codex H1): an `ndjsonAlert` envelope is a
+		// record-and-resolve signal, NOT a prompt task. RETIRED under R1 — the
+		// pr-triage agent no longer emits `ndjsonAlert`: it writes
+		// `pr-triage-send__` {sendText|noSend} envelopes and the DAEMON owns
+		// send-failure handling (makeTaskSendHandler). This branch is now INERT
+		// (no current producer) and kept only as defensive handling. It needs no
+		// live handle and must NEVER reach
+		// the dispatch path — falling through would mis-classify the
+		// prompt-less envelope as `malformed-task`. Branch here, BEFORE the
+		// `isAgentRegistered` check, so the alert resolves even if the agent
+		// is (de)registered. Emit telemetry BEFORE `claimTask` so a rename
+		// failure leaves the file in pending/ and the alert re-trips next
+		// tick rather than being lost.
+		//
+		// Codex H1 follow-up (un-scoped-bypass close): `tasks/pending/` is the
+		// GENERIC bus shared by ALL agents. Treating ANY non-empty `ndjsonAlert`
+		// on ANY task as a terminal alert let a malformed/adversarial task for
+		// another (or unregistered) agent skip runtime execution and still get
+		// silently resolved — possibly releasing a cron slot it doesn't own.
+		// The branch now fires ONLY when ALL of: (a) `agentId === "pr-triage"`
+		// (the sole producer today; daemon-owned, not self-declared),
+		// (b) the alert kind is in the daemon-owned `PR_TRIAGE_ALERT_KINDS`
+		// set, and (c) there is NO non-empty `prompt` field (a real alert
+		// envelope is prompt-less). Any other shape (alert for a different
+		// agent, unknown kind, or prompt+alert combined) FALLS THROUGH to the
+		// existing handling (registration check / dispatch / poison).
+		const ndjsonAlert = (parsed as { ndjsonAlert?: unknown }).ndjsonAlert;
+		const alertPromptRaw = (parsed as { prompt?: unknown }).prompt;
+		const alertHasPrompt =
+			typeof alertPromptRaw === "string" && alertPromptRaw.length > 0;
+		// I-3 (dual-adversarial pass #2): ALSO require the FILENAME to match
+		// the pr-triage producer convention (`pr-triage__<ts>-<pid>.json`, see
+		// prompt-template.md). `tasks/pending/` is the GENERIC bus shared by all
+		// agents; without a filename-provenance check, a foreign producer's file
+		// whose BODY is shaped like a pr-triage alert would be silently
+		// record-and-resolved here, destroying the real producer's signal (data
+		// loss). A `rogue-agent__*.json` with a pr-triage body now FALLS THROUGH
+		// to normal routing (registration check / dispatch / unrouted).
+		if (
+			agentId === "pr-triage" &&
+			filename.startsWith("pr-triage__") &&
+			typeof ndjsonAlert === "string" &&
+			PR_TRIAGE_ALERT_KINDS.has(ndjsonAlert) &&
+			!alertHasPrompt
+		) {
+			const detailsRaw = (parsed as { details?: unknown }).details;
+			const details = typeof detailsRaw === "string" ? detailsRaw : "";
+			// Codex Medium (durability): `emitTelemetry` swallows append
+			// failures and returns `false` on a degraded telemetry dir
+			// (ENOSPC/EACCES). Resolve the fallback-alert file ONLY when its
+			// record durably landed — otherwise leave it in `pending/` so the
+			// alert re-trips next tick instead of being silently resolved
+			// without ever surfacing the double-failure signal.
+			const recorded = await emitTelemetry({
+				kind: "pr-triage-telegram-send-failed",
+				agentId,
+				filename,
+				alertKind: ndjsonAlert,
+				details,
+			});
+			if (recorded) {
+				await this.claimTask(filename, agentId);
+			}
+			return;
+		}
+		// R1 (feature-pr84-r1-daemon-creds, D2) — a pr-triage RESULT envelope is
+		// a record-and-send signal, NOT a prompt task. The agent (a pure
+		// data-in → text-out transform) writes `{ agentId: "pr-triage",
+		// sendText: "<summary>" }` (or `{ agentId: "pr-triage", noSend: true }`)
+		// to `tasks/pending/` and the DAEMON owns the Telegram send. Like the
+		// ndjsonAlert branch above, this needs no live handle and must NEVER
+		// reach the dispatch path (a prompt-less `{sendText}` envelope would be
+		// mis-classified as `malformed-task` at main.ts:661-677).
+		//
+		// Provenance guard (mirrors I-3): `tasks/pending/` is the GENERIC bus
+		// shared by all agents. The branch fires ONLY when ALL of:
+		//   (a) `agentId === "pr-triage"` (the sole producer),
+		//   (b) the filename uses the DISTINCT `pr-triage-send__` prefix — NOT
+		//       `pr-triage__` (which the alert branch owns), so a foreign
+		//       `rogue-agent__*.json` with a `sendText` body CANNOT trigger a
+		//       daemon send,
+		//   (c) the discriminator is present (`sendText` is a string OR
+		//       `noSend === true`), and
+		//   (d) there is NO non-empty `prompt` field.
+		// Any other shape falls through to the registration/dispatch/poison
+		// path. The actual send + dead-letter timer live in main.ts's
+		// `task-send-needed` handler (it owns the TelegramBot + clearResultTimer).
+		const sendTextRaw = (parsed as { sendText?: unknown }).sendText;
+		const noSendRaw = (parsed as { noSend?: unknown }).noSend;
+		const sendPromptRaw = (parsed as { prompt?: unknown }).prompt;
+		const sendHasPrompt =
+			typeof sendPromptRaw === "string" && sendPromptRaw.length > 0;
+		const hasSendText = typeof sendTextRaw === "string";
+		const isNoSend = noSendRaw === true;
+		if (
+			agentId === "pr-triage" &&
+			filename.startsWith("pr-triage-send__") &&
+			(hasSendText || isNoSend) &&
+			!sendHasPrompt
+		) {
+			// R1 dual-adversarial round-1 Critical fix: per-filename in-flight
+			// guard, mirroring the dispatch branch's `dispatchInFlight`. The send
+			// handler claims the envelope ONLY after an awaited
+			// `telegramBot.sendAgentNotification` network round-trip; the handler
+			// is invoked fire-and-forget, so `processPendingTask` returns
+			// immediately and the file stays in `pending/` until that claim lands.
+			// Without this guard, a send slower than one polling interval would let
+			// the next tick re-emit `task-send-needed` for the SAME file, firing a
+			// SECOND `sendAgentNotification` → DUPLICATE Telegram notification to
+			// Santiago + racing `claimTask` calls. The send listener clears the
+			// slot via `releaseSendSlot` from its `finally` block.
+			if (this.sendInFlight.has(filename)) {
+				return;
+			}
+			this.sendInFlight.add(filename);
+			this.emit("task-send-needed", {
+				filename,
+				agentId,
+				...(hasSendText ? { sendText: sendTextRaw } : {}),
+				...(isNoSend ? { noSend: true } : {}),
+			});
 			return;
 		}
 		if (!this.isAgentRegistered(agentId)) {
@@ -1876,6 +2159,21 @@ export class AgentManager extends EventEmitter {
 	 */
 	releaseDispatchSlot(filename: string): void {
 		this.dispatchInFlight.delete(filename);
+	}
+
+	/**
+	 * R1 dual-adversarial round-1 Critical fix: clear the per-filename SEND
+	 * in-flight guard after the send handler resolves (success OR failure). MUST
+	 * be called from the handler's `finally` block — otherwise the slot leaks and
+	 * the next polling tick suppresses every subsequent send for that filename
+	 * (a failed send would never re-trip). The analogue of `releaseDispatchSlot`
+	 * for the `task-send-needed` path.
+	 *
+	 * Public so `makeTaskSendHandler` (which lives in `main.ts`) can release
+	 * without a circular import.
+	 */
+	releaseSendSlot(filename: string): void {
+		this.sendInFlight.delete(filename);
 	}
 
 	private async poisonTask(
