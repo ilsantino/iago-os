@@ -440,6 +440,68 @@ describe("CronScheduler — lifecycle", () => {
 		await sch.stop();
 	});
 
+	it("(11c) runWakeCheck spawns with a SCRUBBED env — NO GH_TOKEN/IAGO_TELEGRAM_BOT_TOKEN, keeps PATH (R1 D1)", async () => {
+		vi.useFakeTimers();
+		// Plant secrets on the daemon's own env — these MUST NOT reach the
+		// wake-check bash subprocess (R1: agents/subprocesses never hold secrets).
+		const priorGhToken = process.env.GH_TOKEN;
+		const priorBotToken = process.env.IAGO_TELEGRAM_BOT_TOKEN;
+		const priorPath = process.env.PATH;
+		process.env.GH_TOKEN = "ghp_secret_should_not_leak";
+		process.env.IAGO_TELEGRAM_BOT_TOKEN = "tg_secret_should_not_leak";
+		// Guarantee PATH is present so the allowlisted-key assertion is meaningful.
+		if (process.env.PATH === undefined || process.env.PATH.length === 0) {
+			process.env.PATH = "/usr/bin";
+		}
+		try {
+			const wake = path.join(tempDir, "wake.sh");
+			fs.writeFileSync(wake, "#!/bin/bash\nexit 0\n");
+			spawnSyncMock.mockReturnValueOnce({
+				status: 0,
+				signal: null,
+				error: undefined,
+				stdout: "",
+				stderr: "",
+				pid: 4242,
+				output: [],
+			});
+			const sch = new CronScheduler({
+				agentManager: new EventEmitter(),
+				nowFn: () => new Date(Date.UTC(2026, 4, 18, 14, 0, 0)),
+			});
+			const prompt = writePromptTemplate("p.txt", "do thing");
+			sch.registerCron({
+				agentId: "pr-triage",
+				schedule: "0 14 * * *",
+				wakeCheck: wake,
+				promptTemplatePath: prompt,
+				outputTaskNamePrefix: "pr-triage",
+			});
+			sch.start();
+			await sch._tickForTests();
+
+			expect(spawnSyncMock).toHaveBeenCalledTimes(1);
+			const [cmd, args, opts] = spawnSyncMock.mock.calls[0];
+			expect(cmd).toBe("bash");
+			expect(args).toEqual([wake]);
+			const spawnedEnv: NodeJS.ProcessEnv = opts?.env ?? {};
+			// Secrets MUST be scrubbed (this fails against the old `env: process.env`).
+			expect(spawnedEnv.GH_TOKEN).toBeUndefined();
+			expect(spawnedEnv.IAGO_TELEGRAM_BOT_TOKEN).toBeUndefined();
+			// Non-secret runtime descriptor MUST survive (PTY/bash needs PATH).
+			expect(spawnedEnv.PATH).toBe(process.env.PATH);
+			await sch.stop();
+		} finally {
+			if (priorGhToken === undefined) delete process.env.GH_TOKEN;
+			else process.env.GH_TOKEN = priorGhToken;
+			if (priorBotToken === undefined)
+				delete process.env.IAGO_TELEGRAM_BOT_TOKEN;
+			else process.env.IAGO_TELEGRAM_BOT_TOKEN = priorBotToken;
+			if (priorPath === undefined) delete process.env.PATH;
+			else process.env.PATH = priorPath;
+		}
+	});
+
 	it("(12) tick WITHOUT wakeCheck writes the task file and emits cron-fired", async () => {
 		vi.useFakeTimers();
 		const prompt = writePromptTemplate("p.txt", "do thing");

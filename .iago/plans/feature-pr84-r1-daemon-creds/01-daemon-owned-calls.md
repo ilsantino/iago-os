@@ -58,10 +58,16 @@ emit its summary as a structured file-bus envelope. Update PR #84 in place on
   single-key `agentId` map, `.unref()`'d / non-durable across daemon restart; claim-on-
   send keyed by bare `agentId`) — deferred to `feature-daemon-recovery-hardening`
   **Task 6**.
-- **#2** unbounded GraphQL PR-fetch body (`pr-triage-fetch.ts:299` `res.json()` —
-  time-bounded by the 15s `AbortController` but NOT byte-bounded; a large/hostile
-  response can exhaust daemon memory) — deferred to `feature-daemon-recovery-hardening`
-  **Task 7**.
+- **#2** unbounded GraphQL PR-fetch body (`pr-triage-fetch.ts:299` `res.json()`) —
+  NEITHER time-bounded NOR byte-bounded. The 15s `AbortController` timer is
+  `clearTimeout`'d in the `finally` the instant `fetch()` resolves (response
+  HEADERS arrive), BEFORE the body is consumed, so the abort signal does NOT
+  cover `res.json()`. A slow-streaming / large / hostile body therefore buffers
+  unbounded into the secret-holding daemon's heap with no deadline
+  (memory-exhaustion / indefinite hang). Deferred to
+  `feature-daemon-recovery-hardening` **Task 7** (add a byte/`Content-Length` cap
+  AND a body-read deadline; the prior "time-bounded by the AbortController"
+  rationale was factually wrong — corrected 2026-06-02 per pass#2 gate).
 - The daemon is **NOT deployed** (OpenClaw still runs) — this is a pre-cutover hardening
   change, not a live incident.
 

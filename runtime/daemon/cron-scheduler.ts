@@ -73,6 +73,7 @@ import type { EventEmitter } from "node:events";
 import * as fs from "node:fs";
 import * as path from "node:path";
 
+import { composeRuntimeEnv } from "./cron-agent-env.js";
 import {
 	assertSafeIdentifier,
 	atomicRenameStaleDest,
@@ -635,8 +636,15 @@ export class CronScheduler {
 		// `wakeCheckPath` is the caller-narrowed `cron.wakeCheck` — passing
 		// it as a separate parameter avoids an `as string` cast (plan 07a
 		// constraint: NO `as` casts).
+		// R1 (feature-pr84-r1-daemon-creds, D1 — agents never hold secrets):
+		// spawn with a SCRUBBED env (only the non-secret runtime allowlist),
+		// NOT the daemon's full `process.env`. Handing `process.env` to a bash
+		// subprocess would leak `GH_TOKEN` / `IAGO_TELEGRAM_BOT_TOKEN` to the
+		// child, contradicting the invariant that only the daemon holds secrets.
+		// `composeRuntimeEnv` is the SAME allowlist `composeCronAgentEnv` uses —
+		// single source of truth (`./cron-agent-env.ts`).
 		const result = spawnSync("bash", [wakeCheckPath], {
-			env: process.env,
+			env: composeRuntimeEnv(process.env),
 			encoding: "utf8",
 			timeout: WAKE_CHECK_TIMEOUT_MS,
 			killSignal: "SIGKILL",

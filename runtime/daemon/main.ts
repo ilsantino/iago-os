@@ -106,6 +106,7 @@ import {
 	getCredentialEnvVars,
 	loadSystemdCredentials,
 } from "./cred-bootstrap.js";
+import { composeRuntimeEnv } from "./cron-agent-env.js";
 import {
 	CronScheduler,
 	type PrepareCronPrompt,
@@ -675,7 +676,10 @@ export function makeResultTimers(deps: {
  *     is strictly bounded (no unbounded loop, no storm); the inter-attempt
  *     delays are `await`ed inside this already-fire-and-forget handler so the
  *     poll loop never blocks. After the budget is spent the day's summary is
- *     lost (at-most-once, recorded as telemetry, surfaced next daily run).
+ *     lost (at-most-once). The ONLY durable trace is the
+ *     `pr-triage-telegram-send-failed` telemetry line; the next daily cron fire
+ *     is an INDEPENDENT fresh fetch of CURRENT PRs, NOT a re-send of the dropped
+ *     summary (there is no mechanism that re-surfaces a specific dropped run).
  *   - claim (resolve) the envelope file BEFORE the send (at-most-once); on a
  *     degraded telemetry dir the noSend branch leaves it in `pending/` to re-trip.
  *   - always `clearResultTimer(agentId)` in a `finally` (the agent produced a
@@ -1171,47 +1175,13 @@ export const CRON_AGENT_RESTART_BACKOFF_MS: readonly number[] = [
 	5_000, 30_000, 60_000,
 ];
 
-/**
- * R1 (feature-pr84-r1-daemon-creds, D1 — agents never hold long-lived secrets)
- * — the daemon-owned set of NON-SECRET process-level vars a trusted cron
- * agent's PTY needs to actually run a shell.
- *
- * The pr-triage agent NO LONGER holds any secret: the daemon fetches the PRs
- * (holding `GH_TOKEN` in its own process) and sends the Telegram summary
- * itself (holding `IAGO_TELEGRAM_BOT_TOKEN`). The agent is a pure data-in →
- * text-out transform — it makes no network call and reads no token. So there is
- * NO secret-injection allowlist anymore (the former `CRON_AGENT_ENV_ALLOWLIST`
- * of `IAGO_TELEGRAM_BOT_TOKEN` / `IAGO_TELEGRAM_ALLOWED_USER_IDS` / `GH_TOKEN`
- * is DELETED).
- *
- * node-pty REPLACES (does not merge) the parent env when `env` is supplied
- * (claude-pty.ts spawnInternal — the deliberate CRITICAL #1 multi-tenant
- * isolation invariant). So a cron agent whose composed env carries ONLY a
- * state-root gets a shell with no `PATH`/`HOME`/`SHELL`/`LANG` and cannot
- * resolve the `claude` binary or basic shell utilities. These are NON-SECRET
- * runtime descriptors (search path, home dir, login shell, locale): forwarding
- * them leaks no credential and exposes nothing a local shell could not already
- * discover.
- *
- * `LC_ALL`/`XDG_*` are intentionally omitted — `LANG` covers locale for the
- * shell utilities the agent invokes, and adding `XDG_*` would forward more of
- * the daemon's home-dir layout than the agent needs. Extend this list only with
- * a documented runtime need.
- */
-export const CRON_AGENT_RUNTIME_ALLOWLIST: readonly string[] = [
-	"PATH",
-	"HOME",
-	"SHELL",
-	"LANG",
-	// FIX D (R1 dual-adversarial Minor) — the result-envelope rendezvous dir.
-	// The cron agent writes its `pr-triage-send__*.json` envelope under
-	// `$IAGO_DAEMON_STATE_ROOT/tasks/pending/`, and the daemon polls its OWN
-	// resolved `IAGO_DAEMON_STATE_ROOT`. Overlaying the daemon's value (non-secret
-	// config, present in the production systemd `Environment=`) onto the agent env
-	// keeps the two in lockstep so a notification can't be silently written to a
-	// directory the daemon never reads. Non-secret: a state-dir path, no credential.
-	"IAGO_DAEMON_STATE_ROOT",
-];
+// R1 (feature-pr84-r1-daemon-creds, D1) — the daemon-owned set of NON-SECRET
+// process-level vars a trusted cron agent's PTY needs to actually run a shell.
+// The canonical definition (and the doc explaining WHY each key is safe) lives
+// in `./cron-agent-env.ts` so `cron-scheduler.ts` can share the SAME allowlist
+// and `composeRuntimeEnv` helper without a circular import (main.ts →
+// cron-scheduler.ts). Re-exported here for back-compat with existing importers.
+export { CRON_AGENT_RUNTIME_ALLOWLIST } from "./cron-agent-env.js";
 
 /**
  * R1 (feature-pr84-r1-daemon-creds) — the daemon-owned set of agentIds for
@@ -1262,12 +1232,12 @@ export function composeCronAgentEnv(
 	// ONLY the non-secret runtime descriptors are overlaid — NO secrets. A
 	// declared `baseEnv` value already present for a key is overwritten by the
 	// daemon's process.env value (the daemon's runtime descriptors are
-	// authoritative).
-	for (const key of CRON_AGENT_RUNTIME_ALLOWLIST) {
-		const value = daemonEnv[key];
-		if (typeof value === "string" && value.length > 0) {
-			merged[key] = value;
-		}
+	// authoritative). The scrubbed overlay is produced by the SAME
+	// `composeRuntimeEnv` helper the back-compat wake-check uses — single source
+	// of truth for the allowlist.
+	const runtime = composeRuntimeEnv(daemonEnv);
+	for (const [key, value] of Object.entries(runtime)) {
+		if (typeof value === "string") merged[key] = value;
 	}
 	return merged;
 }
