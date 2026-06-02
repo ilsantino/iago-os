@@ -45,6 +45,13 @@ export type StateKind =
 	| "agents"
 	| "telemetry"
 	| "session-logs"
+	// Task 6 (result-envelope dead-letter durability): per-agent durable
+	// markers `<agentId>.json` recording an in-flight pr-triage dispatch's
+	// correlation runId + deadline. Written at dispatch, removed when the
+	// result envelope is processed (or the timer fires). Scanned at boot so a
+	// daemon restart mid-dispatch re-arms or immediately dead-letters the
+	// orphaned dispatch instead of silently dropping the daily summary.
+	| "result-pending"
 	| "markers";
 
 const ALL_KINDS: ReadonlyArray<StateKind> = [
@@ -57,6 +64,7 @@ const ALL_KINDS: ReadonlyArray<StateKind> = [
 	"agents",
 	"telemetry",
 	"session-logs",
+	"result-pending",
 	"markers",
 ];
 

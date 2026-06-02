@@ -2,6 +2,23 @@
 // Per-stage telemetry aggregator. Reads NDJSON run files under
 // .iago/state/pipeline-runs/, computes p50/p95/timeout/skip counts.
 //
+// INPUT-SINK RECONCILIATION (Task 4, 2026-06-02): there are now TWO telemetry
+// sinks with DIFFERENT shapes, and this aggregator reads BOTH so neither is
+// silently invisible:
+//   1. Legacy per-stage telemetry — per-run `*.ndjson` FILES under the
+//      `.iago/state/pipeline-runs/` DIRECTORY, written by the deprecated bash
+//      pipeline (`scripts/lib/pipeline-telemetry.sh`). Records are
+//      stage_start / stage_end / pipeline_init / pipeline_finalize / event
+//      kinds. These feed the stage-stats table AND the by_session projection.
+//   2. NEW JS-workflow summary sink — a SINGLE append-only FILE
+//      `.iago/state/pipeline-runs.ndjson` (note: a FILE, not the directory),
+//      written by `.claude/workflows/execute-pipeline.js`'s SUMMARY stage. Each
+//      line is ONE per-plan completion record: {plan, pr, verdict, codex,
+//      rounds, ts}. It carries NO stage durations, so it cannot feed stage
+//      stats; it is surfaced in its own `js_pipeline_runs` section below so the
+//      live pipeline's output is not dropped on the floor. The previous version
+//      read only sink (1) and was therefore blind to every JS-pipeline run.
+//
 // Usage: node scripts/metrics-aggregate.mjs [--last N]
 //   --last N    Aggregate the most recent N complete runs (default 10).
 //
@@ -50,6 +67,9 @@ for (let i = 0; i < args.length; i++) {
 
 const projectDir = process.cwd();
 const runsDir = path.join(projectDir, ".iago", "state", "pipeline-runs");
+// Task 4 input-sink reconciliation: the NEW JS-workflow summary sink is a
+// SINGLE FILE adjacent to (NOT inside) the legacy directory.
+const jsRunsFile = path.join(projectDir, ".iago", "state", "pipeline-runs.ndjson");
 
 // Absent / empty input is fail-closed by default and soft only under
 // --allow-empty (dual-adversarial Important): without the flag, a missing or
@@ -57,28 +77,60 @@ const runsDir = path.join(projectDir, ".iago", "state", "pipeline-runs");
 // misconfigured consumer (broken writer, wrong CWD, wiped state) is caught
 // rather than reported as a healthy fresh checkout.
 const emptyExit = allowEmpty ? 0 : 1;
-let files;
+
+// ── Sink 2: the JS-workflow per-plan summary file (Task 4) ──────────────────
+// Read it FIRST so the empty-input decision below accounts for it: a populated
+// JS sink is real telemetry even when the legacy directory is absent, so it
+// must NOT be reported as "no telemetry" / fail-closed.
+/** @type {Array<{plan?:string,pr?:string,verdict?:string,codex?:string,rounds?:number,ts?:string}>} */
+const jsPipelineRuns = [];
+try {
+  const jsContent = readFileSync(jsRunsFile, "utf-8");
+  for (const line of jsContent.split("\n")) {
+    if (!line.trim()) continue;
+    try {
+      jsPipelineRuns.push(JSON.parse(line));
+    } catch {
+      // skip malformed lines (mirrors the legacy-sink lenient parse)
+    }
+  }
+} catch {
+  // File absent → no JS-pipeline runs yet. Not an error on its own; the
+  // combined-empty check below decides the exit policy.
+}
+
+// ── Sink 1: the legacy per-stage telemetry directory ────────────────────────
+let files = [];
+let legacyDirMissing = false;
 try {
   files = readdirSync(runsDir).filter((f) => f.endsWith(".ndjson"));
 } catch {
+  legacyDirMissing = true;
+}
+
+// Combined emptiness: only fail-closed (or soft no-op under --allow-empty) when
+// BOTH sinks are empty. If the JS sink has records, fall through and render its
+// section even though the legacy stage-stats table cannot be computed.
+if (files.length === 0 && jsPipelineRuns.length === 0) {
   if (allowEmpty) {
     console.log("no input files");
+  } else if (legacyDirMissing) {
+    console.error(
+      `No pipeline telemetry: neither ${runsDir} (dir) nor ${jsRunsFile} (file) present (pass --allow-empty to treat this as a soft no-op).`,
+    );
   } else {
     console.error(
-      `No pipeline runs directory at ${runsDir} (pass --allow-empty to treat this as a soft no-op).`,
+      `No pipeline run files in ${runsDir} and no records in ${jsRunsFile} (pass --allow-empty to treat this as a soft no-op).`,
     );
   }
   process.exit(emptyExit);
 }
+
+// JS sink has records but the legacy stage sink is empty → render only the
+// JS-pipeline section and exit 0 (real telemetry, just not per-stage).
 if (files.length === 0) {
-  if (allowEmpty) {
-    console.log("no input files");
-  } else {
-    console.error(
-      `No pipeline run files in ${runsDir} (pass --allow-empty to treat this as a soft no-op).`,
-    );
-  }
-  process.exit(emptyExit);
+  renderJsPipelineRuns(jsPipelineRuns, lastN);
+  process.exit(0);
 }
 
 const runs = [];
@@ -138,6 +190,10 @@ const sessionRunWindow = sessionEligible.slice(-lastN);
 // declaration defined below.
 if (noCompleteRuns) {
   renderBySession(sessionRunWindow);
+  // Task 4: still surface the JS-pipeline summary sink before the non-zero
+  // exit, so its runs are never invisible just because the legacy stage sink
+  // had no complete run.
+  renderJsPipelineRuns(jsPipelineRuns, lastN);
   console.error("No complete runs found.");
   process.exit(1);
 }
@@ -404,3 +460,43 @@ function renderBySession(window) {
 }
 
 renderBySession(sessionRunWindow);
+renderJsPipelineRuns(jsPipelineRuns, lastN);
+
+// ── js_pipeline_runs section (Task 4 input-sink reconciliation) ─────────────
+// Render the NEW JS-workflow summary sink (.iago/state/pipeline-runs.ndjson).
+// Each record is a per-plan completion summary {plan, pr, verdict, codex,
+// rounds, ts} with NO stage durations, so it gets its own section rather than
+// being forced into the per-stage table. Hoisted function declaration so the
+// no-complete-runs guard and the only-JS-sink branch above can call it before
+// their own exits. A no-op when there are no JS records (keeps legacy-only
+// output byte-identical to the pre-Task-4 behavior).
+function renderJsPipelineRuns(jsRuns, limit) {
+  if (jsRuns.length === 0) return;
+  // Sort by `ts` ascending so --last N takes the most recent; fall back to
+  // insertion order for records missing a ts.
+  const sorted = [...jsRuns].sort((a, b) =>
+    String(a.ts ?? "").localeCompare(String(b.ts ?? "")),
+  );
+  const taken = sorted.slice(-limit);
+  console.log("\njs_pipeline_runs");
+  const cols = ["plan", "verdict", "codex", "rounds", "pr", "ts"];
+  const rows = taken.map((r) => [
+    String(r.plan ?? "-"),
+    String(r.verdict ?? "-"),
+    String(r.codex ?? "-"),
+    String(r.rounds ?? "-"),
+    // Collapse an empty PR url to a dash for table readability.
+    r.pr ? String(r.pr) : "-",
+    String(r.ts ?? "-"),
+  ]);
+  const widths = cols.map((c, i) =>
+    Math.max(c.length, ...rows.map((row) => row[i].length), 0),
+  );
+  const fmt = (vals) => vals.map((v, i) => v.padEnd(widths[i])).join("  ");
+  console.log(fmt(cols));
+  console.log(widths.map((w) => "-".repeat(w)).join("  "));
+  for (const row of rows) console.log(fmt(row));
+  console.log(
+    `\n(${taken.length} JS-pipeline run${taken.length === 1 ? "" : "s"} from ${path.basename(jsRunsFile)})`,
+  );
+}

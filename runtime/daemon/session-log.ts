@@ -68,9 +68,12 @@
  *   `readEventsUpToHWM` re-reads the whole file each call. Rotation
  *   policy (rotate at 100MB; archive to
  *   `session-logs/archive/<handleId>-<rotateTimestamp>.jsonl`) is
- *   tracked for a Phase 6+ follow-up. Plan 03 boot recovery emits a
- *   telemetry warning when session.jsonl exceeds 50MB so the trigger is
- *   observable (see `runtime/daemon/README.md` § Failure modes).
+ *   tracked for a Phase 6+ follow-up. NOTE (corrected 2026-06-02):
+ *   there is NO size-threshold telemetry warning yet — boot recovery
+ *   does NOT `fs.stat` the log nor emit any "session.jsonl exceeds 50MB"
+ *   signal. The unbounded-growth risk is currently UNINSTRUMENTED; the
+ *   prior comment claiming a 50MB warning was aspirational, not
+ *   implemented. Wiring the warning (or rotation) is the Phase 6+ work.
  * - **Shutdown.** Call `cancelPendingAppends(handleId, reason)` during
  *   graceful shutdown to reject any queued `appendEvent` promises.
  *   Without this, callers hang forever waiting on a drain that will

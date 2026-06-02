@@ -329,7 +329,7 @@ async function readTelemetryKinds(): Promise<Set<string>> {
 // ---------------------------------------------------------------------------
 
 describe("daemon integration: auto-start, boot recovery, shutdown (mocked PTY + Telegram)", () => {
-	it("claude-pty adapter registers via side-effect import at startDaemon load", async () => {
+	it("claude-pty adapter is registered via startDaemon's loadAdapterFailIsolated dynamic import", async () => {
 		const daemon = await buildDaemon({ withBot: false, agents: [] });
 		const ids = listRuntimes().map((r) => r.id);
 		expect(ids).toContain("claude-pty");
@@ -704,10 +704,12 @@ describe("daemon integration: auto-start, boot recovery, shutdown (mocked PTY + 
 		});
 		// Force heartbeat.stop to throw — the per-stage try/catch in main.ts
 		// (lines 348-354) must log to stderr and NOT propagate.
-		vi
-			.spyOn(daemon.heartbeat, "stop")
-			.mockRejectedValueOnce(new Error("heartbeat-boom"));
-		const errSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+		vi.spyOn(daemon.heartbeat, "stop").mockRejectedValueOnce(
+			new Error("heartbeat-boom"),
+		);
+		const errSpy = vi
+			.spyOn(console, "error")
+			.mockImplementation(() => undefined);
 
 		await daemon.shutdown();
 
@@ -745,10 +747,12 @@ describe("daemon integration: auto-start, boot recovery, shutdown (mocked PTY + 
 		});
 
 		// heartbeat.stop hangs — never resolves.
-		vi
-			.spyOn(daemon.heartbeat, "stop")
-			.mockReturnValue(new Promise<void>(() => undefined));
-		const errSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+		vi.spyOn(daemon.heartbeat, "stop").mockReturnValue(
+			new Promise<void>(() => undefined),
+		);
+		const errSpy = vi
+			.spyOn(console, "error")
+			.mockImplementation(() => undefined);
 
 		const start = Date.now();
 		await daemon.shutdown();
@@ -819,7 +823,9 @@ describe("daemon integration: auto-start, boot recovery, shutdown (mocked PTY + 
 		// Wipe the runtime registry so the listRuntimes() check at
 		// main.ts:222 finds no "claude-pty" entry and logs a warning.
 		_resetRegistryForTests();
-		const errSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+		const errSpy = vi
+			.spyOn(console, "error")
+			.mockImplementation(() => undefined);
 
 		const daemon = await buildDaemon({ withBot: false, agents: [] });
 

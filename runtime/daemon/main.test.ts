@@ -1354,19 +1354,25 @@ describe("makeTaskDispatchHandler (Plan 04d)", () => {
 		).toEqual([evt.filename]);
 	});
 
-	it("(DH-R1) arms the dead-letter result timer after a successful pr-triage dispatch", async () => {
+	it("(DH-R1) arms the dead-letter result timer after a successful pr-triage dispatch (with a correlation runId)", async () => {
 		const { runtime } = makeStubRuntime("dhr1-runtime");
 		registerRuntime(runtime);
 		const handle = makeHandleFixture("pr-triage", "dhr1-runtime");
 		const mgr = makeStubManager({ handle });
 		const emitMock = vi.fn().mockResolvedValue(undefined);
-		const timerCalls: Array<{ agentId: string; timeoutMs?: number }> = [];
+		const timerCalls: Array<{
+			agentId: string;
+			runId: string;
+			filename?: string | null;
+			timeoutMs?: number;
+		}> = [];
 
 		const handler = makeTaskDispatchHandler({
 			agentManager: mgr,
 			emit: emitMock,
-			startResultTimer: (agentId, timeoutMs) =>
-				timerCalls.push({ agentId, timeoutMs }),
+			startResultTimer: async (agentId, runId, filename, timeoutMs) => {
+				timerCalls.push({ agentId, runId, filename, timeoutMs });
+			},
 		});
 
 		await handler({
@@ -1375,10 +1381,15 @@ describe("makeTaskDispatchHandler (Plan 04d)", () => {
 			taskContent: { prompt: "do the triage", agentId: "pr-triage" },
 		});
 
-		// Timer armed exactly once for pr-triage, with the result-timeout window.
-		expect(timerCalls).toEqual([
-			{ agentId: "pr-triage", timeoutMs: RESULT_TIMEOUT_MS },
-		]);
+		// Task 6: timer armed exactly once for pr-triage, with the result-timeout
+		// window, the dispatched filename, AND a non-empty correlation runId.
+		expect(timerCalls).toHaveLength(1);
+		const call = timerCalls[0]!;
+		expect(call.agentId).toBe("pr-triage");
+		expect(call.timeoutMs).toBe(RESULT_TIMEOUT_MS);
+		expect(call.filename).toBe("pr-triage__1700000400.json");
+		expect(typeof call.runId).toBe("string");
+		expect(call.runId.length).toBeGreaterThan(0);
 	});
 
 	it("(DH-R1b) does NOT arm the timer for a non-pr-triage agent", async () => {
@@ -1915,7 +1926,10 @@ describe("makeResultTimers + dispatch arming (R1 D4 dead-letter)", () => {
 			timeoutMs: 1000,
 		});
 
-		startResultTimer("pr-triage");
+		// Task 6: startResultTimer is now async (writes the durable marker before
+		// arming the in-memory timer) and takes a correlation runId — await it so
+		// the setTimeout is scheduled before the fake clock advances.
+		await startResultTimer("pr-triage", "run-rt1");
 		expect(emitMock).not.toHaveBeenCalled();
 
 		await vi.advanceTimersByTimeAsync(1000);
@@ -1939,8 +1953,10 @@ describe("makeResultTimers + dispatch arming (R1 D4 dead-letter)", () => {
 			timeoutMs: 1000,
 		});
 
-		startResultTimer("pr-triage");
-		clearResultTimer("pr-triage");
+		await startResultTimer("pr-triage", "run-rt2");
+		// Clear with no runId → unconditional clear (the matching-run case is
+		// covered by the wrong-run regression below).
+		await clearResultTimer("pr-triage");
 		await vi.advanceTimersByTimeAsync(2000);
 
 		expect(
@@ -1958,10 +1974,11 @@ describe("makeResultTimers + dispatch arming (R1 D4 dead-letter)", () => {
 			timeoutMs: 1000,
 		});
 
-		startResultTimer("pr-triage");
+		await startResultTimer("pr-triage", "run-rt3a");
 		await vi.advanceTimersByTimeAsync(500);
-		// Re-fire resets the clock (clear-then-set).
-		startResultTimer("pr-triage");
+		// Re-fire resets the clock (clear-then-set). A NEW dispatch supersedes the
+		// prior run's timer + marker regardless of runId.
+		await startResultTimer("pr-triage", "run-rt3b");
 		await vi.advanceTimersByTimeAsync(700);
 		// 1200ms total elapsed but only 700ms since the re-fire — not yet fired.
 		expect(
@@ -1980,6 +1997,183 @@ describe("makeResultTimers + dispatch arming (R1 D4 dead-letter)", () => {
 	it("(RT-4) RESULT_TIMEOUT_MS default is a positive number", () => {
 		expect(typeof RESULT_TIMEOUT_MS).toBe("number");
 		expect(RESULT_TIMEOUT_MS).toBeGreaterThan(0);
+	});
+
+	it("(RT-5) startResultTimer writes a durable result-pending marker carrying the runId + deadline", async () => {
+		// Task 6 (Critical) durability: the dead-letter must survive a restart, so
+		// startResultTimer persists `result-pending/<agentId>.json` BEFORE arming
+		// the in-memory timer. Asserts the marker lands on disk with the
+		// correlation runId, the dispatched filename, and a future deadline.
+		const emitMock = vi.fn().mockResolvedValue(true);
+		const { startResultTimer } = makeResultTimers({
+			emit: emitMock,
+			timeoutMs: 60_000,
+		});
+
+		const before = Date.now();
+		await startResultTimer("pr-triage", "run-marker", "pr-triage__9.json");
+
+		const markerPath = path.join(pathFor("result-pending"), "pr-triage.json");
+		const marker = JSON.parse(await fsp.readFile(markerPath, "utf-8")) as {
+			agentId: string;
+			runId: string;
+			filename: string | null;
+			deadlineMs: number;
+		};
+		expect(marker.agentId).toBe("pr-triage");
+		expect(marker.runId).toBe("run-marker");
+		expect(marker.filename).toBe("pr-triage__9.json");
+		expect(marker.deadlineMs).toBeGreaterThanOrEqual(before + 60_000);
+	});
+
+	it("(RT-6) a stale/wrong-run envelope does NOT clear the live run's timer or marker", async () => {
+		// Task 6 (Critical) correlation: clearResultTimer(agentId, wrongRunId) must
+		// be a no-op (returns false) so a late envelope from a PRIOR dispatch
+		// cannot cancel the CURRENT run's dead-letter timer. The live timer must
+		// still fire and the marker must still be present after the wrong-run clear.
+		vi.useFakeTimers();
+		const emitMock = vi.fn().mockResolvedValue(true);
+		const { startResultTimer, clearResultTimer } = makeResultTimers({
+			emit: emitMock,
+			timeoutMs: 1000,
+		});
+
+		await startResultTimer("pr-triage", "live-run");
+		// A stale envelope from a prior run tries to clear with the wrong runId.
+		const cleared = await clearResultTimer("pr-triage", "stale-prior-run");
+		expect(cleared).toBe(false);
+
+		// Marker is still on disk (not removed by the wrong-run clear).
+		const markerPath = path.join(pathFor("result-pending"), "pr-triage.json");
+		await expect(fsp.access(markerPath)).resolves.toBeUndefined();
+
+		// The live timer still fires its dead-letter.
+		await vi.advanceTimersByTimeAsync(1000);
+		const timeouts = emitMock.mock.calls.filter(
+			(c) => (c[0] as { kind: string }).kind === "pr-triage-result-timeout",
+		);
+		expect(timeouts).toHaveLength(1);
+
+		// A matching-run clear DOES succeed and removes the marker.
+		await startResultTimer("pr-triage", "second-run");
+		const ok = await clearResultTimer("pr-triage", "second-run");
+		expect(ok).toBe(true);
+		await expect(fsp.access(markerPath)).rejects.toBeDefined();
+	});
+
+	it("(RT-7) recoverResultTimers re-arms a still-future orphaned marker after a restart", async () => {
+		// Task 6 (Critical) restart recovery: a dispatch in flight when the daemon
+		// restarts leaves a durable marker with a FUTURE deadline. A fresh
+		// makeResultTimers (simulating the new process) must re-arm the timer from
+		// the marker so the dead-letter still fires — the daily summary is not
+		// silently dropped.
+		vi.useFakeTimers();
+		// Simulate the marker the dead process left behind: deadline 1000ms out.
+		const markerPath = path.join(pathFor("result-pending"), "pr-triage.json");
+		await fsp.writeFile(
+			markerPath,
+			JSON.stringify({
+				agentId: "pr-triage",
+				runId: "orphaned-run",
+				filename: "pr-triage__7.json",
+				deadlineMs: Date.now() + 1000,
+			}),
+		);
+
+		const emitMock = vi.fn().mockResolvedValue(true);
+		const { recoverResultTimers } = makeResultTimers({
+			emit: emitMock,
+			timeoutMs: 120_000,
+		});
+		await recoverResultTimers();
+
+		// Not yet fired.
+		expect(
+			emitMock.mock.calls.filter(
+				(c) => (c[0] as { kind: string }).kind === "pr-triage-result-timeout",
+			),
+		).toHaveLength(0);
+
+		await vi.advanceTimersByTimeAsync(1000);
+		const timeouts = emitMock.mock.calls.filter(
+			(c) => (c[0] as { kind: string }).kind === "pr-triage-result-timeout",
+		);
+		expect(timeouts).toHaveLength(1);
+		// Marker removed once the re-armed timer fired.
+		await expect(fsp.access(markerPath)).rejects.toBeDefined();
+	});
+
+	it("(RT-9 — Task 6 #2) onResultComplete fires with the cron filename on envelope-clear AND on dead-letter timeout", async () => {
+		// Task 6 gate-finding #2 (hold-slot-until-result): the result-timer
+		// machinery must signal RUN COMPLETION (so the daemon releases the held
+		// cron slot) at BOTH terminal points — the envelope being processed
+		// (clearResultTimer) and the dead-letter timeout firing — echoing the
+		// original cron task filename both times.
+		vi.useFakeTimers();
+		const emitMock = vi.fn().mockResolvedValue(true);
+		const completions: Array<{ agentId: string; filename: string | null }> = [];
+		const { startResultTimer, clearResultTimer } = makeResultTimers({
+			emit: emitMock,
+			timeoutMs: 1000,
+			onResultComplete: (agentId, filename) =>
+				completions.push({ agentId, filename }),
+		});
+
+		// (a) envelope processed → completion fires with the cron filename.
+		await startResultTimer("pr-triage", "run-a", "pr-triage__111.json");
+		await clearResultTimer("pr-triage", "run-a");
+		expect(completions).toContainEqual({
+			agentId: "pr-triage",
+			filename: "pr-triage__111.json",
+		});
+
+		// (b) dead-letter timeout → completion fires with the cron filename.
+		completions.length = 0;
+		await startResultTimer("pr-triage", "run-b", "pr-triage__222.json");
+		await vi.advanceTimersByTimeAsync(1000);
+		expect(completions).toContainEqual({
+			agentId: "pr-triage",
+			filename: "pr-triage__222.json",
+		});
+
+		// (c) a re-fire OVERWRITE must NOT fire completion (the prior run is
+		// superseded, not finished) — only the new run's terminal point does.
+		completions.length = 0;
+		await startResultTimer("pr-triage", "run-c1", "pr-triage__333.json");
+		await startResultTimer("pr-triage", "run-c2", "pr-triage__444.json");
+		expect(completions).toHaveLength(0);
+	});
+
+	it("(RT-8) recoverResultTimers immediately dead-letters an already-expired orphaned marker", async () => {
+		// Task 6 (Critical) restart recovery, expired branch: if the marker's
+		// deadline already passed while the daemon was down, recovery must emit the
+		// dead-letter immediately (reason orphaned-dispatch-recovered) and remove
+		// the marker — the orphaned dispatch is never silently lost.
+		const markerPath = path.join(pathFor("result-pending"), "pr-triage.json");
+		await fsp.writeFile(
+			markerPath,
+			JSON.stringify({
+				agentId: "pr-triage",
+				runId: "expired-run",
+				filename: "pr-triage__7.json",
+				deadlineMs: Date.now() - 5000,
+			}),
+		);
+
+		const emitMock = vi.fn().mockResolvedValue(true);
+		const { recoverResultTimers } = makeResultTimers({ emit: emitMock });
+		await recoverResultTimers();
+
+		const timeouts = emitMock.mock.calls.filter(
+			(c) => (c[0] as { kind: string }).kind === "pr-triage-result-timeout",
+		);
+		expect(timeouts).toHaveLength(1);
+		expect(timeouts[0][0]).toMatchObject({
+			kind: "pr-triage-result-timeout",
+			agentId: "pr-triage",
+			reason: "orphaned-dispatch-recovered",
+		});
+		await expect(fsp.access(markerPath)).rejects.toBeDefined();
 	});
 });
 

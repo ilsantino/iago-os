@@ -556,6 +556,65 @@ describe("pr-triage integration (R1 daemon-owned creds)", () => {
 		expect(liveHandles).toHaveLength(1);
 	}, 15_000);
 
+	it("Case 4b (Task 8) — heartbeat recycle re-arms the cron exit listener; a later crash restarts exactly once (single restart authority)", async () => {
+		writePrTriageFixture();
+		const { mgr, register } = await buildSystem();
+		await register("pr-triage", { backoffMs: [10] });
+		const initialSpawns = mockSpawn.mock.calls.length;
+		expect(initialSpawns).toBe(1);
+
+		const handle = mgr.listHandles().find((h) => h.agentId === "pr-triage");
+		if (handle === undefined) throw new Error("no pr-triage handle");
+
+		// ── Phase A — simulate a HEARTBEAT recycle via restartAgent (the path the
+		// heartbeat's forceRestart callback drives). This tears down PTY gen-1 and
+		// re-spawns gen-2 under the SAME handle id, and emits `agent-restarted`.
+		await mgr.restartAgent(handle.id, "stalled");
+		// Let the `agent-restarted` re-arm + any spurious gen-1 exit-listener
+		// microtask settle.
+		await new Promise((resolve) => setTimeout(resolve, 60));
+
+		// gen-2 spawned; exactly ONE live handle (no double-restart from the
+		// recycle tripping the gen-1 cron exit listener — `isRestarting` guarded).
+		const afterRecycleSpawns = mockSpawn.mock.calls.length;
+		expect(afterRecycleSpawns).toBe(initialSpawns + 1);
+		expect(
+			mgr.listHandles().filter((h) => h.agentId === "pr-triage"),
+		).toHaveLength(1);
+		// The recycle is a heartbeat action — it must NOT have emitted a cron-side
+		// restart event (that channel is for the cron loop's own restarts).
+		expect(emittedEventsOfKind("cron-agent-restarted")).toHaveLength(0);
+
+		// ── Phase B — crash the gen-2 PTY. The KEY assertion: the cron exit
+		// listener was RE-ARMED onto gen-2 by `agent-restarted` (without Task 8 it
+		// would still be bound to the dead gen-1 PTY, so this crash would go
+		// un-restarted — silent death of the daily job).
+		const gen2Pty = ptyState.last;
+		if (gen2Pty === null) throw new Error("no gen-2 pty");
+		const noise = "completely-unrelated-noise-XYZ ".repeat(20);
+		gen2Pty.emitData(noise);
+		expect(gen2Pty.killCalls).toContain("SIGTERM");
+
+		// Wait for the cron-side restart (injected 10ms backoff) to fire.
+		await new Promise((resolve) => setTimeout(resolve, 120));
+
+		// EXACTLY ONE cron-side restart from the gen-2 crash — not zero (listener
+		// was armed) and not two (no double-restart).
+		const cronRestarts = emittedEventsOfKind("cron-agent-restarted");
+		expect(cronRestarts).toHaveLength(1);
+		expect(cronRestarts[0]).toMatchObject({
+			kind: "cron-agent-restarted",
+			agentId: "pr-triage",
+			attempt: 1,
+		});
+		// gen-3 spawned (recycle gen-2 + crash-restart gen-3).
+		expect(mockSpawn.mock.calls.length).toBe(initialSpawns + 2);
+		// Still exactly one live handle after the whole sequence.
+		expect(
+			mgr.listHandles().filter((h) => h.agentId === "pr-triage"),
+		).toHaveLength(1);
+	}, 15_000);
+
 	it("Case 5 — agent send envelope (sendText) routes to 'task-send-needed', NOT dispatch (daemon owns the send)", async () => {
 		writePrTriageFixture();
 		const { mgr, register } = await buildSystem();

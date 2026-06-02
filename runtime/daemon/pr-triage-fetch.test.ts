@@ -151,6 +151,84 @@ describe("fetchOpenPrs", () => {
 		expect((thrown as FetchPrsError).message).toContain("timed out");
 		expect((thrown as FetchPrsError).message).not.toContain(SECRET_TOKEN);
 	});
+
+	it("(Task 7) throws a FetchPrsError when the streamed body exceeds the byte cap (no unbounded buffer)", async () => {
+		// Task 7 (Important): the AbortController bounds TIME, never SIZE.
+		// `await res.json()` would buffer the ENTIRE body into the long-lived
+		// daemon heap. A response larger than the cap must throw `FetchPrsError`
+		// (→ pr-fetch-failed) while streaming, rather than being fully buffered.
+		// A real streaming `Response` (has `.body.getReader()`) exercises the
+		// running-byte-counter abort path. Cap set tiny so the test body trips it.
+		const big = JSON.stringify({
+			data: { search: { issueCount: 1, nodes: [{ number: 1, title: "x" }] } },
+			padding: "A".repeat(4096),
+		});
+		const fetchImpl = vi.fn(
+			async () =>
+				new Response(big, {
+					status: 200,
+					headers: { "Content-Type": "application/json" },
+				}),
+		) as unknown as typeof fetch;
+
+		let thrown: unknown;
+		try {
+			await fetchOpenPrs(SECRET_TOKEN, { fetchImpl, maxResponseBytes: 256 });
+		} catch (err) {
+			thrown = err;
+		}
+		expect(thrown).toBeInstanceOf(FetchPrsError);
+		const e = thrown as FetchPrsError;
+		expect(e.status).toBe(200);
+		expect(e.message).toContain("exceeds");
+		// Token never leaks into the overflow error.
+		expect(e.message).not.toContain(SECRET_TOKEN);
+	});
+
+	it("(Task 7) rejects on an over-cap Content-Length header (fast reject)", async () => {
+		// `Content-Length`, when present and over the cap, is the fast-reject path:
+		// the overflow is surfaced from the declared length, not from buffering the
+		// whole body. (We assert the throw + the content-length reason; whether the
+		// underlying Response eagerly primes its stream is a runtime detail.)
+		const fetchImpl = vi.fn(
+			async () =>
+				new Response(JSON.stringify({ data: { search: { nodes: [] } } }), {
+					status: 200,
+					headers: {
+						"Content-Type": "application/json",
+						"Content-Length": String(64 * 1024 * 1024),
+					},
+				}),
+		) as unknown as typeof fetch;
+
+		let thrown: unknown;
+		try {
+			await fetchOpenPrs(SECRET_TOKEN, { fetchImpl, maxResponseBytes: 1024 });
+		} catch (err) {
+			thrown = err;
+		}
+		expect(thrown).toBeInstanceOf(FetchPrsError);
+		expect((thrown as FetchPrsError).message).toContain("content-length");
+		expect((thrown as FetchPrsError).message).not.toContain(SECRET_TOKEN);
+	});
+
+	it("(Task 7) a normal under-cap response still parses cleanly", async () => {
+		// Regression guard: the byte cap must not break the happy path.
+		const nodes = [{ number: 7, title: "ok" }];
+		const fetchImpl = vi.fn(
+			async () =>
+				new Response(
+					JSON.stringify({ data: { search: { issueCount: 1, nodes } } }),
+					{ status: 200, headers: { "Content-Type": "application/json" } },
+				),
+		) as unknown as typeof fetch;
+		const result = await fetchOpenPrs(SECRET_TOKEN, {
+			fetchImpl,
+			maxResponseBytes: 8 * 1024 * 1024,
+		});
+		expect(result.nodes).toEqual(nodes);
+		expect(result.issueCount).toBe(1);
+	});
 });
 
 describe("sanitizePrPayload", () => {

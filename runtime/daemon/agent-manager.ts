@@ -387,15 +387,30 @@ export class AgentManager extends EventEmitter {
 	 * `persistAgentConfig` is keyed on `handle.id`, which does not exist until
 	 * `spawn` returns, so persist-before-spawn is structurally impossible.
 	 *
-	 * Partial-state windows:
+	 * DURABILITY CONTRACT (Task 1 Critical — fail-closed, 2026-06-02):
+	 * persistence is LOAD-BEARING. If `persistAgentConfig` throws after a
+	 * successful spawn (disk fault / ENOSPC / EACCES), `registerAgent` does
+	 * NOT return a live-but-unpersisted handle — it tears the spawned handle
+	 * down (`shutdownAgentInternal` → marker + cascade + `runtime.shutdown` +
+	 * `teardown`) and REJECTS. Rationale: a tracked handle with no
+	 * `agents/<id>.json` on disk is invisible to boot recovery's
+	 * `knownConfigs` AND to the on-disk uniqueness scan
+	 * (`assertAgentIdAvailable`) — so a daemon crash would strand the live
+	 * process unrecoverably AND a later `registerAgent` of the same id could
+	 * duplicate it. Fail-closed eliminates both: either a fully-registered,
+	 * recoverable agent or a clean rejection with NO leaked process.
+	 *
+	 * Partial-state windows (post-fix):
 	 *   - If `spawn` throws, no handle id exists yet — nothing is tracked and
 	 *     nothing is persisted. The caller sees the throw; there is no orphan.
-	 *   - If `persistAgentConfig` throws AFTER a successful spawn, the live
-	 *     process is tracked in-memory but has NO persisted `<handle.id>.json`.
-	 *     A daemon crash before the next persist would strand that process
-	 *     (boot recovery's `knownConfigs` would not include it). `persistAgentConfig`
-	 *     itself swallows write errors (logs to stderr, resolves) so this
-	 *     window is narrow — registration still returns the live handle.
+	 *   - If `persistAgentConfig` throws AFTER a successful spawn, the spawned
+	 *     handle is shut down + untracked before the throw propagates — no
+	 *     live process, no tracked handle, no on-disk config. There is no
+	 *     longer a "tracked-but-unpersisted" window.
+	 *
+	 * The in-process registration lock (`withAgentRegistrationLock`) is held
+	 * across the whole sequence so the rollback completes before a competing
+	 * same-id `registerAgent` re-checks availability.
 	 */
 	async registerAgent(config: RegisterAgentConfig): Promise<AgentHandle> {
 		assertSafeIdentifier(config.agentId, "agentId");
@@ -431,7 +446,34 @@ export class AgentManager extends EventEmitter {
 				org: config.org ?? null,
 				parentHandleId: null,
 			});
-			await this.persistAgentConfig(handle.id, config, runtime);
+			try {
+				await this.persistAgentConfig(handle.id, config, runtime);
+			} catch (persistErr) {
+				// Task 1 Critical (fail-closed): persistence is load-bearing. A
+				// tracked handle with no `agents/<id>.json` is unrecoverable after a
+				// crash and duplicable on re-register. Roll the spawn back — shut the
+				// live process down, cascade children, write the marker, and untrack —
+				// then reject so the caller never sees a half-registered agent.
+				// `shutdownAgentInternal` is keyed on `withParentLock(handle.id)`, a
+				// DIFFERENT lock from the `withAgentRegistrationLock(agentId)` held
+				// here, so there is no self-deadlock. A best-effort second teardown
+				// guards the case where shutdown itself throws before `teardown` runs.
+				try {
+					await this.shutdownAgentInternal(handle.id, "SIGKILL", "crash");
+				} catch (rollbackErr) {
+					console.error(
+						`[agent-manager] rollback shutdown of ${handle.id} after persist failure failed: ${
+							rollbackErr instanceof Error ? rollbackErr.message : String(rollbackErr)
+						}`,
+					);
+				} finally {
+					// Ensure the handle is gone from `handles` even if shutdown threw
+					// before reaching its own `teardown` (idempotent: no-op if already
+					// torn down).
+					this.teardown(handle.id);
+				}
+				throw persistErr;
+			}
 			return handle;
 		});
 	}
@@ -465,8 +507,13 @@ export class AgentManager extends EventEmitter {
 	 * `trackHandle`). Returns `undefined` if the handle is unknown.
 	 * Synchronous read of the in-memory tracked record — safe to call
 	 * from the Telegram bot's `/status` reply path. PR45 M6.
+	 *
+	 * Minor (Task 3 type-tighten): the return is `StatusValue | undefined`
+	 * (not the looser `string | undefined`) — `lastStatus` is already a
+	 * `StatusValue`, so the narrower type lets callers `switch` exhaustively
+	 * over the union without a string-widening cast.
 	 */
-	getLastStatus(handleId: string): string | undefined {
+	getLastStatus(handleId: string): StatusValue | undefined {
 		return this.handles.get(handleId)?.lastStatus;
 	}
 
@@ -493,6 +540,20 @@ export class AgentManager extends EventEmitter {
 	 * (no await on the hot path); callers needing ground-truth liveness
 	 * must await `runtime.isAlive(handle)` (the heartbeat loop already
 	 * does, via the per-handle probe wired in `trackHandle`).
+	 *
+	 * NAMING COLLISION (Task 3 Minor — intentional, kept-with-JSDoc per the
+	 * plan's "rename OR strengthen the JSDoc" choice): this method shares the
+	 * bare name `isAlive` with the runtime adapter's
+	 * `AgentRuntime.isAlive(handle): Promise<boolean>`, but the two are NOT
+	 * interchangeable. `AgentManager.isAlive(handleId)` is SYNCHRONOUS, keyed
+	 * by `handleId` (string), derives liveness from the CACHED `lastStatus`,
+	 * and returns `boolean | undefined`. `AgentRuntime.isAlive(handle)` is
+	 * ASYNC, takes an `AgentHandle`, actively PROBES the underlying process,
+	 * and returns `Promise<boolean>`. The differing signatures (sync vs
+	 * Promise, string vs handle, tri-state vs boolean) make an accidental
+	 * swap a type error, so the shared name is retained rather than renamed.
+	 * Do NOT call this where ground-truth liveness is required — await the
+	 * runtime probe instead.
 	 */
 	isAlive(handleId: string): boolean | undefined {
 		const tracked = this.handles.get(handleId);
@@ -561,6 +622,20 @@ export class AgentManager extends EventEmitter {
 				this.teardown(handleId);
 			}
 		});
+	}
+
+	/**
+	 * Task 8 (single restart authority) — is a restart currently in flight for
+	 * this handle id? Both restart paths (the heartbeat recycle via
+	 * `restartAgent` and the cron-restart loop's exit listener) consult this so
+	 * the SECOND arrival yields to the first instead of double-restarting. The
+	 * cron exit listener checks it before calling `scheduleRestart`: a heartbeat
+	 * recycle that is tearing the PTY down (which trips the same `exited` status
+	 * the cron listener watches) is already restarting, so the cron listener
+	 * must NOT fire a competing restart.
+	 */
+	isRestarting(handleId: string): boolean {
+		return this.restartingPromises.has(handleId);
 	}
 
 	async restartAgent(
@@ -679,8 +754,38 @@ export class AgentManager extends EventEmitter {
 		// accumulates across restarts (atomic 0o600 temp-then-rename in
 		// persistAgentConfig). Skipped when env is unchanged (nothing to rewrite).
 		if (envOverride !== undefined) {
-			await this.persistAgentConfig(handleId, respawnConfig, existing.runtime);
+			// Task 1: persistAgentConfig now THROWS on write failure. In the
+			// restart path the respawn ALREADY succeeded and the new generation is
+			// tracked, so a failed env-rewrite must NOT undo the recovery — catch
+			// it locally and log. This is the documented narrow window: boot
+			// recovery would rebuild from the stale-but-present prior config (or
+			// none) rather than the freshly-rotated env. Distinct from the
+			// register path, where the spawn is rolled back fail-closed because no
+			// live agent existed before it.
+			try {
+				await this.persistAgentConfig(handleId, respawnConfig, existing.runtime);
+			} catch (persistErr) {
+				console.error(
+					`[agent-manager] restart env-rewrite persist for ${handleId} failed (respawn kept): ${
+						persistErr instanceof Error ? persistErr.message : String(persistErr)
+					}`,
+				);
+			}
 		}
+		// Task 8 (single restart authority) — announce the new generation so the
+		// cron-restart loop re-arms its exit listener on the FRESH handle,
+		// regardless of WHO triggered this restart (heartbeat recycle, IPC, or the
+		// cron loop itself). Without this, a heartbeat-initiated recycle would
+		// re-spawn a generation with NO cron-side exit listener, and a later exit
+		// of the cron agent would go un-restarted (silent death of the daily job).
+		// Carries the agentId so the cron loop (which keys by agentId) can match,
+		// plus the handleId + new generationToken so the listener re-arms against
+		// the exact new handle.
+		this.emit("agent-restarted", {
+			agentId: newGeneration.agentId,
+			handleId,
+			generationToken: newGeneration.generationToken,
+		});
 		return newGeneration;
 	}
 
@@ -900,10 +1005,7 @@ export class AgentManager extends EventEmitter {
 				// matches the marker's handleId. Adapters MAY return a handle
 				// with a different id (e.g., generation suffix); the recovered
 				// listing reflects what was actually tracked.
-				const recoveredId = await this.attemptCrashReplay(
-					handleId,
-					knownConfigs,
-				);
+				const recoveredId = await this.attemptCrashReplay(handleId, knownConfigs);
 				if (recoveredId !== null && this.handles.has(recoveredId)) {
 					recovered.push(recoveredId);
 				}
@@ -921,10 +1023,7 @@ export class AgentManager extends EventEmitter {
 				for (const handleId of knownConfigs.keys()) {
 					if (seenHandleIds.has(handleId)) continue;
 					crashes.push(handleId);
-					const recoveredId = await this.attemptCrashReplay(
-						handleId,
-						knownConfigs,
-					);
+					const recoveredId = await this.attemptCrashReplay(handleId, knownConfigs);
 					if (recoveredId !== null && this.handles.has(recoveredId)) {
 						recovered.push(recoveredId);
 					}
@@ -1493,11 +1592,19 @@ export class AgentManager extends EventEmitter {
 			// Best-effort cleanup of the temp file so a failed write does not
 			// leave a stray secret-bearing `.tmp` on disk.
 			await fsp.unlink(tmpFile).catch(() => undefined);
+			// Task 1 Critical (fail-closed): persistence is load-bearing. RETHROW
+			// instead of swallowing — the previous console.error-and-resolve let
+			// `registerAgent` return a tracked-but-unpersisted (unrecoverable,
+			// duplicable) handle. The caller (`registerAgent`) rolls the spawn back
+			// on this throw; the restart re-persist call site (`doRestart`) catches
+			// it locally because the respawn already succeeded (the env-rewrite is
+			// the only casualty and is the documented narrow restart window).
 			console.error(
 				`[agent-manager] persistAgentConfig for ${handleId} failed: ${
 					err instanceof Error ? err.message : String(err)
 				}`,
 			);
+			throw err instanceof Error ? err : new Error(String(err));
 		}
 	}
 
@@ -1590,11 +1697,7 @@ export class AgentManager extends EventEmitter {
 			if (tracked.handle.agentId !== agentId) continue;
 			const existingOrg = tracked.org;
 			if (existingOrg !== attemptedOrg) {
-				throw new AgentIdAlreadyRegisteredError(
-					agentId,
-					existingOrg,
-					attemptedOrg,
-				);
+				throw new AgentIdAlreadyRegisteredError(agentId, existingOrg, attemptedOrg);
 			}
 		}
 
@@ -1631,11 +1734,7 @@ export class AgentManager extends EventEmitter {
 			const orgVal = (parsed as { org?: unknown }).org;
 			const existingOrg = typeof orgVal === "string" ? orgVal : null;
 			if (existingOrg !== attemptedOrg) {
-				throw new AgentIdAlreadyRegisteredError(
-					agentId,
-					existingOrg,
-					attemptedOrg,
-				);
+				throw new AgentIdAlreadyRegisteredError(agentId, existingOrg, attemptedOrg);
 			}
 		}
 	}

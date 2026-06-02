@@ -410,12 +410,13 @@ describe("AgentManager / registerAgent", () => {
 		expect(hbRegister).toHaveBeenCalledWith(handle.id, expect.any(Function));
 	});
 
-	it("persist-fail after spawn: handle is tracked in-memory but no config persisted (orphan window)", async () => {
-		// Dual-adversarial Important (Finding 4): the documented partial-state
-		// window. spawn succeeds, persistAgentConfig's writeFile fails. The
-		// process is live + tracked in-memory and registerAgent still resolves
-		// with the handle (persistAgentConfig swallows the write error), but no
-		// `<handle.id>.json` lands on disk — the real orphan risk.
+	it("persist-fail after spawn: registerAgent rejects fail-closed, shuts down + untracks the spawned handle, no config on disk", async () => {
+		// Task 1 Critical (fail-closed): spawn succeeds but persistAgentConfig's
+		// writeFile fails (ENOSPC). The OLD behavior returned a tracked-but-
+		// unpersisted live handle (the orphan window). The fix rolls the spawn
+		// back: registerAgent REJECTS, the spawned handle is shut down + untracked,
+		// and no `<handle.id>.json` lands on disk. This test fails without the fix
+		// (old code resolved with a live handle) and passes with it.
 		const ctrl = makeMockRuntime("mock-pty-persist-fail");
 		registerRuntime(ctrl.runtime);
 		const mgr = new AgentManager();
@@ -437,21 +438,29 @@ describe("AgentManager / registerAgent", () => {
 			return writeFileState.real(p, data, options);
 		});
 
-		// registerAgent MUST NOT throw — persistAgentConfig logs + resolves.
-		const handle = await mgr.registerAgent({
-			agentId: "persist-orphan",
-			runtimeId: "mock-pty-persist-fail",
-			cwd: "/tmp/work",
-			env: {},
-			sessionId: "sess-po",
-		});
+		// registerAgent MUST reject (fail-closed) rather than resolve with a
+		// live-but-unpersisted handle.
+		await expect(
+			mgr.registerAgent({
+				agentId: "persist-orphan",
+				runtimeId: "mock-pty-persist-fail",
+				cwd: "/tmp/work",
+				env: {},
+				sessionId: "sess-po",
+			}),
+		).rejects.toThrow(/ENOSPC/);
 
-		// The live process is tracked in-memory.
-		expect(mgr.getHandle(handle.id)).toBeDefined();
+		// The process WAS spawned, then rolled back: no handle leaks in-memory.
 		expect(ctrl.spawnCalls).toHaveLength(1);
+		expect(mgr.listHandles()).toHaveLength(0);
 
-		// But NO persisted config file exists on disk — the orphan window.
-		const configPath = path.join(agentsDir, `${handle.id}.json`);
+		// The spawned handle was shut down during rollback (no orphan PTY).
+		const spawnedId = `${ctrl.runtime.id}-h1`;
+		expect(mgr.getHandle(spawnedId)).toBeUndefined();
+		expect(ctrl.shutdownCalls.some((c) => c.handleId === spawnedId)).toBe(true);
+
+		// No persisted config file exists on disk (the write was the failure).
+		const configPath = path.join(agentsDir, `${spawnedId}.json`);
 		await expect(fsp.access(configPath)).rejects.toBeDefined();
 	});
 });
@@ -601,6 +610,71 @@ describe("AgentManager / restartAgent", () => {
 		// we did not boot, marker should still be present.
 		const stillMarker = await readStopMarker(handle.id);
 		expect(stillMarker?.reason).toBe("recycle");
+	});
+
+	it("(Task 8) emits agent-restarted with the new generation so the cron loop can re-arm", async () => {
+		// Task 8 (single restart authority): a heartbeat recycle (or any
+		// restartAgent caller) must ANNOUNCE the new generation so the cron-restart
+		// loop re-arms its exit listener on the fresh handle. Without this event,
+		// a heartbeat recycle leaves the new generation with no cron-side exit
+		// listener and a later exit goes un-restarted.
+		const ctrl = makeMockRuntime("mock-pty-restarted-evt");
+		registerRuntime(ctrl.runtime);
+		const mgr = new AgentManager();
+		const handle = await mgr.registerAgent({
+			agentId: "evt-agent",
+			runtimeId: "mock-pty-restarted-evt",
+			cwd: "/tmp/work",
+			env: {},
+			sessionId: "sess-evt",
+		});
+
+		const events: Array<{
+			agentId: string;
+			handleId: string;
+			generationToken: number;
+		}> = [];
+		mgr.on("agent-restarted", (e) => events.push(e));
+
+		const restarted = await mgr.restartAgent(handle.id, "stalled");
+
+		expect(events).toHaveLength(1);
+		expect(events[0]).toEqual({
+			agentId: "evt-agent",
+			handleId: handle.id,
+			generationToken: restarted.generationToken,
+		});
+		// The announced handleId resolves to the live new generation.
+		expect(mgr.getHandle(events[0].handleId)?.generationToken).toBe(
+			restarted.generationToken,
+		);
+	});
+
+	it("(Task 8) isRestarting reports true only while a restart is in flight", async () => {
+		// Task 8 (no double-restart): the cron exit listener consults isRestarting
+		// before scheduling, so a heartbeat recycle tearing the PTY down (which
+		// trips the same exited/crashed status the listener watches) does not race
+		// a competing cron restart. The flag is true DURING doRestart and clears
+		// after it settles.
+		const ctrl = makeMockRuntime("mock-pty-isrestarting");
+		registerRuntime(ctrl.runtime);
+		const mgr = new AgentManager();
+		const handle = await mgr.registerAgent({
+			agentId: "isr-agent",
+			runtimeId: "mock-pty-isrestarting",
+			cwd: "/tmp/work",
+			env: {},
+			sessionId: "sess-isr",
+		});
+
+		expect(mgr.isRestarting(handle.id)).toBe(false);
+		const p = mgr.restartAgent(handle.id, "stalled");
+		// Synchronously after kicking restartAgent, the in-flight promise is
+		// registered → isRestarting is true.
+		expect(mgr.isRestarting(handle.id)).toBe(true);
+		await p;
+		// Settled → flag cleared.
+		expect(mgr.isRestarting(handle.id)).toBe(false);
 	});
 });
 
@@ -2369,15 +2443,16 @@ describe("AgentManager / persistAgentConfig overwrite-mode (pr84 Codex at-rest)"
 		},
 	);
 
-	it("swallows a persist write/rename failure and cleans up the secret-bearing .tmp (pr84 Finding 3)", async () => {
-		// Finding 3 (pr84 dual-adversarial, Important — coverage gap): the
-		// persist path writes a fresh 0o600 temp file then atomic-renames it
-		// over the dest. If the write/chmod/rename throws (ENOSPC/EACCES/
-		// ENOTDIR), the catch MUST (a) best-effort unlink the stray
-		// secret-bearing `.tmp` so a Telegram token + GH PAT are not left on
-		// disk, and (b) SWALLOW the error so a transient persist failure does
-		// not crash `registerAgent`. Only the success path was tested before.
-		// Platform-agnostic: asserts cleanup + non-throw, not POSIX mode bits.
+	it("on a persist write/rename failure: cleans up the secret-bearing .tmp AND rejects fail-closed (pr84 Finding 3 + Task 1)", async () => {
+		// Finding 3 (pr84 dual-adversarial) + Task 1 (Critical, 2026-06-02): the
+		// persist path writes a fresh 0o600 temp file then atomic-renames it over
+		// the dest. If the write/chmod/rename throws (ENOSPC/EACCES/ENOTDIR), the
+		// catch MUST (a) best-effort unlink the stray secret-bearing `.tmp` so a
+		// Telegram token + GH PAT are not left on disk, and — UPDATED for Task 1 —
+		// (b) RETHROW so `registerAgent` rolls the spawn back and REJECTS
+		// fail-closed (was: swallow + resolve, which leaked an unrecoverable
+		// tracked handle). Platform-agnostic: asserts cleanup + rejection +
+		// no-handle-leak, not POSIX mode bits.
 		const fixedHandleId = "persist-fail-fixed-h";
 		const ctrl = makeMockRuntime("mock-pty-persist-fail");
 		ctrl.runtime.spawn = async (opts: SpawnOpts): Promise<AgentHandle> => {
@@ -2421,7 +2496,7 @@ describe("AgentManager / persistAgentConfig overwrite-mode (pr84 Codex at-rest)"
 			return renameState.real(source, dest);
 		});
 
-		// (b) registerAgent RESOLVES despite the persist failure — error swallowed.
+		// (b) registerAgent REJECTS fail-closed on the persist failure (Task 1).
 		await expect(
 			mgr.registerAgent({
 				agentId: "persist-fail-agent",
@@ -2431,12 +2506,15 @@ describe("AgentManager / persistAgentConfig overwrite-mode (pr84 Codex at-rest)"
 				env: { IAGO_TELEGRAM_BOT_TOKEN: "secret-token", GH_TOKEN: "gh-pat" },
 				sessionId: "sess-persist-fail",
 			}),
-		).resolves.toBeDefined();
+		).rejects.toThrow(/ENOSPC/);
 
 		// (a) The stray secret-bearing `.tmp` was cleaned up by the catch's unlink.
 		await expect(fsp.stat(tmpFile)).rejects.toThrow();
 		// The dest config was never published (the rename failed before publish).
 		await expect(fsp.stat(persistedFile)).rejects.toThrow();
+		// (c) Task 1: the spawned handle was rolled back — no in-memory leak.
+		expect(mgr.listHandles()).toHaveLength(0);
+		expect(mgr.getHandle(fixedHandleId)).toBeUndefined();
 	});
 });
 

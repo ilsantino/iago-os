@@ -841,6 +841,98 @@ describe("CronScheduler — overlap + decrement", () => {
 		expect(overlaps).toHaveLength(0);
 		await sch.stop();
 	});
+
+	it("(15 — Task 6 #2) a deferReleaseAgents slot is HELD across task-resolved and released only on cron-result-complete", async () => {
+		// Task 6 gate-finding #2 (hold-slot-until-result): for a send-contract
+		// agent (pr-triage), `task-resolved` fires at PROMPT HANDOFF, not run
+		// completion. With the agent in `deferReleaseAgents`, task-resolved must
+		// NOT release the slot — only `cron-result-complete` (emitted when the
+		// result envelope is processed or a durable dead-letter fires) does.
+		// Without the fix, the next tick could dispatch a second prompt mid-run.
+		vi.useFakeTimers();
+		const am = new EventEmitter();
+		const prompt = writePromptTemplate("p.txt", "go");
+		let nowHolder = new Date(Date.UTC(2026, 4, 18, 14, 0, 0));
+		const sch = new CronScheduler({
+			agentManager: am,
+			nowFn: () => nowHolder,
+			deferReleaseAgents: new Set(["pr-triage"]),
+		});
+		sch.registerCron({
+			agentId: "pr-triage",
+			schedule: "0 14 * * *",
+			promptTemplatePath: prompt,
+			outputTaskNamePrefix: "pr-triage",
+			maxConcurrent: 1,
+		});
+		sch.start();
+		await sch._tickForTests();
+		expect(sch._runningCountForTests().get("pr-triage")).toBe(1);
+
+		const pendingForResolve = await fsp.readdir(
+			path.join(tempDir, "tasks/pending"),
+		);
+		const emittedFilename = pendingForResolve[0] as string;
+
+		// task-resolved (prompt handoff) must NOT release the deferred slot.
+		am.emit("task-resolved", {
+			agentId: "pr-triage",
+			filename: emittedFilename,
+		});
+		expect(sch._runningCountForTests().get("pr-triage")).toBe(1);
+		expect(sch._outstandingFilenamesForTests().has("pr-triage")).toBe(true);
+
+		// A second matching tick MUST be overlap-prevented — the slot is still held.
+		nowHolder = new Date(Date.UTC(2026, 4, 18, 14, 0, 30));
+		await sch._tickForTests();
+		const evtsMid = await readTelemetry();
+		expect(
+			evtsMid.filter((e) => e.kind === "cron-overlap-prevented"),
+		).not.toHaveLength(0);
+		// Still exactly one pending file (the second tick did not dispatch).
+		expect(await fsp.readdir(path.join(tempDir, "tasks/pending"))).toHaveLength(
+			1,
+		);
+
+		// cron-result-complete (run done) releases the slot.
+		am.emit("cron-result-complete", {
+			agentId: "pr-triage",
+			filename: emittedFilename,
+		});
+		expect(sch._runningCountForTests().get("pr-triage")).toBe(0);
+		expect(sch._outstandingFilenamesForTests().has("pr-triage")).toBe(false);
+		await sch.stop();
+	});
+
+	it("(16 — Task 6 #2) a non-deferred agent still releases on task-resolved (back-compat)", async () => {
+		// Regression guard: deferReleaseAgents must be opt-in. An agent NOT in the
+		// set keeps the legacy release-on-handoff behavior — task-resolved releases.
+		vi.useFakeTimers();
+		const am = new EventEmitter();
+		const prompt = writePromptTemplate("p.txt", "go");
+		const sch = new CronScheduler({
+			agentManager: am,
+			nowFn: () => new Date(Date.UTC(2026, 4, 18, 14, 0, 0)),
+			deferReleaseAgents: new Set(["pr-triage"]),
+		});
+		sch.registerCron({
+			agentId: "other-agent",
+			schedule: "0 14 * * *",
+			promptTemplatePath: prompt,
+			outputTaskNamePrefix: "other-agent",
+			maxConcurrent: 1,
+		});
+		sch.start();
+		await sch._tickForTests();
+		expect(sch._runningCountForTests().get("other-agent")).toBe(1);
+		const emitted = (
+			await fsp.readdir(path.join(tempDir, "tasks/pending"))
+		)[0] as string;
+		am.emit("task-resolved", { agentId: "other-agent", filename: emitted });
+		// Non-deferred → released immediately on handoff.
+		expect(sch._runningCountForTests().get("other-agent")).toBe(0);
+		await sch.stop();
+	});
 });
 
 describe("validateScheduleSyntax — unconditional field parsing", () => {

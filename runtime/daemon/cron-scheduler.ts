@@ -157,6 +157,29 @@ export interface CronSchedulerOpts {
 	 * verbatim-template behavior for every cron (back-compat).
 	 */
 	readonly prepareCronPrompt?: PrepareCronPrompt;
+	/**
+	 * Task 6 gate-finding #2 (hold-slot-until-result) — agentIds whose cron
+	 * concurrency slot is held until the RUN COMPLETES, not just until the
+	 * prompt is handed off.
+	 *
+	 * For a normal cron agent the run is a spawn-then-exit lifecycle, so
+	 * `task-resolved` (emitted by `claimTask` at prompt handoff) IS the
+	 * completion signal and releases the slot. But for a send-contract agent
+	 * (pr-triage), `claimTask` fires `task-resolved` the moment the prompt
+	 * enters the persistent PTY — long BEFORE the agent writes its result
+	 * envelope. Releasing the slot there lets the next cron tick dispatch a
+	 * SECOND prompt that overwrites the single-key dead-letter timer and emits a
+	 * stale/duplicate envelope.
+	 *
+	 * For an agentId in this set, the `task-resolved`/`task-poisoned`/
+	 * `task-unrouted` terminal events do NOT release the slot; only a
+	 * `cron-result-complete` event (emitted by the result-timer machinery when
+	 * the envelope is processed OR a durable dead-letter timeout fires) does —
+	 * carrying the ORIGINAL cron task filename so the correct outstanding slot is
+	 * released. Empty by default (every agent keeps the legacy release-on-handoff
+	 * behavior).
+	 */
+	readonly deferReleaseAgents?: ReadonlySet<string>;
 }
 
 export interface RegisterCronOpts {
@@ -187,6 +210,15 @@ const TERMINAL_EVENTS = [
 	"task-poisoned",
 	"task-unrouted",
 ] as const;
+
+/**
+ * Task 6 gate-finding #2 — the RUN-COMPLETION terminal event for a
+ * send-contract agent (see `deferReleaseAgents`). Emitted by the result-timer
+ * machinery (`makeResultTimers`) when the agent's result envelope is processed
+ * OR a durable dead-letter timeout fires, carrying the ORIGINAL cron task
+ * filename. For a deferred agent this — NOT `task-resolved` — releases the slot.
+ */
+const RESULT_COMPLETE_EVENT = "cron-result-complete" as const;
 
 const TICK_INTERVAL_MS = 60_000;
 const WAKE_CHECK_TIMEOUT_MS = 30_000;
@@ -427,10 +459,17 @@ export class CronScheduler {
 	// cron concurrency counter and let the next matching tick fire past
 	// `maxConcurrent`.
 	private readonly outstandingFilenames = new Map<string, Set<string>>();
+	// Task 6 gate-finding #2 — agentIds whose slot is released on
+	// `cron-result-complete` (run completion) rather than on `task-resolved`
+	// (prompt handoff). See `CronSchedulerOpts.deferReleaseAgents`.
+	private readonly deferReleaseAgents: ReadonlySet<string>;
 	private interval: NodeJS.Timeout | null = null;
 	private tickInFlight: Promise<void> | null = null;
 	private stopped = false;
 	private readonly terminalListener: (event: TaskTerminalEvent) => void;
+	// Task 6 gate-finding #2 — the run-completion listener (separate from
+	// `terminalListener` so it can be unsubscribed independently in `stop()`).
+	private readonly resultCompleteListener: (event: TaskTerminalEvent) => void;
 
 	constructor(opts: CronSchedulerOpts) {
 		this.agentManager = opts.agentManager;
@@ -438,36 +477,72 @@ export class CronScheduler {
 		this.logger = opts.logger ?? defaultLogger();
 		this.nowFn = opts.nowFn ?? (() => new Date());
 		this.prepareCronPrompt = opts.prepareCronPrompt;
+		this.deferReleaseAgents = opts.deferReleaseAgents ?? new Set<string>();
 		// Subscribe immediately so the decrement chain works for every fire,
 		// even if `start()` is deferred. Defensive: 07b's `AgentManager`
 		// emit-side may not exist yet, so the handler tolerates absent
 		// counter entries and unknown filenames.
+		//
+		// Task 6 gate-finding #2 — `task-resolved`/`task-poisoned`/`task-unrouted`
+		// release the slot for EVERY agent EXCEPT those in `deferReleaseAgents`.
+		// For a deferred (send-contract) agent these events mark prompt HANDOFF,
+		// not run completion, so they must NOT release the slot — only the
+		// `cron-result-complete` event does.
 		this.terminalListener = (event: TaskTerminalEvent): void => {
-			if (
-				typeof event !== "object" ||
-				event === null ||
-				typeof event.agentId !== "string" ||
-				typeof event.filename !== "string"
-			) {
+			if (!this.isValidTerminalEvent(event)) return;
+			if (this.deferReleaseAgents.has(event.agentId)) {
+				// Held until `cron-result-complete`. Do NOT release here.
 				return;
 			}
-			const outstanding = this.outstandingFilenames.get(event.agentId);
-			if (outstanding === undefined || !outstanding.has(event.filename)) {
-				// Not a cron-emitted filename for this agent — manual task or
-				// a duplicate terminal event we already processed. Ignore so
-				// non-cron completions cannot reopen cron concurrency slots.
-				return;
-			}
-			outstanding.delete(event.filename);
-			if (outstanding.size === 0) {
-				this.outstandingFilenames.delete(event.agentId);
-			}
-			const current = this.runningCount.get(event.agentId) ?? 0;
-			this.runningCount.set(event.agentId, Math.max(0, current - 1));
+			this.releaseOutstanding(event.agentId, event.filename);
+		};
+		// Task 6 gate-finding #2 — the run-completion event. Releases the slot for
+		// a deferred agent (and is a harmless no-op for any other agent, whose
+		// outstanding filename was already cleared by `terminalListener`).
+		this.resultCompleteListener = (event: TaskTerminalEvent): void => {
+			if (!this.isValidTerminalEvent(event)) return;
+			this.releaseOutstanding(event.agentId, event.filename);
 		};
 		for (const evt of TERMINAL_EVENTS) {
 			this.agentManager.on(evt, this.terminalListener);
 		}
+		this.agentManager.on(RESULT_COMPLETE_EVENT, this.resultCompleteListener);
+	}
+
+	/**
+	 * Shape-guard for an inbound terminal/result event. Defensive: the
+	 * emit-side (`AgentManager` / result-timer machinery) may pass an unexpected
+	 * payload, and a thrown listener would surface on the emitter's call site.
+	 */
+	private isValidTerminalEvent(event: TaskTerminalEvent): boolean {
+		return (
+			typeof event === "object" &&
+			event !== null &&
+			typeof event.agentId === "string" &&
+			typeof event.filename === "string"
+		);
+	}
+
+	/**
+	 * Release one outstanding cron slot for `agentId`/`filename` if (and only
+	 * if) that filename is a live cron-emitted task for the agent. Idempotent:
+	 * a duplicate or non-cron filename is ignored, so the counter never
+	 * underflows and non-cron completions cannot reopen cron concurrency slots.
+	 */
+	private releaseOutstanding(agentId: string, filename: string): void {
+		const outstanding = this.outstandingFilenames.get(agentId);
+		if (outstanding === undefined || !outstanding.has(filename)) {
+			// Not a cron-emitted filename for this agent — manual task, a
+			// duplicate terminal event we already processed, or (for a deferred
+			// agent) the `task-resolved` we intentionally ignored. No-op.
+			return;
+		}
+		outstanding.delete(filename);
+		if (outstanding.size === 0) {
+			this.outstandingFilenames.delete(agentId);
+		}
+		const current = this.runningCount.get(agentId) ?? 0;
+		this.runningCount.set(agentId, Math.max(0, current - 1));
 	}
 
 	/**
@@ -546,6 +621,7 @@ export class CronScheduler {
 		for (const evt of TERMINAL_EVENTS) {
 			this.agentManager.off(evt, this.terminalListener);
 		}
+		this.agentManager.off(RESULT_COMPLETE_EVENT, this.resultCompleteListener);
 	}
 
 	/**

@@ -120,7 +120,12 @@ import {
 	fetchOpenPrs,
 	sanitizePrPayload,
 } from "./pr-triage-fetch.js";
-import { ensureStateDirsSync, getStateRoot, pathFor } from "./state-paths.js";
+import {
+	atomicRenameStaleDest,
+	ensureStateDirsSync,
+	getStateRoot,
+	pathFor,
+} from "./state-paths.js";
 import { type DaemonEvent, PR_TRIAGE_ALERT_KINDS, emit } from "./telemetry.js";
 
 /**
@@ -616,45 +621,266 @@ export const RESULT_TIMEOUT_MS = 120_000;
 export const TELEGRAM_SEND_RETRY_BACKOFF_MS: readonly number[] = [250, 1000];
 
 /**
- * R1 (feature-pr84-r1-daemon-creds, D4) — build the shared result-timer
- * closures the dispatch handler and the send handler both use. `maxConcurrent:
- * 1` means a single in-flight dispatch per pr-triage agent, so a single-key map
- * is sufficient (a re-fire overwrites: clear-then-set). The timer is
- * `.unref()`'d so it never keeps the process alive, and does NOT survive a
- * daemon restart.
+ * Task 6 (Critical) — the durable, run-correlated dead-letter marker. Written
+ * to `result-pending/<agentId>.json` at dispatch and removed when the result
+ * envelope is processed (or the in-memory timer fires). Carries the per-dispatch
+ * `runId` so a late/wrong-run envelope cannot clear the CURRENT run's marker,
+ * and a `deadlineMs` (absolute epoch) so a boot scan can decide re-arm vs
+ * immediate dead-letter.
+ */
+export interface ResultPendingMarker {
+	readonly agentId: string;
+	readonly runId: string;
+	readonly filename: string | null;
+	readonly deadlineMs: number;
+}
+
+/**
+ * Task 6 — durable result-pending marker path for an agentId.
+ */
+function resultPendingPath(agentId: string): string {
+	return path.join(pathFor("result-pending"), `${agentId}.json`);
+}
+
+/**
+ * Task 6 (Critical — result-envelope run-correlation + dead-letter durability,
+ * escalated 2026-06-02) — build the shared result-timer closures the dispatch
+ * handler and the send handler both use.
+ *
+ * The PRIOR design keyed an in-memory `.unref()`'d timer by BARE `agentId` and
+ * relied on `maxConcurrent: 1` to make a single-key map "sufficient". Two holes:
+ *   (a) NOT durable across restart — a dispatch in flight when the daemon
+ *       restarts lost its timer, so `pr-triage-result-timeout` never fired and
+ *       the daily summary was silently dropped (no durable pending work to
+ *       recover); and
+ *   (b) fragile to re-fire / a future `maxConcurrent > 1` — a late envelope from
+ *       a PRIOR run could clear the CURRENT run's key (wrong-run attribution).
+ *
+ * This design closes both:
+ *   - CORRELATION: every dispatch is stamped with a `runId`. The marker and the
+ *     in-memory timer both carry it. `clearResultTimer(agentId, runId)` clears
+ *     ONLY when the runId matches the active run — a stale/wrong-run envelope is
+ *     ignored (returns `false`) and never clears a live timer or marker.
+ *   - DURABILITY: `startResultTimer` writes a `result-pending/<agentId>.json`
+ *     marker (atomically) carrying `{runId, deadlineMs, filename}`. The marker
+ *     survives a restart; `recoverResultTimers()` (called from boot) scans the
+ *     dir and either RE-ARMS a still-future deadline or IMMEDIATELY dead-letters
+ *     an expired/orphaned one (`pr-triage-result-timeout`) — the dropped-summary
+ *     hole is gone.
+ *   - IDEMPOTENCY: a re-armed dispatch carries the SAME runId as its marker, so
+ *     the recovery path cannot double-emit a timeout for a run already cleared.
+ *
+ * The in-memory timer is still `.unref()`'d (never keeps the process alive); the
+ * durable marker is the cross-restart backstop. `startResultTimer` is async (it
+ * writes the marker) — callers that cannot await fire-and-forget it.
  */
 export function makeResultTimers(deps: {
 	emit: (event: DaemonEvent) => Promise<unknown>;
 	timeoutMs?: number;
+	/**
+	 * Task 6 gate-finding #2 (hold-slot-until-result) — invoked when a run
+	 * COMPLETES: the envelope is processed (`clearResultTimer`) OR the durable
+	 * dead-letter timeout fires (live, re-armed, or boot-recovered). `filename`
+	 * is the ORIGINAL cron task filename (from the marker), so the daemon can
+	 * release exactly the right CronScheduler concurrency slot. Optional — when
+	 * omitted, the result timers behave as before (no slot coupling).
+	 */
+	onResultComplete?: (agentId: string, filename: string | null) => void;
 }): {
-	startResultTimer: (agentId: string, timeoutMs?: number) => void;
-	clearResultTimer: (agentId: string) => void;
+	startResultTimer: (
+		agentId: string,
+		runId: string,
+		filename?: string | null,
+		timeoutMs?: number,
+	) => Promise<void>;
+	clearResultTimer: (agentId: string, runId?: string) => Promise<boolean>;
+	recoverResultTimers: () => Promise<void>;
 } {
 	const { emit } = deps;
+	const onResultComplete = deps.onResultComplete;
 	const defaultTimeout = deps.timeoutMs ?? RESULT_TIMEOUT_MS;
-	const timers = new Map<string, NodeJS.Timeout>();
-	const clearResultTimer = (agentId: string): void => {
+	// agentId → { runId, filename, timer }. The runId guards against a
+	// stale/wrong-run envelope clearing the live run's timer; the filename is the
+	// original cron task filename, echoed to `onResultComplete` on completion so
+	// the daemon releases the correct held cron slot (Task 6 #2).
+	const timers = new Map<
+		string,
+		{ runId: string; filename: string | null; timer: NodeJS.Timeout }
+	>();
+
+	const removeMarker = async (agentId: string): Promise<void> => {
+		await fsp.unlink(resultPendingPath(agentId)).catch(() => undefined);
+	};
+
+	const fireTimeout = (
+		agentId: string,
+		runId: string,
+		filename: string | null,
+		delayMs: number,
+	): void => {
+		const t = setTimeout(
+			() => {
+				const active = timers.get(agentId);
+				// Only fire if THIS run is still the active one (a re-fire/overwrite
+				// would have replaced it with a new runId).
+				if (active === undefined || active.runId !== runId) return;
+				timers.delete(agentId);
+				void removeMarker(agentId);
+				void emit({
+					kind: "pr-triage-result-timeout",
+					agentId,
+					reason: "no-envelope-before-deadline",
+				});
+				// Task 6 #2 — the run is OVER (dead-lettered). Release the held cron
+				// slot so the NEXT cron tick can dispatch.
+				onResultComplete?.(agentId, filename);
+			},
+			Math.max(0, delayMs),
+		);
+		if (typeof t.unref === "function") t.unref();
+		timers.set(agentId, { runId, filename, timer: t });
+	};
+
+	const clearResultTimer = async (
+		agentId: string,
+		runId?: string,
+	): Promise<boolean> => {
 		const existing = timers.get(agentId);
+		// Wrong-run guard: if a runId is supplied and it does NOT match the active
+		// run, this is a stale/late envelope from a prior dispatch — ignore it.
+		if (
+			existing !== undefined &&
+			runId !== undefined &&
+			existing.runId !== runId
+		) {
+			return false;
+		}
+		// Capture the filename BEFORE deleting so the slot release targets the
+		// correct cron task. Fall back to the on-disk marker's filename when no
+		// in-memory timer exists (e.g. cleared after a re-arm or via the
+		// unconditional overwrite path).
+		let completedFilename: string | null = existing?.filename ?? null;
+		if (existing === undefined) {
+			try {
+				const raw = await fsp.readFile(resultPendingPath(agentId), "utf-8");
+				const m = JSON.parse(raw) as ResultPendingMarker;
+				if (typeof m.filename === "string") completedFilename = m.filename;
+			} catch {
+				// no marker — leave completedFilename null
+			}
+		}
 		if (existing !== undefined) {
-			clearTimeout(existing);
+			clearTimeout(existing.timer);
 			timers.delete(agentId);
 		}
+		await removeMarker(agentId);
+		// Task 6 #2 — the envelope was processed (run complete). Release the held
+		// cron slot. Skipped only on the wrong-run guard above (early return).
+		onResultComplete?.(agentId, completedFilename);
+		return true;
 	};
-	const startResultTimer = (agentId: string, timeoutMs?: number): void => {
-		// Re-fire overwrites: clear-then-set (single in-flight per agent).
-		clearResultTimer(agentId);
-		const t = setTimeout(() => {
+
+	const startResultTimer = async (
+		agentId: string,
+		runId: string,
+		filename: string | null = null,
+		timeoutMs?: number,
+	): Promise<void> => {
+		// Re-fire overwrites: clear-then-set (single in-flight per agent). This is
+		// an OVERWRITE, not a run completion, so it MUST NOT fire onResultComplete
+		// (that would release the cron slot for a run that is being superseded, not
+		// finished). Tear down the prior in-memory timer + marker directly.
+		const prior = timers.get(agentId);
+		if (prior !== undefined) {
+			clearTimeout(prior.timer);
 			timers.delete(agentId);
-			void emit({
-				kind: "pr-triage-result-timeout",
-				agentId,
-				reason: "no-envelope-before-deadline",
-			});
-		}, timeoutMs ?? defaultTimeout);
-		if (typeof t.unref === "function") t.unref();
-		timers.set(agentId, t);
+		}
+		await removeMarker(agentId);
+		const deadlineMs = Date.now() + (timeoutMs ?? defaultTimeout);
+		const marker: ResultPendingMarker = {
+			agentId,
+			runId,
+			filename,
+			deadlineMs,
+		};
+		// Durable marker FIRST (atomic temp-then-rename) so a crash between write
+		// and timer-arm still leaves a recoverable marker.
+		const dst = resultPendingPath(agentId);
+		const tmp = `${dst}.tmp`;
+		try {
+			await fsp.writeFile(tmp, JSON.stringify(marker), { mode: 0o600 });
+			await atomicRenameStaleDest(tmp, dst);
+		} catch (err) {
+			await fsp.unlink(tmp).catch(() => undefined);
+			console.error(
+				`[daemon] result-pending marker write for ${agentId} failed: ${
+					err instanceof Error ? err.message : String(err)
+				}`,
+			);
+			// Fall through and still arm the in-memory timer — degraded (no
+			// cross-restart durability) but the live run is still dead-lettered.
+		}
+		fireTimeout(agentId, runId, filename, timeoutMs ?? defaultTimeout);
 	};
-	return { startResultTimer, clearResultTimer };
+
+	/**
+	 * Task 6 — boot-time recovery. Scan `result-pending/` for markers orphaned by
+	 * a restart. A future deadline RE-ARMS a fresh in-memory timer (same runId,
+	 * so idempotent); an expired/at-deadline marker is IMMEDIATELY dead-lettered
+	 * (`pr-triage-result-timeout`) and removed — closing the silent-drop hole.
+	 */
+	const recoverResultTimers = async (): Promise<void> => {
+		let entries: string[];
+		try {
+			entries = await fsp.readdir(pathFor("result-pending"));
+		} catch {
+			return; // dir absent — nothing to recover
+		}
+		const now = Date.now();
+		for (const entry of entries) {
+			if (!entry.endsWith(".json")) continue;
+			const full = path.join(pathFor("result-pending"), entry);
+			let marker: ResultPendingMarker;
+			try {
+				marker = JSON.parse(await fsp.readFile(full, "utf-8"));
+			} catch {
+				// Malformed marker — remove so it does not strand forever.
+				await fsp.unlink(full).catch(() => undefined);
+				continue;
+			}
+			if (
+				typeof marker.agentId !== "string" ||
+				typeof marker.runId !== "string" ||
+				typeof marker.deadlineMs !== "number"
+			) {
+				await fsp.unlink(full).catch(() => undefined);
+				continue;
+			}
+			const markerFilename =
+				typeof marker.filename === "string" ? marker.filename : null;
+			const remaining = marker.deadlineMs - now;
+			if (remaining > 0) {
+				// Re-arm a fresh timer for the REMAINING window, preserving the runId
+				// + filename. `fireTimeout` wires the dead-letter emit AND the
+				// onResultComplete slot release, so the recovered run behaves exactly
+				// like a live one (and is idempotent — same runId).
+				fireTimeout(marker.agentId, marker.runId, markerFilename, remaining);
+			} else {
+				// Already past deadline at boot — dead-letter immediately so the
+				// orphaned dispatch is not silently lost.
+				await fsp.unlink(full).catch(() => undefined);
+				await emit({
+					kind: "pr-triage-result-timeout",
+					agentId: marker.agentId,
+					reason: "orphaned-dispatch-recovered",
+				});
+				// Task 6 #2 — release the held cron slot for the orphaned run.
+				onResultComplete?.(marker.agentId, markerFilename);
+			}
+		}
+	};
+
+	return { startResultTimer, clearResultTimer, recoverResultTimers };
 }
 
 /**
@@ -696,7 +922,17 @@ export function makeTaskSendHandler(deps: {
 	agentManager: AgentManager;
 	emit: (event: DaemonEvent) => Promise<unknown>;
 	telegramBot: TelegramBot | null;
-	clearResultTimer: (agentId: string) => void;
+	// Task 6 — accepts the run-correlated async clear. The handler passes the
+	// LIVE marker's runId (read from `result-pending/<agentId>.json`) so a
+	// stale/wrong-run envelope cannot clear the current run's dead-letter timer.
+	// biome-ignore lint/suspicious/noConfusingVoidType: this callback is
+	// intentionally "awaitable-or-fire-and-forget" — the production
+	// `clearResultTimer` returns `Promise<boolean>`, but several unit-test mocks
+	// pass a synchronous `() => void`; the handler `await`s either form.
+	clearResultTimer: (
+		agentId: string,
+		runId?: string,
+	) => Promise<boolean> | void;
 	backoffMs?: readonly number[];
 }): (evt: TaskSendEvent) => Promise<void> {
 	const { agentManager, emit, telegramBot, clearResultTimer } = deps;
@@ -802,7 +1038,21 @@ export function makeTaskSendHandler(deps: {
 			// subsequent `task-send-needed` emit for this filename — a failed
 			// send (left in `pending/` to re-trip) would never fire again.
 			agentManager.releaseSendSlot(evt.filename);
-			clearResultTimer(evt.agentId);
+			// Task 6 — clear the dead-letter timer for the LIVE run. Read the
+			// active marker's runId so the clear is run-correlated: a stale/wrong-run
+			// envelope (whose runId no longer matches the live marker) returns false
+			// and leaves the current run's timer + marker intact. Best-effort marker
+			// read — if it is absent (already cleared / never armed) we clear by
+			// agentId unconditionally.
+			let runId: string | undefined;
+			try {
+				const raw = await fsp.readFile(resultPendingPath(evt.agentId), "utf-8");
+				const m = JSON.parse(raw) as ResultPendingMarker;
+				if (typeof m.runId === "string") runId = m.runId;
+			} catch {
+				// no live marker — clear unconditionally below
+			}
+			await clearResultTimer(evt.agentId, runId);
 		}
 	};
 }
@@ -871,12 +1121,19 @@ export function makeTaskDispatchHandler(deps: {
 	// accepts both the real telemetry `emit` (now Promise<boolean> — reports
 	// durable-write success) and the Promise<void> mocks used in tests.
 	emit: (event: DaemonEvent) => Promise<unknown>;
-	// R1 (feature-pr84-r1-daemon-creds, D4) — arm the dead-letter timer after a
-	// successful pr-triage PROMPT dispatch. The matching `task-send-needed`
-	// handler clears it when the agent's result envelope arrives. Optional so
-	// the existing handler unit tests (which only assert dispatch behavior) need
-	// no timer plumbing.
-	startResultTimer?: (agentId: string, timeoutMs?: number) => void;
+	// R1 (feature-pr84-r1-daemon-creds, D4) + Task 6 — arm the durable,
+	// run-correlated dead-letter timer after a successful pr-triage PROMPT
+	// dispatch. The handler stamps a fresh `runId` per dispatch and threads it
+	// into the marker so a wrong-run envelope cannot clear the live run. The
+	// matching `task-send-needed` handler clears it when the agent's result
+	// envelope arrives. Optional so the existing handler unit tests (which only
+	// assert dispatch behavior) need no timer plumbing.
+	startResultTimer?: (
+		agentId: string,
+		runId: string,
+		filename?: string | null,
+		timeoutMs?: number,
+	) => Promise<void> | void;
 }): (evt: TaskDispatchEvent) => Promise<void> {
 	const { agentManager, emit, startResultTimer } = deps;
 	return async (evt: TaskDispatchEvent): Promise<void> => {
@@ -994,15 +1251,26 @@ export function makeTaskDispatchHandler(deps: {
 			}
 			try {
 				await agentManager.claimTask(evt.filename, evt.agentId);
-				// R1 (feature-pr84-r1-daemon-creds, D4) — the PROMPT was
-				// dispatched (claimed) successfully. Arm the dead-letter timer so
-				// an agent that crashes WITHOUT writing a result envelope surfaces
-				// as `pr-triage-result-timeout` rather than a silently lost
-				// notification. The `task-send-needed` handler clears it when the
-				// agent's `pr-triage-send__*.json` envelope arrives. Scoped to
-				// pr-triage — the only agent on the daemon-owned send contract.
+				// R1 (feature-pr84-r1-daemon-creds, D4) + Task 6 — the PROMPT was
+				// dispatched (claimed) successfully. Arm the durable, run-correlated
+				// dead-letter timer so an agent that crashes WITHOUT writing a result
+				// envelope surfaces as `pr-triage-result-timeout` rather than a
+				// silently lost notification — AND survives a daemon restart via the
+				// `result-pending/<agentId>.json` marker. A fresh `runId` per dispatch
+				// is stamped into the marker so a stale/wrong-run envelope cannot clear
+				// the live run. The `task-send-needed` handler clears it (by the same
+				// runId) when the agent's `pr-triage-send__*.json` envelope arrives.
+				// Scoped to pr-triage — the only agent on the daemon-owned send
+				// contract. Awaited so the marker is durable before this handler
+				// returns (the in-flight guard is still held by the polling loop).
 				if (startResultTimer !== undefined && evt.agentId === "pr-triage") {
-					startResultTimer(evt.agentId, RESULT_TIMEOUT_MS);
+					const runId = randomUUID();
+					await startResultTimer(
+						evt.agentId,
+						runId,
+						evt.filename,
+						RESULT_TIMEOUT_MS,
+					);
 				}
 			} catch (err) {
 				// claimTask itself surfaces `claim-task-failed` telemetry on
@@ -1260,9 +1528,26 @@ export function composeCronAgentEnv(
  * re-registration with exponential backoff
  * (`CRON_AGENT_RESTART_BACKOFF_MS`). Each successful re-registration
  * emits `cron-agent-restarted`; budget exhaustion emits
- * `cron-agent-restart-failed`. Re-registration succeeded — the new
- * handle gets its own status callback so a second exit reuses the same
- * restart loop.
+ * `cron-agent-restart-failed`.
+ *
+ * SINGLE RESTART AUTHORITY (Task 8, feature-daemon-recovery-hardening) —
+ * two restart subsystems act on the same agentId: THIS cron-restart loop's
+ * exit listener AND the heartbeat-driven recycle (`AgentManager.restartAgent`
+ * / `doRestart`). Left uncoupled they would race / double-restart, and a
+ * heartbeat recycle would re-spawn a generation with NO cron-side exit
+ * listener (so a later exit goes un-restarted — silent death of the daily
+ * job). This loop resolves both:
+ *   1. RE-ARM ON EVERY RESTART. The loop subscribes to the AgentManager's
+ *      `agent-restarted` event and re-arms its exit listener on the FRESH
+ *      handle whenever ANY path restarts this agentId — heartbeat recycle,
+ *      IPC, or this loop itself. The cron-side listener therefore always
+ *      tracks the live generation.
+ *   2. NO DOUBLE-RESTART. The exit listener consults
+ *      `agentManager.isRestarting(handleId)` before scheduling: a heartbeat
+ *      recycle tearing the PTY down trips the same `exited` status this
+ *      listener watches, but the recycle is already in flight, so the listener
+ *      yields (the recycle's `agent-restarted` re-arms). The loop only OWNS a
+ *      restart when it is the sole actor (a genuine unsolicited crash).
  *
  * The helper short-circuits when `isShuttingDown()` returns true (the
  * daemon teardown drains the polling loop and removes listeners; a
@@ -1301,12 +1586,35 @@ export async function registerCronAgentWithRestart(deps: {
 	const composeAgentEnv = (): Record<string, string> =>
 		composeCronAgentEnv(agentId, agentConfig.env, process.env);
 
+	// Task 8 — the single live exit-listener unsubscribe for THIS agent. Re-armed
+	// (prior torn down first) on every restart, so exactly ONE listener is armed
+	// against the live generation at any time.
+	let currentUnsubscribe: (() => void) | null = null;
+
 	const armExitListener = (handle: AgentHandle): void => {
+		// Task 8 — tear down any prior listener before arming the new one so two
+		// generations never both watch for exit (a stale listener on a dead PTY is
+		// harmless but a duplicate live one would double-count an exit).
+		if (currentUnsubscribe !== null) {
+			try {
+				currentUnsubscribe();
+			} catch {
+				// best-effort
+			}
+			currentUnsubscribe = null;
+		}
 		const runtime: AgentRuntime = resolveRuntime(handle.runtime);
 		let scheduled = false;
 		const unsubscribe = runtime.onStatusChanged(handle, (status) => {
 			if (status !== "exited" && status !== "crashed") return;
 			if (scheduled) return;
+			// Task 8 (no double-restart) — if a restart is ALREADY in flight for
+			// this handle (a heartbeat recycle tearing the PTY down trips the same
+			// `exited`/`crashed` status this listener watches), yield: the recycle
+			// owns the restart and its `agent-restarted` event will re-arm this
+			// listener on the fresh generation. The cron loop only owns a restart
+			// when it is the sole actor (a genuine unsolicited crash).
+			if (agentManager.isRestarting(handle.id)) return;
 			scheduled = true;
 			// Defer the actual unsubscribe + retry to a microtask so the
 			// status-callback site is not entangled with PTY teardown.
@@ -1316,21 +1624,30 @@ export async function registerCronAgentWithRestart(deps: {
 				} catch {
 					// best-effort
 				}
+				if (currentUnsubscribe === unsubscribe) currentUnsubscribe = null;
 				await scheduleRestart(1);
 			})();
 		});
+		currentUnsubscribe = unsubscribe;
 	};
 
-	// DEFERRED (F2, dual-adversarial pass#3 — feature-daemon-recovery-hardening):
-	// this cron-restart loop and the heartbeat-driven recycle path
-	// (`AgentManager.restartAgent` / `doRestart`) are two independent restart
-	// subsystems that can race or double-restart the same agentId, and a
-	// heartbeat-initiated recycle does NOT re-arm THIS loop's exit listener — so
-	// after a recycle the cron agent can exit again with no cron-side restart.
-	// That pre-existing coupling is intentionally NOT fixed here; it is tracked in
-	// the feature-daemon-recovery-hardening work. Do not "fix" it inline — a
-	// partial fix here would interleave with the heartbeat recycle and is exactly
-	// the foot-gun that feature is scoped to resolve holistically.
+	// Task 8 (re-arm on every restart) — subscribe ONCE to the AgentManager's
+	// `agent-restarted` event. Whenever ANY path restarts this agentId (heartbeat
+	// recycle, IPC, or this cron loop's own `restartAgent` call), re-arm the
+	// exit listener on the FRESH handle so the cron-side restart authority always
+	// tracks the live generation. Filtered by agentId (the manager hosts many).
+	const onAgentRestarted = (evt: {
+		agentId?: unknown;
+		handleId?: unknown;
+	}): void => {
+		if (evt.agentId !== agentId || typeof evt.handleId !== "string") return;
+		if (isShuttingDown()) return;
+		const fresh = agentManager.getHandle(evt.handleId);
+		if (fresh === undefined) return;
+		armExitListener(fresh);
+	};
+	agentManager.on("agent-restarted", onAgentRestarted);
+
 	const scheduleRestart = async (attempt: number): Promise<void> => {
 		if (isShuttingDown()) return;
 		if (attempt > backoffMs.length) {
@@ -1366,12 +1683,18 @@ export async function registerCronAgentWithRestart(deps: {
 			const deadHandle = findHandleForAgent(agentManager, agentId);
 			let handle: AgentHandle;
 			if (deadHandle !== null) {
+				// `restartAgent` emits `agent-restarted`, which re-arms the exit
+				// listener via `onAgentRestarted` (the single re-arm authority) — so
+				// this branch does NOT call `armExitListener` itself (that would
+				// double-arm). Task 8.
 				handle = await agentManager.restartAgent(deadHandle.id, "crash", {
 					envOverride: composeAgentEnv(),
 				});
 			} else {
 				// No tracked handle at all (e.g. it was already torn down). Fall
 				// back to a fresh registration so the agent still recovers.
+				// `registerAgent` does NOT emit `agent-restarted`, so arm the exit
+				// listener explicitly below.
 				handle = await agentManager.registerAgent({
 					agentId,
 					runtimeId: agentConfig.runtimeId,
@@ -1380,13 +1703,13 @@ export async function registerCronAgentWithRestart(deps: {
 					env: composeAgentEnv(),
 					sessionId: makeDaemonStartupSessionId(agentId),
 				});
+				armExitListener(handle);
 			}
 			await emit({
 				kind: "cron-agent-restarted",
 				agentId,
 				attempt,
 			});
-			armExitListener(handle);
 		} catch (err) {
 			console.error(
 				`[daemon] cron-agent restart attempt ${attempt} for ${agentId} failed: ${err instanceof Error ? err.message : String(err)}`,
@@ -1920,6 +2243,15 @@ export async function startDaemon(
 		prepareCronPrompt: makePrTriageCronPrompt({
 			getToken: () => process.env.GH_TOKEN,
 		}),
+		// Task 6 gate-finding #2 (hold-slot-until-result) — pr-triage is the only
+		// send-contract agent: its `claimTask` emits `task-resolved` at prompt
+		// HANDOFF (the prompt enters the persistent PTY), not at run completion.
+		// Hold its concurrency slot until the result envelope is processed OR a
+		// durable dead-letter timeout fires (both surface as `cron-result-complete`
+		// from `makeResultTimers.onResultComplete`). Without this, a slow run lets
+		// the next cron tick dispatch a second prompt that overwrites the single
+		// dead-letter timer and emits a stale/duplicate envelope.
+		deferReleaseAgents: new Set(["pr-triage"]),
 	});
 	const agentsDir = resolveAgentsDir();
 	const cronEntries = await loadCronEntries(agentsDir);
@@ -1973,12 +2305,33 @@ export async function startDaemon(
 		});
 	}
 
-	// R1 (feature-pr84-r1-daemon-creds, D4) — shared dead-letter timer closures
-	// the dispatch handler (arm-on-dispatch) and the send handler
+	// R1 (feature-pr84-r1-daemon-creds, D4) + Task 6 — shared dead-letter timer
+	// closures the dispatch handler (arm-on-dispatch) and the send handler
 	// (clear-on-envelope) both use. A dispatched pr-triage PROMPT that produces
 	// no result envelope within `RESULT_TIMEOUT_MS` surfaces as
 	// `pr-triage-result-timeout` rather than a silently lost notification.
-	const { startResultTimer, clearResultTimer } = makeResultTimers({ emit });
+	const { startResultTimer, clearResultTimer, recoverResultTimers } =
+		makeResultTimers({
+			emit,
+			// Task 6 gate-finding #2 (hold-slot-until-result) — when a pr-triage run
+			// COMPLETES (envelope processed or durable dead-letter fires), emit the
+			// run-completion event on the AgentManager so the CronScheduler releases
+			// the cron concurrency slot it has been HOLDING since dispatch (the slot
+			// is NOT released at `claimTask`/prompt-handoff for send-contract agents).
+			// Carries the original cron task filename so the correct slot is released.
+			onResultComplete: (agentId, filename) => {
+				if (filename === null) return;
+				agentManager.emit("cron-result-complete", { agentId, filename });
+			},
+		});
+	// Task 6 (Critical) — recover dead-letter markers orphaned by a restart: a
+	// dispatch in flight when the daemon went down left a durable
+	// `result-pending/<agentId>.json` marker. Re-arm a still-future deadline or
+	// immediately dead-letter an expired one, so the daily summary is never
+	// silently dropped across a restart. Runs alongside bootRecovery /
+	// recoverStrandedApprovals; awaited so recovery completes before the polling
+	// loop starts.
+	await recoverResultTimers();
 
 	// Plan 04d Task 3 — subscribe the dispatch handler BEFORE
 	// `startPollingLoop` (called below at the post-shutdown-guard step) so

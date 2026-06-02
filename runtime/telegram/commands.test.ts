@@ -184,6 +184,21 @@ describe("commands / parseCommand", () => {
 		}
 	});
 
+	it("parses /inject when a NEWLINE separates agent from text (any-whitespace boundary)", () => {
+		// Regression (Task 2): the old literal `indexOf(" ")` boundary returned
+		// -1 for a newline-separated `/inject agent\ntext` (no literal space
+		// before the newline) and rejected a valid invocation as "missing
+		// argument: text". `afterCmd.search(/\s/)` splits on the first whitespace
+		// of ANY kind, so a newline delimiter is honored and the payload is
+		// preserved verbatim from just past it.
+		const r = parseCommand("/inject claude-main\nhello world");
+		expect(r.ok).toBe(true);
+		if (r.ok && r.command.name === "inject") {
+			expect(r.command.agent).toBe("claude-main");
+			expect(r.command.text).toBe("hello world");
+		}
+	});
+
 	it("parses /status agent-foo", () => {
 		const r = parseCommand("/status agent-foo");
 		expect(r.ok).toBe(true);

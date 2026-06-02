@@ -32,6 +32,20 @@ import { sanitizeInjectText } from "../telegram/bot.js";
 
 const GITHUB_GRAPHQL_ENDPOINT = "https://api.github.com/graphql";
 const DEFAULT_FETCH_TIMEOUT_MS = 15_000;
+/**
+ * Task 7 (Important — bound the GraphQL response body) — hard byte cap on the
+ * GitHub GraphQL response. `await res.json()` buffers the ENTIRE body into
+ * memory; the 15s `AbortController` bounds TIME, not SIZE, so a large or hostile
+ * response (the `search(first: 50)` query can return ~50 PRs each with a body +
+ * up to `comments(first: 100)`) could exhaust the long-lived daemon's heap
+ * before the timeout trips — an availability/OOM risk the time limit does not
+ * cover. The cap is derived from the realistic worst case the query selects:
+ *   50 PRs × (title + author + url + ~100 comment authors/bodies) ≈ a few MB.
+ * 8 MiB leaves generous headroom over that while still aborting a runaway/hostile
+ * body well before heap pressure. Beyond the cap we throw `FetchPrsError`
+ * (→ `pr-fetch-failed` telemetry), mirroring the non-200 / invalid-JSON paths.
+ */
+const MAX_RESPONSE_BYTES = 8 * 1024 * 1024;
 const MS_PER_DAY = 86_400_000;
 const CLAUDE_LABEL = "claude-review-requested";
 
@@ -199,6 +213,89 @@ export class FetchPrsError extends Error {
 export interface FetchPrsDeps {
 	readonly fetchImpl?: typeof fetch;
 	readonly timeoutMs?: number;
+	/**
+	 * Task 7 — override the response byte cap (defaults to `MAX_RESPONSE_BYTES`).
+	 * Exposed for the regression test that drives an over-cap body; production
+	 * callers leave it unset.
+	 */
+	readonly maxResponseBytes?: number;
+}
+
+/**
+ * Task 7 — read a fetch `Response` body into a string under a hard byte cap.
+ * `Content-Length` is checked first (fast reject when present and honest) but
+ * it can be ABSENT or LIE, so the body is also streamed with a running byte
+ * counter that aborts the read past the cap. Throws `FetchPrsError` on overflow
+ * (status 200 — the response WAS a 200, it is just too large), so the caller
+ * surfaces `pr-fetch-failed` rather than buffering unbounded.
+ *
+ * Falls back to `res.text()` only when the body is not a readable stream (some
+ * mock/polyfill Responses) — in that buffered path the post-read length is
+ * still enforced, so an over-cap mock body is rejected too.
+ */
+async function readBodyCapped(
+	res: Response,
+	maxBytes: number,
+): Promise<string> {
+	const declared = res.headers?.get?.("content-length");
+	if (declared !== null && declared !== undefined && declared !== "") {
+		const n = Number(declared);
+		if (Number.isFinite(n) && n > maxBytes) {
+			throw new FetchPrsError(
+				`github-graphql-fetch response exceeds ${maxBytes}-byte cap (content-length ${n})`,
+				200,
+			);
+		}
+	}
+	const body = res.body;
+	// Streaming path: count bytes as chunks arrive, abort past the cap before the
+	// whole body is buffered.
+	if (
+		body !== null &&
+		body !== undefined &&
+		typeof body.getReader === "function"
+	) {
+		const reader = body.getReader();
+		const chunks: Uint8Array[] = [];
+		let total = 0;
+		for (;;) {
+			const { done, value } = await reader.read();
+			if (done) break;
+			if (value !== undefined) {
+				total += value.byteLength;
+				if (total > maxBytes) {
+					// Stop pulling more bytes and release the stream.
+					await reader.cancel().catch(() => undefined);
+					throw new FetchPrsError(
+						`github-graphql-fetch response exceeds ${maxBytes}-byte cap (streamed)`,
+						200,
+					);
+				}
+				chunks.push(value);
+			}
+		}
+		return new TextDecoder().decode(concatChunks(chunks, total));
+	}
+	// Non-stream fallback (mock/polyfill Responses): buffer via text() then
+	// enforce the cap on the decoded byte length.
+	const text = await res.text();
+	if (Buffer.byteLength(text, "utf-8") > maxBytes) {
+		throw new FetchPrsError(
+			`github-graphql-fetch response exceeds ${maxBytes}-byte cap (buffered)`,
+			200,
+		);
+	}
+	return text;
+}
+
+function concatChunks(chunks: Uint8Array[], total: number): Uint8Array {
+	const out = new Uint8Array(total);
+	let offset = 0;
+	for (const chunk of chunks) {
+		out.set(chunk, offset);
+		offset += chunk.byteLength;
+	}
+	return out;
 }
 
 /**
@@ -250,9 +347,12 @@ function scrubScalarField(v: unknown, cap: number): string {
 /**
  * POST the PR-triage GraphQL query to GitHub holding `token` in the
  * `Authorization` header. Bounded by an `AbortController` timeout (default
- * 15s). On non-200 / network error throws `FetchPrsError` carrying the status
- * but NEVER the token. Returns `{ nodes, issueCount }`: `data.search.nodes`
- * (the ≤50 inspected PR array) plus `data.search.issueCount` (the TRUE total
+ * 15s) AND a hard response byte cap (`MAX_RESPONSE_BYTES`, Task 7) — the
+ * timeout bounds TIME, the cap bounds SIZE so a large/hostile body cannot
+ * exhaust the long-lived daemon heap before the timeout trips. On non-200 /
+ * network error / over-cap body throws `FetchPrsError` carrying the status but
+ * NEVER the token. Returns `{ nodes, issueCount }`: `data.search.nodes` (the
+ * ≤50 inspected PR array) plus `data.search.issueCount` (the TRUE total
  * open-PR count, which may exceed `nodes.length`).
  */
 export async function fetchOpenPrs(
@@ -261,6 +361,7 @@ export async function fetchOpenPrs(
 ): Promise<FetchPrsResult> {
 	const fetchImpl = deps.fetchImpl ?? fetch;
 	const timeoutMs = deps.timeoutMs ?? DEFAULT_FETCH_TIMEOUT_MS;
+	const maxResponseBytes = deps.maxResponseBytes ?? MAX_RESPONSE_BYTES;
 	const controller = new AbortController();
 	const timer = setTimeout(() => controller.abort(), timeoutMs);
 	if (typeof timer.unref === "function") timer.unref();
@@ -294,9 +395,14 @@ export async function fetchOpenPrs(
 			res.status,
 		);
 	}
+	// Task 7 — read the body under a hard byte cap (the AbortController bounds
+	// TIME, never SIZE). `readBodyCapped` throws `FetchPrsError` on overflow;
+	// let that propagate (it is NOT a JSON-parse failure). Only a genuine
+	// JSON.parse error is remapped to the "invalid JSON body" label.
+	const rawBody = await readBodyCapped(res, maxResponseBytes);
 	let json: unknown;
 	try {
-		json = await res.json();
+		json = JSON.parse(rawBody);
 	} catch {
 		throw new FetchPrsError("github-graphql-fetch invalid JSON body", 200);
 	}
@@ -385,8 +491,7 @@ export function sanitizePrPayload(
 ): PrTriagePayload {
 	const scalars: PrScalar[] = prs.map((pr) => {
 		const updatedAt = asStringOrNull(pr.updatedAt);
-		const parsedUpdated =
-			updatedAt !== null ? Date.parse(updatedAt) : Number.NaN;
+		const parsedUpdated = updatedAt !== null ? Date.parse(updatedAt) : Number.NaN;
 		// Clamp to >= 0: a server-ahead `updatedAt` or local clock skew would
 		// otherwise yield a negative age that renders as "age:-2d" in the summary
 		// (pass#2 Minor). An unparseable/missing timestamp falls back to 0.
