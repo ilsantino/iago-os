@@ -59,7 +59,7 @@ Three non-negotiable gates before Stage D (OpenClaw cutover):
 
 **Goal:** `iago-os-v2-daemon.service` running on VPS in parallel with OpenClaw; one real workflow migrated; no OpenClaw impact.
 **Effort:** 2-3d.
-**Merged PRs (12/15):** #60/#61/#62/#63/#64/#65/#67/#68/#72/#74 (Plan 04b)/#76 (Plan 04d)/#80 (Plan 04d extension).
+**Merged PRs (12/15):** #60/#61/#62/#63/#64/#65/#67/#68/#72/#74 (Plan 06)/#76 (Plan 04b)/#80 (Plan 04d).
 
 **Remaining work:**
 1. **PR #84** — R1 daemon-creds rework ✅ merged 2026-06-02 (Santiago confirmed merge).
