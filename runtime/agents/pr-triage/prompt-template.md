@@ -119,9 +119,13 @@ Write a single atomic result-envelope file. The daemon's poll loop picks it up a
 
 The filename prefix `pr-triage-send__` is **load-bearing** — it MUST match the daemon's provenance check (`processPendingTask` requires `filename.startsWith("pr-triage-send__")`). A different prefix would route the envelope into the dispatch path and surface as `malformed-task`.
 
+**Run correlation (`runId`) is load-bearing too.** At the end of this prompt the daemon appended a `DAEMON RUN CORRELATION` line carrying a `runId` value for THIS run. Copy that exact `runId` string into the envelope's `runId` field. The daemon uses it to correlate your result with this specific dispatch, so a late/stale envelope from an earlier run cannot clear the wrong run's dead-letter timer. If the correlation line is somehow absent, omit `runId` (the daemon falls back to an agentId-only clear).
+
 ```bash
 STATE_ROOT="${IAGO_DAEMON_STATE_ROOT:-/var/lib/iago-os/daemon-state}"
 TASK_FILE="$STATE_ROOT/tasks/pending/pr-triage-send__$(date +%s%3N)-$$.json"
+# RUN_ID is the value from the daemon's "DAEMON RUN CORRELATION" line at the end
+# of this prompt. Copy it verbatim.
 # Atomic publish: write to a `.tmp` sibling, then `mv` into place (rename(2) is
 # atomic on POSIX) so the daemon's poll tick never reads a half-written file.
 # `umask 0077` is scoped to a subshell so the dir is born 0700 and the file
@@ -129,8 +133,8 @@ TASK_FILE="$STATE_ROOT/tasks/pending/pr-triage-send__$(date +%s%3N)-$$.json"
 (
   umask 0077
   mkdir -p "$STATE_ROOT/tasks/pending"
-  jq -n --arg text "$SUMMARY" \
-    '{"agentId":"pr-triage","sendText":$text}' \
+  jq -n --arg text "$SUMMARY" --arg runId "$RUN_ID" \
+    '{"agentId":"pr-triage","sendText":$text,"runId":$runId}' \
     > "$TASK_FILE.tmp"
   mv "$TASK_FILE.tmp" "$TASK_FILE"
 )
@@ -144,7 +148,9 @@ TASK_FILE="$STATE_ROOT/tasks/pending/pr-triage-send__$(date +%s%3N)-$$.json"
 (
   umask 0077
   mkdir -p "$STATE_ROOT/tasks/pending"
-  jq -n '{"agentId":"pr-triage","noSend":true}' > "$TASK_FILE.tmp"
+  jq -n --arg runId "$RUN_ID" \
+    '{"agentId":"pr-triage","noSend":true,"runId":$runId}' \
+    > "$TASK_FILE.tmp"
   mv "$TASK_FILE.tmp" "$TASK_FILE"
 )
 ```

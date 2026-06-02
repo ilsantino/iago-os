@@ -171,13 +171,19 @@ export interface CronSchedulerOpts {
 	 * SECOND prompt that overwrites the single-key dead-letter timer and emits a
 	 * stale/duplicate envelope.
 	 *
-	 * For an agentId in this set, the `task-resolved`/`task-poisoned`/
-	 * `task-unrouted` terminal events do NOT release the slot; only a
-	 * `cron-result-complete` event (emitted by the result-timer machinery when
-	 * the envelope is processed OR a durable dead-letter timeout fires) does —
-	 * carrying the ORIGINAL cron task filename so the correct outstanding slot is
-	 * released. Empty by default (every agent keeps the legacy release-on-handoff
-	 * behavior).
+	 * For an agentId in this set, the `task-resolved` (prompt-HANDOFF) event does
+	 * NOT release the slot; only a `cron-result-complete` event (emitted by the
+	 * result-timer machinery when the envelope is processed OR a durable
+	 * dead-letter timeout fires) does — carrying the ORIGINAL cron task filename
+	 * so the correct outstanding slot is released. Empty by default (every agent
+	 * keeps the legacy release-on-handoff behavior).
+	 *
+	 * Critical (Codex, round 1) — `task-poisoned` and `task-unrouted` are the
+	 * EXCEPTION: those are PRE-DISPATCH failures (malformed/oversized payload,
+	 * unregistered agentId / registration orphan window) emitted BEFORE any result
+	 * timer is armed, so no `cron-result-complete` can ever follow. They ALWAYS
+	 * release the slot — even for a deferred agent — so a malformed/oversized/
+	 * orphan-window cron task cannot leak the slot forever.
 	 */
 	readonly deferReleaseAgents?: ReadonlySet<string>;
 }
@@ -210,6 +216,23 @@ const TERMINAL_EVENTS = [
 	"task-poisoned",
 	"task-unrouted",
 ] as const;
+
+/**
+ * Critical (Codex, daemon-recovery-hardening round 1) — the PROMPT-HANDOFF
+ * terminal event. For a deferred (send-contract) agent this marks prompt handoff
+ * NOT run completion, so the slot is HELD until `cron-result-complete`. For every
+ * other agent it releases the slot.
+ *
+ * `task-poisoned` and `task-unrouted` (the other two `TERMINAL_EVENTS`) are
+ * DISTINCT: they are PRE-DISPATCH failures (malformed/oversized payload, or an
+ * unregistered agentId / registration orphan window) emitted by the polling loop
+ * BEFORE any dispatch and BEFORE any result timer is armed. No
+ * `cron-result-complete` will ever fire for them, so deferring their release
+ * would leak the cron slot FOREVER (with `maxConcurrent: 1`, every future cron
+ * fire is blocked as an overlap until daemon restart). They therefore ALWAYS
+ * release the slot, even for a deferred agent.
+ */
+const HANDOFF_EVENT = "task-resolved" as const;
 
 /**
  * Task 6 gate-finding #2 — the RUN-COMPLETION terminal event for a
@@ -466,9 +489,16 @@ export class CronScheduler {
 	private interval: NodeJS.Timeout | null = null;
 	private tickInFlight: Promise<void> | null = null;
 	private stopped = false;
-	private readonly terminalListener: (event: TaskTerminalEvent) => void;
+	// Critical (Codex, round 1) — split the terminal listener in two:
+	//   - `handoffListener` (task-resolved): prompt handoff; HELD for a deferred
+	//     agent (released by `cron-result-complete`), released for everyone else.
+	//   - `preDispatchFailListener` (task-poisoned / task-unrouted): a PRE-DISPATCH
+	//     failure with no result timer; ALWAYS releases — even for a deferred agent
+	//     — so the slot cannot leak forever.
+	private readonly handoffListener: (event: TaskTerminalEvent) => void;
+	private readonly preDispatchFailListener: (event: TaskTerminalEvent) => void;
 	// Task 6 gate-finding #2 — the run-completion listener (separate from
-	// `terminalListener` so it can be unsubscribed independently in `stop()`).
+	// the terminal listeners so it can be unsubscribed independently in `stop()`).
 	private readonly resultCompleteListener: (event: TaskTerminalEvent) => void;
 
 	constructor(opts: CronSchedulerOpts) {
@@ -483,12 +513,11 @@ export class CronScheduler {
 		// emit-side may not exist yet, so the handler tolerates absent
 		// counter entries and unknown filenames.
 		//
-		// Task 6 gate-finding #2 — `task-resolved`/`task-poisoned`/`task-unrouted`
-		// release the slot for EVERY agent EXCEPT those in `deferReleaseAgents`.
-		// For a deferred (send-contract) agent these events mark prompt HANDOFF,
-		// not run completion, so they must NOT release the slot — only the
-		// `cron-result-complete` event does.
-		this.terminalListener = (event: TaskTerminalEvent): void => {
+		// Task 6 gate-finding #2 — `task-resolved` marks prompt HANDOFF. It
+		// releases the slot for EVERY agent EXCEPT those in `deferReleaseAgents`;
+		// for a deferred (send-contract) agent prompt handoff is NOT run
+		// completion, so only the `cron-result-complete` event releases.
+		this.handoffListener = (event: TaskTerminalEvent): void => {
 			if (!this.isValidTerminalEvent(event)) return;
 			if (this.deferReleaseAgents.has(event.agentId)) {
 				// Held until `cron-result-complete`. Do NOT release here.
@@ -496,15 +525,31 @@ export class CronScheduler {
 			}
 			this.releaseOutstanding(event.agentId, event.filename);
 		};
+		// Critical (Codex, round 1) — `task-poisoned` / `task-unrouted` are
+		// PRE-DISPATCH failures (malformed/oversized payload, unregistered agent /
+		// registration orphan window). They fire from the polling loop BEFORE any
+		// dispatch and BEFORE any result timer exists, so NO `cron-result-complete`
+		// can ever follow. They must ALWAYS release the slot — including for a
+		// deferred agent — or the cron slot leaks forever and `maxConcurrent: 1`
+		// blocks every future fire until daemon restart.
+		this.preDispatchFailListener = (event: TaskTerminalEvent): void => {
+			if (!this.isValidTerminalEvent(event)) return;
+			this.releaseOutstanding(event.agentId, event.filename);
+		};
 		// Task 6 gate-finding #2 — the run-completion event. Releases the slot for
 		// a deferred agent (and is a harmless no-op for any other agent, whose
-		// outstanding filename was already cleared by `terminalListener`).
+		// outstanding filename was already cleared by `handoffListener`).
 		this.resultCompleteListener = (event: TaskTerminalEvent): void => {
 			if (!this.isValidTerminalEvent(event)) return;
 			this.releaseOutstanding(event.agentId, event.filename);
 		};
 		for (const evt of TERMINAL_EVENTS) {
-			this.agentManager.on(evt, this.terminalListener);
+			this.agentManager.on(
+				evt,
+				evt === HANDOFF_EVENT
+					? this.handoffListener
+					: this.preDispatchFailListener,
+			);
 		}
 		this.agentManager.on(RESULT_COMPLETE_EVENT, this.resultCompleteListener);
 	}
@@ -619,7 +664,12 @@ export class CronScheduler {
 			}
 		}
 		for (const evt of TERMINAL_EVENTS) {
-			this.agentManager.off(evt, this.terminalListener);
+			this.agentManager.off(
+				evt,
+				evt === HANDOFF_EVENT
+					? this.handoffListener
+					: this.preDispatchFailListener,
+			);
 		}
 		this.agentManager.off(RESULT_COMPLETE_EVENT, this.resultCompleteListener);
 	}

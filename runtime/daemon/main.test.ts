@@ -1355,7 +1355,7 @@ describe("makeTaskDispatchHandler (Plan 04d)", () => {
 	});
 
 	it("(DH-R1) arms the dead-letter result timer after a successful pr-triage dispatch (with a correlation runId)", async () => {
-		const { runtime } = makeStubRuntime("dhr1-runtime");
+		const { runtime, sendCalls } = makeStubRuntime("dhr1-runtime");
 		registerRuntime(runtime);
 		const handle = makeHandleFixture("pr-triage", "dhr1-runtime");
 		const mgr = makeStubManager({ handle });
@@ -1390,6 +1390,17 @@ describe("makeTaskDispatchHandler (Plan 04d)", () => {
 		expect(call.filename).toBe("pr-triage__1700000400.json");
 		expect(typeof call.runId).toBe("string");
 		expect(call.runId.length).toBeGreaterThan(0);
+
+		// Critical (Codex, round 1): the SAME runId armed in the timer must be
+		// ECHOED into the dispatched PROMPT so the agent copies it into its result
+		// envelope. Without the echo, the send handler could only re-read the runId
+		// from the live marker (which always matches), defeating the wrong-run
+		// guard. The original prompt text is preserved (instruction is appended).
+		expect(sendCalls).toHaveLength(1);
+		const sentText = (sendCalls[0]!.payload as { text: string }).text;
+		expect(sentText).toContain("do the triage");
+		expect(sentText).toContain("DAEMON RUN CORRELATION");
+		expect(sentText).toContain(`"runId":"${call.runId}"`);
 	});
 
 	it("(DH-R1b) does NOT arm the timer for a non-pr-triage agent", async () => {
@@ -1979,6 +1990,14 @@ describe("makeResultTimers + dispatch arming (R1 D4 dead-letter)", () => {
 		// Re-fire resets the clock (clear-then-set). A NEW dispatch supersedes the
 		// prior run's timer + marker regardless of runId.
 		await startResultTimer("pr-triage", "run-rt3b");
+		// Minor (Opus, round 1): the overwrite must ATOMICALLY replace the marker —
+		// a marker is ALWAYS on disk across the re-fire (no pre-write unlink window),
+		// and it now carries the NEW run's runId.
+		const markerPath = path.join(pathFor("result-pending"), "pr-triage.json");
+		const marker = JSON.parse(await fsp.readFile(markerPath, "utf-8")) as {
+			runId: string;
+		};
+		expect(marker.runId).toBe("run-rt3b");
 		await vi.advanceTimersByTimeAsync(700);
 		// 1200ms total elapsed but only 700ms since the re-fire — not yet fired.
 		expect(
@@ -2174,6 +2193,128 @@ describe("makeResultTimers + dispatch arming (R1 D4 dead-letter)", () => {
 			reason: "orphaned-dispatch-recovered",
 		});
 		await expect(fsp.access(markerPath)).rejects.toBeDefined();
+	});
+
+	it("(RT-10 — Critical, round 1) a late stale envelope (old runId) does NOT clear the NEW run's timer via the send handler", async () => {
+		// Critical (Codex, round 1): the send handler must run-correlate the clear
+		// using the ENVELOPE's runId (carried through `task-send-needed`), NOT the
+		// runId re-read from the live on-disk marker. The marker always holds the
+		// CURRENT run's runId, so reading it made the wrong-run guard a dead branch.
+		//
+		// Scenario: run-A dispatched, then run-B started (overwrite — new
+		// marker/timer). A LATE envelope from run-A arrives. With the bug, the
+		// handler reads the marker (now run-B's runId) and clears run-B's live
+		// timer + marker, releasing its slot and suppressing its dead-letter. With
+		// the fix, the handler passes the envelope's `runId: "run-a"`, the wrong-run
+		// guard fails the clear, and run-B's dead-letter STILL fires.
+		vi.useFakeTimers();
+		try {
+			const emitMock = vi.fn().mockResolvedValue(true);
+			const completions: Array<{
+				agentId: string;
+				filename: string | null;
+			}> = [];
+			const { startResultTimer, clearResultTimer } = makeResultTimers({
+				emit: emitMock,
+				timeoutMs: 1000,
+				onResultComplete: (agentId, filename) =>
+					completions.push({ agentId, filename }),
+			});
+
+			// run-A dispatched, then superseded by run-B (overwrite).
+			await startResultTimer("pr-triage", "run-a", "pr-triage__a.json");
+			await startResultTimer("pr-triage", "run-b", "pr-triage__b.json");
+
+			// A LATE envelope from run-A reaches the send handler. The handler is
+			// wired to the REAL run-correlated clearResultTimer. The envelope echoes
+			// run-A's runId — the value the agent copied in at run-A's dispatch.
+			const { mgr } = makeSendStubManager();
+			const { bot } = makeFakeTelegram(async () => ({ ok: true }));
+			const sendHandler = makeTaskSendHandler({
+				agentManager: mgr,
+				emit: emitMock,
+				telegramBot: bot as unknown as import("../telegram/bot.js").TelegramBot,
+				clearResultTimer,
+			});
+			await sendHandler({
+				filename: "pr-triage-send__stale.json",
+				agentId: "pr-triage",
+				sendText: "stale summary from run-A",
+				runId: "run-a",
+			});
+
+			// The stale clear must NOT have completed run-B (no slot release for it).
+			expect(completions).toHaveLength(0);
+			// run-B's marker is still on disk.
+			const markerPath = path.join(pathFor("result-pending"), "pr-triage.json");
+			await expect(fsp.access(markerPath)).resolves.toBeUndefined();
+
+			// run-B's dead-letter STILL fires (its timer was not cleared by the stale
+			// envelope).
+			await vi.advanceTimersByTimeAsync(1000);
+			const timeouts = emitMock.mock.calls.filter(
+				(c) => (c[0] as { kind: string }).kind === "pr-triage-result-timeout",
+			);
+			expect(timeouts).toHaveLength(1);
+			// And the completion that DID fire is run-B's (via its dead-letter), with
+			// run-B's filename — never run-A's.
+			expect(completions).toEqual([
+				{ agentId: "pr-triage", filename: "pr-triage__b.json" },
+			]);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("(RT-11 — Critical, round 1) the LIVE run's envelope (matching runId) clears its own timer via the send handler", async () => {
+		// Companion to RT-10: the in-run envelope (carrying the CURRENT run's runId)
+		// DOES clear the timer + marker and release the slot — the guard only
+		// rejects MISMATCHED runIds, never the live one.
+		vi.useFakeTimers();
+		try {
+			const emitMock = vi.fn().mockResolvedValue(true);
+			const completions: Array<{
+				agentId: string;
+				filename: string | null;
+			}> = [];
+			const { startResultTimer, clearResultTimer } = makeResultTimers({
+				emit: emitMock,
+				timeoutMs: 1000,
+				onResultComplete: (agentId, filename) =>
+					completions.push({ agentId, filename }),
+			});
+			await startResultTimer("pr-triage", "run-live", "pr-triage__live.json");
+
+			const { mgr } = makeSendStubManager();
+			const { bot } = makeFakeTelegram(async () => ({ ok: true }));
+			const sendHandler = makeTaskSendHandler({
+				agentManager: mgr,
+				emit: emitMock,
+				telegramBot: bot as unknown as import("../telegram/bot.js").TelegramBot,
+				clearResultTimer,
+			});
+			await sendHandler({
+				filename: "pr-triage-send__live.json",
+				agentId: "pr-triage",
+				sendText: "today's summary",
+				runId: "run-live",
+			});
+
+			// The matching-run clear completed the run with its cron filename.
+			expect(completions).toEqual([
+				{ agentId: "pr-triage", filename: "pr-triage__live.json" },
+			]);
+			// Marker removed; no dead-letter ever fires.
+			const markerPath = path.join(pathFor("result-pending"), "pr-triage.json");
+			await expect(fsp.access(markerPath)).rejects.toBeDefined();
+			await vi.advanceTimersByTimeAsync(1000);
+			const timeouts = emitMock.mock.calls.filter(
+				(c) => (c[0] as { kind: string }).kind === "pr-triage-result-timeout",
+			);
+			expect(timeouts).toHaveLength(0);
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 });
 

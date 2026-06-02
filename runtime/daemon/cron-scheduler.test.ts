@@ -933,6 +933,85 @@ describe("CronScheduler — overlap + decrement", () => {
 		expect(sch._runningCountForTests().get("other-agent")).toBe(0);
 		await sch.stop();
 	});
+
+	it("(17 — Critical, round 1) a deferReleaseAgents slot is RELEASED on task-poisoned (pre-dispatch failure, no result timer)", async () => {
+		// Critical (Codex, round 1): for a DEFERRED agent (pr-triage),
+		// `task-poisoned` fires from the polling loop BEFORE any dispatch and
+		// BEFORE any result timer is armed (malformed/oversized payload). No
+		// `cron-result-complete` will ever follow, so if the deferred path held the
+		// slot here it would leak forever and `maxConcurrent: 1` would block every
+		// future cron fire. Therefore task-poisoned MUST release even for a
+		// deferred agent. Without the fix the slot stays at 1 forever.
+		vi.useFakeTimers();
+		const am = new EventEmitter();
+		const prompt = writePromptTemplate("p.txt", "go");
+		const sch = new CronScheduler({
+			agentManager: am,
+			nowFn: () => new Date(Date.UTC(2026, 4, 18, 14, 0, 0)),
+			deferReleaseAgents: new Set(["pr-triage"]),
+		});
+		sch.registerCron({
+			agentId: "pr-triage",
+			schedule: "0 14 * * *",
+			promptTemplatePath: prompt,
+			outputTaskNamePrefix: "pr-triage",
+			maxConcurrent: 1,
+		});
+		sch.start();
+		await sch._tickForTests();
+		expect(sch._runningCountForTests().get("pr-triage")).toBe(1);
+		const emitted = (
+			await fsp.readdir(path.join(tempDir, "tasks/pending"))
+		)[0] as string;
+
+		// A malformed/oversized cron task → task-poisoned, with NO result timer
+		// armed. The deferred slot must be released (not held until a
+		// cron-result-complete that will never come).
+		am.emit("task-poisoned", { agentId: "pr-triage", filename: emitted });
+		expect(sch._runningCountForTests().get("pr-triage")).toBe(0);
+		expect(sch._outstandingFilenamesForTests().has("pr-triage")).toBe(false);
+		await sch.stop();
+	});
+
+	it("(18 — Critical, round 1) a deferReleaseAgents slot is RELEASED on task-unrouted (registration orphan window)", async () => {
+		// Critical (Codex, round 1): same as (17) for `task-unrouted` — a cron task
+		// that arrives during the registration orphan window (agentId not yet
+		// registered) emits task-unrouted from the polling loop before dispatch.
+		// No result timer is armed, so the deferred slot must release here.
+		vi.useFakeTimers();
+		const am = new EventEmitter();
+		const prompt = writePromptTemplate("p.txt", "go");
+		const sch = new CronScheduler({
+			agentManager: am,
+			nowFn: () => new Date(Date.UTC(2026, 4, 18, 14, 0, 0)),
+			deferReleaseAgents: new Set(["pr-triage"]),
+		});
+		sch.registerCron({
+			agentId: "pr-triage",
+			schedule: "0 14 * * *",
+			promptTemplatePath: prompt,
+			outputTaskNamePrefix: "pr-triage",
+			maxConcurrent: 1,
+		});
+		sch.start();
+		await sch._tickForTests();
+		expect(sch._runningCountForTests().get("pr-triage")).toBe(1);
+		const emitted = (
+			await fsp.readdir(path.join(tempDir, "tasks/pending"))
+		)[0] as string;
+
+		am.emit("task-unrouted", { agentId: "pr-triage", filename: emitted });
+		expect(sch._runningCountForTests().get("pr-triage")).toBe(0);
+		expect(sch._outstandingFilenamesForTests().has("pr-triage")).toBe(false);
+
+		// And a subsequent matching tick is NOT overlap-prevented (slot is free).
+		await sch._tickForTests();
+		const evts = await readTelemetry();
+		expect(
+			evts.filter((e) => e.kind === "cron-overlap-prevented"),
+		).toHaveLength(0);
+		await sch.stop();
+	});
 });
 
 describe("validateScheduleSyntax — unconditional field parsing", () => {

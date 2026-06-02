@@ -590,6 +590,19 @@ export interface TaskSendEvent {
 	readonly agentId: string;
 	readonly sendText?: string;
 	readonly noSend?: boolean;
+	/**
+	 * Critical (Codex, round 1) — the per-dispatch correlation id the daemon
+	 * stamped into the PROMPT (`{{RUN_ID}}` / the runId-echo instruction) and the
+	 * agent echoed back in its result envelope. Carried THROUGH from the envelope
+	 * (NOT re-read from the live on-disk marker) so the send handler can pass the
+	 * ENVELOPE's runId to `clearResultTimer`: a late/stale envelope from a PRIOR
+	 * run carries the OLD runId, fails the wrong-run guard, and cannot clear the
+	 * CURRENT run's timer/marker or release its slot. Absent on a legacy envelope
+	 * (or one whose agent failed to echo it) — the handler then clears
+	 * unconditionally by agentId (degraded, but the dead-letter timer is the
+	 * cross-restart backstop).
+	 */
+	readonly runId?: string;
 }
 
 /**
@@ -764,6 +777,19 @@ export function makeResultTimers(deps: {
 			try {
 				const raw = await fsp.readFile(resultPendingPath(agentId), "utf-8");
 				const m = JSON.parse(raw) as ResultPendingMarker;
+				// Critical (Codex, round 1) — wrong-run guard for the NO-in-memory-timer
+				// path too. After a daemon restart the in-memory timer is gone but the
+				// durable marker survives (re-armed or pending recovery). A stale
+				// envelope from a PRIOR run (different runId) must NOT clear the current
+				// marker or release the slot here either — the marker's runId is the
+				// authority when there is no live timer.
+				if (
+					runId !== undefined &&
+					typeof m.runId === "string" &&
+					m.runId !== runId
+				) {
+					return false;
+				}
 				if (typeof m.filename === "string") completedFilename = m.filename;
 			} catch {
 				// no marker — leave completedFilename null
@@ -789,13 +815,19 @@ export function makeResultTimers(deps: {
 		// Re-fire overwrites: clear-then-set (single in-flight per agent). This is
 		// an OVERWRITE, not a run completion, so it MUST NOT fire onResultComplete
 		// (that would release the cron slot for a run that is being superseded, not
-		// finished). Tear down the prior in-memory timer + marker directly.
+		// finished). Tear down the prior in-memory timer directly.
 		const prior = timers.get(agentId);
 		if (prior !== undefined) {
 			clearTimeout(prior.timer);
 			timers.delete(agentId);
 		}
-		await removeMarker(agentId);
+		// Minor (Opus, round 1) — do NOT `removeMarker()` before writing the new
+		// one. The `atomicRenameStaleDest` below ATOMICALLY replaces the prior
+		// marker (rename(2) is atomic on POSIX / NTFS MOVEFILE_REPLACE_EXISTING), so
+		// a pre-write unlink is redundant AND opens a window in which NO marker is on
+		// disk — a crash there would lose cross-restart recoverability for an
+		// in-flight run. Keeping the prior marker until the atomic rename closes that
+		// window: there is always EITHER the prior marker or the new one on disk.
 		const deadlineMs = Date.now() + (timeoutMs ?? defaultTimeout);
 		const marker: ResultPendingMarker = {
 			agentId,
@@ -922,9 +954,11 @@ export function makeTaskSendHandler(deps: {
 	agentManager: AgentManager;
 	emit: (event: DaemonEvent) => Promise<unknown>;
 	telegramBot: TelegramBot | null;
-	// Task 6 — accepts the run-correlated async clear. The handler passes the
-	// LIVE marker's runId (read from `result-pending/<agentId>.json`) so a
-	// stale/wrong-run envelope cannot clear the current run's dead-letter timer.
+	// Task 6 + Critical (Codex, round 1) — accepts the run-correlated async clear.
+	// The handler passes the ENVELOPE's runId (`evt.runId`, echoed by the agent),
+	// NOT the live marker's runId, so a stale/wrong-run envelope (carrying an OLD
+	// runId) fails the wrong-run guard and cannot clear the current run's
+	// dead-letter timer/marker or release its held slot.
 	// biome-ignore lint/suspicious/noConfusingVoidType: this callback is
 	// intentionally "awaitable-or-fire-and-forget" — the production
 	// `clearResultTimer` returns `Promise<boolean>`, but several unit-test mocks
@@ -1038,21 +1072,19 @@ export function makeTaskSendHandler(deps: {
 			// subsequent `task-send-needed` emit for this filename — a failed
 			// send (left in `pending/` to re-trip) would never fire again.
 			agentManager.releaseSendSlot(evt.filename);
-			// Task 6 — clear the dead-letter timer for the LIVE run. Read the
-			// active marker's runId so the clear is run-correlated: a stale/wrong-run
-			// envelope (whose runId no longer matches the live marker) returns false
-			// and leaves the current run's timer + marker intact. Best-effort marker
-			// read — if it is absent (already cleared / never armed) we clear by
-			// agentId unconditionally.
-			let runId: string | undefined;
-			try {
-				const raw = await fsp.readFile(resultPendingPath(evt.agentId), "utf-8");
-				const m = JSON.parse(raw) as ResultPendingMarker;
-				if (typeof m.runId === "string") runId = m.runId;
-			} catch {
-				// no live marker — clear unconditionally below
-			}
-			await clearResultTimer(evt.agentId, runId);
+			// Task 6 + Critical (Codex, round 1) — clear the dead-letter timer for
+			// the run THIS ENVELOPE belongs to. Use the runId the AGENT ECHOED into
+			// the envelope (`evt.runId`), NOT the runId re-read from the live on-disk
+			// marker. Reading the marker was the bug: the marker always holds the
+			// CURRENT run's runId, so `existing.runId !== runId` could never be true
+			// and the wrong-run guard was dead. With the envelope's runId, a
+			// late/stale envelope from a PRIOR run carries the OLD runId, fails the
+			// guard inside `clearResultTimer` (returns false), and leaves the CURRENT
+			// run's timer + marker + held slot intact. When the envelope carries NO
+			// runId (legacy producer, or the agent failed to echo it) we clear
+			// unconditionally by agentId — degraded, but the dead-letter timer is the
+			// cross-restart backstop and a missing echo only costs at-most-once.
+			await clearResultTimer(evt.agentId, evt.runId);
 		}
 	};
 }
@@ -1115,6 +1147,23 @@ export function makeTaskSendHandler(deps: {
  * Phase 2 — do not reintroduce per-task spawn semantics without
  * coordinating with the runtime adapter contract.
  */
+
+/**
+ * Critical (Codex, round 1) — append a per-dispatch run-correlation instruction
+ * to the dispatched PROMPT. The agent MUST copy this exact `runId` into its
+ * result envelope's `runId` field. The daemon then compares the ENVELOPE's runId
+ * (carried through `task-send-needed`) against the live marker's runId, so a
+ * late/stale envelope from a PRIOR run (carrying an OLD runId) cannot clear the
+ * CURRENT run's dead-letter timer/marker or release its slot. Without this echo
+ * the send handler had to re-read the runId from the live on-disk marker — which
+ * by construction ALWAYS matched the active timer, defeating the wrong-run guard.
+ *
+ * Plain text (no markup) and clearly framed as a daemon instruction, not PR data.
+ */
+export function appendRunIdInstruction(prompt: string, runId: string): string {
+	return `${prompt}\n\n---\nDAEMON RUN CORRELATION (not PR data): when you write your result envelope, include the field "runId":"${runId}" exactly as given, alongside the existing agentId/sendText (or agentId/noSend) fields. This lets the daemon correlate your result with this specific run.`;
+}
+
 export function makeTaskDispatchHandler(deps: {
 	agentManager: AgentManager;
 	// Promise<unknown>: the handler awaits emit and ignores the result, so it
@@ -1231,7 +1280,18 @@ export function makeTaskDispatchHandler(deps: {
 				});
 				return;
 			}
-			const promptText = promptRaw;
+			// Critical (Codex, round 1) — stamp the per-dispatch correlation runId
+			// BEFORE building the prompt message so it can be ECHOED to the agent and
+			// REUSED when arming the dead-letter timer. The SAME runId must reach the
+			// agent (so it copies it into its envelope) AND the marker (so the send
+			// handler's wrong-run guard has a value to compare the envelope's runId
+			// against). Scoped to pr-triage — the only agent on the daemon-owned send
+			// contract; every other agent gets the verbatim prompt and no timer.
+			const isSendContract =
+				startResultTimer !== undefined && evt.agentId === "pr-triage";
+			const runId = isSendContract ? randomUUID() : null;
+			const promptText =
+				runId !== null ? appendRunIdInstruction(promptRaw, runId) : promptRaw;
 			const runtime: AgentRuntime = resolveRuntime(handle.runtime);
 			const message: AgentMessage = {
 				kind: "prompt",
@@ -1256,15 +1316,14 @@ export function makeTaskDispatchHandler(deps: {
 				// dead-letter timer so an agent that crashes WITHOUT writing a result
 				// envelope surfaces as `pr-triage-result-timeout` rather than a
 				// silently lost notification — AND survives a daemon restart via the
-				// `result-pending/<agentId>.json` marker. A fresh `runId` per dispatch
-				// is stamped into the marker so a stale/wrong-run envelope cannot clear
-				// the live run. The `task-send-needed` handler clears it (by the same
-				// runId) when the agent's `pr-triage-send__*.json` envelope arrives.
-				// Scoped to pr-triage — the only agent on the daemon-owned send
-				// contract. Awaited so the marker is durable before this handler
-				// returns (the in-flight guard is still held by the polling loop).
-				if (startResultTimer !== undefined && evt.agentId === "pr-triage") {
-					const runId = randomUUID();
+				// `result-pending/<agentId>.json` marker. The runId stamped into the
+				// marker is the SAME one echoed into the prompt above, so a
+				// stale/wrong-run envelope (carrying a DIFFERENT runId) cannot clear
+				// the live run. The `task-send-needed` handler clears it (by the
+				// ENVELOPE's runId) when the agent's `pr-triage-send__*.json` envelope
+				// arrives. Awaited so the marker is durable before this handler returns
+				// (the in-flight guard is still held by the polling loop).
+				if (startResultTimer !== undefined && runId !== null) {
 					await startResultTimer(
 						evt.agentId,
 						runId,

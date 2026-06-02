@@ -463,7 +463,9 @@ export class AgentManager extends EventEmitter {
 				} catch (rollbackErr) {
 					console.error(
 						`[agent-manager] rollback shutdown of ${handle.id} after persist failure failed: ${
-							rollbackErr instanceof Error ? rollbackErr.message : String(rollbackErr)
+							rollbackErr instanceof Error
+								? rollbackErr.message
+								: String(rollbackErr)
 						}`,
 					);
 				} finally {
@@ -763,11 +765,17 @@ export class AgentManager extends EventEmitter {
 			// register path, where the spawn is rolled back fail-closed because no
 			// live agent existed before it.
 			try {
-				await this.persistAgentConfig(handleId, respawnConfig, existing.runtime);
+				await this.persistAgentConfig(
+					handleId,
+					respawnConfig,
+					existing.runtime,
+				);
 			} catch (persistErr) {
 				console.error(
 					`[agent-manager] restart env-rewrite persist for ${handleId} failed (respawn kept): ${
-						persistErr instanceof Error ? persistErr.message : String(persistErr)
+						persistErr instanceof Error
+							? persistErr.message
+							: String(persistErr)
 					}`,
 				);
 			}
@@ -1005,7 +1013,10 @@ export class AgentManager extends EventEmitter {
 				// matches the marker's handleId. Adapters MAY return a handle
 				// with a different id (e.g., generation suffix); the recovered
 				// listing reflects what was actually tracked.
-				const recoveredId = await this.attemptCrashReplay(handleId, knownConfigs);
+				const recoveredId = await this.attemptCrashReplay(
+					handleId,
+					knownConfigs,
+				);
 				if (recoveredId !== null && this.handles.has(recoveredId)) {
 					recovered.push(recoveredId);
 				}
@@ -1023,7 +1034,10 @@ export class AgentManager extends EventEmitter {
 				for (const handleId of knownConfigs.keys()) {
 					if (seenHandleIds.has(handleId)) continue;
 					crashes.push(handleId);
-					const recoveredId = await this.attemptCrashReplay(handleId, knownConfigs);
+					const recoveredId = await this.attemptCrashReplay(
+						handleId,
+						knownConfigs,
+					);
 					if (recoveredId !== null && this.handles.has(recoveredId)) {
 						recovered.push(recoveredId);
 					}
@@ -1697,7 +1711,11 @@ export class AgentManager extends EventEmitter {
 			if (tracked.handle.agentId !== agentId) continue;
 			const existingOrg = tracked.org;
 			if (existingOrg !== attemptedOrg) {
-				throw new AgentIdAlreadyRegisteredError(agentId, existingOrg, attemptedOrg);
+				throw new AgentIdAlreadyRegisteredError(
+					agentId,
+					existingOrg,
+					attemptedOrg,
+				);
 			}
 		}
 
@@ -1734,7 +1752,11 @@ export class AgentManager extends EventEmitter {
 			const orgVal = (parsed as { org?: unknown }).org;
 			const existingOrg = typeof orgVal === "string" ? orgVal : null;
 			if (existingOrg !== attemptedOrg) {
-				throw new AgentIdAlreadyRegisteredError(agentId, existingOrg, attemptedOrg);
+				throw new AgentIdAlreadyRegisteredError(
+					agentId,
+					existingOrg,
+					attemptedOrg,
+				);
 			}
 		}
 	}
@@ -2165,6 +2187,14 @@ export class AgentManager extends EventEmitter {
 			typeof sendPromptRaw === "string" && sendPromptRaw.length > 0;
 		const hasSendText = typeof sendTextRaw === "string";
 		const isNoSend = noSendRaw === true;
+		// Critical (Codex, round 1) — carry the agent-echoed correlation runId
+		// THROUGH to the send handler so it passes the ENVELOPE's runId (not the
+		// live marker's) to `clearResultTimer`. A late/stale envelope from a prior
+		// run carries the OLD runId and is rejected by the wrong-run guard. Absent
+		// on a legacy envelope (handler then clears unconditionally).
+		const sendRunIdRaw = (parsed as { runId?: unknown }).runId;
+		const sendRunId =
+			typeof sendRunIdRaw === "string" ? sendRunIdRaw : undefined;
 		if (
 			agentId === "pr-triage" &&
 			filename.startsWith("pr-triage-send__") &&
@@ -2191,6 +2221,9 @@ export class AgentManager extends EventEmitter {
 				agentId,
 				...(hasSendText ? { sendText: sendTextRaw } : {}),
 				...(isNoSend ? { noSend: true } : {}),
+				// Critical (Codex, round 1) — forward the agent-echoed runId so the
+				// send handler can run-correlate the clear. Omitted when absent.
+				...(sendRunId !== undefined ? { runId: sendRunId } : {}),
 			});
 			return;
 		}
