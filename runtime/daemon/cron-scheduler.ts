@@ -73,6 +73,7 @@ import type { EventEmitter } from "node:events";
 import * as fs from "node:fs";
 import * as path from "node:path";
 
+import { composeRuntimeEnv } from "./cron-agent-env.js";
 import {
 	assertSafeIdentifier,
 	atomicRenameStaleDest,
@@ -98,6 +99,47 @@ export interface Logger {
  */
 export type CronAgentManager = EventEmitter;
 
+/**
+ * R1 (feature-pr84-r1-daemon-creds) — the daemon-side hook that pre-computes a
+ * cron's prompt. For pr-triage the default implementation (wired in main.ts,
+ * where `process.env.GH_TOKEN` is available) fetches all open PRs, sanitizes
+ * them to a scalar payload, and either:
+ *   - `{ skip: true, reason }` — gate the spawn (zero PRs, or a fetch error: do
+ *     NOT spawn with stale/no data); this REPLACES the bash wake-check gate, OR
+ *   - `{ skip: false, prompt }` — the rendered prompt with the sanitized
+ *     payload JSON substituted into the `{{PR_DATA_JSON}}` placeholder.
+ *
+ * Minor (R1 dual-adversarial) — an optional `exitCode` lets a skip carry the
+ * token-free HTTP status of the failed fetch (e.g. 401 vs 403 vs 429) into the
+ * `cron-skipped` telemetry's `exitCode` field, so an operator can distinguish a
+ * revoked PAT from a rate-limit without server-side logs. Omitted (or `null`)
+ * for skips with no HTTP status (zero PRs, network error, template read).
+ *
+ * `cron` is the registered entry (read `promptTemplatePath` to load the
+ * template). Bounded by the implementation's own timeout so a hung GitHub call
+ * cannot wedge the 60s tick (the seam is already `async fire()`).
+ */
+export type PrepareCronPrompt = (cron: RegisteredCron) => Promise<{
+	skip: boolean;
+	reason?: string;
+	prompt?: string;
+	exitCode?: number | null;
+}>;
+
+/**
+ * R1 (feature-pr84-r1-daemon-creds) — clamp a `prepareCronPrompt` hook's
+ * free-form `reason` string to the daemon-side skip reasons the `cron-skipped`
+ * telemetry kind accepts. An unrecognized value falls back to `prepare-skip` so
+ * the telemetry union stays exhaustive without an `as` cast.
+ */
+function narrowPrepareSkipReason(
+	reason: string | undefined,
+): "no-open-prs" | "pr-fetch-failed" | "prepare-skip" {
+	if (reason === "no-open-prs") return "no-open-prs";
+	if (reason === "pr-fetch-failed") return "pr-fetch-failed";
+	return "prepare-skip";
+}
+
 export interface CronSchedulerOpts {
 	readonly agentManager: CronAgentManager;
 	readonly stateRoot?: string;
@@ -107,6 +149,14 @@ export interface CronSchedulerOpts {
 	 * @internal
 	 */
 	readonly nowFn?: () => Date;
+	/**
+	 * R1 (feature-pr84-r1-daemon-creds) — optional per-cron prompt-preparation
+	 * hook. When provided, `fire()` renders the prompt via this hook (daemon
+	 * fetch + sanitize + inject) instead of reading the template verbatim, and
+	 * gates the spawn on its `skip` result. Omitting it preserves the legacy
+	 * verbatim-template behavior for every cron (back-compat).
+	 */
+	readonly prepareCronPrompt?: PrepareCronPrompt;
 }
 
 export interface RegisterCronOpts {
@@ -118,7 +168,7 @@ export interface RegisterCronOpts {
 	readonly maxConcurrent?: number;
 }
 
-interface RegisteredCron {
+export interface RegisteredCron {
 	readonly agentId: string;
 	readonly schedule: string;
 	readonly wakeCheck: string | undefined;
@@ -367,6 +417,7 @@ export class CronScheduler {
 	private readonly stateRoot: string | undefined;
 	private readonly logger: Logger;
 	private readonly nowFn: () => Date;
+	private readonly prepareCronPrompt: PrepareCronPrompt | undefined;
 	private readonly registered: RegisteredCron[] = [];
 	private readonly runningCount = new Map<string, number>();
 	// Filenames currently outstanding per agentId (cron-emitted tasks that
@@ -386,6 +437,7 @@ export class CronScheduler {
 		this.stateRoot = opts.stateRoot;
 		this.logger = opts.logger ?? defaultLogger();
 		this.nowFn = opts.nowFn ?? (() => new Date());
+		this.prepareCronPrompt = opts.prepareCronPrompt;
 		// Subscribe immediately so the decrement chain works for every fire,
 		// even if `start()` is deferred. Defensive: 07b's `AgentManager`
 		// emit-side may not exist yet, so the handler tolerates absent
@@ -584,8 +636,15 @@ export class CronScheduler {
 		// `wakeCheckPath` is the caller-narrowed `cron.wakeCheck` — passing
 		// it as a separate parameter avoids an `as string` cast (plan 07a
 		// constraint: NO `as` casts).
+		// R1 (feature-pr84-r1-daemon-creds, D1 — agents never hold secrets):
+		// spawn with a SCRUBBED env (only the non-secret runtime allowlist),
+		// NOT the daemon's full `process.env`. Handing `process.env` to a bash
+		// subprocess would leak `GH_TOKEN` / `IAGO_TELEGRAM_BOT_TOKEN` to the
+		// child, contradicting the invariant that only the daemon holds secrets.
+		// `composeRuntimeEnv` is the SAME allowlist `composeCronAgentEnv` uses —
+		// single source of truth (`./cron-agent-env.ts`).
 		const result = spawnSync("bash", [wakeCheckPath], {
-			env: process.env,
+			env: composeRuntimeEnv(process.env),
 			encoding: "utf8",
 			timeout: WAKE_CHECK_TIMEOUT_MS,
 			killSignal: "SIGKILL",
@@ -628,17 +687,66 @@ export class CronScheduler {
 
 	private async fire(cron: RegisteredCron, now: Date): Promise<void> {
 		let prompt: string;
-		try {
-			prompt = fs.readFileSync(cron.promptTemplatePath, "utf8");
-		} catch (err) {
-			await emit({
-				kind: "cron-fired-prompt-missing",
-				agentId: cron.agentId,
-				schedule: cron.schedule,
-				promptTemplatePath: cron.promptTemplatePath,
-				errno: getErrnoCode(err) ?? "EUNKNOWN",
-			});
-			return;
+		if (this.prepareCronPrompt !== undefined) {
+			// R1 (feature-pr84-r1-daemon-creds) — daemon-side prompt prep:
+			// fetch + sanitize + inject the scalar payload, and gate the spawn.
+			// This REPLACES the bash wake-check gate for pr-triage (zero PRs →
+			// no spawn, no task file, matching the old wake-check exit-1
+			// behavior). A fetch error returns `{ skip: true }` so we never
+			// spawn with stale/no data.
+			let prepared: {
+				skip: boolean;
+				reason?: string;
+				prompt?: string;
+				exitCode?: number | null;
+			};
+			try {
+				prepared = await this.prepareCronPrompt(cron);
+			} catch (err) {
+				// Defensive: a throwing hook must not wedge the tick. Treat as a
+				// skip with a fetch-failed reason.
+				await emit({
+					kind: "cron-skipped",
+					agentId: cron.agentId,
+					schedule: cron.schedule,
+					reason: "pr-fetch-failed",
+					exitCode: null,
+				});
+				this.logger.error(
+					`[cron-scheduler] prepareCronPrompt threw for agent ${cron.agentId}: ${
+						err instanceof Error ? err.message : String(err)
+					}`,
+				);
+				return;
+			}
+			if (prepared.skip || typeof prepared.prompt !== "string") {
+				await emit({
+					kind: "cron-skipped",
+					agentId: cron.agentId,
+					schedule: cron.schedule,
+					reason: narrowPrepareSkipReason(prepared.reason),
+					// Minor (fetch-error observability): forward the token-free HTTP
+					// status the hook surfaced (e.g. 401/403/429) so the operator can
+					// tell a revoked PAT from a rate-limit. `null` when the skip has no
+					// HTTP status (zero PRs, network error, template read).
+					exitCode: prepared.exitCode ?? null,
+				});
+				return;
+			}
+			prompt = prepared.prompt;
+		} else {
+			try {
+				prompt = fs.readFileSync(cron.promptTemplatePath, "utf8");
+			} catch (err) {
+				await emit({
+					kind: "cron-fired-prompt-missing",
+					agentId: cron.agentId,
+					schedule: cron.schedule,
+					promptTemplatePath: cron.promptTemplatePath,
+					errno: getErrnoCode(err) ?? "EUNKNOWN",
+				});
+				return;
+			}
 		}
 
 		const unix = Math.floor(now.getTime() / 1000);

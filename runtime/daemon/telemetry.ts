@@ -252,7 +252,20 @@ export type DaemonEvent =
 			readonly kind: "cron-skipped";
 			readonly agentId: string;
 			readonly schedule: string;
-			readonly reason: "wake-check-failed" | "wake-check-timeout";
+			/**
+			 * `wake-check-*` are the legacy bash-gate reasons. R1
+			 * (feature-pr84-r1-daemon-creds) adds the daemon-side
+			 * `prepareCronPrompt` gate reasons: `no-open-prs` (zero open PRs →
+			 * no spawn, REPLACES the wake-check exit-1 gate), `pr-fetch-failed`
+			 * (the daemon GitHub fetch threw → do NOT spawn with stale/no data),
+			 * and `prepare-skip` (a generic hook skip with no specific reason).
+			 */
+			readonly reason:
+				| "wake-check-failed"
+				| "wake-check-timeout"
+				| "no-open-prs"
+				| "pr-fetch-failed"
+				| "prepare-skip";
 			readonly exitCode: number | null;
 	  }
 	| {
@@ -390,6 +403,59 @@ export type DaemonEvent =
 	  }
 	| {
 			/**
+			 * Plan pr84-gap-closure (Codex H1) — the pr-triage agent's bash
+			 * failed to deliver a Telegram alert and wrote an `ndjsonAlert`
+			 * fallback envelope instead of a `prompt` task. The daemon
+			 * records-and-resolves it: no live handle is needed, the file
+			 * moves pending→resolved, and this event carries the audit trail.
+			 *
+			 * `alertKind` is the verbatim `ndjsonAlert` value from the
+			 * envelope — it disambiguates the two historical producer shapes
+			 * (the telegram-send-failed alert and the `pr-triage-double-failure`
+			 * alert) plus any future alert kind. (RETIRED under R1: the agent no
+			 * longer emits `ndjsonAlert`; the daemon now emits
+			 * `pr-triage-telegram-send-failed` directly from makeTaskSendHandler.)
+			 * without multiplying union members. `details` is the verbatim
+			 * `details` string from the envelope, already token-redacted by
+			 * the agent (it captures `$HTTP_STATUS` + a redacted response
+			 * body, NOT the curl process exit) — so there are deliberately
+			 * no `curlExitCode`/`telegramResponseBody` fields here.
+			 */
+			readonly kind: "pr-triage-telegram-send-failed";
+			readonly agentId: string;
+			readonly filename: string;
+			readonly alertKind: string;
+			readonly details: string;
+	  }
+	| {
+			/**
+			 * R1 (feature-pr84-r1-daemon-creds, D4) — the pr-triage agent
+			 * computed an EMPTY summary and wrote a `{ noSend: true }` envelope
+			 * (or the daemon resolved a no-send result). This distinguishes
+			 * "nothing to send" from "agent died without writing an envelope"
+			 * (which surfaces as `pr-triage-result-timeout`). The send handler
+			 * claims the envelope file after recording this event.
+			 */
+			readonly kind: "pr-triage-no-send";
+			readonly agentId: string;
+			readonly filename: string;
+	  }
+	| {
+			/**
+			 * R1 (feature-pr84-r1-daemon-creds, D4 — dead-letter) — a dispatched
+			 * pr-triage PROMPT did not produce a result envelope
+			 * (`pr-triage-send__*.json`) before the result-timeout deadline. The
+			 * agent likely crashed mid-run; surface it as telemetry rather than a
+			 * silent lost notification. KNOWN LIMIT: the timer does not survive a
+			 * daemon restart (the next cron fire recovers; full durability is
+			 * deferred #5).
+			 */
+			readonly kind: "pr-triage-result-timeout";
+			readonly agentId: string;
+			readonly reason: string;
+	  }
+	| {
+			/**
 			 * Plan 04d dual-adversarial I-C fix: a cron-driven agent that
 			 * was pre-registered at daemon startup exited (PTY crash,
 			 * credential expiry, heartbeat-driven recycle). Re-registration
@@ -496,6 +562,32 @@ export type DaemonEvent =
 			readonly reason: "runtime-not-registered";
 	  };
 
+/**
+ * pr84-gap-closure (Codex H1 follow-up) — the daemon-owned set of recognized
+ * `ndjsonAlert` kinds the `pr-triage` agent may emit. An alert envelope is a
+ * record-and-resolve signal that bypasses the dispatch path; treating ANY
+ * non-empty `ndjsonAlert` string as a terminal alert was an un-scoped dispatch
+ * bypass — `tasks/pending/` is the GENERIC bus shared by all agents, so a
+ * malformed or adversarial task for another (or unregistered) agent could skip
+ * runtime execution and still get silently resolved.
+ *
+ * Both `AgentManager.processPendingTask` (agent-manager.ts) and
+ * `makeTaskDispatchHandler` (main.ts) gate the alert branch on membership in
+ * THIS set (plus `agentId === "pr-triage"` and no `prompt` field), so the
+ * branch is daemon-owned, not self-declared by the task envelope. Any other
+ * shape falls through to the existing registration/dispatch/poison handling.
+ *
+ * Defined here (not in main.ts) so both consumers import it from the module
+ * they already depend on — avoids a circular import between agent-manager.ts
+ * and main.ts. Values mirror the two HISTORICAL producer shapes. (RETIRED under
+ * R1: the pr-triage agent no longer emits `ndjsonAlert`; the daemon owns
+ * send-failure telemetry. The set is kept for the inert defensive branch.)
+ */
+export const PR_TRIAGE_ALERT_KINDS: ReadonlySet<string> = new Set([
+	"pr-triage-telegram-send-failed",
+	"pr-triage-double-failure",
+]);
+
 let missingSessionIdWarned = false;
 
 function formatDate(date: Date): string {
@@ -524,10 +616,23 @@ function resolveSessionId(): string {
 	return "no-session-id";
 }
 
+/**
+ * Append a telemetry event to the daily NDJSON file.
+ *
+ * Returns `true` if the line durably landed on disk, `false` if the append
+ * failed (the error is logged, never thrown — fire-and-forget callers can
+ * keep ignoring the result). The boolean exists for the rare caller that
+ * must NOT take an irreversible action unless the event was durably
+ * recorded: the pr-triage ndjsonAlert path (agent-manager `processPendingTask`)
+ * uses it to avoid resolving a fallback-alert task out of `pending/` when its
+ * `pr-triage-telegram-send-failed` record could not be written — otherwise a
+ * degraded telemetry dir (ENOSPC/EACCES) would silently swallow the
+ * double-failure signal AND stop the task from retrying (Codex Medium).
+ */
 export async function emit(
 	event: DaemonEvent,
 	extra?: Record<string, unknown>,
-): Promise<void> {
+): Promise<boolean> {
 	const filePath = getTelemetryPath();
 	const sessionId = resolveSessionId();
 	const line = {
@@ -541,8 +646,10 @@ export async function emit(
 	try {
 		await fsp.mkdir(path.dirname(filePath), { recursive: true });
 		await fsp.appendFile(filePath, serialized, "utf8");
+		return true;
 	} catch (err) {
 		console.error("[telemetry] write failed:", err);
+		return false;
 	}
 }
 
