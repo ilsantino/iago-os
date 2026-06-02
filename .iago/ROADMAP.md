@@ -59,12 +59,11 @@ Three non-negotiable gates before Stage D (OpenClaw cutover):
 
 **Goal:** `iago-os-v2-daemon.service` running on VPS in parallel with OpenClaw; one real workflow migrated; no OpenClaw impact.
 **Effort:** 2-3d.
-**Merged PRs (12/15):** #60/#61/#62/#63/#64/#65/#67/#68/#72/#74 (Plan 06)/#76 (Plan 04b)/#80 (Plan 04d).
+**Merged PRs (13/15):** #60/#61/#62/#63/#64/#65/#67/#68/#72/#74 (Plan 06)/#76 (Plan 04b)/#80 (Plan 04d)/#84 (R1 daemon-creds rework, merged 2026-06-02).
 
 **Remaining work:**
-1. **PR #84** — R1 daemon-creds rework ✅ merged 2026-06-02 (Santiago confirmed merge).
-2. **`feature-daemon-recovery-hardening`** 🔄 — 8-task plan executing now (Tasks 1–8, `.iago/plans/feature-daemon-recovery-hardening/01-recovery-hardening.md`); blocks cutover.
-3. **Phase 2 acceptance gate (05a/05b)** ⏳ — evidence template + checker + E2E test harness; not yet started. Gate for `/iago-verify phase-2-vps-bootstrap`.
+1. **`feature-daemon-recovery-hardening`** 🔄 — 8-task plan executing now (Tasks 1–8, `.iago/plans/feature-daemon-recovery-hardening/01-recovery-hardening.md`); blocks cutover.
+2. **Phase 2 acceptance gate (05a/05b)** ⏳ — evidence template + checker + E2E test harness; not yet started. Gate for `/iago-verify phase-2-vps-bootstrap`.
 
 **Exit criterion:** `/iago-verify phase-2-vps-bootstrap` passes; acceptance gate evidence for Plans 05a + 05b written; dual-adversarial clean on recovery-hardening PR; all pre-cutover gates satisfied.
 
