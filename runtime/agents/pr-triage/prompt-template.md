@@ -125,7 +125,13 @@ The filename prefix `pr-triage-send__` is **load-bearing** — it MUST match the
 STATE_ROOT="${IAGO_DAEMON_STATE_ROOT:-/var/lib/iago-os/daemon-state}"
 TASK_FILE="$STATE_ROOT/tasks/pending/pr-triage-send__$(date +%s%3N)-$$.json"
 # RUN_ID is the value from the daemon's "DAEMON RUN CORRELATION" line at the end
-# of this prompt. Copy it verbatim.
+# of this prompt. SET IT EXPLICITLY below — copy the runId string verbatim. This
+# is load-bearing: the daemon quarantines (drops, surfacing a dead-letter
+# timeout) a summary whose runId does not match the live run, INCLUDING a
+# missing or empty runId while a run is active. Only leave RUN_ID empty if the
+# correlation line is truly absent — the envelope then omits the field and the
+# daemon treats it as no-correlation.
+RUN_ID="<paste the runId from the DAEMON RUN CORRELATION line; leave empty ONLY if that line is absent>"
 # Atomic publish: write to a `.tmp` sibling, then `mv` into place (rename(2) is
 # atomic on POSIX) so the daemon's poll tick never reads a half-written file.
 # `umask 0077` is scoped to a subshell so the dir is born 0700 and the file
@@ -133,9 +139,17 @@ TASK_FILE="$STATE_ROOT/tasks/pending/pr-triage-send__$(date +%s%3N)-$$.json"
 (
   umask 0077
   mkdir -p "$STATE_ROOT/tasks/pending"
-  jq -n --arg text "$SUMMARY" --arg runId "$RUN_ID" \
-    '{"agentId":"pr-triage","sendText":$text,"runId":$runId}' \
-    > "$TASK_FILE.tmp"
+  # Omit `runId` entirely when RUN_ID is empty (never emit runId:"" — the daemon
+  # would compare it to the live UUID and quarantine this legitimate summary).
+  if [ -n "$RUN_ID" ]; then
+    jq -n --arg text "$SUMMARY" --arg runId "$RUN_ID" \
+      '{"agentId":"pr-triage","sendText":$text,"runId":$runId}' \
+      > "$TASK_FILE.tmp"
+  else
+    jq -n --arg text "$SUMMARY" \
+      '{"agentId":"pr-triage","sendText":$text}' \
+      > "$TASK_FILE.tmp"
+  fi
   mv "$TASK_FILE.tmp" "$TASK_FILE"
 )
 ```
@@ -145,12 +159,22 @@ If `totalCount === 0` the daemon never spawns you (it gates on zero PRs before d
 ```bash
 STATE_ROOT="${IAGO_DAEMON_STATE_ROOT:-/var/lib/iago-os/daemon-state}"
 TASK_FILE="$STATE_ROOT/tasks/pending/pr-triage-send__$(date +%s%3N)-$$.json"
+# Same RUN_ID as the send block above (the runId from the DAEMON RUN CORRELATION
+# line). Set it explicitly; leave empty only if that line is absent.
+RUN_ID="<paste the runId from the DAEMON RUN CORRELATION line; leave empty ONLY if that line is absent>"
 (
   umask 0077
   mkdir -p "$STATE_ROOT/tasks/pending"
-  jq -n --arg runId "$RUN_ID" \
-    '{"agentId":"pr-triage","noSend":true,"runId":$runId}' \
-    > "$TASK_FILE.tmp"
+  # Omit `runId` when empty (never emit runId:"") — same rule as the send block.
+  if [ -n "$RUN_ID" ]; then
+    jq -n --arg runId "$RUN_ID" \
+      '{"agentId":"pr-triage","noSend":true,"runId":$runId}' \
+      > "$TASK_FILE.tmp"
+  else
+    jq -n \
+      '{"agentId":"pr-triage","noSend":true}' \
+      > "$TASK_FILE.tmp"
+  fi
   mv "$TASK_FILE.tmp" "$TASK_FILE"
 )
 ```

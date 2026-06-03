@@ -770,16 +770,35 @@ export function makeResultTimers(deps: {
 				// Only fire if THIS run is still the active one (a re-fire/overwrite
 				// would have replaced it with a new runId).
 				if (active === undefined || active.runId !== runId) return;
-				timers.delete(agentId);
-				void removeMarker(agentId);
-				void emit({
-					kind: "pr-triage-result-timeout",
-					agentId,
-					reason: "no-envelope-before-deadline",
-				});
-				// Task 6 #2 — the run is OVER (dead-lettered). Release the held cron
-				// slot so the NEXT cron tick can dispatch.
-				onResultComplete?.(agentId, filename);
+				// Dual-adversarial Important (escalated 2026-06-02) — DURABILITY GATE.
+				// Record the timeout BEFORE unlinking the durable marker / releasing the
+				// slot. `emit` returns false (it never throws) when the telemetry append
+				// fails (ENOSPC/EACCES); the prior order (delete marker → fire-and-forget
+				// emit) meant a failed append lost the dropped-summary signal — the very
+				// event this timeout exists to surface — with nothing for boot recovery
+				// (`recoverResultTimers`) to re-scan. On a failed record: RETAIN the
+				// marker + timer entry so the next boot re-surfaces it; do NOT remove or
+				// release. Fire-and-forget async so the poll loop is not blocked.
+				void (async () => {
+					const recorded = await emit({
+						kind: "pr-triage-result-timeout",
+						agentId,
+						reason: "no-envelope-before-deadline",
+					});
+					if (!recorded) return;
+					// Re-check this run is still current (a fresh dispatch may have armed a
+					// new timer for this agent while we awaited the telemetry write).
+					const stillActive = timers.get(agentId);
+					if (stillActive === undefined || stillActive.runId !== runId) return;
+					timers.delete(agentId);
+					// Marker removal is fire-and-forget AFTER the durable timeout record
+					// (the same ordering as before the gate — the release does not wait on
+					// the unlink, and a re-dispatch atomically overwrites the marker).
+					void removeMarker(agentId);
+					// Task 6 #2 — the run is OVER (dead-lettered). Release the held cron
+					// slot so the NEXT cron tick can dispatch.
+					onResultComplete?.(agentId, filename);
+				})();
 			},
 			Math.max(0, delayMs),
 		);
@@ -787,32 +806,43 @@ export function makeResultTimers(deps: {
 		timers.set(agentId, { runId, filename, timer: t });
 	};
 
-	// Round-2 Important (Codex) — pre-send wrong-run guard. Returns false ONLY for
-	// a DEFINITE runId mismatch against the active run (in-memory timer first, then
-	// the durable on-disk marker). `undefined` runId, or no active run on either
-	// source, returns true (the send proceeds — at-most-once as before). This lets
-	// the send handler quarantine a stale/late envelope BEFORE the irreversible
-	// Telegram send, instead of validating only afterward in `clearResultTimer`.
+	// Round-2 Important (Codex) + dual-adversarial Critical (escalated 2026-06-02)
+	// — pre-send wrong-run guard. An envelope is "active" only when its runId
+	// MATCHES the agent's live run (in-memory timer first, then the durable on-disk
+	// marker). The PRIOR design short-circuited `runId === undefined` to `true`,
+	// which let a runId-LESS envelope (a NORMAL agent failure mode — the echo line
+	// is explicitly optional per prompt-template.md, so the agent may omit it)
+	// bypass the guard entirely: a late/stale summary from a PRIOR run would be
+	// pushed to Telegram while a live run is still pending. The fix: when there IS
+	// an active run (live timer OR durable marker) for the agent, REQUIRE a
+	// matching runId — a missing (`undefined`/empty-string, normalized upstream to
+	// `undefined`) or mismatched runId returns `false` (quarantine). ONLY when
+	// there is NO active run at all do we return `true` (the legacy/no-correlation
+	// path — nothing to misattribute against).
 	const isActiveRun = async (
 		agentId: string,
 		runId?: string,
 	): Promise<boolean> => {
-		if (runId === undefined) return true;
 		const existing = timers.get(agentId);
 		if (existing !== undefined) {
-			return existing.runId === runId;
+			// A live run is in flight: only the matching runId is its envelope. A
+			// missing runId (undefined) cannot be confirmed as this run → quarantine.
+			return runId !== undefined && existing.runId === runId;
 		}
 		// No live timer (e.g. after a restart) — the durable marker is authority.
 		try {
 			const raw = await fsp.readFile(resultPendingPath(agentId), "utf-8");
 			const m = JSON.parse(raw) as ResultPendingMarker;
 			if (typeof m.runId === "string") {
-				return m.runId === runId;
+				// A durable marker means a run is still pending: same rule — require a
+				// matching runId; a missing/mismatched one is quarantined.
+				return runId !== undefined && m.runId === runId;
 			}
 		} catch {
 			// No marker / unreadable — nothing to validate against.
 		}
-		// Neither a live timer nor a marker runId to compare: do not quarantine.
+		// Neither a live timer nor a marker runId to compare: NO active run, so a
+		// legacy/undefined-runId envelope is NOT spuriously quarantined.
 		return true;
 	};
 
@@ -823,6 +853,11 @@ export function makeResultTimers(deps: {
 		const existing = timers.get(agentId);
 		// Wrong-run guard: if a runId is supplied and it does NOT match the active
 		// run, this is a stale/late envelope from a prior dispatch — ignore it.
+		// (A MISSING runId is handled by the send handler's pre-send quarantine,
+		// which skips the clear entirely when there is an active run — see
+		// `makeTaskSendHandler`. An explicit `clearResultTimer(agentId)` with no
+		// runId remains an intentional unconditional clear for the internal
+		// overwrite/recovery paths.)
 		if (
 			existing !== undefined &&
 			runId !== undefined &&
@@ -1062,6 +1097,13 @@ export function makeTaskSendHandler(deps: {
 		deps;
 	const backoffMs = deps.backoffMs ?? TELEGRAM_SEND_RETRY_BACKOFF_MS;
 	return async (evt: TaskSendEvent): Promise<void> => {
+		// Dual-adversarial Critical (escalated 2026-06-02) — set when the pre-send
+		// guard quarantines this envelope (stale OR missing-runId against an active
+		// run). A quarantined envelope must NOT reach the `finally`'s
+		// `clearResultTimer`: a missing-runId clear matches the live timer by agentId
+		// and would strip the CURRENT run's dead-letter/overlap protection. Skipping
+		// the clear leaves the live run intact for its own envelope (or dead-letter).
+		let quarantined = false;
 		try {
 			// Minor (empty-summary guard): treat an explicit `noSend` OR an
 			// empty/whitespace-only `sendText` as "nothing to send" — never deliver
@@ -1082,25 +1124,32 @@ export function makeTaskSendHandler(deps: {
 				}
 				return;
 			}
-			// Round-2 Important (Codex) — PRE-SEND wrong-run guard. Validate the
-			// envelope's runId against the ACTIVE run BEFORE the irreversible
-			// Telegram send. A late/stale envelope from a PRIOR dispatch (carrying an
-			// OLD runId) must NOT be pushed to the user; the post-send
+			// Round-2 Important (Codex) + dual-adversarial Critical (escalated
+			// 2026-06-02) — PRE-SEND wrong-run guard. Validate the envelope against the
+			// ACTIVE run BEFORE the irreversible Telegram send. A late/stale envelope
+			// from a PRIOR dispatch must NOT be pushed to the user; the post-send
 			// `clearResultTimer` guard only stops it from clearing the CURRENT run's
-			// timer — it cannot un-send a message already delivered. On a definite
-			// mismatch: QUARANTINE the envelope (claim it out of `pending/` so it
-			// stops re-tripping every poll tick), record `pr-triage-stale-run-dropped`
-			// telemetry, and skip the send. The stale runId also fails the wrong-run
-			// guard inside the `finally`'s `clearResultTimer`, so the current run's
-			// dead-letter timer/marker/held slot stay intact.
-			if (isActiveRun !== undefined && evt.runId !== undefined) {
+			// timer — it cannot un-send a message already delivered. `isActiveRun` is
+			// now called even when the envelope carries NO runId: a runId-less envelope
+			// (a NORMAL failure mode — the echo line is optional per prompt-template.md)
+			// cannot be confirmed as the live run, so when a run IS active it is
+			// quarantined too (the prior `evt.runId !== undefined` gate let it bypass
+			// the guard and push a stale summary). `isActiveRun` returns `true` (no
+			// quarantine) only when there is NO active run to misattribute against. On
+			// quarantine: claim the envelope out of `pending/` (stop the re-trip),
+			// record `pr-triage-stale-run-dropped`, skip the send, AND set `quarantined`
+			// so the `finally` does NOT run `clearResultTimer` (a runId-less clear would
+			// match the live timer by agentId and strip the current run's
+			// timer/marker/held slot).
+			if (isActiveRun !== undefined) {
 				const active = await isActiveRun(evt.agentId, evt.runId);
 				if (!active) {
+					quarantined = true;
 					await emit({
 						kind: "pr-triage-stale-run-dropped",
 						agentId: evt.agentId,
 						filename: evt.filename,
-						runId: evt.runId,
+						...(evt.runId !== undefined ? { runId: evt.runId } : {}),
 					});
 					// Quarantine: remove from pending/ so it does not re-trip. A failed
 					// claim (disk fault) leaves it in pending/ for a later tick — still
@@ -1197,11 +1246,19 @@ export function makeTaskSendHandler(deps: {
 			// and the wrong-run guard was dead. With the envelope's runId, a
 			// late/stale envelope from a PRIOR run carries the OLD runId, fails the
 			// guard inside `clearResultTimer` (returns false), and leaves the CURRENT
-			// run's timer + marker + held slot intact. When the envelope carries NO
-			// runId (legacy producer, or the agent failed to echo it) we clear
-			// unconditionally by agentId — degraded, but the dead-letter timer is the
-			// cross-restart backstop and a missing echo only costs at-most-once.
-			await clearResultTimer(evt.agentId, evt.runId);
+			// run's timer + marker + held slot intact.
+			//
+			// Dual-adversarial Critical (escalated 2026-06-02) — SKIP the clear entirely
+			// when this envelope was QUARANTINED by the pre-send guard. A quarantined
+			// envelope is missing/stale against an ACTIVE run; calling
+			// `clearResultTimer(agentId, undefined)` would match the live timer by
+			// agentId (the runId guard is skipped on `undefined`) and strip the CURRENT
+			// run's timer/marker/held slot — the exact dead-letter protection this branch
+			// adds. The non-quarantine paths (matching runId → the run completed; or no
+			// active run at all → nothing to wrongly clear) still clear as before.
+			if (!quarantined) {
+				await clearResultTimer(evt.agentId, evt.runId);
+			}
 		}
 	};
 }

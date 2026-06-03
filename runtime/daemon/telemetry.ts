@@ -469,11 +469,15 @@ export type DaemonEvent =
 			 * wrong/stale summary to the user. The current run's dead-letter
 			 * timer/marker/held slot are left intact. `runId` is the stale id from
 			 * the envelope (token-free correlation id, safe to log).
+			 *
+			 * `runId` is OPTIONAL (dual-adversarial Critical, escalated 2026-06-02):
+			 * a runId-LESS envelope (the agent omitted the optional echo) arriving
+			 * while a run is active is quarantined too, and carries no runId to log.
 			 */
 			readonly kind: "pr-triage-stale-run-dropped";
 			readonly agentId: string;
 			readonly filename: string;
-			readonly runId: string;
+			readonly runId?: string;
 	  }
 	| {
 			/**

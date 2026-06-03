@@ -2073,9 +2073,11 @@ describe("makeTaskSendHandler (R1)", () => {
 			(c) => (c[0] as { kind: string }).kind === "pr-triage-telegram-send-failed",
 		);
 		expect(failed).toHaveLength(0);
-		// The `finally` still runs clearResultTimer with the stale runId — which the
-		// in-controller wrong-run guard rejects, leaving the current run intact.
-		expect(cleared).toEqual([{ id: "pr-triage", runId: "run-OLD" }]);
+		// Dual-adversarial pass #2: a QUARANTINED envelope now SKIPS the finally's
+		// clearResultTimer entirely (the handler set the `quarantined` flag) — strictly
+		// safer than the prior call-then-inner-guard, and identical in outcome (the live
+		// run is untouched). So no clear is attempted for the stale envelope.
+		expect(cleared).toHaveLength(0);
 	});
 
 	it("(TS-12, round-2 Important) a MATCHING-runId envelope still sends (the guard does not block the live run)", async () => {
@@ -2108,6 +2110,52 @@ describe("makeTaskSendHandler (R1)", () => {
 			(c) => (c[0] as { kind: string }).kind === "pr-triage-stale-run-dropped",
 		);
 		expect(dropped).toHaveLength(0);
+	});
+
+	it("(TS-12b, dual-adversarial pass #2 Critical) a runId-LESS envelope arriving while a run is ACTIVE is quarantined, NOT sent, and does NOT clear the live run's timer", async () => {
+		// Without the fix the pre-send guard was gated on `evt.runId !== undefined`, so
+		// a runId-less envelope (a NORMAL agent failure mode — the echo is optional)
+		// skipped the guard and (1) pushed a stale prior summary to Telegram and (2)
+		// `clearResultTimer(agentId, undefined)` matched the live timer by agentId and
+		// stripped the CURRENT run's dead-letter protection. The fix calls isActiveRun
+		// even with no runId (quarantine when a run is active) AND skips the finally
+		// clear on quarantine. RED without the fix: a send happens and clear is called.
+		const { mgr, claimCalls } = makeSendStubManager();
+		const { bot, calls } = makeFakeTelegram(async () => ({ ok: true }));
+		const emitMock = vi.fn().mockResolvedValue(true);
+		const cleared: Array<{ id: string; runId?: string }> = [];
+		const handler = makeTaskSendHandler({
+			agentManager: mgr,
+			emit: emitMock,
+			telegramBot: bot as unknown as import("../telegram/bot.js").TelegramBot,
+			clearResultTimer: (id, runId) => cleared.push({ id, runId }),
+			// A run IS active; only its own runId ("run-LIVE") is confirmable. A
+			// runId-less envelope cannot be confirmed, so isActiveRun returns false.
+			isActiveRun: async (_agentId, runId) => runId === "run-LIVE",
+		});
+
+		await handler({
+			filename: "pr-triage-send__norunid.json",
+			agentId: "pr-triage",
+			sendText: "stale summary from a prior run",
+			// no runId
+		});
+
+		// Quarantined BEFORE the irreversible Telegram send.
+		expect(calls).toHaveLength(0);
+		// stale-run-dropped telemetry recorded (with NO runId field on a runId-less env).
+		const dropped = emitMock.mock.calls
+			.map((c) => c[0])
+			.filter(
+				(e) => (e as { kind: string }).kind === "pr-triage-stale-run-dropped",
+			);
+		expect(dropped).toHaveLength(1);
+		expect(dropped[0]).not.toHaveProperty("runId");
+		// Envelope claimed out of pending/ so it stops re-tripping.
+		expect(claimCalls).toHaveLength(1);
+		// CRITICAL: clearResultTimer must NOT be called — a runId-less clear would
+		// strip the live run's timer/marker/held slot.
+		expect(cleared).toHaveLength(0);
 	});
 });
 
@@ -2199,6 +2247,79 @@ describe("makeResultTimers + dispatch arming (R1 D4 dead-letter)", () => {
 	it("(RT-4) RESULT_TIMEOUT_MS default is a positive number", () => {
 		expect(typeof RESULT_TIMEOUT_MS).toBe("number");
 		expect(RESULT_TIMEOUT_MS).toBeGreaterThan(0);
+	});
+
+	it("(RT-6, dual-adversarial pass #2 Critical) isActiveRun quarantines a missing/mismatched runId while a run is ACTIVE, and allows it when none is active", async () => {
+		const emitMock = vi.fn().mockResolvedValue(true);
+		const { startResultTimer, isActiveRun } = makeResultTimers({
+			emit: emitMock,
+			timeoutMs: 60_000,
+		});
+
+		// No active run → an undefined/empty runId is NOT quarantined (no live run to
+		// misattribute against — the legacy/no-correlation path).
+		expect(await isActiveRun("pr-triage", undefined)).toBe(true);
+		expect(await isActiveRun("pr-triage", "")).toBe(true);
+
+		// Arm a live run.
+		await startResultTimer("pr-triage", "run-A", "pr-triage__1.json");
+
+		// The live run's own runId → active (the send proceeds).
+		expect(await isActiveRun("pr-triage", "run-A")).toBe(true);
+		// A DIFFERENT runId (a stale/prior run's envelope) → quarantine.
+		expect(await isActiveRun("pr-triage", "run-B")).toBe(false);
+		// A MISSING runId while a run IS active → quarantine. THE Critical fix: the
+		// prior code short-circuited `undefined` to `true`, letting a runId-less stale
+		// summary bypass the guard and be pushed to Telegram. RED without the fix.
+		expect(await isActiveRun("pr-triage", undefined)).toBe(false);
+		// An empty-string runId behaves identically to missing (it cannot match the
+		// live UUID); upstream normalization maps it to undefined too.
+		expect(await isActiveRun("pr-triage", "")).toBe(false);
+	});
+
+	it("(RT-7, dual-adversarial pass #2 Important) a FAILED timeout-telemetry write retains the durable marker and does not release the slot (real timers)", async () => {
+		// Durability gate: the prior order (delete marker -> fire-and-forget emit) lost
+		// the dropped-summary signal when the telemetry append failed (ENOSPC/EACCES).
+		// The fix records the timeout FIRST and only removes the marker / releases the
+		// slot on a durable write. RED without the fix: the marker is unlinked anyway.
+		const released: Array<{ agentId: string; filename: string | null }> = [];
+		// emit returns FALSE for the timeout event (simulated telemetry-disk fault).
+		const emitMock = vi
+			.fn()
+			.mockImplementation(
+				async (e: { kind: string }) => e.kind !== "pr-triage-result-timeout",
+			);
+		const { startResultTimer } = makeResultTimers({
+			emit: emitMock,
+			timeoutMs: 20,
+			onResultComplete: (agentId, filename) =>
+				released.push({ agentId, filename }),
+		});
+
+		const exists = (p: string) =>
+			fsp
+				.access(p)
+				.then(() => true)
+				.catch(() => false);
+		const markerPath = path.join(pathFor("result-pending"), "pr-triage.json");
+
+		await startResultTimer("pr-triage", "run-rt7", "pr-triage__7.json");
+		expect(await exists(markerPath)).toBe(true);
+
+		// Real timers: wait past the 20ms deadline so the timeout callback + its async
+		// durability gate fully run.
+		await new Promise<void>((r) => setTimeout(r, 80));
+
+		// The timeout telemetry was attempted...
+		expect(
+			emitMock.mock.calls.filter(
+				(c) => (c[0] as { kind: string }).kind === "pr-triage-result-timeout",
+			),
+		).toHaveLength(1);
+		// ...but FAILED to record, so the marker is RETAINED (boot recovery can
+		// re-surface the dropped-summary signal) and the cron slot is NOT released.
+		expect(await exists(markerPath)).toBe(true);
+		expect(released).toHaveLength(0);
 	});
 
 	it("(RT-5) startResultTimer writes a durable result-pending marker carrying the runId + deadline", async () => {

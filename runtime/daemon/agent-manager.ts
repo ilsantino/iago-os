@@ -2191,7 +2191,18 @@ export class AgentManager extends EventEmitter {
 		// run carries the OLD runId and is rejected by the wrong-run guard. Absent
 		// on a legacy envelope (handler then clears unconditionally).
 		const sendRunIdRaw = (parsed as { runId?: unknown }).runId;
-		const sendRunId = typeof sendRunIdRaw === "string" ? sendRunIdRaw : undefined;
+		// Dual-adversarial Important (escalated 2026-06-02) — normalize an EMPTY-STRING
+		// runId to `undefined` so it follows the single "no correlation" path. The
+		// prompt-template emits `runId:"$RUN_ID"`; if the agent runs it without
+		// substituting the value, the envelope carries `runId:""`. Treating `""` as a
+		// real id would compare it against the live run's UUID (never equal), and the
+		// pre-send guard would quarantine the legitimate summary; normalizing here makes
+		// `""` and absent behave identically (quarantine only when a run is active,
+		// proceed when there is none).
+		const sendRunId =
+			typeof sendRunIdRaw === "string" && sendRunIdRaw.length > 0
+				? sendRunIdRaw
+				: undefined;
 		if (
 			agentId === "pr-triage" &&
 			filename.startsWith("pr-triage-send__") &&
