@@ -205,9 +205,7 @@ describe("matchesCron — parser", () => {
 	});
 
 	it("(8) malformed expression throws RangeError naming the offending field", () => {
-		expect(() => matchesCron("bogus expression", new Date())).toThrow(
-			RangeError,
-		);
+		expect(() => matchesCron("bogus expression", new Date())).toThrow(RangeError);
 		expect(() =>
 			matchesCron("0 99 * * *", new Date(Date.UTC(2026, 4, 18, 0, 0, 0))),
 		).toThrow(/hour/);
@@ -494,8 +492,7 @@ describe("CronScheduler — lifecycle", () => {
 		} finally {
 			if (priorGhToken === undefined) delete process.env.GH_TOKEN;
 			else process.env.GH_TOKEN = priorGhToken;
-			if (priorBotToken === undefined)
-				delete process.env.IAGO_TELEGRAM_BOT_TOKEN;
+			if (priorBotToken === undefined) delete process.env.IAGO_TELEGRAM_BOT_TOKEN;
 			else process.env.IAGO_TELEGRAM_BOT_TOKEN = priorBotToken;
 			if (priorPath === undefined) delete process.env.PATH;
 			else process.env.PATH = priorPath;
@@ -904,6 +901,67 @@ describe("CronScheduler — overlap + decrement", () => {
 		await sch.stop();
 	});
 
+	it("(15b — round-2 Minor) restoreOutstanding re-holds a recovered in-flight slot across a restart; a matching tick is overlap-prevented until cron-result-complete", async () => {
+		// Round-2 Minor (Codex): on daemon restart, a still-future result-pending
+		// marker means a run is still in flight. The recovery path calls
+		// `restoreOutstanding(agentId, filename)` so the scheduler does NOT boot at
+		// runningCount=0 — otherwise a matching cron tick dispatches a SECOND prompt
+		// that overwrites the single marker. This test proves the re-held slot blocks
+		// the next overlapping fire and is released on run completion.
+		//
+		// FAILS without `restoreOutstanding` (no API to re-hold the slot → the tick
+		// fires a duplicate).
+		vi.useFakeTimers();
+		const am = new EventEmitter();
+		const prompt = writePromptTemplate("p.txt", "go");
+		const nowHolder = new Date(Date.UTC(2026, 4, 18, 14, 0, 0));
+		const sch = new CronScheduler({
+			agentManager: am,
+			nowFn: () => nowHolder,
+			deferReleaseAgents: new Set(["pr-triage"]),
+		});
+		sch.registerCron({
+			agentId: "pr-triage",
+			schedule: "0 14 * * *",
+			promptTemplatePath: prompt,
+			outputTaskNamePrefix: "pr-triage",
+			maxConcurrent: 1,
+		});
+
+		// Simulate boot recovery: a run was in flight when the daemon restarted.
+		const recoveredFilename = "pr-triage__recovered.json";
+		sch.restoreOutstanding("pr-triage", recoveredFilename);
+		expect(sch._runningCountForTests().get("pr-triage")).toBe(1);
+		expect(
+			sch._outstandingFilenamesForTests().get("pr-triage")?.has(recoveredFilename),
+		).toBe(true);
+
+		// Idempotent: a duplicate recovery must NOT double-count the slot.
+		sch.restoreOutstanding("pr-triage", recoveredFilename);
+		expect(sch._runningCountForTests().get("pr-triage")).toBe(1);
+
+		// A matching tick must be overlap-prevented — the recovered slot is held, so
+		// NO duplicate prompt is dispatched (no pending file written).
+		sch.start();
+		await sch._tickForTests();
+		const evts = await readTelemetry();
+		expect(
+			evts.filter((e) => e.kind === "cron-overlap-prevented"),
+		).not.toHaveLength(0);
+		expect(await fsp.readdir(path.join(tempDir, "tasks/pending"))).toHaveLength(
+			0,
+		);
+
+		// When the recovered run completes, the slot is released.
+		am.emit("cron-result-complete", {
+			agentId: "pr-triage",
+			filename: recoveredFilename,
+		});
+		expect(sch._runningCountForTests().get("pr-triage")).toBe(0);
+		expect(sch._outstandingFilenamesForTests().has("pr-triage")).toBe(false);
+		await sch.stop();
+	});
+
 	it("(16 — Task 6 #2) a non-deferred agent still releases on task-resolved (back-compat)", async () => {
 		// Regression guard: deferReleaseAgents must be opt-in. An agent NOT in the
 		// set keeps the legacy release-on-handoff behavior — task-resolved releases.
@@ -1007,9 +1065,9 @@ describe("CronScheduler — overlap + decrement", () => {
 		// And a subsequent matching tick is NOT overlap-prevented (slot is free).
 		await sch._tickForTests();
 		const evts = await readTelemetry();
-		expect(
-			evts.filter((e) => e.kind === "cron-overlap-prevented"),
-		).toHaveLength(0);
+		expect(evts.filter((e) => e.kind === "cron-overlap-prevented")).toHaveLength(
+			0,
+		);
 		await sch.stop();
 	});
 });

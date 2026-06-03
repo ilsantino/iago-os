@@ -546,9 +546,7 @@ export class CronScheduler {
 		for (const evt of TERMINAL_EVENTS) {
 			this.agentManager.on(
 				evt,
-				evt === HANDOFF_EVENT
-					? this.handoffListener
-					: this.preDispatchFailListener,
+				evt === HANDOFF_EVENT ? this.handoffListener : this.preDispatchFailListener,
 			);
 		}
 		this.agentManager.on(RESULT_COMPLETE_EVENT, this.resultCompleteListener);
@@ -588,6 +586,32 @@ export class CronScheduler {
 		}
 		const current = this.runningCount.get(agentId) ?? 0;
 		this.runningCount.set(agentId, Math.max(0, current - 1));
+	}
+
+	/**
+	 * Round-2 Minor (Codex) — RE-HOLD a concurrency slot for an in-flight run
+	 * recovered after a daemon restart. The boot-recovery path
+	 * (`makeResultTimers.onResultRecovered`) calls this for each still-future
+	 * `result-pending/<agentId>.json` marker so the scheduler does NOT boot with
+	 * `runningCount=0` for a run that is still pending — otherwise a matching cron
+	 * tick could dispatch a SECOND prompt that overwrites the single result marker
+	 * (duplicate/stale-run under non-daily cadences). Idempotent: if the filename
+	 * is already outstanding for the agent (e.g. a double recovery), it is a no-op
+	 * so the counter never over-counts. The symmetric `releaseOutstanding`
+	 * (driven by `cron-result-complete` / terminal events) drops it on completion.
+	 */
+	restoreOutstanding(agentId: string, filename: string): void {
+		if (!this.isValidTerminalEvent({ agentId, filename })) return;
+		let outstanding = this.outstandingFilenames.get(agentId);
+		if (outstanding === undefined) {
+			outstanding = new Set<string>();
+			this.outstandingFilenames.set(agentId, outstanding);
+		}
+		// Idempotent: a filename already outstanding must not double-increment.
+		if (outstanding.has(filename)) return;
+		outstanding.add(filename);
+		const current = this.runningCount.get(agentId) ?? 0;
+		this.runningCount.set(agentId, current + 1);
 	}
 
 	/**
@@ -666,9 +690,7 @@ export class CronScheduler {
 		for (const evt of TERMINAL_EVENTS) {
 			this.agentManager.off(
 				evt,
-				evt === HANDOFF_EVENT
-					? this.handoffListener
-					: this.preDispatchFailListener,
+				evt === HANDOFF_EVENT ? this.handoffListener : this.preDispatchFailListener,
 			);
 		}
 		this.agentManager.off(RESULT_COMPLETE_EVENT, this.resultCompleteListener);

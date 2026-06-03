@@ -699,6 +699,20 @@ export function makeResultTimers(deps: {
 	 * omitted, the result timers behave as before (no slot coupling).
 	 */
 	onResultComplete?: (agentId: string, filename: string | null) => void;
+	/**
+	 * Round-2 Minor (Codex) — invoked when `recoverResultTimers` RE-ARMS a
+	 * still-future dead-letter marker after a restart. The recovered run is still
+	 * in flight (no result envelope yet), so its CronScheduler concurrency slot
+	 * must be RE-HELD — otherwise the scheduler boots with `runningCount=0` and a
+	 * matching cron tick could dispatch a SECOND prompt that overwrites the single
+	 * `result-pending/<agentId>.json` marker, reintroducing duplicate/stale-run
+	 * behavior under non-daily cadences. The symmetric `onResultComplete` releases
+	 * the slot when the recovered run finally completes (envelope or dead-letter).
+	 * `filename` is the original cron task filename from the marker; `null` →
+	 * nothing to re-hold (manual / filename-less run). Optional — when omitted the
+	 * recovery path behaves as before (no slot re-hold).
+	 */
+	onResultRecovered?: (agentId: string, filename: string | null) => void;
 }): {
 	startResultTimer: (
 		agentId: string,
@@ -708,9 +722,28 @@ export function makeResultTimers(deps: {
 	) => Promise<void>;
 	clearResultTimer: (agentId: string, runId?: string) => Promise<boolean>;
 	recoverResultTimers: () => Promise<void>;
+	/**
+	 * Round-2 Important (Codex) — is `runId` the ACTIVE run for `agentId`?
+	 *
+	 * The send handler consults this BEFORE the irreversible Telegram send so a
+	 * late/stale envelope (carrying an OLD runId from a prior dispatch) is
+	 * quarantined instead of delivered. Authority order matches
+	 * `clearResultTimer`:
+	 *   - if an in-memory timer exists → its runId is authoritative;
+	 *   - else fall back to the durable on-disk marker's runId (survives a
+	 *     restart that dropped the in-memory timer);
+	 *   - if NEITHER exists → there is no active run to validate against. Return
+	 *     `true` so a legacy/undefined-runId envelope, or one whose marker was
+	 *     already cleared by a concurrent path, is NOT spuriously quarantined
+	 *     (degrades to the prior at-most-once send behavior). A `runId` of
+	 *     `undefined` (legacy producer / missing echo) also returns `true` — the
+	 *     guard only blocks a DEFINITE mismatch.
+	 */
+	isActiveRun: (agentId: string, runId?: string) => Promise<boolean>;
 } {
 	const { emit } = deps;
 	const onResultComplete = deps.onResultComplete;
+	const onResultRecovered = deps.onResultRecovered;
 	const defaultTimeout = deps.timeoutMs ?? RESULT_TIMEOUT_MS;
 	// agentId → { runId, filename, timer }. The runId guards against a
 	// stale/wrong-run envelope clearing the live run's timer; the filename is the
@@ -752,6 +785,35 @@ export function makeResultTimers(deps: {
 		);
 		if (typeof t.unref === "function") t.unref();
 		timers.set(agentId, { runId, filename, timer: t });
+	};
+
+	// Round-2 Important (Codex) — pre-send wrong-run guard. Returns false ONLY for
+	// a DEFINITE runId mismatch against the active run (in-memory timer first, then
+	// the durable on-disk marker). `undefined` runId, or no active run on either
+	// source, returns true (the send proceeds — at-most-once as before). This lets
+	// the send handler quarantine a stale/late envelope BEFORE the irreversible
+	// Telegram send, instead of validating only afterward in `clearResultTimer`.
+	const isActiveRun = async (
+		agentId: string,
+		runId?: string,
+	): Promise<boolean> => {
+		if (runId === undefined) return true;
+		const existing = timers.get(agentId);
+		if (existing !== undefined) {
+			return existing.runId === runId;
+		}
+		// No live timer (e.g. after a restart) — the durable marker is authority.
+		try {
+			const raw = await fsp.readFile(resultPendingPath(agentId), "utf-8");
+			const m = JSON.parse(raw) as ResultPendingMarker;
+			if (typeof m.runId === "string") {
+				return m.runId === runId;
+			}
+		} catch {
+			// No marker / unreadable — nothing to validate against.
+		}
+		// Neither a live timer nor a marker runId to compare: do not quarantine.
+		return true;
 	};
 
 	const clearResultTimer = async (
@@ -897,6 +959,14 @@ export function makeResultTimers(deps: {
 				// onResultComplete slot release, so the recovered run behaves exactly
 				// like a live one (and is idempotent — same runId).
 				fireTimeout(marker.agentId, marker.runId, markerFilename, remaining);
+				// Round-2 Minor (Codex) — the recovered run is still IN FLIGHT (no
+				// envelope yet), so RE-HOLD its CronScheduler concurrency slot.
+				// Without this the scheduler boots at runningCount=0 and a matching
+				// cron tick could dispatch a SECOND prompt that overwrites the single
+				// result-pending marker (duplicate/stale-run under non-daily cadences).
+				// The symmetric onResultComplete (wired into fireTimeout above and into
+				// clearResultTimer) releases it when the recovered run completes.
+				onResultRecovered?.(marker.agentId, markerFilename);
 			} else {
 				// Already past deadline at boot — dead-letter immediately so the
 				// orphaned dispatch is not silently lost.
@@ -912,7 +982,12 @@ export function makeResultTimers(deps: {
 		}
 	};
 
-	return { startResultTimer, clearResultTimer, recoverResultTimers };
+	return {
+		startResultTimer,
+		clearResultTimer,
+		recoverResultTimers,
+		isActiveRun,
+	};
 }
 
 /**
@@ -959,17 +1034,32 @@ export function makeTaskSendHandler(deps: {
 	// NOT the live marker's runId, so a stale/wrong-run envelope (carrying an OLD
 	// runId) fails the wrong-run guard and cannot clear the current run's
 	// dead-letter timer/marker or release its held slot.
-	// biome-ignore lint/suspicious/noConfusingVoidType: this callback is
-	// intentionally "awaitable-or-fire-and-forget" — the production
-	// `clearResultTimer` returns `Promise<boolean>`, but several unit-test mocks
-	// pass a synchronous `() => void`; the handler `await`s either form.
+	//
+	// noConfusingVoidType: this callback is intentionally
+	// "awaitable-or-fire-and-forget" — the production `clearResultTimer` returns
+	// `Promise<boolean>`, but several unit-test mocks pass a synchronous
+	// `() => void`; the handler `await`s either form. The `biome-ignore` sits on the
+	// return-type line itself (round-2 Minor fix) so biome associates the
+	// suppression with the offending union node — placing it above the multi-line
+	// JSDoc reported `suppressions/unused`.
 	clearResultTimer: (
 		agentId: string,
 		runId?: string,
+		// biome-ignore lint/suspicious/noConfusingVoidType: awaitable-or-fire-and-forget (see note above)
 	) => Promise<boolean> | void;
+	// Round-2 Important (Codex) — pre-send wrong-run guard. Consulted BEFORE the
+	// irreversible Telegram send: a late/stale envelope (carrying an OLD runId
+	// from a prior dispatch) is QUARANTINED — claimed out of `pending/` and
+	// recorded as telemetry — instead of delivered to the user. Without this the
+	// stale summary was sent first and the runId mismatch was only caught
+	// afterward in `clearResultTimer` (too late — the send already happened).
+	// Optional: when omitted (legacy callers / tests that do not exercise the
+	// guard) the handler behaves as before (no pre-send validation).
+	isActiveRun?: (agentId: string, runId?: string) => Promise<boolean>;
 	backoffMs?: readonly number[];
 }): (evt: TaskSendEvent) => Promise<void> {
-	const { agentManager, emit, telegramBot, clearResultTimer } = deps;
+	const { agentManager, emit, telegramBot, clearResultTimer, isActiveRun } =
+		deps;
 	const backoffMs = deps.backoffMs ?? TELEGRAM_SEND_RETRY_BACKOFF_MS;
 	return async (evt: TaskSendEvent): Promise<void> => {
 		try {
@@ -991,6 +1081,33 @@ export function makeTaskSendHandler(deps: {
 					await agentManager.claimTask(evt.filename, evt.agentId);
 				}
 				return;
+			}
+			// Round-2 Important (Codex) — PRE-SEND wrong-run guard. Validate the
+			// envelope's runId against the ACTIVE run BEFORE the irreversible
+			// Telegram send. A late/stale envelope from a PRIOR dispatch (carrying an
+			// OLD runId) must NOT be pushed to the user; the post-send
+			// `clearResultTimer` guard only stops it from clearing the CURRENT run's
+			// timer — it cannot un-send a message already delivered. On a definite
+			// mismatch: QUARANTINE the envelope (claim it out of `pending/` so it
+			// stops re-tripping every poll tick), record `pr-triage-stale-run-dropped`
+			// telemetry, and skip the send. The stale runId also fails the wrong-run
+			// guard inside the `finally`'s `clearResultTimer`, so the current run's
+			// dead-letter timer/marker/held slot stay intact.
+			if (isActiveRun !== undefined && evt.runId !== undefined) {
+				const active = await isActiveRun(evt.agentId, evt.runId);
+				if (!active) {
+					await emit({
+						kind: "pr-triage-stale-run-dropped",
+						agentId: evt.agentId,
+						filename: evt.filename,
+						runId: evt.runId,
+					});
+					// Quarantine: remove from pending/ so it does not re-trip. A failed
+					// claim (disk fault) leaves it in pending/ for a later tick — still
+					// no send happened, so no duplicate/stale delivery.
+					await agentManager.claimTask(evt.filename, evt.agentId);
+					return;
+				}
 			}
 			// BOUNDED-RETRY-THEN-AT-MOST-ONCE (pass#2 Critical fix + F3 retry). The
 			// Telegram send is an IRREVERSIBLE side effect, so CLAIM the envelope
@@ -2011,8 +2128,7 @@ export function registerSighupHandler(
 			const errInfo: { errorCode: string } =
 				err instanceof Error
 					? {
-							errorCode:
-								(err as NodeJS.ErrnoException).code ?? err.constructor.name,
+							errorCode: (err as NodeJS.ErrnoException).code ?? err.constructor.name,
 						}
 					: { errorCode: "unknown" };
 			try {
@@ -2100,8 +2216,7 @@ export function registerSighupHandler(
 				const errInfo: { errorCode: string } =
 					err instanceof Error
 						? {
-								errorCode:
-									(err as NodeJS.ErrnoException).code ?? err.constructor.name,
+								errorCode: (err as NodeJS.ErrnoException).code ?? err.constructor.name,
 							}
 						: { errorCode: "unknown" };
 				try {
@@ -2369,20 +2484,33 @@ export async function startDaemon(
 	// (clear-on-envelope) both use. A dispatched pr-triage PROMPT that produces
 	// no result envelope within `RESULT_TIMEOUT_MS` surfaces as
 	// `pr-triage-result-timeout` rather than a silently lost notification.
-	const { startResultTimer, clearResultTimer, recoverResultTimers } =
-		makeResultTimers({
-			emit,
-			// Task 6 gate-finding #2 (hold-slot-until-result) — when a pr-triage run
-			// COMPLETES (envelope processed or durable dead-letter fires), emit the
-			// run-completion event on the AgentManager so the CronScheduler releases
-			// the cron concurrency slot it has been HOLDING since dispatch (the slot
-			// is NOT released at `claimTask`/prompt-handoff for send-contract agents).
-			// Carries the original cron task filename so the correct slot is released.
-			onResultComplete: (agentId, filename) => {
-				if (filename === null) return;
-				agentManager.emit("cron-result-complete", { agentId, filename });
-			},
-		});
+	const {
+		startResultTimer,
+		clearResultTimer,
+		recoverResultTimers,
+		isActiveRun,
+	} = makeResultTimers({
+		emit,
+		// Task 6 gate-finding #2 (hold-slot-until-result) — when a pr-triage run
+		// COMPLETES (envelope processed or durable dead-letter fires), emit the
+		// run-completion event on the AgentManager so the CronScheduler releases
+		// the cron concurrency slot it has been HOLDING since dispatch (the slot
+		// is NOT released at `claimTask`/prompt-handoff for send-contract agents).
+		// Carries the original cron task filename so the correct slot is released.
+		onResultComplete: (agentId, filename) => {
+			if (filename === null) return;
+			agentManager.emit("cron-result-complete", { agentId, filename });
+		},
+		// Round-2 Minor (Codex) — re-hold the cron concurrency slot for an in-flight
+		// run recovered from a still-future result-pending marker after a restart,
+		// so a matching cron tick cannot dispatch a second prompt that overwrites the
+		// single marker (duplicate/stale-run under non-daily cadences). Released
+		// later via the onResultComplete chain above.
+		onResultRecovered: (agentId, filename) => {
+			if (filename === null) return;
+			scheduler.restoreOutstanding(agentId, filename);
+		},
+	});
 	// Task 6 (Critical) — recover dead-letter markers orphaned by a restart: a
 	// dispatch in flight when the daemon went down left a durable
 	// `result-pending/<agentId>.json` marker. Re-arm a still-future deadline or
@@ -2442,6 +2570,9 @@ export async function startDaemon(
 		emit,
 		telegramBot: bot,
 		clearResultTimer,
+		// Round-2 Important (Codex) — pre-send wrong-run guard: drop a stale-runId
+		// envelope BEFORE the irreversible Telegram send instead of after.
+		isActiveRun,
 	});
 	const taskSendListener = (evt: TaskSendEvent): void => {
 		void taskSendHandler(evt);

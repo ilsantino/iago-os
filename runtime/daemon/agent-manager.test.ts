@@ -115,6 +115,32 @@ vi.mock("node:fs/promises", async (importOriginal) => {
 	};
 });
 
+// Round-2 Critical (Codex) — make `writeStopMarker` independently failable so
+// the persist-rollback test can simulate a degraded state root that breaks BOTH
+// persistence AND the marker write. Pass-through by default (so every other test
+// keeps real marker semantics); the regression test queues a one-shot rejection
+// via `writeStopMarkerMock.mockRejectedValueOnce(...)` to drive the rollback path
+// where `shutdownAgentInternal` throws BEFORE reaching `runtime.shutdown`.
+type WriteStopMarkerFn = (
+	handleId: string,
+	reason: import("./markers.js").StopMarkerReason,
+) => Promise<void>;
+const { writeStopMarkerMock, markersState } = vi.hoisted(() => ({
+	writeStopMarkerMock: vi.fn(),
+	markersState: { realWriteStopMarker: null as WriteStopMarkerFn | null },
+}));
+vi.mock("./markers.js", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("./markers.js")>();
+	markersState.realWriteStopMarker = actual.writeStopMarker as WriteStopMarkerFn;
+	return {
+		...actual,
+		writeStopMarker: (
+			handleId: string,
+			reason: import("./markers.js").StopMarkerReason,
+		) => writeStopMarkerMock(handleId, reason),
+	};
+});
+
 let tempDir: string;
 
 beforeEach(async () => {
@@ -149,6 +175,15 @@ beforeEach(async () => {
 		}
 		return writeFileState.real(p, data, options);
 	});
+	writeStopMarkerMock.mockReset();
+	writeStopMarkerMock.mockImplementation((handleId, reason) => {
+		if (markersState.realWriteStopMarker === null) {
+			throw new Error(
+				"markersState.realWriteStopMarker not initialized by vi.mock factory",
+			);
+		}
+		return markersState.realWriteStopMarker(handleId, reason);
+	});
 	vi.spyOn(console, "error").mockImplementation(() => {});
 });
 
@@ -181,9 +216,7 @@ interface CostQueueState {
 	queue: CostEvent[];
 	resolvers: Array<
 		(
-			value:
-				| { value: CostEvent; done: false }
-				| { value: undefined; done: true },
+			value: { value: CostEvent; done: false } | { value: undefined; done: true },
 		) => void
 	>;
 	closed: boolean;
@@ -263,9 +296,7 @@ function makeMockRuntime(id: string): MockRuntimeControls {
 			// moment shutdown was invoked — used by ordering assertions.
 			let markerSeen = false;
 			try {
-				await fsp.access(
-					path.join(pathFor("markers"), `${handle.id}.daemon-stop`),
-				);
+				await fsp.access(path.join(pathFor("markers"), `${handle.id}.daemon-stop`));
 				markerSeen = true;
 			} catch {
 				markerSeen = false;
@@ -431,9 +462,7 @@ describe("AgentManager / registerAgent", () => {
 				);
 			}
 			if (writeFileState.real === null) {
-				throw new Error(
-					"writeFileState.real not initialized by vi.mock factory",
-				);
+				throw new Error("writeFileState.real not initialized by vi.mock factory");
 			}
 			return writeFileState.real(p, data, options);
 		});
@@ -460,6 +489,74 @@ describe("AgentManager / registerAgent", () => {
 		expect(ctrl.shutdownCalls.some((c) => c.handleId === spawnedId)).toBe(true);
 
 		// No persisted config file exists on disk (the write was the failure).
+		const configPath = path.join(agentsDir, `${spawnedId}.json`);
+		await expect(fsp.access(configPath)).rejects.toBeDefined();
+	});
+
+	it("persist-fail rollback where writeStopMarker ALSO throws: still force-kills the adapter (no orphan live PTY)", async () => {
+		// Round-2 Critical (Codex): the persist-failure rollback calls
+		// `shutdownAgentInternal`, which writes the stop marker AND cascades
+		// children BEFORE it ever reaches `runtime.shutdown`. If the same degraded
+		// state root that broke persistence ALSO makes `writeStopMarker` throw,
+		// `shutdownAgentInternal` aborts before the adapter is killed and control
+		// lands in the rollback catch. WITHOUT the force-kill fix, the `finally`
+		// then tears the handle out of `handles` while the PTY is still alive — an
+		// untracked, unrecoverable live process. WITH the fix, the rollback forces
+		// `runtime.shutdown(handle, "SIGKILL")` before teardown.
+		//
+		// This test FAILS without the fix (no shutdown call for the spawned
+		// handle) and PASSES with it.
+		const ctrl = makeMockRuntime("mock-pty-persist-marker-fail");
+		registerRuntime(ctrl.runtime);
+		const mgr = new AgentManager();
+
+		const agentsDir = pathFor("agents");
+		// (1) Break the persist write (ENOSPC) — triggers the rollback.
+		writeFileMock.mockImplementation((p, data, options) => {
+			if (String(p).startsWith(agentsDir)) {
+				return Promise.reject(
+					Object.assign(new Error("simulated ENOSPC"), { code: "ENOSPC" }),
+				);
+			}
+			if (writeFileState.real === null) {
+				throw new Error("writeFileState.real not initialized by vi.mock factory");
+			}
+			return writeFileState.real(p, data, options);
+		});
+		// (2) Break the FIRST stop-marker write (the rollback's
+		// `shutdownAgentInternal` marker write) so it throws BEFORE the adapter
+		// shutdown is reached. One-shot: only the rollback marker write fails.
+		writeStopMarkerMock.mockRejectedValueOnce(
+			Object.assign(new Error("simulated marker EIO"), { code: "EIO" }),
+		);
+
+		await expect(
+			mgr.registerAgent({
+				agentId: "persist-marker-orphan",
+				runtimeId: "mock-pty-persist-marker-fail",
+				cwd: "/tmp/work",
+				env: {},
+				sessionId: "sess-pmo",
+			}),
+		).rejects.toThrow(/ENOSPC/);
+
+		// The process WAS spawned then rolled back — no handle leaks in-memory.
+		expect(ctrl.spawnCalls).toHaveLength(1);
+		expect(mgr.listHandles()).toHaveLength(0);
+
+		const spawnedId = `${ctrl.runtime.id}-h1`;
+		expect(mgr.getHandle(spawnedId)).toBeUndefined();
+		// The KEY assertion: even though the marker write threw before
+		// `shutdownAgentInternal` could call `runtime.shutdown`, the forced
+		// adapter shutdown in the rollback catch reaped the live PTY.
+		expect(ctrl.shutdownCalls.some((c) => c.handleId === spawnedId)).toBe(true);
+		expect(
+			ctrl.shutdownCalls.some(
+				(c) => c.handleId === spawnedId && c.signal === "SIGKILL",
+			),
+		).toBe(true);
+
+		// No persisted config on disk (the persist write was the failure).
 		const configPath = path.join(agentsDir, `${spawnedId}.json`);
 		await expect(fsp.access(configPath)).rejects.toBeDefined();
 	});
@@ -713,9 +810,7 @@ describe("AgentManager / spawnSubagent", () => {
 		await waitForCondition(() =>
 			ctrl.shutdownCalls.some((c) => c.handleId === child.id),
 		);
-		const childShutdown = ctrl.shutdownCalls.find(
-			(c) => c.handleId === child.id,
-		);
+		const childShutdown = ctrl.shutdownCalls.find((c) => c.handleId === child.id);
 		expect(childShutdown).toBeDefined();
 	});
 });
@@ -798,10 +893,7 @@ describe("AgentManager / bootRecovery", () => {
 				org: undefined,
 				parentHandleId: undefined,
 				spawnedAt: Date.now(),
-				markerPath: path.join(
-					pathFor("markers"),
-					`${crashHandleId}.daemon-stop`,
-				),
+				markerPath: path.join(pathFor("markers"), `${crashHandleId}.daemon-stop`),
 			};
 		});
 
@@ -1085,9 +1177,7 @@ describe("AgentManager / shutdown cascade without status callback (Codex H2)", (
 		// callback semantics.
 		await mgr.shutdownAgent(parent.id, "SIGTERM");
 
-		const childShutdown = ctrl.shutdownCalls.find(
-			(s) => s.handleId === child.id,
-		);
+		const childShutdown = ctrl.shutdownCalls.find((s) => s.handleId === child.id);
 		expect(childShutdown).toBeDefined();
 		expect(mgr.getHandle(child.id)).toBeUndefined();
 		expect(mgr.getHandle(parent.id)).toBeUndefined();
@@ -1117,9 +1207,7 @@ describe("AgentManager / shutdown cascade without status callback (Codex H2)", (
 		// Child handle was shut down and removed; the new parent
 		// generation has no children linked (application layer must
 		// respawn).
-		const childShutdown = ctrl.shutdownCalls.find(
-			(s) => s.handleId === child.id,
-		);
+		const childShutdown = ctrl.shutdownCalls.find((s) => s.handleId === child.id);
 		expect(childShutdown).toBeDefined();
 		expect(mgr.getHandle(child.id)).toBeUndefined();
 		const link = mgr
@@ -1164,10 +1252,7 @@ describe("AgentManager / bootRecovery crash without marker (Codex H1)", () => {
 				org: undefined,
 				parentHandleId: undefined,
 				spawnedAt: Date.now(),
-				markerPath: path.join(
-					pathFor("markers"),
-					`${crashedHandleId}.daemon-stop`,
-				),
+				markerPath: path.join(pathFor("markers"), `${crashedHandleId}.daemon-stop`),
 			};
 		});
 
@@ -1407,9 +1492,7 @@ describe("AgentManager / EC5 cost event after parent teardown", () => {
 			provider: "anthropic",
 			model: "claude-opus-4-8",
 		});
-		await waitForCondition(
-			() => mgr.getCostSummary(parent.id).rolledUpCost > 0,
-		);
+		await waitForCondition(() => mgr.getCostSummary(parent.id).rolledUpCost > 0);
 		expect(mgr.getCostSummary(parent.id).rolledUpCost).toBeCloseTo(0.1, 6);
 
 		// Shut down the parent — cascade tears down the child too.
@@ -2396,19 +2479,13 @@ describe("AgentManager / persistAgentConfig overwrite-mode (pr84 Codex at-rest)"
 					org: opts.org,
 					parentHandleId: opts.parentHandle?.id,
 					spawnedAt: Date.now(),
-					markerPath: path.join(
-						pathFor("markers"),
-						`${fixedHandleId}.daemon-stop`,
-					),
+					markerPath: path.join(pathFor("markers"), `${fixedHandleId}.daemon-stop`),
 				};
 			};
 			registerRuntime(ctrl.runtime);
 			const mgr = new AgentManager();
 
-			const persistedFile = path.join(
-				pathFor("agents"),
-				`${fixedHandleId}.json`,
-			);
+			const persistedFile = path.join(pathFor("agents"), `${fixedHandleId}.json`);
 
 			// First registration creates the persisted config at 0600.
 			await mgr.registerAgent({
@@ -2467,10 +2544,7 @@ describe("AgentManager / persistAgentConfig overwrite-mode (pr84 Codex at-rest)"
 				org: opts.org,
 				parentHandleId: opts.parentHandle?.id,
 				spawnedAt: Date.now(),
-				markerPath: path.join(
-					pathFor("markers"),
-					`${fixedHandleId}.daemon-stop`,
-				),
+				markerPath: path.join(pathFor("markers"), `${fixedHandleId}.daemon-stop`),
 			};
 		};
 		registerRuntime(ctrl.runtime);

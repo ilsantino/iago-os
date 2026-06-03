@@ -340,10 +340,7 @@ export type DaemonEvent =
 			 */
 			readonly kind: "task-poisoned";
 			readonly filename: string;
-			readonly reason:
-				| "json-parse-error"
-				| "missing-agent-id"
-				| "oversized-task";
+			readonly reason: "json-parse-error" | "missing-agent-id" | "oversized-task";
 			readonly errno?: string;
 	  }
 	| {
@@ -453,6 +450,23 @@ export type DaemonEvent =
 			readonly kind: "pr-triage-result-timeout";
 			readonly agentId: string;
 			readonly reason: string;
+	  }
+	| {
+			/**
+			 * Round-2 Important (Codex) — a late/stale result envelope arrived
+			 * carrying a runId that does NOT match the active run for the agent
+			 * (a prior dispatch's envelope surfacing after a newer run started,
+			 * or a duplicate emit after a restart). The send handler validates
+			 * the runId BEFORE the irreversible Telegram send and QUARANTINES the
+			 * stale envelope (claims it out of `pending/`) instead of pushing a
+			 * wrong/stale summary to the user. The current run's dead-letter
+			 * timer/marker/held slot are left intact. `runId` is the stale id from
+			 * the envelope (token-free correlation id, safe to log).
+			 */
+			readonly kind: "pr-triage-stale-run-dropped";
+			readonly agentId: string;
+			readonly filename: string;
+			readonly runId: string;
 	  }
 	| {
 			/**

@@ -463,11 +463,29 @@ export class AgentManager extends EventEmitter {
 				} catch (rollbackErr) {
 					console.error(
 						`[agent-manager] rollback shutdown of ${handle.id} after persist failure failed: ${
-							rollbackErr instanceof Error
-								? rollbackErr.message
-								: String(rollbackErr)
+							rollbackErr instanceof Error ? rollbackErr.message : String(rollbackErr)
 						}`,
 					);
+					// Round-2 Critical (Codex): `shutdownAgentInternal` writes the
+					// stop marker AND cascades children BEFORE it ever reaches
+					// `runtime.shutdown`. If the same degraded state root that broke
+					// persistence also makes `writeStopMarker`/cascade throw, control
+					// lands here WITHOUT the adapter ever being killed — and the
+					// `finally` below would then `teardown` the handle out of the map,
+					// stranding a live PTY with no recovery record (a later
+					// same-agentId register could then duplicate it). Force the
+					// adapter shutdown directly so the live process is always reaped
+					// before the handle is untracked. Best-effort: a throw here is
+					// logged, never rethrown over the original `persistErr`.
+					try {
+						await runtime.shutdown(handle, "SIGKILL");
+					} catch (forceErr) {
+						console.error(
+							`[agent-manager] forced adapter shutdown of ${handle.id} during persist rollback failed: ${
+								forceErr instanceof Error ? forceErr.message : String(forceErr)
+							}`,
+						);
+					}
 				} finally {
 					// Ensure the handle is gone from `handles` even if shutdown threw
 					// before reaching its own `teardown` (idempotent: no-op if already
@@ -765,17 +783,11 @@ export class AgentManager extends EventEmitter {
 			// register path, where the spawn is rolled back fail-closed because no
 			// live agent existed before it.
 			try {
-				await this.persistAgentConfig(
-					handleId,
-					respawnConfig,
-					existing.runtime,
-				);
+				await this.persistAgentConfig(handleId, respawnConfig, existing.runtime);
 			} catch (persistErr) {
 				console.error(
 					`[agent-manager] restart env-rewrite persist for ${handleId} failed (respawn kept): ${
-						persistErr instanceof Error
-							? persistErr.message
-							: String(persistErr)
+						persistErr instanceof Error ? persistErr.message : String(persistErr)
 					}`,
 				);
 			}
@@ -1013,10 +1025,7 @@ export class AgentManager extends EventEmitter {
 				// matches the marker's handleId. Adapters MAY return a handle
 				// with a different id (e.g., generation suffix); the recovered
 				// listing reflects what was actually tracked.
-				const recoveredId = await this.attemptCrashReplay(
-					handleId,
-					knownConfigs,
-				);
+				const recoveredId = await this.attemptCrashReplay(handleId, knownConfigs);
 				if (recoveredId !== null && this.handles.has(recoveredId)) {
 					recovered.push(recoveredId);
 				}
@@ -1034,10 +1043,7 @@ export class AgentManager extends EventEmitter {
 				for (const handleId of knownConfigs.keys()) {
 					if (seenHandleIds.has(handleId)) continue;
 					crashes.push(handleId);
-					const recoveredId = await this.attemptCrashReplay(
-						handleId,
-						knownConfigs,
-					);
+					const recoveredId = await this.attemptCrashReplay(handleId, knownConfigs);
 					if (recoveredId !== null && this.handles.has(recoveredId)) {
 						recovered.push(recoveredId);
 					}
@@ -1711,11 +1717,7 @@ export class AgentManager extends EventEmitter {
 			if (tracked.handle.agentId !== agentId) continue;
 			const existingOrg = tracked.org;
 			if (existingOrg !== attemptedOrg) {
-				throw new AgentIdAlreadyRegisteredError(
-					agentId,
-					existingOrg,
-					attemptedOrg,
-				);
+				throw new AgentIdAlreadyRegisteredError(agentId, existingOrg, attemptedOrg);
 			}
 		}
 
@@ -1752,11 +1754,7 @@ export class AgentManager extends EventEmitter {
 			const orgVal = (parsed as { org?: unknown }).org;
 			const existingOrg = typeof orgVal === "string" ? orgVal : null;
 			if (existingOrg !== attemptedOrg) {
-				throw new AgentIdAlreadyRegisteredError(
-					agentId,
-					existingOrg,
-					attemptedOrg,
-				);
+				throw new AgentIdAlreadyRegisteredError(agentId, existingOrg, attemptedOrg);
 			}
 		}
 	}
@@ -2193,8 +2191,7 @@ export class AgentManager extends EventEmitter {
 		// run carries the OLD runId and is rejected by the wrong-run guard. Absent
 		// on a legacy envelope (handler then clears unconditionally).
 		const sendRunIdRaw = (parsed as { runId?: unknown }).runId;
-		const sendRunId =
-			typeof sendRunIdRaw === "string" ? sendRunIdRaw : undefined;
+		const sendRunId = typeof sendRunIdRaw === "string" ? sendRunIdRaw : undefined;
 		if (
 			agentId === "pr-triage" &&
 			filename.startsWith("pr-triage-send__") &&

@@ -145,9 +145,7 @@ describe("loadPersistedConfigs", () => {
 		// throws "Cannot redefine property" on `fsp.readdir` under Node 20.
 		await fsp.rm(pathFor("agents"), { recursive: true, force: true });
 		await fsp.writeFile(pathFor("agents"), "not a directory");
-		const errSpy = vi
-			.spyOn(console, "error")
-			.mockImplementation(() => undefined);
+		const errSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
 		const result = await loadPersistedConfigs();
 		expect(result.size).toBe(0);
 		const logs = errSpy.mock.calls.map((c) => String(c[0])).join("\n");
@@ -167,9 +165,7 @@ describe("loadPersistedConfigs", () => {
 		await fsp.mkdir(path.join(pathFor("agents"), "h-eisdir.json"), {
 			recursive: true,
 		});
-		const errSpy = vi
-			.spyOn(console, "error")
-			.mockImplementation(() => undefined);
+		const errSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
 		const result = await loadPersistedConfigs();
 		expect(result.size).toBe(0);
 		const logs = errSpy.mock.calls.map((c) => String(c[0])).join("\n");
@@ -179,9 +175,7 @@ describe("loadPersistedConfigs", () => {
 
 	it("logs and continues on a JSON parse error", async () => {
 		await fsp.writeFile(path.join(pathFor("agents"), "bad.json"), "{not-json");
-		const errSpy = vi
-			.spyOn(console, "error")
-			.mockImplementation(() => undefined);
+		const errSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
 		const result = await loadPersistedConfigs();
 		expect(result.size).toBe(0);
 		const logs = errSpy.mock.calls.map((c) => String(c[0])).join("\n");
@@ -204,9 +198,7 @@ describe("loadPersistedConfigs", () => {
 			cwd: "/tmp",
 			sessionId: "s-1",
 		});
-		const errSpy = vi
-			.spyOn(console, "error")
-			.mockImplementation(() => undefined);
+		const errSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
 		const result = await loadPersistedConfigs();
 		expect(result.size).toBe(0);
 		const logs = errSpy.mock.calls.map((c) => String(c[0])).join("\n");
@@ -317,9 +309,7 @@ describe("withTimeout", () => {
 	});
 
 	it('returns "timeout" and writes a stderr warning when the op exceeds the timeout', async () => {
-		const errSpy = vi
-			.spyOn(console, "error")
-			.mockImplementation(() => undefined);
+		const errSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
 		const result = await withTimeout(
 			"slow-op",
 			() => new Promise<number>((resolve) => setTimeout(() => resolve(1), 200)),
@@ -1000,9 +990,7 @@ describe("makeTaskDispatchHandler (Plan 04d)", () => {
 
 		const failedCalls = emitMock.mock.calls
 			.map((c) => c[0])
-			.filter(
-				(e) => (e as { kind: string }).kind === "pr-triage-dispatch-failed",
-			);
+			.filter((e) => (e as { kind: string }).kind === "pr-triage-dispatch-failed");
 		expect(failedCalls).toHaveLength(1);
 		expect(failedCalls[0]).toMatchObject({
 			kind: "pr-triage-dispatch-failed",
@@ -1039,9 +1027,7 @@ describe("makeTaskDispatchHandler (Plan 04d)", () => {
 
 		const failedCalls = emitMock.mock.calls
 			.map((c) => c[0])
-			.filter(
-				(e) => (e as { kind: string }).kind === "pr-triage-dispatch-failed",
-			);
+			.filter((e) => (e as { kind: string }).kind === "pr-triage-dispatch-failed");
 		expect(failedCalls).toHaveLength(1);
 		expect(failedCalls[0]).toMatchObject({
 			kind: "pr-triage-dispatch-failed",
@@ -1081,9 +1067,7 @@ describe("makeTaskDispatchHandler (Plan 04d)", () => {
 
 		const failedCalls = emitMock.mock.calls
 			.map((c) => c[0])
-			.filter(
-				(e) => (e as { kind: string }).kind === "pr-triage-dispatch-failed",
-			);
+			.filter((e) => (e as { kind: string }).kind === "pr-triage-dispatch-failed");
 		expect(failedCalls).toHaveLength(1);
 		expect(failedCalls[0]).toMatchObject({
 			kind: "pr-triage-dispatch-failed",
@@ -1133,9 +1117,7 @@ describe("makeTaskDispatchHandler (Plan 04d)", () => {
 		// malformed-task telemetry emitted with absent-prompt diagnostic.
 		const failedCalls = emitMock.mock.calls
 			.map((c) => c[0])
-			.filter(
-				(e) => (e as { kind: string }).kind === "pr-triage-dispatch-failed",
-			);
+			.filter((e) => (e as { kind: string }).kind === "pr-triage-dispatch-failed");
 		expect(failedCalls).toHaveLength(1);
 		expect(failedCalls[0]).toMatchObject({
 			kind: "pr-triage-dispatch-failed",
@@ -1146,9 +1128,9 @@ describe("makeTaskDispatchHandler (Plan 04d)", () => {
 		expect((failedCalls[0] as { message: string }).message).toContain("absent");
 
 		// C-1: dispatch slot released even on the malformed-task branch.
-		expect(
-			(mgr as unknown as { _releaseCalls: string[] })._releaseCalls,
-		).toEqual([evt.filename]);
+		expect((mgr as unknown as { _releaseCalls: string[] })._releaseCalls).toEqual(
+			[evt.filename],
+		);
 	});
 
 	it("(DH-6/I-E) empty-string prompt: emits pr-triage-dispatch-failed(malformed-task), does NOT send, does NOT claim", async () => {
@@ -1183,9 +1165,7 @@ describe("makeTaskDispatchHandler (Plan 04d)", () => {
 
 		const failedCalls = emitMock.mock.calls
 			.map((c) => c[0])
-			.filter(
-				(e) => (e as { kind: string }).kind === "pr-triage-dispatch-failed",
-			);
+			.filter((e) => (e as { kind: string }).kind === "pr-triage-dispatch-failed");
 		expect(failedCalls).toHaveLength(1);
 		expect(failedCalls[0]).toMatchObject({
 			kind: "pr-triage-dispatch-failed",
@@ -1196,9 +1176,9 @@ describe("makeTaskDispatchHandler (Plan 04d)", () => {
 			"empty string",
 		);
 
-		expect(
-			(mgr as unknown as { _releaseCalls: string[] })._releaseCalls,
-		).toEqual([evt.filename]);
+		expect((mgr as unknown as { _releaseCalls: string[] })._releaseCalls).toEqual(
+			[evt.filename],
+		);
 	});
 
 	it("(DH-7/I-E) non-string prompt (number): emits pr-triage-dispatch-failed(malformed-task), does NOT send, does NOT claim", async () => {
@@ -1233,9 +1213,7 @@ describe("makeTaskDispatchHandler (Plan 04d)", () => {
 
 		const failedCalls = emitMock.mock.calls
 			.map((c) => c[0])
-			.filter(
-				(e) => (e as { kind: string }).kind === "pr-triage-dispatch-failed",
-			);
+			.filter((e) => (e as { kind: string }).kind === "pr-triage-dispatch-failed");
 		expect(failedCalls).toHaveLength(1);
 		expect(failedCalls[0]).toMatchObject({
 			kind: "pr-triage-dispatch-failed",
@@ -1246,9 +1224,9 @@ describe("makeTaskDispatchHandler (Plan 04d)", () => {
 			"type number",
 		);
 
-		expect(
-			(mgr as unknown as { _releaseCalls: string[] })._releaseCalls,
-		).toEqual([evt.filename]);
+		expect((mgr as unknown as { _releaseCalls: string[] })._releaseCalls).toEqual(
+			[evt.filename],
+		);
 	});
 
 	it("(DH-1b/C-1) happy path also releases dispatch slot in finally", async () => {
@@ -1276,9 +1254,9 @@ describe("makeTaskDispatchHandler (Plan 04d)", () => {
 
 		await handler(evt);
 
-		expect(
-			(mgr as unknown as { _releaseCalls: string[] })._releaseCalls,
-		).toEqual([evt.filename]);
+		expect((mgr as unknown as { _releaseCalls: string[] })._releaseCalls).toEqual(
+			[evt.filename],
+		);
 	});
 
 	it("(DH-8/H1) ndjsonAlert envelope: emits pr-triage-telegram-send-failed + claims, NOT malformed-task", async () => {
@@ -1323,8 +1301,7 @@ describe("makeTaskDispatchHandler (Plan 04d)", () => {
 		const alertCalls = emitMock.mock.calls
 			.map((c) => c[0])
 			.filter(
-				(e) =>
-					(e as { kind: string }).kind === "pr-triage-telegram-send-failed",
+				(e) => (e as { kind: string }).kind === "pr-triage-telegram-send-failed",
 			);
 		expect(alertCalls).toHaveLength(1);
 		expect(alertCalls[0]).toMatchObject({
@@ -1338,9 +1315,7 @@ describe("makeTaskDispatchHandler (Plan 04d)", () => {
 		// NOT mis-classified as malformed-task (or any dispatch-failed).
 		const failedCalls = emitMock.mock.calls
 			.map((c) => c[0])
-			.filter(
-				(e) => (e as { kind: string }).kind === "pr-triage-dispatch-failed",
-			);
+			.filter((e) => (e as { kind: string }).kind === "pr-triage-dispatch-failed");
 		expect(failedCalls).toHaveLength(0);
 
 		// File claimed (pending → resolved).
@@ -1349,9 +1324,9 @@ describe("makeTaskDispatchHandler (Plan 04d)", () => {
 		]);
 
 		// C-1: dispatch slot released on the alert branch too.
-		expect(
-			(mgr as unknown as { _releaseCalls: string[] })._releaseCalls,
-		).toEqual([evt.filename]);
+		expect((mgr as unknown as { _releaseCalls: string[] })._releaseCalls).toEqual(
+			[evt.filename],
+		);
 	});
 
 	it("(DH-R1) arms the dead-letter result timer after a successful pr-triage dispatch (with a correlation runId)", async () => {
@@ -1635,8 +1610,7 @@ describe("makeTaskSendHandler (R1)", () => {
 		expect(releaseCalls).toEqual([evt.filename]);
 		// No send-failed telemetry on the happy path.
 		const failed = emitMock.mock.calls.filter(
-			(c) =>
-				(c[0] as { kind: string }).kind === "pr-triage-telegram-send-failed",
+			(c) => (c[0] as { kind: string }).kind === "pr-triage-telegram-send-failed",
 		);
 		expect(failed).toHaveLength(0);
 	});
@@ -1667,9 +1641,7 @@ describe("makeTaskSendHandler (R1)", () => {
 		// NOT re-trip (which would duplicate or storm) — it is recorded instead.
 		expect(claimCalls).toHaveLength(1);
 		const failed = emitMock.mock.calls
-			.map(
-				(c) => c[0] as { kind: string; alertKind?: string; details?: string },
-			)
+			.map((c) => c[0] as { kind: string; alertKind?: string; details?: string })
 			.filter((e) => e.kind === "pr-triage-telegram-send-failed");
 		expect(failed).toHaveLength(1);
 		expect(failed[0].alertKind).toBe("pr-triage-telegram-send-failed");
@@ -1827,8 +1799,7 @@ describe("makeTaskSendHandler (R1)", () => {
 			expect(claimCalls).toHaveLength(1);
 			// No send-failed telemetry: the retry recovered.
 			const failed = emitMock.mock.calls.filter(
-				(c) =>
-					(c[0] as { kind: string }).kind === "pr-triage-telegram-send-failed",
+				(c) => (c[0] as { kind: string }).kind === "pr-triage-telegram-send-failed",
 			);
 			expect(failed).toHaveLength(0);
 			expect(cleared).toEqual(["pr-triage"]);
@@ -1875,8 +1846,7 @@ describe("makeTaskSendHandler (R1)", () => {
 			// EXACTLY ONE send-failed telemetry after the budget is exhausted —
 			// not one-per-attempt, and not an unbounded storm.
 			const failed = emitMock.mock.calls.filter(
-				(c) =>
-					(c[0] as { kind: string }).kind === "pr-triage-telegram-send-failed",
+				(c) => (c[0] as { kind: string }).kind === "pr-triage-telegram-send-failed",
 			);
 			expect(failed).toHaveLength(1);
 			expect(releaseCalls).toEqual(["pr-triage-send__1700000308-1.json"]);
@@ -1912,8 +1882,7 @@ describe("makeTaskSendHandler (R1)", () => {
 		expect(claimCalls).toHaveLength(1);
 		// Must NOT emit a send-failed for an empty summary.
 		const failed = emitMock.mock.calls.filter(
-			(c) =>
-				(c[0] as { kind: string }).kind === "pr-triage-telegram-send-failed",
+			(c) => (c[0] as { kind: string }).kind === "pr-triage-telegram-send-failed",
 		);
 		expect(failed).toHaveLength(0);
 	});
@@ -1925,6 +1894,95 @@ describe("makeTaskSendHandler (R1)", () => {
 			expect(typeof d).toBe("number");
 			expect(d).toBeGreaterThan(0);
 		}
+	});
+
+	it("(TS-11, round-2 Important) a stale-runId envelope is QUARANTINED before the send — sendAgentNotification is NOT called", async () => {
+		// Round-2 Important (Codex): the wrong-run guard previously ran only AFTER
+		// the irreversible Telegram send (inside `clearResultTimer`, in the
+		// `finally`). A late/stale envelope from a PRIOR run was therefore delivered
+		// to the user FIRST; the guard only prevented clearing the current run's
+		// timer afterward. The fix consults `isActiveRun` BEFORE the claim/send: on a
+		// runId mismatch the envelope is quarantined (claimed out of pending/) and
+		// `pr-triage-stale-run-dropped` telemetry fires, and NO send happens.
+		//
+		// This test FAILS without the fix (sendAgentNotification IS called) and
+		// PASSES with it.
+		const { mgr, claimCalls } = makeSendStubManager();
+		const { bot, calls } = makeFakeTelegram(async () => ({ ok: true }));
+		const emitMock = vi.fn().mockResolvedValue(true);
+		const cleared: Array<{ id: string; runId?: string }> = [];
+		const handler = makeTaskSendHandler({
+			agentManager: mgr,
+			emit: emitMock,
+			telegramBot: bot as unknown as import("../telegram/bot.js").TelegramBot,
+			clearResultTimer: (id, runId) => {
+				cleared.push({ id, runId });
+			},
+			// The active run is "run-NEW"; the inbound envelope carries the stale
+			// "run-OLD", so isActiveRun resolves false → quarantine, no send.
+			isActiveRun: async (_agentId, runId) => runId === "run-NEW",
+		});
+
+		await handler({
+			filename: "pr-triage-send__stale-old.json",
+			agentId: "pr-triage",
+			sendText: "stale summary from a prior run",
+			runId: "run-OLD",
+		});
+
+		// KEY assertion: the irreversible Telegram send NEVER happened.
+		expect(calls).toHaveLength(0);
+		// The stale envelope was quarantined out of pending/ (claimed once) so it
+		// stops re-tripping every poll tick.
+		expect(claimCalls).toEqual([
+			{ filename: "pr-triage-send__stale-old.json", agentId: "pr-triage" },
+		]);
+		// Quarantine telemetry recorded with the stale runId.
+		const dropped = emitMock.mock.calls
+			.map((c) => c[0] as { kind: string; runId?: string })
+			.filter((e) => e.kind === "pr-triage-stale-run-dropped");
+		expect(dropped).toHaveLength(1);
+		expect(dropped[0].runId).toBe("run-OLD");
+		// No send was attempted, so no send-failed telemetry.
+		const failed = emitMock.mock.calls.filter(
+			(c) => (c[0] as { kind: string }).kind === "pr-triage-telegram-send-failed",
+		);
+		expect(failed).toHaveLength(0);
+		// The `finally` still runs clearResultTimer with the stale runId — which the
+		// in-controller wrong-run guard rejects, leaving the current run intact.
+		expect(cleared).toEqual([{ id: "pr-triage", runId: "run-OLD" }]);
+	});
+
+	it("(TS-12, round-2 Important) a MATCHING-runId envelope still sends (the guard does not block the live run)", async () => {
+		// Companion to TS-11: when isActiveRun returns true (the envelope's runId
+		// matches the active run), the send proceeds normally. Guards against an
+		// over-eager pre-send guard that would suppress legitimate deliveries.
+		const { mgr, claimCalls } = makeSendStubManager();
+		const { bot, calls } = makeFakeTelegram(async () => ({ ok: true }));
+		const emitMock = vi.fn().mockResolvedValue(true);
+		const handler = makeTaskSendHandler({
+			agentManager: mgr,
+			emit: emitMock,
+			telegramBot: bot as unknown as import("../telegram/bot.js").TelegramBot,
+			clearResultTimer: () => {},
+			isActiveRun: async (_agentId, runId) => runId === "run-NEW",
+		});
+
+		await handler({
+			filename: "pr-triage-send__live.json",
+			agentId: "pr-triage",
+			sendText: "live summary",
+			runId: "run-NEW",
+		});
+
+		// The send happened (the guard passed).
+		expect(calls).toEqual(["live summary"]);
+		expect(claimCalls).toHaveLength(1);
+		// No quarantine telemetry for a live run.
+		const dropped = emitMock.mock.calls.filter(
+			(c) => (c[0] as { kind: string }).kind === "pr-triage-stale-run-dropped",
+		);
+		expect(dropped).toHaveLength(0);
 	});
 });
 
@@ -2163,6 +2221,86 @@ describe("makeResultTimers + dispatch arming (R1 D4 dead-letter)", () => {
 		expect(completions).toHaveLength(0);
 	});
 
+	it("(RT-11, round-2 Minor) recoverResultTimers RE-HOLDS the cron slot for a still-future marker via onResultRecovered (and NOT for an expired one)", async () => {
+		// Round-2 Minor (Codex): a still-in-flight run recovered from a future
+		// result-pending marker must RE-HELD its CronScheduler concurrency slot, or
+		// the scheduler boots at runningCount=0 and a matching cron tick could
+		// dispatch a SECOND prompt that overwrites the single marker. The
+		// expired-marker branch dead-letters (releases via onResultComplete) and must
+		// NOT re-hold. This test asserts onResultRecovered fires for the future
+		// marker only.
+		//
+		// FAILS without the fix (onResultRecovered never wired/called) — the recovered
+		// run's slot is never re-held.
+		vi.useFakeTimers();
+		const recovered: Array<{ agentId: string; filename: string | null }> = [];
+		const completed: Array<{ agentId: string; filename: string | null }> = [];
+
+		// (a) future marker → re-hold.
+		const futureMarker = path.join(pathFor("result-pending"), "pr-triage.json");
+		await fsp.writeFile(
+			futureMarker,
+			JSON.stringify({
+				agentId: "pr-triage",
+				runId: "inflight-run",
+				filename: "pr-triage__900.json",
+				deadlineMs: Date.now() + 5000,
+			}),
+		);
+		const emitMock = vi.fn().mockResolvedValue(true);
+		const { recoverResultTimers } = makeResultTimers({
+			emit: emitMock,
+			timeoutMs: 120_000,
+			onResultComplete: (agentId, filename) =>
+				completed.push({ agentId, filename }),
+			onResultRecovered: (agentId, filename) =>
+				recovered.push({ agentId, filename }),
+		});
+		await recoverResultTimers();
+
+		// The recovered in-flight run re-held its slot with the cron filename.
+		expect(recovered).toEqual([
+			{ agentId: "pr-triage", filename: "pr-triage__900.json" },
+		]);
+		// It is still in flight (no completion yet — slot stays held).
+		expect(completed).toHaveLength(0);
+
+		// (b) expired marker → dead-letter, release (NOT re-hold).
+		// Remove the future pr-triage marker first so part (b)'s scan only sees the
+		// expired other-agent marker (recoverResultTimers scans the whole dir).
+		await fsp.unlink(futureMarker).catch(() => undefined);
+		recovered.length = 0;
+		completed.length = 0;
+		const expiredMarker = path.join(
+			pathFor("result-pending"),
+			"other-agent.json",
+		);
+		await fsp.writeFile(
+			expiredMarker,
+			JSON.stringify({
+				agentId: "other-agent",
+				runId: "expired-run",
+				filename: "other-agent__1.json",
+				deadlineMs: Date.now() - 1000,
+			}),
+		);
+		const emitMock2 = vi.fn().mockResolvedValue(true);
+		const { recoverResultTimers: recover2 } = makeResultTimers({
+			emit: emitMock2,
+			onResultComplete: (agentId, filename) =>
+				completed.push({ agentId, filename }),
+			onResultRecovered: (agentId, filename) =>
+				recovered.push({ agentId, filename }),
+		});
+		await recover2();
+
+		// Expired → released (slot freed), NOT re-held.
+		expect(recovered).toHaveLength(0);
+		expect(completed).toEqual([
+			{ agentId: "other-agent", filename: "other-agent__1.json" },
+		]);
+	});
+
 	it("(RT-8) recoverResultTimers immediately dead-letters an already-expired orphaned marker", async () => {
 		// Task 6 (Critical) restart recovery, expired branch: if the marker's
 		// deadline already passed while the daemon was down, recovery must emit the
@@ -2358,10 +2496,9 @@ describe("makePrTriageCronPrompt (R1)", () => {
 				const auth = (init?.headers as Record<string, string> | undefined)
 					?.Authorization;
 				seenAuth.push(auth);
-				return new Response(
-					JSON.stringify({ data: { search: { nodes: [] } } }),
-					{ status: 200 },
-				);
+				return new Response(JSON.stringify({ data: { search: { nodes: [] } } }), {
+					status: 200,
+				});
 			},
 		) as unknown as typeof fetch;
 		const prepare = makePrTriageCronPrompt({
