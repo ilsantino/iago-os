@@ -132,6 +132,11 @@ TASK_FILE="$STATE_ROOT/tasks/pending/pr-triage-send__$(date +%s%3N)-$$.json"
 # correlation line is truly absent — the envelope then omits the field and the
 # daemon treats it as no-correlation.
 RUN_ID="<paste the runId from the DAEMON RUN CORRELATION line; leave empty ONLY if that line is absent>"
+# IMPORTANT: Replace the entire angle-bracket token above with the actual UUID
+# string (e.g. RUN_ID="a1b2c3d4-..."). Do NOT leave the literal text
+# "<paste...>" — a non-empty non-UUID string will pass the empty-string guard,
+# be compared against the live marker, fail the UUID match, and cause the
+# daemon to quarantine this result as a stale-run envelope (dead-letter fires).
 # Atomic publish: write to a `.tmp` sibling, then `mv` into place (rename(2) is
 # atomic on POSIX) so the daemon's poll tick never reads a half-written file.
 # `umask 0077` is scoped to a subshell so the dir is born 0700 and the file
@@ -162,6 +167,8 @@ TASK_FILE="$STATE_ROOT/tasks/pending/pr-triage-send__$(date +%s%3N)-$$.json"
 # Same RUN_ID as the send block above (the runId from the DAEMON RUN CORRELATION
 # line). Set it explicitly; leave empty only if that line is absent.
 RUN_ID="<paste the runId from the DAEMON RUN CORRELATION line; leave empty ONLY if that line is absent>"
+# IMPORTANT: Replace the angle-bracket token above with the actual UUID (same
+# rule as the send block — a literal "<paste...>" would cause quarantine).
 (
   umask 0077
   mkdir -p "$STATE_ROOT/tasks/pending"

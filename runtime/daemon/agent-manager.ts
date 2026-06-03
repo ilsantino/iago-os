@@ -459,7 +459,13 @@ export class AgentManager extends EventEmitter {
 				// here, so there is no self-deadlock. A best-effort second teardown
 				// guards the case where shutdown itself throws before `teardown` runs.
 				try {
-					await this.shutdownAgentInternal(handle.id, "SIGKILL", "crash");
+					// Use "graceful" instead of "crash": this process was never
+					// fully registered (persistAgentConfig failed, so no config
+					// file exists). A "crash" marker would cause boot recovery
+					// to call attemptCrashReplay, find no config, and add a
+					// phantom entry to the crashes list. "graceful" is the
+					// correct semantic — the process never surfaced to the user.
+					await this.shutdownAgentInternal(handle.id, "SIGKILL", "graceful");
 				} catch (rollbackErr) {
 					console.error(
 						`[agent-manager] rollback shutdown of ${handle.id} after persist failure failed: ${

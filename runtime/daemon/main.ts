@@ -1859,7 +1859,7 @@ export async function registerCronAgentWithRestart(deps: {
 	 * would break Phase B's real-I/O marker poll).
 	 */
 	backoffMs?: readonly number[];
-}): Promise<void> {
+}): Promise<() => void> {
 	const { agentManager, agentId, agentConfig, isShuttingDown } = deps;
 	const backoffMs = deps.backoffMs ?? CRON_AGENT_RESTART_BACKOFF_MS;
 
@@ -2068,6 +2068,9 @@ export async function registerCronAgentWithRestart(deps: {
 			`[daemon] startup registerAgent(${agentId}) failed: ${err instanceof Error ? err.message : String(err)} — agent will be unrouted`,
 		);
 	}
+	return () => {
+		agentManager.off("agent-restarted", onAgentRestarted);
+	};
 }
 
 /**
@@ -2620,6 +2623,7 @@ export async function startDaemon(
 	// (`scheduleCronAgentRestart`) subscribes to the runtime's status
 	// callback and re-runs `registerAgent` on exit/crash with
 	// exponential backoff (3 attempts at 5s/30s/60s).
+	const cronRestartCleanups: Array<() => void> = [];
 	for (const opts of cronEntries) {
 		let agentConfig: AgentConfigShape;
 		try {
@@ -2630,12 +2634,14 @@ export async function startDaemon(
 			);
 			continue;
 		}
-		await registerCronAgentWithRestart({
-			agentManager,
-			agentId: opts.agentId,
-			agentConfig,
-			isShuttingDown: () => shuttingDown,
-		});
+		cronRestartCleanups.push(
+			await registerCronAgentWithRestart({
+				agentManager,
+				agentId: opts.agentId,
+				agentConfig,
+				isShuttingDown: () => shuttingDown,
+			}),
+		);
 	}
 
 	// R1 (feature-pr84-r1-daemon-creds, D4) + Task 6 — shared dead-letter timer
@@ -2741,6 +2747,9 @@ export async function startDaemon(
 	// `shuttingDown` is declared above (hoisted for the I-C cron-agent
 	// restart loop). All assignments happen inside `shutdown`.
 	const shutdownHandlers = new Set<() => void>();
+	for (const cleanup of cronRestartCleanups) {
+		shutdownHandlers.add(cleanup);
+	}
 	let resolveShutdownPromise!: () => void;
 	const shutdownPromise = new Promise<void>((resolve) => {
 		resolveShutdownPromise = resolve;

@@ -518,7 +518,7 @@ export class CronScheduler {
 		// for a deferred (send-contract) agent prompt handoff is NOT run
 		// completion, so only the `cron-result-complete` event releases.
 		this.handoffListener = (event: TaskTerminalEvent): void => {
-			if (!this.isValidTerminalEvent(event)) return;
+			if (!this.isValidAgentFilenameEvent(event)) return;
 			if (this.deferReleaseAgents.has(event.agentId)) {
 				// Held until `cron-result-complete`. Do NOT release here.
 				return;
@@ -533,14 +533,14 @@ export class CronScheduler {
 		// deferred agent — or the cron slot leaks forever and `maxConcurrent: 1`
 		// blocks every future fire until daemon restart.
 		this.preDispatchFailListener = (event: TaskTerminalEvent): void => {
-			if (!this.isValidTerminalEvent(event)) return;
+			if (!this.isValidAgentFilenameEvent(event)) return;
 			this.releaseOutstanding(event.agentId, event.filename);
 		};
 		// Task 6 gate-finding #2 — the run-completion event. Releases the slot for
 		// a deferred agent (and is a harmless no-op for any other agent, whose
 		// outstanding filename was already cleared by `handoffListener`).
 		this.resultCompleteListener = (event: TaskTerminalEvent): void => {
-			if (!this.isValidTerminalEvent(event)) return;
+			if (!this.isValidAgentFilenameEvent(event)) return;
 			this.releaseOutstanding(event.agentId, event.filename);
 		};
 		for (const evt of TERMINAL_EVENTS) {
@@ -553,11 +553,12 @@ export class CronScheduler {
 	}
 
 	/**
-	 * Shape-guard for an inbound terminal/result event. Defensive: the
-	 * emit-side (`AgentManager` / result-timer machinery) may pass an unexpected
+	 * Shape-guard for an inbound event that must have string agentId + filename.
+	 * Used both by terminal-event listeners and by restoreOutstanding (a restore
+	 * is not a terminal event). Defensive: the emit-side may pass an unexpected
 	 * payload, and a thrown listener would surface on the emitter's call site.
 	 */
-	private isValidTerminalEvent(event: TaskTerminalEvent): boolean {
+	private isValidAgentFilenameEvent(event: { agentId: unknown; filename: unknown }): boolean {
 		return (
 			typeof event === "object" &&
 			event !== null &&
@@ -601,7 +602,7 @@ export class CronScheduler {
 	 * (driven by `cron-result-complete` / terminal events) drops it on completion.
 	 */
 	restoreOutstanding(agentId: string, filename: string): void {
-		if (!this.isValidTerminalEvent({ agentId, filename })) return;
+		if (!this.isValidAgentFilenameEvent({ agentId, filename })) return;
 		let outstanding = this.outstandingFilenames.get(agentId);
 		if (outstanding === undefined) {
 			outstanding = new Set<string>();
