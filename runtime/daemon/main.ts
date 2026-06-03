@@ -1427,7 +1427,52 @@ export function makeTaskDispatchHandler(deps: {
 				return;
 			}
 			try {
-				await agentManager.claimTask(evt.filename, evt.agentId);
+				// Dual-adversarial Critical (round 1) — HONOR claimTask's return on
+				// the dispatch path (was discarded). `claimTask` now returns `false`
+				// on a pending→resolved rename fault (EACCES/ENOSPC/EBUSY) and the
+				// send/alert legs already honor it; the dispatch leg must too. On a
+				// failed claim the SAME file is still in `tasks/pending/`, so the next
+				// polling tick would re-dispatch the SAME prompt under a NEW runId.
+				// Arming the result timer here would OVERWRITE the marker with the new
+				// runId (startResultTimer's clear-then-set), making the redispatch
+				// authoritative — and when the FIRST run finally writes its envelope
+				// (carrying the ORIGINAL runId) the send handler's wrong-run guard
+				// quarantines the legitimate daily summary as stale. So on `false`:
+				// do NOT arm/overwrite the timer, surface dispatch-failed telemetry,
+				// and leave the file in pending/ for the next tick to retry (the marker
+				// from any PRIOR live run is left untouched). claimTask already emits
+				// `claim-task-failed`; this dispatch-level event keeps the dispatch
+				// taxonomy complete (one dispatch event per task).
+				const claimed = await agentManager.claimTask(evt.filename, evt.agentId);
+				if (!claimed) {
+					await emit({
+						kind: "pr-triage-dispatch-failed",
+						agentId: evt.agentId,
+						filename: evt.filename,
+						reason: "claim-failed",
+						message:
+							"claimTask reported a pending→resolved rename fault; task left in tasks/pending/ for retry, result timer NOT armed",
+					});
+					// Dual-adversarial pass #2 (Critical follow-up) — the claim faulted, so
+					// claimTask emitted NO `task-resolved` and we arm NO result timer. For a
+					// send-contract (deferred-release) agent the CronScheduler slot would
+					// otherwise stay HELD forever (it is released only via
+					// `cron-result-complete`, which the result timer fires); with
+					// `maxConcurrent: 1` the next cron tick is then overlap-prevented and the
+					// file we just left in tasks/pending/ is NEVER retried (permanent stall —
+					// the leak the round-1 fix's own "leave for next tick to retry" comment
+					// assumed away). Release the held slot HERE so the next tick can retry,
+					// WITHOUT arming/overwriting any live run's durable marker. Gated on
+					// `isSendContract` so non-deferred agents (whose slot already released at
+					// `task-resolved`) are not double-released.
+					if (isSendContract) {
+						agentManager.emit("cron-result-complete", {
+							agentId: evt.agentId,
+							filename: evt.filename,
+						});
+					}
+					return;
+				}
 				// R1 (feature-pr84-r1-daemon-creds, D4) + Task 6 — the PROMPT was
 				// dispatched (claimed) successfully. Arm the durable, run-correlated
 				// dead-letter timer so an agent that crashes WITHOUT writing a result
@@ -1461,6 +1506,17 @@ export function makeTaskDispatchHandler(deps: {
 					reason: "listener-exception",
 					message: err instanceof Error ? err.message : String(err),
 				});
+				// Dual-adversarial pass #2 (Minor) — claimTask THREW, so neither
+				// `task-resolved` nor the result timer fired; for a send-contract
+				// (deferred-release) agent the CronScheduler slot would leak until daemon
+				// restart (overlap-preventing every future pr-triage cron fire). Release it
+				// here — same reasoning as the claim-fault path above.
+				if (isSendContract) {
+					agentManager.emit("cron-result-complete", {
+						agentId: evt.agentId,
+						filename: evt.filename,
+					});
+				}
 			}
 		} catch (err) {
 			await emit({
@@ -1767,6 +1823,33 @@ export async function registerCronAgentWithRestart(deps: {
 	// against the live generation at any time.
 	let currentUnsubscribe: (() => void) | null = null;
 
+	// Task 8 (Important, dual-adversarial pass #2) — close the cross-subsystem
+	// deferred double-restart race. A cron-owned restart waits out `backoffMs`
+	// (~5s) BEFORE it fires `restartAgent`. If another actor (heartbeat recycle,
+	// IPC) restarts this agent DURING that wait, the agent is already a fresh,
+	// healthy generation — firing the cron-deferred restart anyway would recycle
+	// it spuriously. `isRestarting(handle.id)` (checked at listener-fire time)
+	// cannot catch this: the recycle can start AND complete inside the backoff
+	// window, after the cron listener already committed to scheduling. So track the
+	// pending backoff timer + a monotonic generation; `onAgentRestarted` (the
+	// re-arm authority, fired by ANY restart) cancels the pending timer and bumps
+	// the generation, and the awaiting `scheduleRestart` aborts when its captured
+	// generation is stale. Cancelling resolves the wait (never `clearTimeout`
+	// alone — that would strand the awaiting promise forever).
+	let pendingRestart: {
+		timer: ReturnType<typeof setTimeout>;
+		resolve: () => void;
+	} | null = null;
+	let restartGeneration = 0;
+	const cancelPendingRestart = (): void => {
+		restartGeneration++;
+		if (pendingRestart !== null) {
+			clearTimeout(pendingRestart.timer);
+			pendingRestart.resolve();
+			pendingRestart = null;
+		}
+	};
+
 	const armExitListener = (handle: AgentHandle): void => {
 		// Task 8 — tear down any prior listener before arming the new one so two
 		// generations never both watch for exit (a stale listener on a dead PTY is
@@ -1820,6 +1903,12 @@ export async function registerCronAgentWithRestart(deps: {
 		if (isShuttingDown()) return;
 		const fresh = agentManager.getHandle(evt.handleId);
 		if (fresh === undefined) return;
+		// Task 8 (Important) — a fresh generation now exists (this restart, by ANY
+		// actor: heartbeat recycle, IPC, or this cron loop's own restartAgent).
+		// Cancel any cron-deferred restart still waiting out its backoff so it does
+		// not recycle the healthy fresh generation. Harmless when WE are the actor
+		// (no pending timer remains by the time our own restartAgent emits this).
+		cancelPendingRestart();
 		armExitListener(fresh);
 	};
 	agentManager.on("agent-restarted", onAgentRestarted);
@@ -1833,12 +1922,25 @@ export async function registerCronAgentWithRestart(deps: {
 			});
 			return;
 		}
+		// Task 8 (Important) — snapshot the generation BEFORE the backoff wait. If a
+		// concurrent restart lands during the wait, `cancelPendingRestart` bumps the
+		// generation (and resolves this wait) so we abort below instead of recycling
+		// the now-fresh generation.
+		const gen = restartGeneration;
 		const delay = backoffMs[attempt - 1];
 		await new Promise<void>((resolve) => {
-			const t = setTimeout(resolve, delay);
-			if (typeof t.unref === "function") t.unref();
+			const timer = setTimeout(() => {
+				pendingRestart = null;
+				resolve();
+			}, delay);
+			if (typeof timer.unref === "function") timer.unref();
+			pendingRestart = { timer, resolve };
 		});
 		if (isShuttingDown()) return;
+		// Task 8 (Important) — a concurrent restart (heartbeat recycle / IPC) landed
+		// while we waited out the backoff; the agent is already a fresh generation.
+		// Abort to avoid a spurious double-restart of a healthy generation.
+		if (restartGeneration !== gen) return;
 		try {
 			// pr84 R2: on a PTY crash the AgentManager cascades child shutdown
 			// but does NOT teardown the crashed handle itself — it lingers in

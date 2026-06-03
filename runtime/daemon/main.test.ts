@@ -12,6 +12,7 @@
  *   resolveSessionId, isDirectlyExecuted.
  */
 
+import { EventEmitter } from "node:events";
 import * as fsp from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -57,6 +58,7 @@ import {
 	makeResultTimers,
 	makeTaskDispatchHandler,
 	makeTaskSendHandler,
+	registerCronAgentWithRestart,
 	resolveSessionId,
 	withTimeout,
 } from "./main.js";
@@ -866,16 +868,24 @@ describe("makeDaemonStartupSessionId (Plan 04d)", () => {
 describe("makeTaskDispatchHandler (Plan 04d)", () => {
 	function makeStubManager(opts: {
 		handle: AgentHandle | null;
-		claimTask?: (filename: string, agentId: string) => Promise<void>;
+		claimTask?: (filename: string, agentId: string) => Promise<boolean>;
+		claimSucceeds?: boolean;
 	}): AgentManager {
 		const calls: Array<{ filename: string; agentId: string }> = [];
 		const releaseCalls: string[] = [];
+		const emitCalls: Array<{ event: string; payload: unknown }> = [];
 		const mgr = {
 			listHandles: () => (opts.handle === null ? [] : [opts.handle]),
+			// `claimTask` mirrors the real contract: RESOLVES `true` on a clean claim
+			// and `false` on a pending→resolved rename fault (the dispatch path now
+			// honors that boolean). Default success keeps the happy-path tests green;
+			// pass `claimSucceeds: false` to drive the claim-fault branch, or a custom
+			// `claimTask` to throw.
 			claimTask:
 				opts.claimTask ??
-				(async (filename: string, agentId: string) => {
+				(async (filename: string, agentId: string): Promise<boolean> => {
 					calls.push({ filename, agentId });
+					return opts.claimSucceeds ?? true;
 				}),
 			// Dual-adversarial C-1: handler ALWAYS calls releaseDispatchSlot
 			// from its finally block. The stub records calls so tests can
@@ -884,8 +894,17 @@ describe("makeTaskDispatchHandler (Plan 04d)", () => {
 			releaseDispatchSlot: (filename: string) => {
 				releaseCalls.push(filename);
 			},
+			// Dual-adversarial pass #2 — the dispatch handler releases a HELD
+			// CronScheduler slot for a send-contract agent by emitting
+			// `cron-result-complete` on the AgentManager when a claim faults or throws.
+			// Record emits so tests can assert the slot is released (not leaked).
+			emit: (event: string, payload: unknown): boolean => {
+				emitCalls.push({ event, payload });
+				return true;
+			},
 			_claimCalls: calls,
 			_releaseCalls: releaseCalls,
+			_emitCalls: emitCalls,
 		} as unknown as AgentManager;
 		return mgr;
 	}
@@ -1359,7 +1378,8 @@ describe("makeTaskDispatchHandler (Plan 04d)", () => {
 		// Task 6: timer armed exactly once for pr-triage, with the result-timeout
 		// window, the dispatched filename, AND a non-empty correlation runId.
 		expect(timerCalls).toHaveLength(1);
-		const call = timerCalls[0]!;
+		const call = timerCalls[0];
+		if (call === undefined) throw new Error("expected exactly one timer call");
 		expect(call.agentId).toBe("pr-triage");
 		expect(call.timeoutMs).toBe(RESULT_TIMEOUT_MS);
 		expect(call.filename).toBe("pr-triage__1700000400.json");
@@ -1372,7 +1392,9 @@ describe("makeTaskDispatchHandler (Plan 04d)", () => {
 		// from the live marker (which always matches), defeating the wrong-run
 		// guard. The original prompt text is preserved (instruction is appended).
 		expect(sendCalls).toHaveLength(1);
-		const sentText = (sendCalls[0]!.payload as { text: string }).text;
+		const firstSend = sendCalls[0];
+		if (firstSend === undefined) throw new Error("expected exactly one send");
+		const sentText = (firstSend.payload as { text: string }).text;
 		expect(sentText).toContain("do the triage");
 		expect(sentText).toContain("DAEMON RUN CORRELATION");
 		expect(sentText).toContain(`"runId":"${call.runId}"`);
@@ -1399,6 +1421,109 @@ describe("makeTaskDispatchHandler (Plan 04d)", () => {
 		});
 
 		expect(timerCalls).toHaveLength(0);
+	});
+
+	it("(DH-R2, dual-adversarial pass #2 Critical) a claim fault after a successful send does NOT arm/overwrite the result timer AND releases the held cron slot for retry", async () => {
+		// Without the fix the dispatch path discarded claimTask's boolean: it armed the
+		// result timer with a NEW runId (overwriting a live run's marker → the
+		// legitimate daily summary is quarantined as stale) and never released the held
+		// CronScheduler slot, permanently stalling pr-triage at maxConcurrent:1. With
+		// the fix, on `claimed === false` the handler emits
+		// pr-triage-dispatch-failed{claim-failed}, does NOT arm the timer, and emits
+		// `cron-result-complete` so the next cron tick can retry. RED without the slot
+		// release: `_emitCalls` would be empty and this assertion fails.
+		const { runtime } = makeStubRuntime("dhr2-runtime");
+		registerRuntime(runtime);
+		const handle = makeHandleFixture("pr-triage", "dhr2-runtime");
+		const mgr = makeStubManager({ handle, claimSucceeds: false });
+		const emitMock = vi.fn().mockResolvedValue(undefined);
+		const timerCalls: string[] = [];
+
+		const handler = makeTaskDispatchHandler({
+			agentManager: mgr,
+			emit: emitMock,
+			startResultTimer: (agentId) => {
+				timerCalls.push(agentId);
+			},
+		});
+
+		const evt: TaskDispatchEvent = {
+			filename: "pr-triage__1700000402.json",
+			agentId: "pr-triage",
+			taskContent: { prompt: "do the daily triage", agentId: "pr-triage" },
+		};
+		await handler(evt);
+
+		const failed = emitMock.mock.calls
+			.map((c) => c[0])
+			.filter((e) => (e as { kind: string }).kind === "pr-triage-dispatch-failed");
+		expect(failed).toHaveLength(1);
+		expect(failed[0]).toMatchObject({ reason: "claim-failed" });
+		// Result timer NOT armed — a live run's durable marker is never overwritten.
+		expect(timerCalls).toHaveLength(0);
+		// Held cron slot released so the file (still in pending/) can be retried.
+		const emitted = (
+			mgr as unknown as {
+				_emitCalls: Array<{ event: string; payload: unknown }>;
+			}
+		)._emitCalls;
+		expect(emitted).toEqual([
+			{
+				event: "cron-result-complete",
+				payload: { agentId: "pr-triage", filename: evt.filename },
+			},
+		]);
+	});
+
+	it("(DH-R3, dual-adversarial pass #2 Minor) a claimTask THROW releases the held cron slot (no permanent overlap-prevention)", async () => {
+		// Without the fix a throw from claimTask (e.g. assertSafeIdentifier) jumped to
+		// the catch, emitted dispatch-failed, but never released the held cron slot —
+		// leaking it until daemon restart, overlap-preventing every future pr-triage
+		// fire. With the fix the catch emits `cron-result-complete`. RED without it.
+		const { runtime } = makeStubRuntime("dhr3-runtime");
+		registerRuntime(runtime);
+		const handle = makeHandleFixture("pr-triage", "dhr3-runtime");
+		const mgr = makeStubManager({
+			handle,
+			claimTask: async () => {
+				throw new Error("assertSafeIdentifier: bad filename");
+			},
+		});
+		const emitMock = vi.fn().mockResolvedValue(undefined);
+		const timerCalls: string[] = [];
+
+		const handler = makeTaskDispatchHandler({
+			agentManager: mgr,
+			emit: emitMock,
+			startResultTimer: (agentId) => {
+				timerCalls.push(agentId);
+			},
+		});
+
+		const evt: TaskDispatchEvent = {
+			filename: "pr-triage__1700000403.json",
+			agentId: "pr-triage",
+			taskContent: { prompt: "do the daily triage", agentId: "pr-triage" },
+		};
+		await handler(evt);
+
+		const failed = emitMock.mock.calls
+			.map((c) => c[0])
+			.filter((e) => (e as { kind: string }).kind === "pr-triage-dispatch-failed");
+		expect(failed).toHaveLength(1);
+		expect(failed[0]).toMatchObject({ reason: "listener-exception" });
+		expect(timerCalls).toHaveLength(0);
+		const emitted = (
+			mgr as unknown as {
+				_emitCalls: Array<{ event: string; payload: unknown }>;
+			}
+		)._emitCalls;
+		expect(emitted).toEqual([
+			{
+				event: "cron-result-complete",
+				payload: { agentId: "pr-triage", filename: evt.filename },
+			},
+		]);
 	});
 });
 
@@ -2597,5 +2722,168 @@ describe("makePrTriageCronPrompt (R1)", () => {
 		expect(result.skip).toBe(true);
 		expect(result.reason).toBe("pr-fetch-failed");
 		expect(fetchImpl).not.toHaveBeenCalled();
+	});
+});
+
+describe("registerCronAgentWithRestart (Task 8 — deferred double-restart race)", () => {
+	type StatusCb = (status: string) => void;
+
+	function makeRestartHarness() {
+		const restartCalls: Array<{ handleId: string; reason: string }> = [];
+		const registerCalls: string[] = [];
+		let restarting = false;
+		let handleN = 0;
+		const handles = new Map<string, AgentHandle>();
+		const emitter = new EventEmitter();
+		// armExitListener subscribes via runtime.onStatusChanged; capture the LIVE
+		// callback for the most-recently-armed handle so the test can drive an exit.
+		let statusCb: StatusCb | null = null;
+
+		const mkHandle = (): AgentHandle => {
+			handleN += 1;
+			const h: AgentHandle = {
+				id: `pr-triage-h${handleN}`,
+				runtime: "cr-runtime",
+				shape: "pty",
+				agentId: "pr-triage",
+				sessionId: `sess-${handleN}`,
+				generationToken: handleN,
+				spawnedAt: 1000 + handleN,
+				markerPath: "/tmp/marker",
+			};
+			handles.set(h.id, h);
+			return h;
+		};
+
+		const runtime: AgentRuntime = {
+			shape: "pty",
+			id: "cr-runtime",
+			version: "test-0.0.1",
+			interfaceVersion: "v1",
+			spawn: async () => {
+				throw new Error("not used in restart tests");
+			},
+			send: async () => {},
+			onStatusChanged: (_handle: AgentHandle, cb: StatusCb) => {
+				statusCb = cb;
+				return () => {
+					if (statusCb === cb) statusCb = null;
+				};
+			},
+			isAlive: async () => true,
+			getStatus: async () => ({ alive: true }),
+			shutdown: async () => {},
+			restoreFromMarker: async () => null,
+			costTap: () => ({
+				[Symbol.asyncIterator]: () => ({
+					next: async () => ({ value: undefined, done: true }) as const,
+				}),
+			}),
+		};
+		registerRuntime(runtime);
+
+		const mgr = {
+			listHandles: () => [...handles.values()],
+			getHandle: (id: string) => handles.get(id),
+			isRestarting: () => restarting,
+			registerAgent: async () => {
+				registerCalls.push("register");
+				return mkHandle();
+			},
+			restartAgent: async (handleId: string, reason: string) => {
+				restartCalls.push({ handleId, reason });
+				const fresh = mkHandle();
+				// restartAgent broadcasts agent-restarted (re-arm authority).
+				emitter.emit("agent-restarted", {
+					agentId: "pr-triage",
+					handleId: fresh.id,
+				});
+				return fresh;
+			},
+			on: (ev: string, cb: (...a: unknown[]) => void) => {
+				emitter.on(ev, cb);
+			},
+			emit: (ev: string, payload: unknown) => emitter.emit(ev, payload),
+		} as unknown as AgentManager;
+
+		return {
+			mgr,
+			restartCalls,
+			registerCalls,
+			fireExit: (status = "crashed") => {
+				statusCb?.(status);
+			},
+			setRestarting: (v: boolean) => {
+				restarting = v;
+			},
+			// Simulate a heartbeat recycle COMPLETING: a fresh handle now exists and the
+			// AgentManager broadcasts agent-restarted (exactly what restartAgent does).
+			simulateRecycleCompleted: () => {
+				const fresh = mkHandle();
+				emitter.emit("agent-restarted", {
+					agentId: "pr-triage",
+					handleId: fresh.id,
+				});
+			},
+		};
+	}
+
+	const agentConfig = {
+		runtimeId: "cr-runtime",
+		cwd: "/tmp",
+		env: {},
+	} as unknown as AgentConfigShape;
+
+	it("(CR-1 control) a genuine crash with NO concurrent recycle fires exactly one cron restart", async () => {
+		vi.useFakeTimers();
+		const h = makeRestartHarness();
+		await registerCronAgentWithRestart({
+			agentManager: h.mgr,
+			agentId: "pr-triage",
+			agentConfig,
+			isShuttingDown: () => false,
+			backoffMs: [50],
+		});
+		// Genuine unsolicited crash: no restart in flight → the cron loop owns it.
+		h.setRestarting(false);
+		h.fireExit("crashed");
+		await vi.advanceTimersByTimeAsync(0);
+		// Still inside the 50ms backoff — nothing fired yet.
+		expect(h.restartCalls).toHaveLength(0);
+		// Past the backoff → the cron restart fires exactly once.
+		await vi.advanceTimersByTimeAsync(60);
+		expect(h.restartCalls).toHaveLength(1);
+		expect(h.restartCalls[0]).toMatchObject({ reason: "crash" });
+	});
+
+	it("(CR-2, dual-adversarial pass #2 Important) a heartbeat recycle that COMPLETES inside the cron backoff window cancels the cron-deferred restart (no spurious double-restart)", async () => {
+		// Without the fix the cron loop's scheduled restart fires after the backoff
+		// even though a heartbeat recycle already produced a fresh, healthy generation
+		// (restartingPromises was already cleared; `scheduled=true` lived in the old
+		// closure) → a spurious double-restart of a healthy agent. With the fix,
+		// onAgentRestarted cancels the pending backoff timer and bumps the generation
+		// so the awaiting scheduleRestart aborts. RED without the fix: restartCalls
+		// would be length 1.
+		vi.useFakeTimers();
+		const h = makeRestartHarness();
+		await registerCronAgentWithRestart({
+			agentManager: h.mgr,
+			agentId: "pr-triage",
+			agentConfig,
+			isShuttingDown: () => false,
+			backoffMs: [50],
+		});
+		// Genuine crash → cron loop schedules a restart and enters the 50ms backoff.
+		h.setRestarting(false);
+		h.fireExit("crashed");
+		await vi.advanceTimersByTimeAsync(0);
+		expect(h.restartCalls).toHaveLength(0);
+		// DURING the backoff window, a heartbeat recycle completes → agent-restarted.
+		h.simulateRecycleCompleted();
+		await vi.advanceTimersByTimeAsync(0);
+		// Advance well past the original backoff: the cron-deferred restart must NOT
+		// fire — the agent is already a fresh, healthy generation.
+		await vi.advanceTimersByTimeAsync(200);
+		expect(h.restartCalls).toHaveLength(0);
 	});
 });

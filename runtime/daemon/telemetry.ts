@@ -395,7 +395,14 @@ export type DaemonEvent =
 				| "listener-exception"
 				| "unregistered"
 				| "malformed-task"
-				| "no-listener";
+				| "no-listener"
+				// Dual-adversarial Critical (round 1) — the prompt reached the agent
+				// (runtime.send resolved) but the pending→resolved CLAIM failed
+				// (rename fault). The file stays in tasks/pending/ for the next tick
+				// to retry; the dead-letter result timer is NOT armed (arming it would
+				// overwrite the live run's marker on the redispatch's new runId and
+				// quarantine the original run's legitimate result).
+				| "claim-failed";
 			readonly message: string;
 	  }
 	| {
