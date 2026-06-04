@@ -96,6 +96,18 @@ This ensures we're on the latest main with no conflicts.
 For each plan in order, invoke the **Workflow tool** (this skill invocation is the
 authorization to call it — Workflow opt-in). Use the absolute paths from step 2:
 
+Before each Workflow call, detect whether the plan was already stress-tested so the
+Workflow can skip the (otherwise pure-waste) Opus stress spawn. Grep the plan for a
+line-anchored `## Stress Test` heading:
+
+```bash
+grep -q '^## Stress Test' "<absolute plan path>" && echo skip || echo run
+```
+
+If it prints `skip`, add `skipStress: true` to `args`; otherwise OMIT the flag (the
+Workflow uses strict `=== true`, so a missing value falls through to running the full
+Opus stress agent — fail-safe toward more review).
+
 ```
 Workflow({
   scriptPath: "<WF>",                      // .claude/workflows/execute-pipeline.js (absolute)
@@ -103,7 +115,8 @@ Workflow({
     plan: "<absolute plan path>",
     projectDir: "<absolute PROJECT_DIR>",
     iagoRoot: "<IAGO_ROOT>",
-    noTag: <true ONLY if --no-review was passed, else omit>
+    noTag: <true ONLY if --no-review was passed, else omit>,
+    skipStress: <true ONLY if the plan has a `## Stress Test` section, else omit>
   }
 })
 ```

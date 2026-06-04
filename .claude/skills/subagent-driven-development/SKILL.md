@@ -51,11 +51,24 @@ If `--dry-run`: validate plan structure, report issues, stop.
 
 **If `--pipeline` is set:** For each task, write a single-task plan to
 `.iago/plans/sdd-{slug}-{N}.md`, then invoke the **Workflow tool** (this skill
-invocation authorizes the Workflow call):
+invocation authorizes the Workflow call). Before each call, grep the plan for a
+line-anchored `## Stress Test` heading and pass `skipStress: true` only when present
+(otherwise OMIT it — the Workflow uses strict `=== true`, so a missing value runs the
+full Opus stress agent):
+```bash
+grep -q '^## Stress Test' "<abs>/.iago/plans/sdd-{slug}-{N}.md" && echo skip || echo run
+```
+The single-task plans this skill writes have no `## Stress Test` section, so this
+normally prints `run` and the flag is omitted — stress still runs.
 ```
 Workflow({
   scriptPath: "<IAGO_ROOT>/.claude/workflows/execute-pipeline.js",
-  args: { plan: "<abs>/.iago/plans/sdd-{slug}-{N}.md", projectDir: "{dir}", iagoRoot: "<IAGO_ROOT>" }
+  args: {
+    plan: "<abs>/.iago/plans/sdd-{slug}-{N}.md",
+    projectDir: "{dir}",
+    iagoRoot: "<IAGO_ROOT>",
+    skipStress: <true ONLY if the plan has a `## Stress Test` section, else omit>
+  }
 })
 ```
 (`IAGO_ROOT` = `${IAGO_OS_ROOT:-$(git rev-parse --show-toplevel)}`.) The Workflow

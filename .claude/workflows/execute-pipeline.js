@@ -24,6 +24,10 @@ export const meta = {
 //   iagoRoot:   absolute path to the iago-os install (for review-checks modules)
 //   noTag:      true → create PR but do not tag @claude (suppress async loop)
 //   noPr:       true → stacked local commit on the current branch, no PR (implies noTag)
+//   skipStress: true → the plan already carries a "## Stress Test" section (the skill
+//               grepped for it), so skip the Opus stress spawn entirely. Strict
+//               `=== true`: any missing/false/ambiguous value falls through to the
+//               full Opus stress agent (fail-safe toward more review, never less).
 // }
 // args may arrive as a parsed object OR (in this harness build) as a JSON
 // STRING — normalize both. Confirmed via zero-agent smoke probe 2026-05-28:
@@ -150,6 +154,19 @@ const PR_SCHEMA = {
   },
 }
 
+// Merged create-PR + @claude-tag (the !noTag path). tagStatus distinguishes a
+// genuine "posted/already-present" from "skipped because there was no PR number".
+const PR_TAG_SCHEMA = {
+  type: 'object',
+  required: ['prUrl', 'prNumber', 'tagStatus'],
+  properties: {
+    prUrl: { type: 'string' },
+    prNumber: { type: 'string' },
+    branch: { type: 'string' },
+    tagStatus: { type: 'string', enum: ['TAGGED', 'ALREADY_TAGGED', 'SKIPPED_NO_PR_NUMBER'] },
+  },
+}
+
 // ─── Helpers ─────────────────────────────────────────────────────────
 // Retry a critical agent call. A throw (transient API error like the
 // "thinking blocks cannot be modified" 400 that killed the bash pipeline) is
@@ -189,7 +206,7 @@ async function withRetryMutating(fn, label, restoreCmd) {
       // tree. If the rollback can't reach a clean checkpoint, fail closed.
       const rb = await agent(
         `${PREAMBLE}\n\nRoll back ALL partial changes from a FAILED pipeline attempt so the retry starts from the checkpoint. In ${projectDir} run exactly:\n  ${restoreCmd}\nThen VERIFY: git status --porcelain MUST be empty. Return status=DONE only if the tree is clean; otherwise status=BLOCKED with what remains.`,
-        { label: `${label}-rollback`, schema: IMPL_SCHEMA },
+        { label: `${label}-rollback`, schema: IMPL_SCHEMA, model: 'haiku' },
       )
       if (!rb || rb.status !== 'DONE') {
         throw new Error(
@@ -230,11 +247,21 @@ function hasBlocking(findings) {
 }
 
 // ─── Prompt builders ─────────────────────────────────────────────────
-function reviewPrompt(isReReview, stressBlock, preImplSha) {
+function reviewPrompt(isReReview, stressBlock, preImplSha, domainsSelected) {
+  // On a re-review the domains were already decided in round 0 — supply them as a hint
+  // and drop the PASS-2 (domain-routing OUTPUT) step. The round-0 head keeps PASS 2.
+  // NOTE: every review-checks module is still loaded on EVERY pass (see step 3 below) —
+  // the hint narrows FOCUS, never which modules are in context, so no coverage is lost.
+  const domainHint =
+    isReReview && domainsSelected && domainsSelected.length
+      ? `\n\nDomains identified in round 0: ${domainsSelected.join(', ')}. Use as a starting hint for PASS 3 focus (a fix may have introduced a new domain — all modules are loaded regardless, so apply any that now apply).`
+      : ''
   const head = isReReview
-    ? `Re-review after a fix round. Verify ALL previous findings (Critical, Important, Minor) are resolved, and check for regressions the fixes may have introduced.
+    ? `Re-review after a fix round. Verify ALL previous findings (Critical, Important, Minor) are resolved, and check for regressions the fixes may have introduced.${domainHint}
 
-INTEGRITY CHECK: if the prior fix claimed "no test infrastructure" to skip a regression test for a Critical/Important finding, verify by probing conventions — sibling *.test.ts / *.test.tsx, vitest.config.ts, package.json test scripts, test-{name}.{mjs,bats,sh} beside bash scripts, e2e/, amplify/functions/*/handler.test.ts. If infra exists that was missed, raise a NEW Important finding.`
+INTEGRITY CHECK: if the prior fix claimed "no test infrastructure" to skip a regression test for a Critical/Important finding, verify by probing conventions — sibling *.test.ts / *.test.tsx, vitest.config.ts, package.json test scripts, test-{name}.{mjs,bats,sh} beside bash scripts, e2e/, amplify/functions/*/handler.test.ts. If infra exists that was missed, raise a NEW Important finding.
+
+PASS — ADVERSARIAL: Read each changed source file in FULL for context — not the diff alone. Apply the relevant domains' checks thoroughly (domain selection is already known — do NOT re-derive a domainsSelected list).`
     : `Review the implementation against the plan. Three passes in one session:
 
 PASS 1 — PLAN COMPLIANCE: For each task in the plan, verify the changes implement it correctly. Flag missing, incomplete, or incorrect implementations.
@@ -374,7 +401,11 @@ Process, in priority order Critical → Important → Minor:
 2. Apply the smallest correct fix, matching existing style.
 3. For each Critical/Important finding, add or extend a regression test in the same commit — it must fail without the fix and pass with it. Locate by convention (foo.ts → foo.test.ts; bash → test-{name}.{mjs,bats,sh} beside it). If no test infra exists for that path, say so explicitly in notes and skip the test for THAT finding only.
 4. Do not re-litigate severity. Skip nothing.
-After all fixes: run the build gate (npx tsc --noEmit / npx vite build as applicable, or bash -n + shellcheck -x for shell). Fix any regression. THEN commit your fixes on the CURRENT branch: git add -A -- ${SECRET_EXCLUDES} || true ; git commit -m "fix: address review findings (round ${round})". (Committing keeps the re-review and Codex diff current.)
+After all fixes: run a FAST self-check on the changed paths (the authoritative full build gate runs post-commit — do NOT run \`npx vite build\` here, it is the slow part and is re-run authoritatively after you commit):
+   - TypeScript paths: npx tsc --noEmit
+   - Changed *.sh: bash -n on each ; shellcheck -x if installed
+   - Changed .claude/workflows/*.js: node "${iagoRoot}/scripts/validate-workflows.mjs"
+Fix any regression the self-check surfaces. THEN commit your fixes on the CURRENT branch: git add -A -- ${SECRET_EXCLUDES} || true ; git commit -m "fix: address review findings (round ${round})". (Committing keeps the re-review and Codex diff current; the post-commit BUILD VERIFY re-gate runs the full tsc + vite + console gate authoritatively.)
 
 Return status=DONE with a per-finding notes summary, or BLOCKED with the reason and what would unblock it.`
 }
@@ -396,18 +427,40 @@ CREATE PR for the plan ${planName}. The changes are ALREADY COMMITTED on branch 
 4. Do NOT merge. Return the PR url and number and the branch name.`
 }
 
-function tagPrompt(prNumber) {
+// Merged create-PR + @claude-tag prompt for the default (!noTag) path. One sonnet
+// agent does both side-effecting steps. The two idempotency guards (reuse an existing
+// PR; skip an already-posted @claude tag) MUST survive the merge — a duplicate PR or a
+// double @claude tag races the parallel review-fix loops (MEMORY: single-@claude-tag).
+function prTagPrompt(branch) {
   return `${PREAMBLE}
 
-Post a GitHub PR comment tagging @claude for review on PR #${prNumber} (in ${projectDir}).
-IDEMPOTENCY FIRST: list existing comments — gh pr view ${prNumber} --json comments — and if a comment already tags @claude for review, do NOT post again; return status=DONE immediately. (A duplicate @claude tag races parallel review-fix loops.)
-Otherwise output exactly one comment via gh pr comment. The comment text must be:
-1. First line: @claude Review this PR thoroughly.
-2. Blank line. Context: 2-3 sentences on what this PR implements and why (synthesize from the plan ${plan}); note the full plan is embedded in the PR description.
-3. Blank line. Focus areas: name the specific domains the diff touches (auth, API, React, backend, infra, i18n) and concrete patterns to watch — reference specific files/functions.
-4. Blank line. Edge cases the local pipeline could not fully verify (integration effects, runtime/load, UX empty/error/loading states, concurrency).
-5. Blank line. End: General pass for anything unexpected.
-No markdown headers, no bullets, under 300 words. Post exactly once. Return status=DONE.`
+CREATE PR and request @claude review for the plan ${planName}. The changes are ALREADY COMMITTED on branch "${branch}". In ${projectDir}, do BOTH steps in order:
+
+STEP A — CREATE OR REUSE THE PR:
+1. Push the branch: git push -u origin "${branch}"
+2. IDEMPOTENCY: check whether a PR already exists for this branch —
+   gh pr view "${branch}" --json url,number,state 2>/dev/null
+   If an OPEN PR already exists, REUSE it (use its url/number) — do NOT create a duplicate.
+3. Otherwise create the PR via gh. Body structure:
+   - Open with "## What this does" — a plain-English 1-3 sentence summary (no jargon).
+   - ## Summary — 1-3 bullets of what changed.
+   - <details><summary>Plan: ${planName}</summary> ... paste the FULL plan content from ${plan} ... </details>
+   - ## Test plan — how to verify.
+   PR TITLE: short plain-English feature name, no conventional-commit prefix, under 60 chars.
+4. Do NOT merge. Extract prUrl and prNumber.
+
+STEP B — TAG @claude (only if STEP A yielded a PR number):
+5. If prNumber is EMPTY/missing, set tagStatus="SKIPPED_NO_PR_NUMBER", do NOT post any comment, and return now (the workflow will abort on the missing number).
+6. IDEMPOTENCY FIRST: list existing comments — gh pr view <prNumber> --json comments — and if a comment already tags @claude for review, do NOT post again; set tagStatus="ALREADY_TAGGED". (A duplicate @claude tag races parallel review-fix loops.)
+7. Otherwise post exactly one comment via gh pr comment <prNumber>. The comment text must be:
+   - First line: @claude Review this PR thoroughly.
+   - Blank line. Context: 2-3 sentences on what this PR implements and why (synthesize from the plan ${plan}); note the full plan is embedded in the PR description.
+   - Blank line. Focus areas: name the specific domains the diff touches (auth, API, React, backend, infra, i18n) and concrete patterns to watch — reference specific files/functions.
+   - Blank line. Edge cases the local pipeline could not fully verify (integration effects, runtime/load, UX empty/error/loading states, concurrency).
+   - Blank line. End: General pass for anything unexpected.
+   No markdown headers, no bullets, under 300 words. Post exactly once. Set tagStatus="TAGGED".
+
+Return prUrl, prNumber, branch, and tagStatus.`
 }
 
 function summaryPrompt(preImplSha, prUrl, reviewVerdict, codexSource, rounds) {
@@ -418,16 +471,19 @@ Write the pipeline summary. In ${projectDir}:
 2. Write .iago/summaries/${planName}.md with frontmatter (plan, status: done, verified: today's UTC date via  date -u +%Y-%m-%d, pr) and sections: Pipeline Result (review verdict ${reviewVerdict}, codex source ${codexSource}, fix rounds ${rounds}, PR ${prUrl || '(none)'}) and Diff Stats (git diff --stat ${preImplSha}..HEAD).
 3. Append one NDJSON line to .iago/state/pipeline-runs.ndjson (mkdir -p .iago/state first): {"plan":"${planName}","pr":"${prUrl || ''}","verdict":"${reviewVerdict}","codex":"${codexSource}","rounds":${rounds},"ts":"<date -u +%Y-%m-%dT%H:%M:%SZ>"}
 4. COMMIT the summary so the working tree is left CLEAN for the next sequential plan's prep guard: git add .iago/summaries/${planName}.md && git commit -m "docs(summary): ${planName} pipeline result". (.iago/state/* is gitignored — do NOT stage it. This commit is local bookkeeping; it is fine that it lands after the PR push and is not part of the PR.)
-Return status=DONE.`
+5. Release the pipeline lock: run  rm -rf ${LOCK_DIR}  in ${projectDir}.
+Return status=DONE only when ALL of the above steps succeed.`
 }
 
 // ─── Dual-adversarial pass (Opus review ∥ Codex), used initially + per fix round ─
-async function runDualAdversarial(label, isReReview, stressBlock, preImplSha) {
+// `domainsSelected` (from round 0) is threaded into a re-review as a focus hint so
+// the re-reviewer does not re-derive domain selection — all modules stay loaded.
+async function runDualAdversarial(label, isReReview, stressBlock, preImplSha, domainsSelected) {
   const [review, codex] = await parallel([
     () =>
       withRetry(
         () =>
-          agent(reviewPrompt(isReReview, stressBlock, preImplSha), {
+          agent(reviewPrompt(isReReview, stressBlock, preImplSha, domainsSelected), {
             label: `review:${label}`,
             phase: 'Review',
             schema: REVIEW_SCHEMA,
@@ -467,7 +523,7 @@ async function runDualAdversarial(label, isReReview, stressBlock, preImplSha) {
   const codexSource = codex.source
   for (const f of review.findings || []) findings.push({ ...f, by: 'opus' })
   for (const f of codex.findings || []) findings.push({ ...f, by: codex.source })
-  return { findings, verdict, codexSource }
+  return { findings, verdict, codexSource, domainsSelected: review.domainsSelected || [] }
 }
 
 // ─── Flow ────────────────────────────────────────────────────────────
@@ -497,6 +553,7 @@ Acquire the per-project pipeline lock in ${projectDir}. Run EXACTLY, in order:
     label: 'lock-acquire',
     phase: 'Stress',
     schema: { type: 'object', required: ['status'], properties: { status: { type: 'string', enum: ['ACQUIRED', 'BLOCKED'] }, notes: { type: 'string' } } },
+    model: 'sonnet',
   },
 )
 if (!lock || lock.status !== 'ACQUIRED') {
@@ -508,10 +565,20 @@ log(`acquired pipeline lock (${LOCK_DIR})`)
 
 // Stage 0 — Stress
 phase('Stress')
-const stress = await withRetry(
-  () => agent(STRESS_PROMPT, { label: 'stress', phase: 'Stress', schema: STRESS_SCHEMA }),
-  'stress',
-)
+// Strict `=== true`: any missing/false/ambiguous value falls through to the full
+// Opus stress agent (fail-safe toward more review, never less). A pre-stressed plan
+// (## Stress Test section, detected by the skill that globs the plan files) would
+// only hit the in-agent early-return (PROCEED) anyway, so this skips a pure-waste spawn.
+let stress
+if (A.skipStress === true) {
+  log('stress skipped — plan already stress-tested (## Stress Test present)')
+  stress = { verdict: 'PROCEED', notes: [] }
+} else {
+  stress = await withRetry(
+    () => agent(STRESS_PROMPT, { label: 'stress', phase: 'Stress', schema: STRESS_SCHEMA }),
+    'stress',
+  )
+}
 if (stress.verdict === 'BLOCK') {
   throw new Error(`Stress test BLOCKED the plan:\n- ${(stress.notes || []).join('\n- ')}`)
 }
@@ -523,7 +590,7 @@ const stressBlock =
 // Stage 1 — Prep + Implement
 phase('Implement')
 const prep = await withRetry(
-  () => agent(PREP_PROMPT, { label: 'prep', phase: 'Implement', schema: PREP_SCHEMA }),
+  () => agent(PREP_PROMPT, { label: 'prep', phase: 'Implement', schema: PREP_SCHEMA, model: 'haiku' }),
   'prep',
 )
 if (prep.status !== 'DONE') {
@@ -572,7 +639,7 @@ if (!buildOk) throw new Error('Build gate failed after 2 attempts')
 phase('Commit')
 // Single attempt — the commit stage creates a commit; a blind retry could
 // double-commit. If it throws, the pipeline aborts for inspection.
-const commit = await agent(commitPrompt(), { label: 'commit', phase: 'Commit', schema: COMMIT_SCHEMA })
+const commit = await agent(commitPrompt(), { label: 'commit', phase: 'Commit', schema: COMMIT_SCHEMA, model: 'sonnet' })
 if (!commit) throw new Error('Commit agent was skipped — aborting')
 if (commit.status !== 'DONE') {
   throw new Error(`Commit ${commit.status}: ${commit.notes || '(no detail)'}`)
@@ -582,7 +649,7 @@ log(`committed on ${branch} @ ${commit.headSha || '?'}`)
 
 // Stage 3/4 — Dual-adversarial review (Opus ∥ Codex), then fix loop
 phase('Review')
-let { findings, verdict, codexSource } = await runDualAdversarial('r0', false, stressBlock, preImplSha)
+let { findings, verdict, codexSource, domainsSelected } = await runDualAdversarial('r0', false, stressBlock, preImplSha)
 let rounds = 0
 const MAX_FIX_ROUNDS = 2
 // Loop while there is work AND it is either round 0 (always do ONE fix pass for any
@@ -609,16 +676,18 @@ while (
   // Re-gate the build after fixes, then re-review (fixes were committed by the fix agent).
   phase('Build gate')
   const rebuild = await withRetry(
-    () => agent(buildVerifyPrompt(preImplSha), { label: `rebuild:${rounds}`, phase: 'Build gate', schema: BUILD_SCHEMA }),
+    () => agent(buildVerifyPrompt(preImplSha), { label: `rebuild:${rounds}`, phase: 'Build gate', schema: BUILD_SCHEMA, model: 'sonnet' }),
     `rebuild:${rounds}`,
   )
   if (!rebuild.passed) throw new Error(`Build broke during fix round ${rounds}: ${rebuild.summary || ''}`)
   phase('Review')
-  ;({ findings, verdict, codexSource } = await runDualAdversarial(
+  // Thread round-0 domain selection in as a focus hint (all modules still load).
+  ;({ findings, verdict, codexSource, domainsSelected } = await runDualAdversarial(
     `r${rounds}`,
     true,
     stressBlock,
     preImplSha,
+    domainsSelected,
   ))
 }
 if (hasBlocking(findings)) {
@@ -637,12 +706,10 @@ let prUrl = ''
 let prNumber = ''
 if (noPr) {
   log(`stacked commit on ${branch} (no PR)`)
-} else {
-  // PR-create and tag are side-effecting (git push, gh pr create, gh pr comment).
-  // NOT wrapped in withRetry: a blind retry could create a duplicate PR or
-  // double-post the @claude tag, racing parallel review-fix loops (MEMORY:
-  // feedback_single_claude_tag). The prompts are idempotent instead — they reuse
-  // an existing PR for the branch and skip an already-posted @claude comment.
+} else if (noTag) {
+  // PR only, no @claude tag (--no-review / --no-tag). NOT wrapped in withRetry: a
+  // blind retry could create a duplicate PR. The prompt is idempotent — it reuses an
+  // existing PR for the branch.
   const pr = await agent(prPrompt(branch), {
     label: 'create-pr',
     phase: 'PR',
@@ -652,45 +719,56 @@ if (noPr) {
   if (!pr) throw new Error('PR-create agent was skipped — aborting')
   prUrl = pr.prUrl || ''
   prNumber = pr.prNumber || (prUrl.match(/\/pull\/(\d+)/) || [])[1] || ''
-  if (!noTag && (!prUrl || !prNumber)) {
-    // Tagging is mandatory unless noTag. A missing PR number means the async
-    // review loop cannot be triggered, so the pipeline must NOT report success.
+  log(`PR: ${prUrl || '(none)'}`)
+} else {
+  // Default path: ONE sonnet agent both creates-or-reuses the PR AND posts the
+  // @claude tag. Merging two sequential sonnet agents that act on the same PR.
+  // NOT wrapped in withRetry: a blind retry could create a duplicate PR or
+  // double-post the @claude tag, racing parallel review-fix loops (MEMORY:
+  // feedback_single_claude_tag). The prompt is idempotent instead — it reuses an
+  // existing PR for the branch and skips an already-posted @claude comment.
+  const pr = await agent(prTagPrompt(branch), {
+    label: 'create-pr-tag',
+    phase: 'PR',
+    schema: PR_TAG_SCHEMA,
+    model: 'sonnet',
+  })
+  if (!pr) throw new Error('PR-create+tag agent was skipped — aborting')
+  prUrl = pr.prUrl || ''
+  prNumber = pr.prNumber || (prUrl.match(/\/pull\/(\d+)/) || [])[1] || ''
+  // PR-number assertion: a missing number means the async review loop cannot be
+  // triggered, so the pipeline must NOT report success.
+  if (!prUrl || !prNumber) {
     throw new Error(
-      `PR stage did not yield a usable PR url/number (url="${prUrl}", number="${prNumber}") — cannot trigger the @claude review loop; resolve and re-run, or tag with /iago-prfix`,
+      `PR stage did not yield a usable PR url/number (url="${prUrl}", number="${prNumber}", tagStatus="${pr.tagStatus || '?'}") — cannot trigger the @claude review loop; resolve and re-run, or tag with /iago-prfix`,
     )
   }
-  log(`PR: ${prUrl || '(none)'}`)
-  if (!noTag) {
-    const tag = await agent(tagPrompt(prNumber), {
-      label: 'tag-claude',
-      phase: 'PR',
-      schema: IMPL_SCHEMA,
-      model: 'sonnet',
-    })
-    if (!tag || tag.status !== 'DONE') {
-      throw new Error(
-        `@claude tag stage did not confirm DONE (status=${tag ? tag.status : 'null'}) — the async review loop may not have started; tag manually with /iago-prfix`,
-      )
-    }
-    log(`tagged @claude on PR #${prNumber} — async GitHub review-fix loop will run`)
+  log(`PR: ${prUrl}`)
+  // We have a PR number, so the tag must have been posted or already present. A
+  // SKIPPED_NO_PR_NUMBER here would contradict the non-empty prNumber above (caught
+  // by the assertion already), so treat anything other than TAGGED/ALREADY_TAGGED as
+  // a failed tag — the async loop may not have started.
+  if (pr.tagStatus !== 'TAGGED' && pr.tagStatus !== 'ALREADY_TAGGED') {
+    throw new Error(
+      `@claude tag did not confirm posted (tagStatus="${pr.tagStatus || 'null'}") on PR #${prNumber} — the async review loop may not have started; tag manually with /iago-prfix`,
+    )
   }
+  log(`tagged @claude on PR #${prNumber} — async GitHub review-fix loop will run`)
 }
 
-// Stage 6 — Summary + telemetry
+// Stage 6 — Summary + telemetry + lock release (one merged deterministic agent).
+// summaryPrompt now ends by releasing the lock, so the two trailing deterministic
+// agents collapse into one spawn. The throw still covers the merged result: today
+// if summary throws, lock-release never ran anyway, so merging changes nothing —
+// and a failed `rm -rf` now surfaces as BLOCKED instead of silent best-effort.
 phase('Summary')
 const summary = await agent(summaryPrompt(preImplSha, prUrl, verdict, codexSource, rounds), {
   label: 'summary',
   phase: 'Summary',
   schema: IMPL_SCHEMA,
+  model: 'haiku',
 })
-if (!summary || summary.status !== 'DONE') throw new Error('Summary agent was skipped or BLOCKED — .iago/summaries/ uncommitted, dirty tree for next plan')
-
-// Release the pipeline lock (best-effort, success path — see the lock comment above
-// for why there is no finally-release).
-await agent(
-  `${PREAMBLE}\n\nRelease the pipeline lock: in ${projectDir} run  rm -rf ${LOCK_DIR}. Return status=DONE.`,
-  { label: 'lock-release', phase: 'Summary', schema: IMPL_SCHEMA },
-)
+if (!summary || summary.status !== 'DONE') throw new Error('Summary agent was skipped or BLOCKED — .iago/summaries/ uncommitted, dirty tree for next plan, or lock not released')
 log(`released pipeline lock`)
 
 log(`PIPELINE COMPLETE — ${planName}`)
