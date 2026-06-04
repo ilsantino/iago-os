@@ -45,10 +45,11 @@ Santiago merges.**
               args: { projectDir, iagoRoot, base, prNumber, mode: "team" } })
    ```
    With `lenses` absent (or the literal string `"auto"`), the Workflow derives the extra
-   lenses from the diff: `amplify/**` → `amplify`; `src/**` or any `*.tsx` → `frontend`;
-   any `auth`/`authz`/`cognito`/`payment`/`billing` path → `security`; plus `codeQuality`
-   and `completeness` ALWAYS. `perf` and `tests` are NOT auto-derived — add them via
-   `--interactive`. Then go to step 4.
+   lenses from the diff: `amplify/**` → `amplify`; `src/**` or any `*.tsx` (case-insensitive) →
+   `frontend`; any security-relevant path
+   (`auth`/`authz`/`cognito`/`payment`/`billing`/`permission`/`role`/`policy`/`session`/`jwt`/`oauth`/`login`/`tenant`/`rbac`/`acl`/`credential`/`secret`/`token`/`password`/`encrypt`)
+   → `security`; plus `codeQuality` and `completeness` ALWAYS. `perf` and `tests` are NOT
+   auto-derived — add them via `--interactive`. Then go to step 4.
 
    **`--interactive` branch.** Call `AskUserQuestion` ONCE with FOUR questions (the tool
    allows up to 4 questions, each with ≤4 options). Q1 and Q2 are `multiSelect: true`; Q3
@@ -58,7 +59,7 @@ Santiago merges.**
    post-findings action, all for step 4 / step 5.
 
    **Question 1 — "Extra review lenses"** (`multiSelect: true`):
-   - **Security review** (`security`) — auth/authz bypass, injection, secret leakage, crypto, tenant isolation, IAM. Same depth as `/security-review`. *Pre-select when the diff touches auth or payments.*
+   - **Security review** (`security`) — auth/authz bypass, injection, secret leakage, crypto, tenant isolation, IAM. Same depth as `/security-review`. *Pre-select when the diff touches auth/authz, payments, permissions/roles/policies, tenancy/RBAC, sessions/JWT/OAuth, or secrets/tokens/credentials.*
    - **Code review** (`codeQuality`) — quality, maintainability, dead/duplicated code, complexity, repo standards. Same depth as `/code-review`.
    - **Test-coverage audit** (`tests`) — do the risky changed paths have a regression test that fails without the change and passes with it? Missing coverage → Important (Critical on auth/data-loss paths).
    - **Completeness critic** (`completeness`) — meta-leg: "what did the other legs miss?" (a file no one read in full, an unverified cross-module effect, an unproven claim, an unhandled failure mode).

@@ -513,7 +513,7 @@ await test('auto-derive: empty diff (changed-files returns []) → base lenses, 
   assert.deepStrictEqual(out.lenses, ['codeQuality', 'completeness'], 'base lenses on empty diff')
   // stress note 4: the real no-change diff must log DISTINCTLY from a degraded fetch.
   assert.ok(h.logs.some((m) => /no diff vs/i.test(m)), 'logs a no-change diff message')
-  assert.ok(!h.logs.some((m) => /DEGRADED fetch/i.test(m)), 'does NOT log a degraded-fetch message')
+  assert.ok(!h.logs.some((m) => /DEGRADED probe/i.test(m)), 'does NOT log a degraded-fetch message')
 })
 
 await test('auto-derive: changed-files agent fails (null) → FULL auto-selectable lens set, distinct DEGRADED log, no throw', async () => {
@@ -551,7 +551,7 @@ await test('auto-derive: changed-files agent fails (null) → FULL auto-selectab
     'all auto-selectable lens legs dispatched under degraded probe',
   )
   assert.strictEqual(out.clean, true, 'degraded fetch does not throw or block (just widens coverage)')
-  assert.ok(h.logs.some((m) => /DEGRADED fetch/i.test(m)), 'logs a degraded-fetch message')
+  assert.ok(h.logs.some((m) => /DEGRADED probe/i.test(m)), 'logs a degraded-fetch message')
   assert.ok(!h.logs.some((m) => /no diff vs/i.test(m)), 'does NOT log the no-change-diff message')
 })
 
@@ -707,6 +707,81 @@ await test('team mode + auto-derived multi-lens diff: lens and team findings att
   assert.ok(teamData && teamData.by === 'team:data', 'team finding attributed by:team:data')
   assert.strictEqual(out.mode, 'team', 'team mode')
   assert.strictEqual(out.blocking, 0, 'both findings Minor → no blocking')
+})
+
+// ── Case-insensitive .tsx extension (round-2 Important — codex) ──────────
+await test('auto-derive: .TSX (uppercase ext) outside src/ → frontend lens (case-insensitive)', async () => {
+  // round-2 Important: deriveLenses tested `p.endsWith(".tsx")` on the raw path, so an
+  // uppercase `.TSX` (e.g. a Button.TSX outside src/) did NOT match and the frontend lens
+  // was silently dropped — a frontend diff passing the final pre-merge gate with NO frontend
+  // review. The fix lowercases the extension check (`lower.endsWith(".tsx")`), the same
+  // coverage-cannot-shrink invariant as the security taxonomy. RED before: no frontend lens.
+  for (const f of ['packages/ui/Button.TSX', 'lib/Widget.Tsx']) {
+    const h = autoHarness([f])
+    const wf = buildWorkflow()
+    const out = await wf(h.agent, h.parallel, null, h.log, h.phase, { ...baseArgs }, null, null)
+    assert.ok(out.lenses.includes('frontend'), `frontend lens derived for "${f}" (case-insensitive .tsx)`)
+    assert.deepStrictEqual(out.lenses, ['frontend', 'codeQuality', 'completeness'], `frontend + base for "${f}"`)
+    assert.ok(dispatchedLensKeys(h.calls).includes('frontend'), `frontend leg dispatched for "${f}"`)
+  }
+})
+
+// ── Malformed-truthy changed-files probe → FULL set (round-2 Critical — codex) ──
+await test('auto-derive: MALFORMED-truthy probe (non-array files) → FULL auto-selectable set, DEGRADED log (not base lenses)', async () => {
+  // round-2 Critical: a truthy-but-malformed probe result (files is not an array — {files:"x"},
+  // {files:null}, {} with no files key, or a non-array object) slipped past the `filesResult ?`
+  // guard and derived from an empty list → coverage SHRANK to the two base lenses while still
+  // reporting clean, silently dropping the security/amplify/frontend lenses on what might be a
+  // sensitive diff. A non-array `files` must be treated as DEGRADED (full set), identical to a
+  // null probe, so coverage can only grow, never shrink. RED before: out.lenses === base two.
+  for (const malformed of [{ files: 'oops-not-an-array' }, { files: null }, {}, { files: { 0: 'a' } }]) {
+    const h = makeHarness([
+      { match: (l) => l === 'review', reply: { verdict: 'PASS', findings: [] } },
+      { match: (l) => l === 'codex', reply: { source: 'codex', findings: [] } },
+      { match: (l) => l === 'changed-files', reply: malformed },
+      {
+        match: (l) =>
+          ['security', 'amplify bug-bounty', 'frontend bug-bounty', 'code quality', 'completeness critic'].includes(l),
+        reply: { findings: [] },
+      },
+    ])
+    const wf = buildWorkflow()
+    const out = await wf(h.agent, h.parallel, null, h.log, h.phase, { ...baseArgs }, null, null)
+    assert.deepStrictEqual(
+      out.lenses,
+      ['security', 'amplify', 'frontend', 'codeQuality', 'completeness'],
+      `malformed probe ${JSON.stringify(malformed)} → FULL auto-selectable set (coverage cannot shrink)`,
+    )
+    assert.ok(h.logs.some((m) => /DEGRADED probe/i.test(m)), `malformed probe ${JSON.stringify(malformed)} logs a DEGRADED message`)
+    assert.ok(
+      !h.logs.some((m) => /no diff vs/i.test(m)),
+      `malformed probe ${JSON.stringify(malformed)} does NOT log a no-change diff`,
+    )
+  }
+})
+
+// ── SKILL ↔ code security-taxonomy sync (round-2 Minor — codex) ──────────
+await test('SKILL step-3 default explanation lists the BROADENED security taxonomy (no drift vs code)', async () => {
+  // round-2 Minor: the deriveLenses security regex was broadened (tenant/rbac/jwt/secret/...)
+  // and the Guarantees block was updated, but the step-3 default-run explanation AND the Q1
+  // security pre-select hint still listed the OLD narrow auth/authz/cognito/payment/billing set
+  // — doc drift that misleads an operator about what auto-derives the security lens. Assert the
+  // step-3 default block AND the Q1 security hint now name the new terms. RED before the update.
+  const skill = readFileSync(join(__dirname, '..', 'skills', 'dual-adversarial', 'SKILL.md'), 'utf8')
+  const start = skill.indexOf('**DEFAULT (no flags)')
+  const end = skill.indexOf('**`--interactive` branch.**')
+  assert.ok(start !== -1 && end !== -1 && end > start, 'step-3 default block located')
+  const block = skill.slice(start, end)
+  for (const kw of ['tenant', 'rbac', 'jwt', 'secret', 'token']) {
+    assert.ok(new RegExp(kw, 'i').test(block), `step-3 default block names the broadened security keyword "${kw}"`)
+  }
+  // The Q1 "Security review" pre-select hint must not still say only "auth or payments".
+  const q1 = skill.slice(skill.indexOf('**Security review**'), skill.indexOf('**Code review**'))
+  assert.ok(q1.length > 0, 'Q1 security option located')
+  assert.ok(
+    /tenant|rbac|session|jwt|secret/i.test(q1),
+    'Q1 security pre-select hint broadened beyond "auth or payments"',
+  )
 })
 
 console.log(`\n${passed} passed, ${failed} failed`)

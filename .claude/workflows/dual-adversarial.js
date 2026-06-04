@@ -226,8 +226,11 @@ function deriveLenses(changedFiles) {
       const lower = p.toLowerCase()
       // amplify/** (top-level or nested) → amplify lens
       if (p.startsWith('amplify/') || p.includes('/amplify/')) matched.add('amplify')
-      // src/** OR any *.tsx (even outside src/, e.g. packages/ui/Button.tsx) → frontend lens
-      if (p.startsWith('src/') || p.includes('/src/') || p.endsWith('.tsx')) matched.add('frontend')
+      // src/** OR any *.tsx (even outside src/, e.g. packages/ui/Button.tsx) → frontend lens.
+      // Extension check is case-INSENSITIVE (lower.endsWith) so an uppercase `.TSX`/`.Tsx` still
+      // selects the frontend lens — coverage must never shrink on a case variation (same
+      // invariant as the security taxonomy below).
+      if (p.startsWith('src/') || p.includes('/src/') || lower.endsWith('.tsx')) matched.add('frontend')
       // any security-relevant path → security lens. Broad ON PURPOSE: a spurious
       // security-lens run is just extra cost, but a MISSED one lets a permissions /
       // tenant-isolation / authz diff pass the final pre-merge gate with NO deep security
@@ -311,13 +314,17 @@ if (Array.isArray(A.lenses) || (!lensesIsAuto && A.lenses != null)) {
       ),
     'changed-files',
   )
-  const changedFiles = filesResult && Array.isArray(filesResult.files) ? filesResult.files : []
-  // On a DEGRADED probe (null) we do NOT know what changed, so deriving from an empty list
-  // would silently shrink coverage to the two base lenses — dropping security/amplify/frontend
-  // on a sensitive diff while still reporting clean. Fall back CONSERVATIVELY to every
-  // auto-selectable lens instead, so coverage can only ever grow (never shrink) on probe
-  // failure. A successful probe (incl. a genuine empty diff) still derives precisely.
-  const derived = filesResult ? deriveLenses(changedFiles) : AUTO_SELECTABLE_LENSES
+  // probeOk is true ONLY when the probe returned a well-formed result with an ARRAY `files`.
+  // A null probe (agent failed) OR a truthy-but-MALFORMED result (files missing / not an array,
+  // e.g. {files:"x"}, {files:null}, {}) are BOTH degraded: we do NOT know what changed, so
+  // deriving from an empty list would silently shrink coverage to the two base lenses — dropping
+  // security/amplify/frontend on a sensitive diff while still reporting clean. Treat both as
+  // DEGRADED and fall back CONSERVATIVELY to every auto-selectable lens, so coverage can only ever
+  // grow (never shrink) on probe failure. A successful probe (incl. a genuine empty diff) still
+  // derives precisely.
+  const probeOk = !!(filesResult && Array.isArray(filesResult.files))
+  const changedFiles = probeOk ? filesResult.files : []
+  const derived = probeOk ? deriveLenses(changedFiles) : AUTO_SELECTABLE_LENSES
   // Re-filter through normalizeLenses so an unknown key can never reach the dispatch loop
   // (deriveLenses / AUTO_SELECTABLE_LENSES already constrain to LENS_DEFS keys; belt-and-suspenders).
   const n = normalizeLenses(derived)
@@ -325,12 +332,13 @@ if (Array.isArray(A.lenses) || (!lensesIsAuto && A.lenses != null)) {
   lensesRequested = n.requested
   lensesDropped = n.dropped
   lensSource = 'auto'
-  if (!filesResult) {
-    // Agent FAILED (null) — degraded fetch. Run the FULL auto-selectable lens set (not just the
-    // base two) so a transient/skipped probe on a sensitive diff cannot strip the specialized
-    // lenses. Flagged distinctly from a genuine no-change diff so an operator can tell them apart.
+  if (!probeOk) {
+    // Probe FAILED (null) or returned a MALFORMED result (non-array files) — degraded either way.
+    // Run the FULL auto-selectable lens set (not just the base two) so a transient/skipped/garbled
+    // probe on a sensitive diff cannot strip the specialized lenses. Flagged distinctly from a
+    // genuine no-change diff so an operator can tell them apart.
     log(
-      `WARNING: changed-files probe failed — cannot determine changed paths (DEGRADED fetch, not a confirmed no-change diff); falling back to the FULL auto-selectable lens set so coverage does not shrink: [${lenses.join(', ')}]`,
+      `WARNING: changed-files probe failed or returned a malformed result — cannot determine changed paths (DEGRADED probe — not a confirmed no-change diff); falling back to the FULL auto-selectable lens set so coverage does not shrink: [${lenses.join(', ')}]`,
     )
   } else if (changedFiles.length === 0) {
     // Agent SUCCEEDED but returned no files — a real no-change diff vs base. Distinct log.
