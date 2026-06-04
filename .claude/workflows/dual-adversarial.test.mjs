@@ -637,5 +637,77 @@ await test('explicit map ({ security: true, frontend: true }) takes the EXPLICIT
   assert.ok(!h.calls.some((c) => c.label === 'changed-files'), 'map EXPLICIT path never dispatches changed-files')
 })
 
+// ── Broadened security-lens taxonomy (Important — codex) ────────────────
+await test('auto-derive: broadened security taxonomy — authz/tenant/policy/jwt/secret paths derive the security lens', async () => {
+  // Important (codex): the security trigger was only auth|authz|cognito|payment|billing, so a
+  // permissions / tenant-isolation / authz diff passed the FINAL pre-merge gate with NO deep
+  // security lens. Each path below contains ONLY a NEW keyword (no auth/cognito/payment/billing)
+  // and MUST still derive the security lens. RED before the broadening: none of these match.
+  const securityPaths = [
+    'src/features/tenant/rbac-policy.ts', // tenant, rbac, polic
+    'amplify/functions/permissions/handler.ts', // permission
+    'src/lib/jwt-verify.ts', // jwt
+    'src/roles/acl.ts', // role, acl
+    'src/login/redirect.ts', // login (note: "oauth" would also match via the "auth" substring)
+    'src/session/store.ts', // session
+    'infra/secret-rotation.ts', // secret
+    'src/crypto/encrypt-token.ts', // encrypt, token
+  ]
+  for (const f of securityPaths) {
+    const h = autoHarness([f])
+    const wf = buildWorkflow()
+    const out = await wf(h.agent, h.parallel, null, h.log, h.phase, { ...baseArgs }, null, null)
+    assert.ok(out.lenses.includes('security'), `security lens derived for "${f}"`)
+    assert.ok(dispatchedLensKeys(h.calls).includes('security'), `security leg dispatched for "${f}"`)
+  }
+  // Negative control: a path with NO security keyword must NOT derive the security lens (the
+  // broadening must not collapse into "always run security").
+  const neg = autoHarness(['src/components/DataTable.tsx'])
+  const wfNeg = buildWorkflow()
+  const outNeg = await wfNeg(neg.agent, neg.parallel, null, neg.log, neg.phase, { ...baseArgs }, null, null)
+  assert.ok(!outNeg.lenses.includes('security'), 'no security lens for a non-security path')
+})
+
+// ── Production default: team mode WITH auto-derived lenses >2 (Important — lens:tests) ──
+await test('team mode + auto-derived multi-lens diff: lens and team findings attributed correctly (production default path)', async () => {
+  // Important (lens:tests): the production default is mode:'team' WITH auto-derived lenses, so
+  // lenses.length is VARIABLE and the leg-slicing (lensResults = results.slice(2, 2+len);
+  // teamResults = results.slice(2+len, 2+len+teamDefs.length)) depends on it. Every other team
+  // test uses the default {files:[]} (len=2). This exercises len>2 (a sensitive diff deriving 5
+  // lenses) ∥ team and asserts each finding lands on the CORRECT by: tag — a slicing regression
+  // would bleed a lens finding into teamResults (or vice versa) with no other test failing. Pins
+  // the slicing invariant for the most common real path.
+  const h = makeHarness([
+    { match: (l) => l === 'review', reply: { verdict: 'PASS', findings: [] } },
+    { match: (l) => l === 'codex', reply: { source: 'codex', findings: [] } },
+    // a sensitive diff: amplify auth handler + a .tsx → derives security, amplify, frontend, +base (5)
+    {
+      match: (l) => l === 'changed-files',
+      reply: { files: ['amplify/functions/auth/handler.ts', 'src/Widget.tsx'] },
+    },
+    { match: (l) => l === 'security', reply: { findings: [{ severity: 'Minor', summary: 'SEC-LENS-MARK' }] } },
+    { match: (l) => l === 'amplify bug-bounty', reply: { findings: [] } },
+    { match: (l) => l === 'frontend bug-bounty', reply: { findings: [] } },
+    { match: (l) => l === 'team:data', reply: { findings: [{ severity: 'Minor', summary: 'TEAM-DATA-MARK' }] } },
+    { match: (l) => l === 'team:arch', reply: { findings: [] } },
+  ])
+  const wf = buildWorkflow()
+  const out = await wf(h.agent, h.parallel, null, h.log, h.phase, { ...baseArgs, mode: 'team' }, null, null)
+  // 5 lenses derived in fixed precedence; team appends team:data + team:arch.
+  assert.deepStrictEqual(
+    out.lenses,
+    ['security', 'amplify', 'frontend', 'codeQuality', 'completeness'],
+    'auto-derived 5 lenses',
+  )
+  // The security LENS finding is attributed to lens:security (NOT bled into a team slot).
+  const secLens = out.findings.find((f) => f.summary === 'SEC-LENS-MARK')
+  assert.ok(secLens && secLens.by === 'lens:security', 'security lens finding attributed by:lens:security')
+  // The team:data finding is attributed to team:data (NOT bled into a lens slot).
+  const teamData = out.findings.find((f) => f.summary === 'TEAM-DATA-MARK')
+  assert.ok(teamData && teamData.by === 'team:data', 'team finding attributed by:team:data')
+  assert.strictEqual(out.mode, 'team', 'team mode')
+  assert.strictEqual(out.blocking, 0, 'both findings Minor → no blocking')
+})
+
 console.log(`\n${passed} passed, ${failed} failed`)
 process.exit(failed ? 1 : 0)

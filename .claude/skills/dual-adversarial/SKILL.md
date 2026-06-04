@@ -104,13 +104,17 @@ Santiago merges.**
 ## Guarantees
 - **Auto-config by default.** The default run issues ZERO prompts: the extra lenses
   auto-derive from the changed-file paths — `amplify/**` → `amplify`; `src/**` OR any
-  `*.tsx` (even outside `src/`) → `frontend`; any `auth`/`authz`/`cognito`/`payment`/`billing`
-  path → `security`; plus `codeQuality` and `completeness` ALWAYS. `perf` and `tests` are
+  `*.tsx` (even outside `src/`) → `frontend`; any security-relevant path
+  (`auth`/`authz`/`cognito`/`payment`/`billing`/`permission`/`role`/`policy`/`session`/`jwt`/`oauth`/`login`/`tenant`/`rbac`/`acl`/`credential`/`secret`/`token`/`password`/`encrypt`)
+  → `security`; plus `codeQuality` and `completeness` ALWAYS. `perf` and `tests` are
   never auto-derived (opt in via `--interactive`). Default depth is **Team** and default
   action is **report-only**. An explicit `lenses` array (including an empty `[]` for zero
   extra lenses) or `--interactive` overrides the derivation entirely — only an absent
-  `lenses` or the literal string `"auto"` triggers it. If the changed-files probe degrades
-  (empty diff or a failed fetch), the gate falls back to the two base lenses and never throws.
+  `lenses` or the literal string `"auto"` triggers it. The two probe-degradation points are
+  handled DIFFERENTLY on purpose: a successful probe that returns a genuine **empty diff** →
+  the two base lenses; a **failed fetch** (the probe agent errored) → the FULL auto-selectable
+  lens set (`security`+`amplify`+`frontend`+`codeQuality`+`completeness`), so coverage can only
+  GROW, never shrink, on a probe failure. Neither path ever throws.
 - **Independent.** The Opus and Codex legs (and every extra lens) run as separate fresh subagents inside one `parallel()` call — no leg is primed with another's findings; results are merged only after all legs finish.
 - **Aggressive.** Every leg defaults to skepticism, gives no credit for good intent or likely follow-up work, and treats happy-path-only behavior as a real weakness.
 - **Model-pinned.** The reviewer leg is pinned to Opus (`model: 'opus'` = Opus 4.8); the cross-model leg uses Codex GPT-5.5 via `codex-companion.mjs` (model pinned in `~/.codex/config.toml`). A core leg that fails forces `clean = false` AND `gateStatus = 'INCOMPLETE'` (a re-run condition, not a `/iago-prfix` finding — see the Report step); a failed extra lens is non-blocking (logged, not blocking).

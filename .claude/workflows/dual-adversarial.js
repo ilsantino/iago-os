@@ -228,8 +228,20 @@ function deriveLenses(changedFiles) {
       if (p.startsWith('amplify/') || p.includes('/amplify/')) matched.add('amplify')
       // src/** OR any *.tsx (even outside src/, e.g. packages/ui/Button.tsx) → frontend lens
       if (p.startsWith('src/') || p.includes('/src/') || p.endsWith('.tsx')) matched.add('frontend')
-      // any auth / authz / cognito / payment / billing path → security lens
-      if (/auth|authz|cognito|payment|billing/.test(lower)) matched.add('security')
+      // any security-relevant path → security lens. Broad ON PURPOSE: a spurious
+      // security-lens run is just extra cost, but a MISSED one lets a permissions /
+      // tenant-isolation / authz diff pass the final pre-merge gate with NO deep security
+      // review — so coverage must never SHRINK (same invariant as the degraded-probe
+      // fallback). Covers auth(z) / cognito / payment / billing PLUS permission / role /
+      // policy(ies) / session / jwt / oauth / login / tenant / rbac / acl / credential /
+      // secret / token / password / encrypt. `\bacl\b` is word-bounded so it does not
+      // match "oracle"; "polic" catches both policy and policies.
+      if (
+        /auth|cognito|payment|billing|permission|role|polic|session|jwt|oauth|login|tenant|rbac|\bacl\b|credential|secret|token|password|encrypt/.test(
+          lower,
+        )
+      )
+        matched.add('security')
     }
   }
   return PRECEDENCE.filter((k) => matched.has(k))
@@ -285,9 +297,12 @@ if (Array.isArray(A.lenses) || (!lensesIsAuto && A.lenses != null)) {
   lensSource = 'explicit'
 } else {
   // AUTO — fetch changed files via a structured agent (the workflow body cannot shell out),
-  // then derive. On agent failure we fall back to deriveLenses([]) (= the two base lenses)
-  // and log the degradation — never throw. The two collapse points (real "no files changed"
-  // vs degraded fetch) are logged DISTINCTLY so an operator can tell them apart (stress note 4).
+  // then derive. On agent failure (null) we fall back to the FULL auto-selectable lens set
+  // (AUTO_SELECTABLE_LENSES, NOT the two base lenses) so coverage can only GROW, never shrink,
+  // on a probe failure — a transient/skipped probe on a sensitive diff must not silently drop
+  // the security/amplify/frontend lenses. Never throw. The two collapse points (a real "no
+  // files changed" diff → base lenses; a degraded fetch → full set) are logged DISTINCTLY so
+  // an operator can tell them apart (stress note 4).
   const filesResult = await withRetry(
     () =>
       agent(
