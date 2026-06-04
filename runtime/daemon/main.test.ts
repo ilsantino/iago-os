@@ -2157,6 +2157,81 @@ describe("makeTaskSendHandler (R1)", () => {
 		// strip the live run's timer/marker/held slot.
 		expect(cleared).toHaveLength(0);
 	});
+
+	it("(TS-12c, dual-adversarial pass #2 Critical) a runId-LESS noSend envelope arriving while a run is ACTIVE is quarantined, NOT recorded as no-send, and does NOT clear the live run's timer", async () => {
+		// Twin of TS-12b for the noSend/empty-summary path. Without the fix the noSend
+		// branch returned BEFORE the isActiveRun guard, so `quarantined` stayed false
+		// and the `finally` called clearResultTimer(agentId, undefined) — stripping the
+		// live run's dead-letter timer/marker/held cron slot (silent summary drop +
+		// duplicate dispatch). The fix hoists the quarantine guard ABOVE the noSend
+		// branch. RED without the fix: pr-triage-no-send is emitted and clearResultTimer
+		// is called.
+		const { mgr, claimCalls } = makeSendStubManager();
+		const { bot, calls } = makeFakeTelegram(async () => ({ ok: true }));
+		const emitMock = vi.fn().mockResolvedValue(true);
+		const cleared: Array<{ id: string; runId?: string }> = [];
+		const handler = makeTaskSendHandler({
+			agentManager: mgr,
+			emit: emitMock,
+			telegramBot: bot as unknown as import("../telegram/bot.js").TelegramBot,
+			clearResultTimer: (id, runId) => cleared.push({ id, runId }),
+			// A run IS active; only its own runId ("run-LIVE") is confirmable. A
+			// runId-less noSend envelope cannot be confirmed, so isActiveRun returns false.
+			isActiveRun: async (_agentId, runId) => runId === "run-LIVE",
+		});
+
+		await handler({
+			filename: "pr-triage-send__norunid-nosend.json",
+			agentId: "pr-triage",
+			noSend: true,
+			// no runId
+		});
+
+		// No Telegram send for a noSend (and none for a quarantine).
+		expect(calls).toHaveLength(0);
+		// Quarantined → stale-run-dropped recorded; pr-triage-no-send must NOT fire (a
+		// stale envelope is not a legitimate "nothing to send" for the live run).
+		const kinds = emitMock.mock.calls.map((c) => (c[0] as { kind: string }).kind);
+		expect(kinds).toContain("pr-triage-stale-run-dropped");
+		expect(kinds).not.toContain("pr-triage-no-send");
+		// Claimed out of pending/ exactly once (the quarantine claim).
+		expect(claimCalls).toHaveLength(1);
+		// CRITICAL: clearResultTimer must NOT be called — a runId-less clear would
+		// strip the live run's timer/marker/held slot.
+		expect(cleared).toHaveLength(0);
+	});
+
+	it("(TS-12d, dual-adversarial pass #2 Critical) a runId-LESS empty-summary envelope (no noSend flag) while a run is ACTIVE is also quarantined", async () => {
+		// The noSend/empty branch has TWO entries: explicit `noSend:true` (TS-12c) and
+		// an empty/whitespace `sendText` with no flag (this test). Both must pass through
+		// the hoisted quarantine guard. RED without the fix: clearResultTimer is called
+		// for the empty-summary path too.
+		const { mgr, claimCalls } = makeSendStubManager();
+		const { bot, calls } = makeFakeTelegram(async () => ({ ok: true }));
+		const emitMock = vi.fn().mockResolvedValue(true);
+		const cleared: Array<{ id: string; runId?: string }> = [];
+		const handler = makeTaskSendHandler({
+			agentManager: mgr,
+			emit: emitMock,
+			telegramBot: bot as unknown as import("../telegram/bot.js").TelegramBot,
+			clearResultTimer: (id, runId) => cleared.push({ id, runId }),
+			isActiveRun: async (_agentId, runId) => runId === "run-LIVE",
+		});
+
+		await handler({
+			filename: "pr-triage-send__norunid-empty.json",
+			agentId: "pr-triage",
+			sendText: "   ", // whitespace-only → treated as empty-summary
+			// no runId, no noSend flag
+		});
+
+		expect(calls).toHaveLength(0);
+		const kinds = emitMock.mock.calls.map((c) => (c[0] as { kind: string }).kind);
+		expect(kinds).toContain("pr-triage-stale-run-dropped");
+		expect(kinds).not.toContain("pr-triage-no-send");
+		expect(claimCalls).toHaveLength(1);
+		expect(cleared).toHaveLength(0);
+	});
 });
 
 describe("makeResultTimers + dispatch arming (R1 D4 dead-letter)", () => {
@@ -2577,6 +2652,49 @@ describe("makeResultTimers + dispatch arming (R1 D4 dead-letter)", () => {
 			reason: "orphaned-dispatch-recovered",
 		});
 		await expect(fsp.access(markerPath)).rejects.toBeDefined();
+	});
+
+	it("(RT-12, dual-adversarial pass #2 Important) an expired orphaned marker whose timeout telemetry FAILS to record is RETAINED and the slot is NOT released", async () => {
+		// Durability gate, the BOOT-recovery twin of RT-7's live-fireTimeout coverage.
+		// The prior order (unlink marker → ignore emit's boolean) lost the
+		// orphaned-dispatch signal when the telemetry append failed (ENOSPC/EACCES) —
+		// nothing remained for the next boot to re-scan. The fix records the timeout
+		// FIRST and only unlinks the marker / releases the slot on a durable write. RED
+		// without the fix: the marker is unlinked anyway and onResultComplete fires.
+		const markerPath = path.join(pathFor("result-pending"), "pr-triage.json");
+		await fsp.writeFile(
+			markerPath,
+			JSON.stringify({
+				agentId: "pr-triage",
+				runId: "expired-run",
+				filename: "pr-triage__7.json",
+				deadlineMs: Date.now() - 5000,
+			}),
+		);
+		const completed: Array<{ agentId: string; filename: string | null }> = [];
+		// emit returns FALSE for the timeout event (simulated telemetry-disk fault).
+		const emitMock = vi
+			.fn()
+			.mockImplementation(
+				async (e: { kind: string }) => e.kind !== "pr-triage-result-timeout",
+			);
+		const { recoverResultTimers } = makeResultTimers({
+			emit: emitMock,
+			onResultComplete: (agentId, filename) =>
+				completed.push({ agentId, filename }),
+		});
+		await recoverResultTimers();
+
+		// The timeout telemetry was attempted...
+		expect(
+			emitMock.mock.calls.filter(
+				(c) => (c[0] as { kind: string }).kind === "pr-triage-result-timeout",
+			),
+		).toHaveLength(1);
+		// ...but FAILED to record, so the marker is RETAINED (the next boot re-surfaces
+		// the orphaned-dispatch signal) and the cron slot is NOT released.
+		await expect(fsp.access(markerPath)).resolves.toBeUndefined();
+		expect(completed).toHaveLength(0);
 	});
 
 	it("(RT-10 — Critical, round 1) a late stale envelope (old runId) does NOT clear the NEW run's timer via the send handler", async () => {

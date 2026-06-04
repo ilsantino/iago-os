@@ -1005,12 +1005,24 @@ export function makeResultTimers(deps: {
 			} else {
 				// Already past deadline at boot — dead-letter immediately so the
 				// orphaned dispatch is not silently lost.
-				await fsp.unlink(full).catch(() => undefined);
-				await emit({
+				//
+				// Dual-adversarial pass #2 Important (2026-06-04) — DURABILITY GATE,
+				// the mirror of the live `fireTimeout` path. Record the timeout BEFORE
+				// unlinking the durable marker / releasing the slot. `emit` returns
+				// false (it never throws) when the telemetry append fails
+				// (ENOSPC/EACCES); the prior order (unlink → ignore emit's boolean)
+				// PERMANENTLY lost the orphaned-dispatch signal — the very event this
+				// branch exists to surface — leaving nothing for the NEXT boot's
+				// `recoverResultTimers` to re-scan. On a failed record: RETAIN the
+				// marker (skip the unlink + slot release) so the next recovery
+				// re-surfaces it (regression: `RT-12`).
+				const recorded = await emit({
 					kind: "pr-triage-result-timeout",
 					agentId: marker.agentId,
 					reason: "orphaned-dispatch-recovered",
 				});
+				if (!recorded) continue;
+				await fsp.unlink(full).catch(() => undefined);
 				// Task 6 #2 — release the held cron slot for the orphaned run.
 				onResultComplete?.(marker.agentId, markerFilename);
 			}
@@ -1105,42 +1117,35 @@ export function makeTaskSendHandler(deps: {
 		// the clear leaves the live run intact for its own envelope (or dead-letter).
 		let quarantined = false;
 		try {
-			// Minor (empty-summary guard): treat an explicit `noSend` OR an
-			// empty/whitespace-only `sendText` as "nothing to send" — never deliver
-			// a blank Telegram message. An agent that computes an empty summary but
-			// forgets the `noSend` discriminator must not produce a blank push.
-			const isEmptySendText =
-				evt.noSend !== true &&
-				(evt.sendText === undefined || evt.sendText.trim().length === 0);
-			if (evt.noSend === true || isEmptySendText) {
-				// D4: empty summary — record-and-resolve, no send.
-				const recorded = await emit({
-					kind: "pr-triage-no-send",
-					agentId: evt.agentId,
-					filename: evt.filename,
-				});
-				if (recorded) {
-					await agentManager.claimTask(evt.filename, evt.agentId);
-				}
-				return;
-			}
+			// Dual-adversarial pass #2 Critical (2026-06-04) — the PRE-SEND wrong-run
+			// guard runs FIRST, before the noSend/empty-summary branch, so EVERY path
+			// (send, noSend, empty-summary) is validated against the ACTIVE run
+			// consistently. Previously the noSend/empty branch returned BEFORE this
+			// guard: a runId-LESS noSend envelope (a NORMAL failure mode — the echo is
+			// optional per prompt-template.md) arriving while a NEWER run is active left
+			// `quarantined === false`, so the `finally` called
+			// `clearResultTimer(agentId, undefined)` and stripped the CURRENT run's
+			// dead-letter timer/marker/held cron slot (silent summary drop + duplicate
+			// dispatch). Hoisting the guard above the noSend branch closes that twin of
+			// the SEND-path bug `TS-12b` covers (regression: `TS-12c`/`TS-12d`).
+			//
 			// Round-2 Important (Codex) + dual-adversarial Critical (escalated
-			// 2026-06-02) — PRE-SEND wrong-run guard. Validate the envelope against the
-			// ACTIVE run BEFORE the irreversible Telegram send. A late/stale envelope
-			// from a PRIOR dispatch must NOT be pushed to the user; the post-send
-			// `clearResultTimer` guard only stops it from clearing the CURRENT run's
-			// timer — it cannot un-send a message already delivered. `isActiveRun` is
-			// now called even when the envelope carries NO runId: a runId-less envelope
-			// (a NORMAL failure mode — the echo line is optional per prompt-template.md)
-			// cannot be confirmed as the live run, so when a run IS active it is
-			// quarantined too (the prior `evt.runId !== undefined` gate let it bypass
-			// the guard and push a stale summary). `isActiveRun` returns `true` (no
-			// quarantine) only when there is NO active run to misattribute against. On
-			// quarantine: claim the envelope out of `pending/` (stop the re-trip),
-			// record `pr-triage-stale-run-dropped`, skip the send, AND set `quarantined`
-			// so the `finally` does NOT run `clearResultTimer` (a runId-less clear would
-			// match the live timer by agentId and strip the current run's
-			// timer/marker/held slot).
+			// 2026-06-02) — validate the envelope against the ACTIVE run BEFORE the
+			// irreversible Telegram send. A late/stale envelope from a PRIOR dispatch
+			// must NOT be pushed to the user; the post-send `clearResultTimer` guard
+			// only stops it from clearing the CURRENT run's timer — it cannot un-send a
+			// message already delivered. `isActiveRun` is called even when the envelope
+			// carries NO runId: a runId-less envelope cannot be confirmed as the live
+			// run, so when a run IS active it is quarantined too (the prior
+			// `evt.runId !== undefined` gate let it bypass the guard and push a stale
+			// summary). `isActiveRun` returns `true` (no quarantine) only when there is
+			// NO active run to misattribute against — so a matching-runId completion
+			// (send OR noSend) and the legacy no-correlation path both proceed and clear
+			// normally. On quarantine: claim the envelope out of `pending/` (stop the
+			// re-trip), record `pr-triage-stale-run-dropped`, skip everything below, AND
+			// set `quarantined` so the `finally` does NOT run `clearResultTimer` (a
+			// runId-less clear would match the live timer by agentId and strip the
+			// current run's timer/marker/held slot).
 			if (isActiveRun !== undefined) {
 				const active = await isActiveRun(evt.agentId, evt.runId);
 				if (!active) {
@@ -1157,6 +1162,30 @@ export function makeTaskSendHandler(deps: {
 					await agentManager.claimTask(evt.filename, evt.agentId);
 					return;
 				}
+			}
+			// Minor (empty-summary guard): treat an explicit `noSend` OR an
+			// empty/whitespace-only `sendText` as "nothing to send" — never deliver
+			// a blank Telegram message. An agent that computes an empty summary but
+			// forgets the `noSend` discriminator must not produce a blank push. This
+			// runs AFTER the wrong-run guard above: a noSend/empty envelope that
+			// belongs to the live run (matching runId) or arrives with no active run
+			// records `pr-triage-no-send` and clears normally; a stale/runId-less one
+			// was already quarantined (so its summary is not mis-recorded as a
+			// legitimate "nothing to send" for the live run).
+			const isEmptySendText =
+				evt.noSend !== true &&
+				(evt.sendText === undefined || evt.sendText.trim().length === 0);
+			if (evt.noSend === true || isEmptySendText) {
+				// D4: empty summary — record-and-resolve, no send.
+				const recorded = await emit({
+					kind: "pr-triage-no-send",
+					agentId: evt.agentId,
+					filename: evt.filename,
+				});
+				if (recorded) {
+					await agentManager.claimTask(evt.filename, evt.agentId);
+				}
+				return;
 			}
 			// BOUNDED-RETRY-THEN-AT-MOST-ONCE (pass#2 Critical fix + F3 retry). The
 			// Telegram send is an IRREVERSIBLE side effect, so CLAIM the envelope
