@@ -694,13 +694,16 @@ while (
   if (!rebuild.passed) throw new Error(`Build broke during fix round ${rounds}: ${rebuild.summary || ''}`)
   phase('Review')
   // Thread round-0 domain selection in as a focus hint (all modules still load).
-  ;({ findings, verdict, codexSource, domainsSelected } = await runDualAdversarial(
-    `r${rounds}`,
-    true,
-    stressBlock,
-    preImplSha,
-    domainsSelected,
-  ))
+  // The re-review is instructed NOT to re-derive domainsSelected, so it returns
+  // []/undefined; preserve the round-0 selection so a 2nd fix round still receives the
+  // hint. Destructuring domainsSelected directly here would reset it to [] after round 1,
+  // dropping the focus hint for round-2's re-review. Coverage is unaffected either way
+  // (all 11 modules load on every pass), but the hint is the point of Task 5's threading.
+  const reReview = await runDualAdversarial(`r${rounds}`, true, stressBlock, preImplSha, domainsSelected)
+  ;({ findings, verdict, codexSource } = reReview)
+  if (reReview.domainsSelected && reReview.domainsSelected.length > 0) {
+    domainsSelected = reReview.domainsSelected
+  }
 }
 if (hasBlocking(findings)) {
   throw new Error(
@@ -775,7 +778,11 @@ if (noPr) {
       `@claude tag did not confirm posted (tagStatus="${pr.tagStatus || 'null'}") on PR ${prUrl} (#${prNumber}) — the async review loop has NOT started. The PR exists; tag it manually with /iago-prfix to start the review.`,
     )
   }
-  log(`tagged @claude on PR #${prNumber} — async GitHub review-fix loop will run`)
+  log(
+    pr.tagStatus === 'ALREADY_TAGGED'
+      ? `@claude already tagged on PR #${prNumber} — async review loop already running`
+      : `tagged @claude on PR #${prNumber} — async GitHub review-fix loop will run`,
+  )
 }
 
 // Stage 6 — Summary + telemetry + lock release (one merged deterministic agent).

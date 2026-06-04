@@ -177,5 +177,55 @@ await test('workflow COMPLETES when create-pr-tag returns tagStatus=TAGGED', asy
   assert.ok(h.calls.some((c) => c.label === 'summary'), 'summary stage runs on a healthy run')
 })
 
+// ── Behavior: round-0 domainsSelected survives into a round-2 re-review ───
+// Regression for the dual-adversarial Minor: the re-review is instructed NOT to
+// re-derive domainsSelected, so it returns []/undefined. Destructuring it directly
+// reset the outer variable to [] after round 1, dropping the focus hint for round-2's
+// re-review. The fix preserves the round-0 selection when a re-review returns none.
+// This test forces TWO fix rounds and asserts the round-2 review prompt still carries
+// the round-0 domains. Without the fix, domainsSelected is [] by round 2 and the hint
+// is absent → this assertion fails.
+await test('round-0 domainsSelected is preserved into the round-2 re-review hint', async () => {
+  const rules = [
+    { match: (l) => l === 'lock-acquire', reply: { status: 'ACQUIRED' } },
+    { match: (l) => l === 'prep', reply: { status: 'DONE', preImplSha: 'abc123', branch: 'main' } },
+    { match: (l) => l === 'implement', reply: { status: 'DONE' } },
+    { match: (l) => /^build:/.test(l), reply: { passed: true, ran: ['tsc'], summary: 'ok' } },
+    { match: (l) => /^rebuild:/.test(l), reply: { passed: true, ran: ['tsc'], summary: 'ok' } },
+    { match: (l) => l === 'commit', reply: { status: 'DONE', branch: 'feat/x', headSha: 'def456' } },
+    // round 0: blocking + domains → triggers fix round 1
+    {
+      match: (l) => l === 'review:r0',
+      reply: { verdict: 'FAIL', findings: [{ severity: 'Critical', summary: 'c0' }], domainsSelected: ['auth', 'api'] },
+    },
+    // round 1 re-review: still blocking, returns NO domainsSelected → triggers fix round 2
+    { match: (l) => l === 'review:r1', reply: { verdict: 'FAIL', findings: [{ severity: 'Critical', summary: 'c1' }] } },
+    // round 2 re-review: clean → loop ends
+    { match: (l) => l === 'review:r2', reply: { verdict: 'PASS', findings: [] } },
+    { match: (l) => /^codex:/.test(l), reply: { source: 'codex', findings: [] } },
+    { match: (l) => /^fix:/.test(l), reply: { status: 'DONE' } },
+    {
+      match: (l) => l === 'create-pr-tag',
+      reply: { prUrl: 'https://github.com/o/r/pull/7', prNumber: '7', branch: 'feat/x', tagStatus: 'TAGGED' },
+    },
+    { match: (l) => l === 'summary', reply: { status: 'DONE' } },
+  ]
+  const h = makeHarness(rules)
+  const wf = buildWorkflow()
+  const out = await wf(h.agent, h.parallel, null, h.log, h.phase, { ...baseArgs }, null, null)
+  assert.strictEqual(out.fixRounds, 2, 'two fix rounds ran (forces a round-2 re-review)')
+  const r1 = h.calls.find((c) => c.label === 'review:r1')
+  const r2 = h.calls.find((c) => c.label === 'review:r2')
+  assert.ok(r1, 'a round-1 re-review ran')
+  assert.ok(r2, 'a round-2 re-review ran')
+  // round 1 gets the hint straight from round 0; round 2 only gets it if it was PRESERVED
+  // across round 1 (which returned no domainsSelected) — the regression assertion.
+  assert.ok(/Domains identified in round 0: auth, api/.test(r1.prompt), 'round-1 re-review carried the hint')
+  assert.ok(
+    /Domains identified in round 0: auth, api/.test(r2.prompt),
+    'round-2 re-review still carries the round-0 hint (preserved, not reset to [])',
+  )
+})
+
 console.log(`\n${passed} passed, ${failed} failed`)
 process.exit(failed ? 1 : 0)
