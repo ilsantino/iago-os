@@ -131,12 +131,13 @@ TASK_FILE="$STATE_ROOT/tasks/pending/pr-triage-send__$(date +%s%3N)-$$.json"
 # missing or empty runId while a run is active. Only leave RUN_ID empty if the
 # correlation line is truly absent — the envelope then omits the field and the
 # daemon treats it as no-correlation.
-RUN_ID="<paste the runId from the DAEMON RUN CORRELATION line; leave empty ONLY if that line is absent>"
-# IMPORTANT: Replace the entire angle-bracket token above with the actual UUID
-# string (e.g. RUN_ID="a1b2c3d4-..."). Do NOT leave the literal text
-# "<paste...>" — a non-empty non-UUID string will pass the empty-string guard,
-# be compared against the live marker, fail the UUID match, and cause the
-# daemon to quarantine this result as a stale-run envelope (dead-letter fires).
+RUN_ID="" # ← REQUIRED while a run is active: set to the runId UUID from the "DAEMON RUN CORRELATION" line at the END of this prompt (e.g. "a1b2c3d4-..."). Empty is the SAFE default — the daemon treats empty/any-non-UUID as "no correlation".
+# IMPORTANT: set RUN_ID to the actual UUID from the correlation line (e.g.
+# RUN_ID="a1b2c3d4-..."). The daemon now validates the runId to a UUID SHAPE, so an
+# empty value OR any non-UUID string (incl. an un-substituted placeholder) is treated
+# as "no correlation" — it is NEVER mis-compared as a stale run. But while a run is
+# active ONLY a matching UUID is delivered; a missing/non-UUID value is dropped
+# (surfaced as a dead-letter timeout), so DO set the exact UUID above.
 # Atomic publish: write to a `.tmp` sibling, then `mv` into place (rename(2) is
 # atomic on POSIX) so the daemon's poll tick never reads a half-written file.
 # `umask 0077` is scoped to a subshell so the dir is born 0700 and the file
@@ -166,9 +167,10 @@ STATE_ROOT="${IAGO_DAEMON_STATE_ROOT:-/var/lib/iago-os/daemon-state}"
 TASK_FILE="$STATE_ROOT/tasks/pending/pr-triage-send__$(date +%s%3N)-$$.json"
 # Same RUN_ID as the send block above (the runId from the DAEMON RUN CORRELATION
 # line). Set it explicitly; leave empty only if that line is absent.
-RUN_ID="<paste the runId from the DAEMON RUN CORRELATION line; leave empty ONLY if that line is absent>"
-# IMPORTANT: Replace the angle-bracket token above with the actual UUID (same
-# rule as the send block — a literal "<paste...>" would cause quarantine).
+RUN_ID="" # ← REQUIRED while a run is active: set to the runId UUID from the "DAEMON RUN CORRELATION" line at the END of this prompt (e.g. "a1b2c3d4-..."). Empty is the SAFE default — the daemon treats empty/any-non-UUID as "no correlation".
+# IMPORTANT: set RUN_ID to the actual UUID (same rule as the send block — the daemon
+# treats an empty or non-UUID value as no-correlation; only a matching UUID is delivered
+# while a run is active).
 (
   umask 0077
   mkdir -p "$STATE_ROOT/tasks/pending"

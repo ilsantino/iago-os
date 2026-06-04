@@ -2205,9 +2205,17 @@ export class AgentManager extends EventEmitter {
 		// pre-send guard would quarantine the legitimate summary; normalizing here makes
 		// `""` and absent behave identically (quarantine only when a run is active,
 		// proceed when there is none).
+		// Tightened 2026-06-04 (pass #2 team:arch finding): validate the echoed runId to a
+		// UUID SHAPE, not merely non-empty. The dispatch runId is `randomUUID()`, so a real
+		// echo is always a UUID; a non-empty NON-UUID (the un-substituted "<paste…>"
+		// placeholder) or `""` both map to `undefined` (the single "no correlation" path), so
+		// a botched substitution behaves like an omitted echo — never a stale-run mismatch
+		// that masquerades as a real-but-wrong runId.
+		const UUID_RE =
+			/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 		const sendRunId =
-			typeof sendRunIdRaw === "string" && sendRunIdRaw.length > 0
-				? sendRunIdRaw
+			typeof sendRunIdRaw === "string" && UUID_RE.test(sendRunIdRaw.trim())
+				? sendRunIdRaw.trim()
 				: undefined;
 		if (
 			agentId === "pr-triage" &&

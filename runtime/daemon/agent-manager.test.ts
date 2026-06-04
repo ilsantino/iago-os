@@ -709,6 +709,65 @@ describe("AgentManager / restartAgent", () => {
 		expect(stillMarker?.reason).toBe("recycle");
 	});
 
+	it("(pass #2 Important) restart env-rewrite persist FAILURE keeps the respawn (does NOT undo a healthy rotated generation)", async () => {
+		// Task 1 made persistAgentConfig THROW. The REGISTER path rolls the spawn back
+		// fail-closed (tested above) because no live agent existed before it. The RESTART
+		// path is the asymmetric twin: the respawn ALREADY succeeded and the new generation is
+		// tracked, so doRestart CATCHES a thrown env-rewrite persist and KEEPS the respawn — a
+		// transient disk fault must not tear down a live, healthy credential-rotated agent.
+		// RED without the catch: the thrown persist propagates and restartAgent REJECTS.
+		const ctrl = makeMockRuntime("mock-pty-restart-persist");
+		registerRuntime(ctrl.runtime);
+		const mgr = new AgentManager();
+		const agentsDir = pathFor("agents");
+
+		// Register with a WORKING persist (the initial config must land on disk).
+		const handle = await mgr.registerAgent({
+			agentId: "rotate-agent",
+			runtimeId: "mock-pty-restart-persist",
+			cwd: "/tmp/work",
+			env: { OLD: "v0" },
+			sessionId: "sess-rot",
+		});
+
+		// Now break ONLY the agents-dir write so the restart's env-rewrite persist throws;
+		// marker/session-log writes (other dirs) keep working.
+		writeFileMock.mockImplementation((p, data, options) => {
+			if (String(p).startsWith(agentsDir)) {
+				return Promise.reject(
+					Object.assign(new Error("simulated ENOSPC"), { code: "ENOSPC" }),
+				);
+			}
+			if (writeFileState.real === null) {
+				throw new Error("writeFileState.real not initialized by vi.mock factory");
+			}
+			return writeFileState.real(p, data, options);
+		});
+
+		const events: Array<{
+			agentId: string;
+			handleId: string;
+			generationToken: number;
+		}> = [];
+		mgr.on("agent-restarted", (e) => events.push(e));
+
+		// Restart WITH an env override (the credential-rotation path that re-persists).
+		const restarted = await mgr.restartAgent(handle.id, "stalled", {
+			envOverride: { ROTATED: "v1" },
+		});
+
+		// Respawn KEPT despite the failed env-rewrite persist (the documented narrow window:
+		// boot recovery rebuilds from the prior config rather than undoing a live recovery).
+		expect(restarted).toBeDefined();
+		expect(ctrl.spawnCalls).toHaveLength(2); // original + respawn
+		expect(restarted.generationToken).toBe(1);
+		// The new generation is tracked + alive (NOT untracked like the register fail-closed path).
+		expect(mgr.getHandle(restarted.id)).toBeDefined();
+		// agent-restarted still announced so the cron loop re-arms on the fresh handle.
+		expect(events).toHaveLength(1);
+		expect(events[0].generationToken).toBe(restarted.generationToken);
+	});
+
 	it("(Task 8) emits agent-restarted with the new generation so the cron loop can re-arm", async () => {
 		// Task 8 (single restart authority): a heartbeat recycle (or any
 		// restartAgent caller) must ANNOUNCE the new generation so the cron-restart

@@ -365,41 +365,60 @@ export async function fetchOpenPrs(
 	const controller = new AbortController();
 	const timer = setTimeout(() => controller.abort(), timeoutMs);
 	if (typeof timer.unref === "function") timer.unref();
-	let res: Response;
+	// Dual-adversarial pass #2 Important — the abort timer stays armed across BOTH the
+	// fetch AND the streaming body read; it is cleared ONLY in the finally below, AFTER
+	// `readBodyCapped` finishes. The prior code cleared the timer in the fetch's own
+	// finally, BEFORE the body read, so `controller.signal` was already dead while
+	// `readBodyCapped` pulled the stream — a slow/trickle/stalled connection dripping bytes
+	// under the cap hung `fetchOpenPrs` forever on the long-lived daemon. Task 7's byte cap
+	// bounds SIZE; this timer is what actually bounds TIME, and it must cover the read.
+	let rawBody: string;
 	try {
-		res = await fetchImpl(GITHUB_GRAPHQL_ENDPOINT, {
-			method: "POST",
-			headers: {
-				Authorization: `Bearer ${token}`,
-				"User-Agent": "iago-os-daemon",
-				"Content-Type": "application/json",
-			},
-			body: JSON.stringify({ query: PR_TRIAGE_GRAPHQL_QUERY }),
-			signal: controller.signal,
-		});
-	} catch (err) {
-		// Network / abort error. NEVER include `err` verbatim — it could echo a
-		// request URL or header. Emit a token-free, status-free label.
-		const label =
-			err instanceof Error && err.name === "AbortError"
-				? "github-graphql-fetch timed out"
-				: "github-graphql-fetch network error";
-		throw new FetchPrsError(label, null);
+		let res: Response;
+		try {
+			res = await fetchImpl(GITHUB_GRAPHQL_ENDPOINT, {
+				method: "POST",
+				headers: {
+					Authorization: `Bearer ${token}`,
+					"User-Agent": "iago-os-daemon",
+					"Content-Type": "application/json",
+				},
+				body: JSON.stringify({ query: PR_TRIAGE_GRAPHQL_QUERY }),
+				signal: controller.signal,
+			});
+		} catch (err) {
+			// Network / abort error. NEVER include `err` verbatim — it could echo a
+			// request URL or header. Emit a token-free, status-free label.
+			const label =
+				err instanceof Error && err.name === "AbortError"
+					? "github-graphql-fetch timed out"
+					: "github-graphql-fetch network error";
+			throw new FetchPrsError(label, null);
+		}
+		if (res.status !== 200) {
+			// Token-free: only the numeric status enters the message.
+			throw new FetchPrsError(
+				`github-graphql-fetch non-200 status ${res.status}`,
+				res.status,
+			);
+		}
+		// Task 7 — read the body under a hard byte cap AND the abort timer above.
+		// `readBodyCapped` throws `FetchPrsError` on overflow; let that propagate (it is
+		// NOT a JSON-parse failure). An ABORT during the streaming read (the timeout
+		// firing on a stalled body) surfaces as an `AbortError` from `reader.read()` —
+		// map it to the same token-free "timed out" label rather than leaking a generic
+		// read error. Only a genuine JSON.parse error (below) is remapped to "invalid JSON".
+		try {
+			rawBody = await readBodyCapped(res, maxResponseBytes);
+		} catch (err) {
+			if (err instanceof Error && err.name === "AbortError") {
+				throw new FetchPrsError("github-graphql-fetch timed out", null);
+			}
+			throw err;
+		}
 	} finally {
 		clearTimeout(timer);
 	}
-	if (res.status !== 200) {
-		// Token-free: only the numeric status enters the message.
-		throw new FetchPrsError(
-			`github-graphql-fetch non-200 status ${res.status}`,
-			res.status,
-		);
-	}
-	// Task 7 — read the body under a hard byte cap (the AbortController bounds
-	// TIME, never SIZE). `readBodyCapped` throws `FetchPrsError` on overflow;
-	// let that propagate (it is NOT a JSON-parse failure). Only a genuine
-	// JSON.parse error is remapped to the "invalid JSON body" label.
-	const rawBody = await readBodyCapped(res, maxResponseBytes);
 	let json: unknown;
 	try {
 		json = JSON.parse(rawBody);
