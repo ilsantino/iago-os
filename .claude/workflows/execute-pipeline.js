@@ -155,7 +155,14 @@ const PR_SCHEMA = {
 }
 
 // Merged create-PR + @claude-tag (the !noTag path). tagStatus distinguishes a
-// genuine "posted/already-present" from "skipped because there was no PR number".
+// genuine "posted/already-present" from "skipped because there was no PR number"
+// AND from a real "the comment post failed after the PR was created". The last
+// state (TAG_FAILED) MUST exist: without it, an agent that created the PR but then
+// hit a `gh pr comment` error (auth/network/rate-limit) has NO truthful schema-valid
+// value to report — its only conformant escape is to hallucinate tagStatus="TAGGED",
+// which would ship a PR whose mandatory async @claude review never started while the
+// logs assert it did. With TAG_FAILED the agent reports the failure honestly, the
+// caller aborts, and prUrl/prNumber are preserved for /iago-prfix recovery.
 const PR_TAG_SCHEMA = {
   type: 'object',
   required: ['prUrl', 'prNumber', 'tagStatus'],
@@ -163,7 +170,10 @@ const PR_TAG_SCHEMA = {
     prUrl: { type: 'string' },
     prNumber: { type: 'string' },
     branch: { type: 'string' },
-    tagStatus: { type: 'string', enum: ['TAGGED', 'ALREADY_TAGGED', 'SKIPPED_NO_PR_NUMBER'] },
+    tagStatus: {
+      type: 'string',
+      enum: ['TAGGED', 'ALREADY_TAGGED', 'SKIPPED_NO_PR_NUMBER', 'TAG_FAILED'],
+    },
   },
 }
 
@@ -460,6 +470,8 @@ STEP B — TAG @claude (only if STEP A yielded a PR number):
    - Blank line. End: General pass for anything unexpected.
    No markdown headers, no bullets, under 300 words. Post exactly once. Set tagStatus="TAGGED".
 
+FAILURE HONESTY (do NOT hallucinate success): if listing the comments OR posting the @claude comment ERRORS (gh non-zero exit, auth/network/rate-limit/GitHub error) AFTER the PR exists, you MUST set tagStatus="TAG_FAILED" and STILL return the prUrl and prNumber you obtained in STEP A (so the run can be recovered with /iago-prfix). NEVER report tagStatus="TAGGED" unless a comment was actually posted successfully, and NEVER report "ALREADY_TAGGED" unless you actually confirmed an existing @claude comment.
+
 Return prUrl, prNumber, branch, and tagStatus.`
 }
 
@@ -744,13 +756,23 @@ if (noPr) {
     )
   }
   log(`PR: ${prUrl}`)
-  // We have a PR number, so the tag must have been posted or already present. A
-  // SKIPPED_NO_PR_NUMBER here would contradict the non-empty prNumber above (caught
-  // by the assertion already), so treat anything other than TAGGED/ALREADY_TAGGED as
-  // a failed tag — the async loop may not have started.
+  // We have a PR number, so the tag must have been posted or already present. Only
+  // TAGGED/ALREADY_TAGGED prove the async @claude review loop was actually started.
+  // Anything else FAILS CLOSED — the pipeline must NOT report success while the
+  // mandatory async review never began:
+  //   - TAG_FAILED          → `gh pr comment` genuinely errored after PR creation
+  //                           (auth/network/rate-limit). The agent reports this
+  //                           honestly instead of hallucinating TAGGED.
+  //   - SKIPPED_NO_PR_NUMBER → contradicts the non-empty prNumber above (already
+  //                           caught by the assertion), so it surfaces here too.
+  //   - null / unknown       → schema-invalid; the tool layer forces a retry, but
+  //                           defend in depth.
+  // The PR was created, so the throw preserves prUrl + #prNumber for recovery: the
+  // PR is real and re-taggable with /iago-prfix — no work is lost, the run just
+  // does not falsely claim the review loop is running.
   if (pr.tagStatus !== 'TAGGED' && pr.tagStatus !== 'ALREADY_TAGGED') {
     throw new Error(
-      `@claude tag did not confirm posted (tagStatus="${pr.tagStatus || 'null'}") on PR #${prNumber} — the async review loop may not have started; tag manually with /iago-prfix`,
+      `@claude tag did not confirm posted (tagStatus="${pr.tagStatus || 'null'}") on PR ${prUrl} (#${prNumber}) — the async review loop has NOT started. The PR exists; tag it manually with /iago-prfix to start the review.`,
     )
   }
   log(`tagged @claude on PR #${prNumber} — async GitHub review-fix loop will run`)
