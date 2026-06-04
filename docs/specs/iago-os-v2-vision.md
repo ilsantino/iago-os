@@ -8,6 +8,8 @@ _Date: 2026-05-15 | Status: **CANONICAL** | Supersedes: `docs/specs/iago-os-visi
 
 **Amendment 2026-05-30 (per-agent-bots — Santiago LOCKED, supersedes the 2026-05-29 one-bot stance):** The 2026-05-29 'keep one bot' decision is REVERSED on evidence. v2 ships **per-agent Telegram bots for standing agents + one chief/orchestrator bot for ephemeral workers & broadcast.** Rationale: the cortextOS reference impl uses per-agent bots (README 'Add Telegram credentials for each agent' → per-agent `BOT_TOKEN`; per-agent PM2 process); the one-bot HTTP-409 premise was wrong (409 is per-token, N tokens poll independently); per-agent bots are all private DMs so the private-chat security gate stays closed (forum-topics DROPPED). Cost: N one-time BotFather registrations + N tokens via the existing per-agent `LoadCredential=` model. Trail: `.iago/research/2026-05-29-cortextos-comms-gap-analysis.md` §10 + `.iago/decisions/2026-05-30-per-agent-bots-and-chief-tier.md`.
 
+**Amendment 2026-06-02 (model independence + golang phased path — Santiago LOCKED):** Names **model independence** as an explicit architectural pillar and the **top Phase-3 priority**: the daemon imports no LLM SDK, every agent is an external CLI subprocess or host-process script, and the `AgentRuntime` registry IS the model-independence abstraction. Phase 3 ships PTY adapters for `codex`/`gemini`/`opencode` (Shape 1) + one OpenAI-compatible HTTP adapter (Shape 2 → OpenRouter / any OpenAI-compatible endpoint / local ollama·vLLM) + a provider-routing layer cherry-picked from odysseus (`llm_core` / `endpoint_resolver` / `model_discovery`, ported as TS behind existing interfaces). Locks the **language decision**: stay TypeScript through cutover; a golang **sidecar** is on the table only post-cutover and only if a flip-trigger fires; no wholesale rewrite without profile evidence. The daemon's SDK-decoupling is what keeps golang viable later. New sections below (§ Model Independence, § Language Decision — golang phased path). Trail: `.iago/research/2026-06-02-odysseus-clone-eval.md` + `.iago/decisions/2026-06-02-model-independence-and-golang.md`.
+
 ---
 
 ## Vision Statement
@@ -437,6 +439,56 @@ The 4.5-day punch list from `.iago/research/iago-os-adversarial-review-2026-05.m
 
 ---
 
+## Model Independence (model-agnostic by design — top Phase-3 priority)
+
+_Added 2026-06-02 (Santiago direction). Source: `.iago/research/2026-06-02-odysseus-clone-eval.md`. ADR: `.iago/decisions/2026-06-02-model-independence-and-golang.md`._
+
+**North star: the architecture is vendor-agnostic.** The daemon imports **no LLM SDK**. Every agent is an external CLI subprocess (Shape 1 PTY) or a separate host-process script (Shape 2 HTTP/SDK) — the daemon is an I/O supervisor that spawns, watches, and coordinates, never an LLM client. The polymorphic `AgentRuntime` registry **is** the model-independence abstraction: swapping or adding a model is an adapter file + a config field, never a daemon-core change.
+
+Model independence means **optionality + cost control**, not "all models are equal." Claude and Codex are currently strongest at agentic work and stay the default for hard agentic tasks and cross-model review; the point is that nothing in the daemon *binds* us to them. A provider-routing layer picks the right model per task — frontier for hard agentic work, cheap/local for bulk — the same 60/30/10 layer-triage and LLM-cost-discipline principle applied to model selection.
+
+**Concrete Phase-3 deliverables (top priority within Phase 3):**
+
+1. **PTY adapters for `codex`, `gemini`, `opencode` (Shape 1).** Multi-CLI cohabitation in one daemon, each a thin `AgentRuntime` implementation over the existing PTY registry (`runtime/agent-runtime/registry.ts`). Adding a fifth CLI is a config + adapter file. This is the path OpenClaw's ACP backend delivered; the registry replaces ACP (no protocol reimplementation).
+2. **One OpenAI-compatible HTTP adapter (Shape 2).** A single `openai-compat` adapter speaks the OpenAI Chat Completions wire format, so **one adapter unlocks N providers**: OpenRouter (hundreds of models behind one key), any OpenAI-compatible endpoint, and **local models** via ollama / vLLM. `anthropic-sdk` stays a distinct Shape-2 adapter for native Claude features; LangGraph and similar workflows host on top of either as the workflow layer. **Cost-safety gate (G-cost):** the *metered* providers this unlocks (OpenRouter + paid OpenAI-compatible endpoints) ship **disabled by default** and require a fail-closed spend ceiling — the Phase-8 cost ledger + hard pause, or an interim per-run/daily hard cap — before they can be enabled, so metered-billing capability never lands ahead of an automated spend stop (the cost-control half of this section's own principle). Flat-rate Claude Max and $0 local (ollama / vLLM) routes are unaffected; the adapter, routing layer, and local models all still ship in Phase 3.
+3. **Provider-routing layer — cherry-picked from odysseus (ported as TS behind existing interfaces).** odysseus's `llm_core.py` / `endpoint_resolver.py` / `model_discovery.py` give us, as *patterns* (not code):
+   - **Role-based endpoint resolution** — a cheap "utility" model (summarization, classification, gap-query generation) resolved separately from the "chat"/agentic model, so bulk work never burns a frontier model.
+   - **Model discovery** — enumerate what a configured endpoint actually serves, rather than hard-coding a model table (odysseus's hand-maintained context-window table is explicitly NOT taken — we discover, not hardcode).
+   - **Dead-host cooldown + mesh fallback** — a downed endpoint is benched on a cooldown timer; Tailscale-DNS fallback reaches mesh-internal model hosts. Directly relevant to a VPS+Tailscale topology with local model hosts.
+
+**Explicitly NOT taken from odysseus here:** hwfit local-model *serving* (we are cloud-first; local models are an option via the OpenAI-compatible adapter, not a serving stack we operate), ChromaDB-coupled retrieval, and the hand-maintained context-window table. The routing *patterns* port; the serving *stack* does not.
+
+**Why this is the top Phase-3 priority:** it is the load-bearing realization of the v2 north star, it is cheap (small TS adapters + a routing layer behind interfaces we already have), and it converts a stated principle ("model-agnostic") into shipped capability before cutover commits us operationally to any one vendor.
+
+---
+
+## Language Decision — golang phased path (2026-06-02)
+
+_Added 2026-06-02 (Santiago LOCKED). Source: `.iago/research/2026-06-02-odysseus-clone-eval.md` (two deep-research Workflows + a golang-steelman pushback pass; confidence 90%). ADR: `.iago/decisions/2026-06-02-model-independence-and-golang.md`._
+
+**Verdict: stay TypeScript through cutover. A golang *sidecar* is on the table only post-cutover and only if a flip-trigger fires. No wholesale rewrite without profile evidence. Do NOT clone odysseus.**
+
+The decision is *enabled* by the model-independence design above: because the daemon imports **no LLM SDK** (the agent is the external `claude`/`codex` CLI in a PTY; `claude-pty.ts:345`) and the review pipeline is a dev-time `.claude/` harness that reviews golang diffs the same as TS, the daemon language is an **isolated, deferrable choice**. The two historical anti-golang arguments — "lose LLM-SDK fit" and "lose the pipeline" — are both dead. **SDK-decoupling is exactly why golang stays viable later** without a forced decision now.
+
+**Conceded (Santiago is right on the substance):** golang's operational wins are real — a single static binary kills the node-gyp / native-dep bug class this team has already hit, ~10–25 MB RSS vs ~40–80 MB V8, and a cleaner systemd sandbox. Don't be married to TypeScript on principle.
+
+**But "SO much faster" does not survive the bytes:** the daemon is I/O-bound. CPU is 1–50 ms/task ≈ **0.01–0.2%** of the 20–120 s a user waits — the seconds live in `claude`/`codex` subprocess token generation, byte-identical in any daemon language (`claudePty.send` returns BEFORE inference, `claude-pty.ts:514`). Goroutines optimize a bottleneck that does not exist. The one user-visible daemon latency — the 5 s poll — is a few-line `fs.watch`/inotify fix in TS, not a 6–9-week rewrite. Today's concurrency ceiling is imaginary (ONE agent on disk, `maxConcurrent=1`). A rewrite now torches 80+ PRs of hardened scar-fixes (anti-zombie, crash-replay, race fixes) for **parity, not progress** — the opposite of the Garry-impressed ship standard.
+
+- **Phase A (now → cutover, ALL TypeScript):** finish Phase 2/3, cut over off OpenClaw, deploy. Don't touch the language. Two cheap TS latency wins are available *if ever needed*: swap the 5 s `setInterval` poll for `fs.watch`/inotify; convert any re-armed cron `wakeCheck` from `spawnSync` to async exec-with-timeout. Cherry-pick odysseus **ideas** (model-independence routing above, plus the deep-research bounded-loop, loop-breaker, and memory-audit safety guards from the eval) as TS behind existing interfaces — each through the review pipeline + iaGO-mandatory cross-model verify.
+- **Phase B (post-cutover, ONLY if a trigger fires):** a golang **sidecar** for ONE layer first — the file-bus scanner + IPC/health as a static binary with `fsnotify` — keeping the PTY / agent-lifecycle core in TS. Captures the deploy-artifact + event-driven-scan wins without re-deriving the hardened scar-fixes. A full golang daemon rewrite stays **off the table** unless multiple triggers stack, and even then it is sidecar-first + profile-first.
+
+**Flip-to-golang triggers (profile first — the time has consistently been inference + PTY round-trips, both language-invariant):**
+
+1. The per-agent-bot vision ships at scale (10+ standing agents each holding a Telegram long-poll) AND a profiled flame graph shows the **event loop**, not inference, as the ceiling.
+2. The daemon starts genuine per-event CPU work (multi-MB parse on the shared loop, crypto/msg, high-freq tick).
+3. node-gyp / deploy pain becomes the dominant operational cost → targeted sidecar.
+4. A measured post-cutover bottleneck survives the cheap TS fixes above.
+5. The team's primary language flips to golang.
+
+**Clone is a category error.** odysseus is Python+JS; its best subsystems (`agent_loop`, `llm_core`, `context_compactor`) reimplement the `claude` CLI's internals, while iaGO's agent IS that CLI in a PTY — there is no seam to drop the code into. Cherry-pick the ~1,100 LOC of genuine *ideas* as TS skills; do not adopt the code.
+
+---
+
 ## Phase Sequencing (v2, supersedes old roadmap waves)
 
 **Effort math revised 2026-05-15** to absorb agent-shape taxonomy + deeper cortextOS adoption (session.jsonl replay, subagent semantics, heartbeat health, full Next.js dashboard) + deeper Hermes adoption (MCP rate-limiter, shell-hook router, compression full impl). Phase 1 +2-3d, Phase 3 +2-3d, Phase 6 +3d, new Hermes-deeper folded into Phase 5, Phase 9 +1d (Shape 4 adapter scope). Total 27-32d → 38-46d.
@@ -519,6 +571,8 @@ Stay scoped:
 - **Paperclip eval (verdict now overridden):** `~/dev/obsidian-brain/projects/paperclip-eval.md` (Santiago-local; see above)
 - **agentic-os-dashboard eval (verdict now overridden):** `~/dev/obsidian-brain/projects/agentic-os-dashboard-eval.md` (Santiago-local; see above)
 - **May-12 adversarial review:** `.iago/research/iago-os-adversarial-review-2026-05.md`
+- **odysseus eval — model independence + golang decision (2026-06-02):** `.iago/research/2026-06-02-odysseus-clone-eval.md` — pattern backlog + provider-routing cherry-picks + language decision (see § Model Independence, § Language Decision — golang phased path)
+- **ADR — model independence + golang (2026-06-02):** `.iago/decisions/2026-06-02-model-independence-and-golang.md`
 - **Old vision (superseded):** `docs/specs/iago-os-vision.md` — keep for historical reasoning trail; do not execute against
 - **Old wedge roadmap (partially superseded):** `docs/specs/iago-os-roadmap.md` — wedge primitives still valid; framing reinterpreted per this doc
 - **Council decision (now overridden):** `~/dev/obsidian-brain/decisions/2026-04-21-iago-os-v2-council.md` (Santiago-local Obsidian vault) — keep for historical reasoning; verdict reversed by Santiago 2026-05-13 per `memory:feedback_iago_v2_overrides_council`
