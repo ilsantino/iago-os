@@ -93,6 +93,34 @@ A schema migration touching the payment table.`
   assert.strictEqual(classifyTier(plan), 3)
 })
 
+test('9 tasks in the repo `### T0N —` convention (no "Task" word) → Tier 2', () => {
+  // The repo (incl. #89's own plan quick-260530-pipeline-risk-tiering.md) writes task
+  // headings as `### T01 —`, `### T02 —`, ... with NO literal "Task" word. The original
+  // /^\s*###\s+Task/ regex missed these entirely → a 9-task keyword-free plan classified
+  // Tier 1 (thin inline 2-leg) instead of Tier 2 (team), silently skipping the >8-task
+  // escalation — the exact under-review this feature exists to prevent. RED before the
+  // broadened /^\s*###\s+T(?:ask|\d)/ regex (returns 1); GREEN after (returns 2).
+  const plan = `# Plan
+${Array.from({ length: 9 }, (_, i) => `### T0${i + 1} — task ${i + 1}\nsome work`).join('\n')}`
+  assert.strictEqual(classifyTier(plan), 2)
+})
+
+test('broadened regex does NOT over-count `### Tier`/`### Testing`/`### Technical` as tasks', () => {
+  // Precision guard for the broadened regex: it must accept `### T01` but NOT spuriously
+  // match other T-words (a digit or "ask" must follow the T). Here 3 decoy T-headings +
+  // 2 real `### T0N` tasks → only the 2 tasks count → 2 tasks, ≤3 files, no keywords → Tier 0.
+  // If the broadening over-matched, taskCount would be 5 and the tier would shift.
+  const plan = `# Plan
+### Tier 2 notes
+### Testing strategy
+### Technical approach
+### T01 — first
+- **files:** a.ts
+### T02 — second
+- **files:** b.ts`
+  assert.strictEqual(classifyTier(plan), 0)
+})
+
 // ── Drift guard: the inline copy in execute-pipeline.js must match this module ──
 test('inline classifyTier in execute-pipeline.js has not drifted from the twin', () => {
   const extract = (src) => {

@@ -135,6 +135,37 @@ await test('Tier 2 delegates to the team gate on BOTH the initial review AND the
   assert.strictEqual(out.reviewVerdict, 'PASS', 'final verdict from the clean re-review')
 })
 
+await test('team delegation threads stressBlock (initial) + isReReview (re-review) into the gate', async () => {
+  // Tier 2/3 reviews DELEGATE to the team gate, but the gate must enforce the SAME stress
+  // notes and re-review integrity check as the inline 2-leg. Assert the delegation forwards
+  // stressBlock (carrying the stress note) with isReReview=false on the INITIAL review, and
+  // isReReview=true on the fix-loop RE-REVIEW. RED before the threading: wargs has neither.
+  const rules = stageRules(TIER2_PLAN).map((r) =>
+    r.match('stress')
+      ? { match: (l) => l === 'stress', reply: { verdict: 'PROCEED', notes: ['guard the empty-list edge case'] } }
+      : r,
+  )
+  const teamGate = (n) =>
+    n === 1
+      ? { clean: false, blocking: 1, gateStatus: 'COMPLETE', verdict: 'FAIL', codexSource: 'codex', verificationSameFamily: true, verificationDegraded: false, findings: [{ severity: 'Critical', summary: 'boom', by: 'opus' }] }
+      : { clean: true, blocking: 0, gateStatus: 'COMPLETE', verdict: 'PASS', codexSource: 'codex', verificationSameFamily: true, verificationDegraded: false, findings: [] }
+  const h = makeHarness(rules, teamGate)
+  const wf = buildWorkflow()
+  await wf(h.agent, h.parallel, null, h.log, h.phase, { ...baseArgs }, null, h.workflow)
+  assert.strictEqual(h.workflowCalls.length, 2, 'team gate invoked twice (initial + re-review)')
+  const [initial, reReview] = h.workflowCalls
+  assert.strictEqual(initial.wargs.isReReview, false, 'initial delegation is not a re-review')
+  assert.ok(
+    typeof initial.wargs.stressBlock === 'string' && initial.wargs.stressBlock.includes('guard the empty-list edge case'),
+    'initial delegation forwards the stress note in stressBlock',
+  )
+  assert.strictEqual(reReview.wargs.isReReview, true, 're-review delegation sets isReReview=true (enables the integrity check)')
+  assert.ok(
+    typeof reReview.wargs.stressBlock === 'string' && reReview.wargs.stressBlock.includes('guard the empty-list edge case'),
+    're-review delegation still forwards the stress note',
+  )
+})
+
 await test('Tier 1 runs the inline 2-leg and NEVER delegates to the team gate', async () => {
   const h = makeHarness(
     stageRules(TIER1_PLAN, [

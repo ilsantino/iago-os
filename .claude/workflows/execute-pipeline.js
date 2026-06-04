@@ -263,8 +263,10 @@ const TIER2_KEYWORDS = ['amplify', 'functions/', 'schema', 'gsi', 'ttl', 'migrat
 function classifyTier(planText) {
   const text = typeof planText === 'string' ? planText : ''
   const lower = text.toLowerCase()
-  // (1) taskCount — count `### Task` headings (line-anchored, allow leading whitespace).
-  const taskMatches = text.match(/^\s*###\s+Task/gim)
+  // (1) taskCount — count `### Task` / `### T<n>` headings (line-anchored, leading ws OK).
+  // Accept both the `### Task N` form and the repo's `### T01 —` / `### T0N` convention; a
+  // digit or "ask" must follow the T so `### Tier`/`### Testing` are NOT counted as tasks.
+  const taskMatches = text.match(/^\s*###\s+T(?:ask|\d)/gim)
   const taskCount = taskMatches ? taskMatches.length : 0
   // Parse failure: no task headings at all → fail closed to Tier 1 (never Tier 0).
   if (taskCount === 0) return 1
@@ -525,7 +527,10 @@ async function runDualAdversarial(label, isReReview, stressBlock, preImplSha, op
     try {
       da = await workflow(
         { scriptPath: `${iagoRoot}/.claude/workflows/dual-adversarial.js` },
-        { projectDir, iagoRoot, base: preImplSha, mode: 'team', lenses, skepticCap },
+        // Forward stressBlock + isReReview so the team gate enforces the SAME stress-note
+        // coverage and re-review integrity check as the inline 2-leg — a delegated Tier 2/3
+        // review must not be SHALLOWER than the Tier-1 path on either dimension.
+        { projectDir, iagoRoot, base: preImplSha, mode: 'team', lenses, skepticCap, stressBlock, isReReview },
       )
     } catch (e) {
       // A thrown team gate (nested workflow() unavailable, or the gate's own

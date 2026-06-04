@@ -361,6 +361,46 @@ await test('skeptic verification is capped; overflow blocking findings kept un-v
   assert.strictEqual(out.blocking, 10, 'all 10 Criticals remain blocking (8 verified + 2 overflow kept)')
 })
 
+// ── Team delegation threads stress notes + re-review integrity check (#89 Important) ──
+await test('team gate injects forwarded stressBlock + RE-REVIEW integrity check into the review leg', async () => {
+  // When execute-pipeline delegates a Tier 2/3 review here, it forwards stressBlock (the plan's
+  // stress notes) and isReReview. The team gate must enforce the SAME stress-note coverage and
+  // re-review integrity check as the inline 2-leg — otherwise a delegated Tier 2/3 review skips
+  // both. Assert the forwarded stress note text and the integrity-check directive land in the
+  // review leg's prompt. RED before the threading: the review prompt carries neither.
+  const STRESS = '\n\nSTRESS ENFORCEMENT: a stress test produced notes.\nNotes:\n- guard the empty-list edge case'
+  const h = makeHarness([
+    { match: (l) => l === 'review', reply: { verdict: 'PASS', findings: [] } },
+    { match: (l) => l === 'codex', reply: { source: 'codex', findings: [] } },
+    { match: (l) => l === 'team:data', reply: { findings: [] } },
+    { match: (l) => l === 'team:arch', reply: { findings: [] } },
+  ])
+  const wf = buildWorkflow()
+  await wf(h.agent, h.parallel, null, h.log, h.phase, { ...baseArgs, mode: 'team', stressBlock: STRESS, isReReview: true }, null, null)
+  const reviewCall = h.calls.find((c) => c.label === 'review')
+  assert.ok(reviewCall, 'review leg ran')
+  assert.ok(reviewCall.prompt.includes('guard the empty-list edge case'), 'forwarded stress note injected into the review prompt')
+  assert.ok(/RE-REVIEW INTEGRITY CHECK/i.test(reviewCall.prompt), 're-review integrity check injected when isReReview=true')
+})
+
+await test('team gate review leg has NO stress/re-review block when neither is forwarded (standalone gate)', async () => {
+  // The standalone pre-merge gate run (not a pipeline delegation) forwards no stressBlock/isReReview,
+  // so the review prompt must NOT carry a stress block or the re-review integrity directive — the
+  // non-delegated path stays as before.
+  const h = makeHarness([
+    { match: (l) => l === 'review', reply: { verdict: 'PASS', findings: [] } },
+    { match: (l) => l === 'codex', reply: { source: 'codex', findings: [] } },
+    { match: (l) => l === 'team:data', reply: { findings: [] } },
+    { match: (l) => l === 'team:arch', reply: { findings: [] } },
+  ])
+  const wf = buildWorkflow()
+  await wf(h.agent, h.parallel, null, h.log, h.phase, { ...baseArgs, mode: 'team' }, null, null)
+  const reviewCall = h.calls.find((c) => c.label === 'review')
+  assert.ok(reviewCall, 'review leg ran')
+  assert.ok(!/RE-REVIEW INTEGRITY CHECK/i.test(reviewCall.prompt), 'no re-review block when isReReview absent')
+  assert.ok(!/STRESS ENFORCEMENT/i.test(reviewCall.prompt), 'no stress block when stressBlock absent')
+})
+
 // ── Side-effect assertion (I1) ──────────────────────────────────────────
 await test('a review leg that dirties the tree fails the gate, does not report clean (I1)', async () => {
   // The side-effect guard runs a read-only agent at start + end to capture HEAD +

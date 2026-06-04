@@ -58,6 +58,13 @@ const projectDir = A.projectDir
 const base = A.base || 'origin/main'
 const iagoRoot = A.iagoRoot // no personal-path default — fail loud (resolves review-checks)
 const prNumber = A.prNumber || ''
+// When the execution pipeline DELEGATES a Tier 2/3 review to this team gate (runDualAdversarial),
+// it forwards the plan's stress notes (stressBlock — a preformatted string, or '') and whether
+// this run is a fix-loop re-review (isReReview). The gate then enforces the SAME stress-note
+// coverage and re-review integrity check as the inline 2-leg. Absent (a standalone gate run on a
+// PR diff) → both no-op and the review leg stays as before.
+const stressBlock = typeof A.stressBlock === 'string' ? A.stressBlock : ''
+const isReReview = A.isReReview === true
 // TEAM mode adds two extra independent reviewer legs (team:data + team:arch) and an
 // adversarial verification pass over Critical/Important findings. Any value other
 // than the literal "team" leaves the workflow byte-for-byte in STANDARD behavior.
@@ -130,6 +137,13 @@ OPERATING STANCE — aggressive and independent:
 
 const diffExpr = `git diff ${base}...HEAD`
 
+// Re-review integrity check — injected ONLY when the pipeline forwards isReReview. Mirrors the
+// inline 2-leg's re-review head so a delegated Tier 2/3 re-review still verifies every prior
+// finding is resolved and that a "no test infra" excuse was not used to dodge a regression test.
+const reReviewBlock = isReReview
+  ? `\n\nRE-REVIEW INTEGRITY CHECK: this is a re-review after a fix round. Verify EVERY previous finding (Critical, Important, Minor) is actually resolved, and hunt for regressions the fixes introduced. If a prior fix claimed "no test infrastructure" to skip a regression test for a Critical/Important finding, verify by probing conventions — sibling *.test.ts/*.test.tsx, vitest.config.ts, package.json test scripts, test-{name}.{mjs,bats,sh} beside bash scripts, e2e/, amplify/functions/*/handler.test.ts. If infra exists that was missed, raise a NEW Important finding.`
+  : ''
+
 const reviewPrompt = `${PREAMBLE}
 
 Final adversarial review of PR${prNumber ? ` #${prNumber}` : ''} before a human merges it. Two passes:
@@ -140,7 +154,7 @@ PASS 2 — ADVERSARIAL: read each changed source file IN FULL (not the diff alon
 
 This is the LAST gate before merge — the async GitHub loop already ran, so focus on what an automated loop misses: integration effects across modules, subtle data-correctness, concurrency, and anything the diff-only view hid.
 
-Categorize findings Critical / Important / Minor. Verdict: PASS = none; PASS_WITH_CONCERNS = only Minor; FAIL = any Critical/Important.`
+Categorize findings Critical / Important / Minor. Verdict: PASS = none; PASS_WITH_CONCERNS = only Minor; FAIL = any Critical/Important.${reReviewBlock}${stressBlock}`
 
 const codexPrompt = `${PREAMBLE}
 

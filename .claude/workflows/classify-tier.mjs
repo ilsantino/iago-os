@@ -24,8 +24,10 @@ export const TIER2_KEYWORDS = ['amplify', 'functions/', 'schema', 'gsi', 'ttl', 
 export function classifyTier(planText) {
   const text = typeof planText === 'string' ? planText : ''
   const lower = text.toLowerCase()
-  // (1) taskCount — count `### Task` headings (line-anchored, allow leading whitespace).
-  const taskMatches = text.match(/^\s*###\s+Task/gim)
+  // (1) taskCount — count `### Task` / `### T<n>` headings (line-anchored, leading ws OK).
+  // Accept both the `### Task N` form and the repo's `### T01 —` / `### T0N` convention; a
+  // digit or "ask" must follow the T so `### Tier`/`### Testing` are NOT counted as tasks.
+  const taskMatches = text.match(/^\s*###\s+T(?:ask|\d)/gim)
   const taskCount = taskMatches ? taskMatches.length : 0
   // Parse failure: no task headings at all → fail closed to Tier 1 (never Tier 0).
   if (taskCount === 0) return 1
