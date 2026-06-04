@@ -95,6 +95,12 @@ no cross-plan bleed.
 the correct cap.
 
 ### T04 — `try/finally` lock release with owner-check (remove double-release)
+> **STATUS: DESCOPED — NOT implemented this pass.** The shipped code keeps the success-path
+> release and documents (in `execute-pipeline.js`) why no `finally`-release is wired (a
+> guaranteed `finally` would dispatch a release agent that can itself throw on the same outage
+> that aborted the run, masking the real error). No double-release was ever shipped; the
+> residual lock-leak-on-crash is the pre-existing 3h-stale-reclaim tradeoff. This task moves to
+> the follow-up plan. The spec below is retained for that follow-up.
 **File:** `.claude/workflows/execute-pipeline.js`
 **Depends on:** —
 **Change:** (1) **Remove** the existing success-path agent lock-release (~line 690-693).
@@ -185,8 +191,14 @@ all resolved in the tasks above. Implementation may skip a redundant Stage-0 str
 - **[Critical] `MAX_FIX_ROUNDS` module const bleeds across stacked plans** → T03 per-plan
   local. Resolved.
 - **[Critical] Double lock-release race + `finally` agent-call can mask the real error** →
-  T04 removes success-path release, single owner-checked `execSync` in `finally`,
-  self-swallowing. Resolved.
+  T04 **DESCOPED this pass (NOT implemented)**. The dangerous variant (a `finally` that
+  dispatches a release `agent()`) was never shipped, so there is no double-release; the
+  code keeps the single success-path release plus an explicit comment in
+  `execute-pipeline.js` documenting why no `finally`-release is wired — a guaranteed
+  `finally` would call a release agent that can itself throw on the same API outage that
+  aborted the run, masking the real error. Residual: a crashed run holds the lock until the
+  3h stale-reclaim (the pre-existing tradeoff, mitigated by worktree-per-session). The
+  `execSync`-in-`finally` design is moved to the follow-up plan, not claimed done here.
 - **[Critical] Self-modification: running pipeline uses stale closure; compile-only gate**
   → ship as standalone branch+PR (not `/iago-execute`); unit tests + post-merge canary;
   T07 hardens the gate. Resolved by ship-path.
@@ -197,7 +209,8 @@ all resolved in the tasks above. Implementation may skip a redundant Stage-0 str
 - **[Important] `verificationDegraded` always true → trains user to ignore** → T06 rename +
   reserve real degraded flag. Resolved.
 - **[Important] Unbounded skeptic fan-out** → T05 `SKEPTIC_CAP=8`. Resolved.
-- **[Important] `finally` could release a concurrent session's lock** → T04 owner-check.
-  Resolved.
+- **[Important] `finally` could release a concurrent session's lock** → moot for now —
+  T04's `finally`-release was DESCOPED (see the [Critical] above), so there is no `finally`
+  to mis-release; the owner-check ships with T04 in the follow-up plan.
 - **[Minor] Tier-0 ceiling ambiguity / undocumented default mode** → T01 requires both
   counts under ceiling; T02 JSDoc. Resolved.

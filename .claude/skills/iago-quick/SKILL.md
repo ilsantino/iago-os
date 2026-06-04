@@ -124,7 +124,10 @@ The Workflow runs the full pipeline as tracked subagents (no `claude -p` fragili
 transient API errors auto-retry, no static turn caps):
 stress → implement → build gate → **commit** → **dual adversarial (Opus ∥ Codex)** →
 fix + regression tests (≤2 rounds) → PR → summary. It returns `{ branch, prUrl,
-reviewVerdict, codexSource, fixRounds }` and notifies you on completion.
+reviewVerdict, codexSource, fixRounds, minorRemaining, verificationSameFamily,
+verificationDegraded }` and notifies you on completion. For a Tier 2/3 (team-gate) plan,
+surface `verificationDegraded === true` to Santiago at the merge decision (the skeptic
+verification did not fully run — a real gate gap).
 
 After the async GitHub review-fix loop reports clean, run the pre-merge gate (pass #2):
 ```

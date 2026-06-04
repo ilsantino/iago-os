@@ -509,33 +509,60 @@ async function runDualAdversarial(label, isReReview, stressBlock, preImplSha, op
   }
   // TEAM mode → delegate to the already-built, already-tested team gate. One-level
   // workflow() nesting (execute-pipeline.js is top-level; dual-adversarial.js never nests
-  // further). DEFENSIVE: if nested workflow() is unavailable or the gate throws, fall
-  // through to the inline 2-leg so a harness limitation degrades to today's behavior
-  // rather than bricking Tier 2/3 review entirely.
+  // further).
+  //
+  // FAIL CLOSED (dual-adversarial pass #2 — 3 Criticals). A team-mode request means a
+  // Tier>=2 (complex/security) plan that MUST get the deep team gate. The previous design
+  // fell THROUGH to the shallow inline 2-leg on ANY team-gate problem (a throw, a malformed
+  // return, OR a COMPLETE-looking result whose gateStatus was actually 'INCOMPLETE' because a
+  // core Opus/Codex leg crashed). That was a SILENT downgrade: an auth/payment/schema plan
+  // got the exact thin review this path exists to prevent, the inline path then hardcoded
+  // verificationDegraded=false (positively asserting "verified"), and the pipeline shipped.
+  // Every failure mode below now STOPS the pipeline (a re-run condition) — the same posture
+  // as the `tier>=2 && mode!=='team'` hard-stop above. It NEVER downgrades to the inline 2-leg.
   if (mode === 'team') {
+    let da
     try {
-      const da = await workflow(
+      da = await workflow(
         { scriptPath: `${iagoRoot}/.claude/workflows/dual-adversarial.js` },
         { projectDir, iagoRoot, base: preImplSha, mode: 'team', lenses, skepticCap },
       )
-      if (da && Array.isArray(da.findings)) {
-        log(
-          `team gate (${label}): ${da.blocking} blocking, codex=${da.codexSource}` +
-            `${da.crossModelDegraded ? ' [cross-model DEGRADED]' : ''}` +
-            `${da.verificationSameFamily ? ' [skeptics same-family]' : ''}` +
-            `${da.verificationDegraded ? ' [verification INCOMPLETE]' : ''}`,
-        )
-        return {
-          findings: da.findings,
-          verdict: da.clean ? 'PASS' : (da.blocking > 0 ? 'FAIL' : 'PASS_WITH_CONCERNS'),
-          codexSource: da.codexSource || 'unavailable',
-          verificationSameFamily: da.verificationSameFamily === true,
-          verificationDegraded: da.verificationDegraded === true,
-        }
-      }
-      log(`team gate (${label}) returned no findings array — falling back to inline 2-leg review`)
     } catch (e) {
-      log(`team gate (${label}) failed (${String(e).slice(0, 160)}) — falling back to inline 2-leg review`)
+      // A thrown team gate (nested workflow() unavailable, or the gate's own
+      // side-effect-breach guard) is a re-run condition — never a license to downgrade.
+      throw new Error(
+        `team gate (${label}) threw (${String(e).slice(0, 200)}) — tier ${tier} requires a COMPLETE team review; failing closed (re-run the pipeline), NOT downgrading to the inline 2-leg.`,
+      )
+    }
+    // A malformed return (no findings array) cannot be reasoned about — fail closed.
+    if (!da || !Array.isArray(da.findings)) {
+      throw new Error(
+        `team gate (${label}) returned a malformed result (no findings array) — tier ${tier} requires a complete team review; failing closed (re-run), NOT downgrading to the inline 2-leg.`,
+      )
+    }
+    // Honor the gate's OWN structured completion signal. When a CORE leg (Opus review or
+    // Codex) fails to run, dual-adversarial.js returns gateStatus:'INCOMPLETE', clean:false,
+    // blocking:0, findings:[]. Reading only findings/clean/blocking mis-maps that to
+    // PASS_WITH_CONCERNS with zero findings → the fix loop is skipped and the run SHIPS. An
+    // INCOMPLETE gate is a re-run condition (incompleteLegs names the failed core legs), not a
+    // pass — fail closed so a half-completed mandatory review can never gate a Tier>=2 merge.
+    if (da.gateStatus !== 'COMPLETE') {
+      throw new Error(
+        `team gate (${label}) did NOT complete (gateStatus=${da.gateStatus}, incompleteLegs=[${(da.incompleteLegs || []).join(', ')}]) — a core reviewer failed; tier ${tier} requires a COMPLETE team review, failing closed (re-run), NOT downgrading to the inline 2-leg.`,
+      )
+    }
+    log(
+      `team gate (${label}): ${da.blocking} blocking, codex=${da.codexSource}` +
+        `${da.crossModelDegraded ? ' [cross-model DEGRADED]' : ''}` +
+        `${da.verificationSameFamily ? ' [skeptics same-family]' : ''}` +
+        `${da.verificationDegraded ? ' [verification INCOMPLETE]' : ''}`,
+    )
+    return {
+      findings: da.findings,
+      verdict: da.clean ? 'PASS' : da.blocking > 0 ? 'FAIL' : 'PASS_WITH_CONCERNS',
+      codexSource: da.codexSource || 'unavailable',
+      verificationSameFamily: da.verificationSameFamily === true,
+      verificationDegraded: da.verificationDegraded === true,
     }
   }
   const [review, codex] = await parallel([
@@ -637,18 +664,29 @@ const stressBlock =
     : ''
 
 // ─── Risk tier — deterministic (zero-LLM) classification of THIS plan ────────────────
-// Fetch the plan text via a read-only agent (the body has no fs) and classify. Any read
-// failure errs to Tier 1 (classifyTier('') → 1) — an unreadable plan still gets the full
-// 2-leg gate. These locals re-initialize per plan, so a stacked multi-plan run never
-// bleeds one plan's tier/cap into the next.
+// Fetch the plan text via a read-only agent (the body has no fs) and classify. A read
+// failure FAILS SAFE to Tier 2 (the deep TEAM gate), NOT Tier 1 — we cannot prove an
+// unreadable plan is low-risk, so it must not be silently downgraded to the shallow inline
+// review (dual-adversarial pass #2 Important). These locals re-initialize per plan, so a
+// stacked multi-plan run never bleeds one plan's tier/cap into the next.
 const planRead = await withRetry(
   () => agent(PLANREAD_PROMPT, { label: 'plan-read', phase: 'Stress', schema: PLANTEXT_SCHEMA }),
   'plan-read',
 )
-if (planRead && planRead.status !== 'DONE') {
-  log(`WARNING: plan-read ${planRead.status} — tier classifier running on empty text, defaulting to Tier 1 (team gate will NOT be used even if the plan is security-sensitive)`)
+const planReadOk =
+  planRead && planRead.status === 'DONE' && typeof planRead.text === 'string' && planRead.text.trim().length > 0
+let tier
+if (planReadOk) {
+  tier = classifyTier(planRead.text)
+} else {
+  // FAIL SAFE: cannot classify an unreadable plan — give it the deep TEAM gate (Tier 2)
+  // instead of the shallow Tier-1 inline review. The team gate diffs the CODE, not the plan,
+  // so it still runs; over-reviewing an unreadable plan is the safe direction.
+  tier = 2
+  log(
+    `WARNING: plan-read ${planRead ? planRead.status : 'null'}/empty after retries — cannot classify risk tier; FAILING SAFE to Tier 2 (deep team gate) rather than Tier-1 inline review for a possibly-security-sensitive plan`,
+  )
 }
-const tier = classifyTier(planRead && planRead.status === 'DONE' ? planRead.text || '' : '')
 const maxFixRounds = tier >= 3 ? 3 : 2
 const reviewMode = tier >= 2 ? 'team' : 'standard'
 const reviewLenses = []

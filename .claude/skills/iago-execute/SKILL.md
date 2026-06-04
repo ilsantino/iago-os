@@ -110,7 +110,11 @@ Workflow({
 
 The Workflow runs in the background as tracked subagents and notifies you on
 completion; its return value carries `{ branch, prUrl, prNumber, reviewVerdict,
-codexSource, fixRounds, minorRemaining }`. Run plans ONE AT A TIME — wait for each
+codexSource, fixRounds, minorRemaining, verificationSameFamily, verificationDegraded }`.
+For a Tier 2/3 (team-gate) plan, **surface `verificationDegraded` to Santiago at the merge
+decision** — `true` means the skeptic verification did not fully run (a real gate gap, the
+in-pipeline analogue of `crossModelDegraded`); `verificationSameFamily` is the always-true
+structural note that the skeptics are same-family Opus. Run plans ONE AT A TIME — wait for each
 to complete before launching the next (the next plan builds on the previous
 plan's commits).
 

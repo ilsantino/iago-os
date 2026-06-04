@@ -116,8 +116,8 @@ await test('Tier 2 delegates to the team gate on BOTH the initial review AND the
   // re-review must call workflow() AGAIN with mode='team'; second call is clean.
   const teamGate = (n) =>
     n === 1
-      ? { clean: false, blocking: 1, verdict: 'FAIL', codexSource: 'codex', verificationSameFamily: true, verificationDegraded: false, findings: [{ severity: 'Critical', summary: 'boom', by: 'opus' }] }
-      : { clean: true, blocking: 0, verdict: 'PASS', codexSource: 'codex', verificationSameFamily: true, verificationDegraded: false, findings: [] }
+      ? { clean: false, blocking: 1, gateStatus: 'COMPLETE', verdict: 'FAIL', codexSource: 'codex', verificationSameFamily: true, verificationDegraded: false, findings: [{ severity: 'Critical', summary: 'boom', by: 'opus' }] }
+      : { clean: true, blocking: 0, gateStatus: 'COMPLETE', verdict: 'PASS', codexSource: 'codex', verificationSameFamily: true, verificationDegraded: false, findings: [] }
   const h = makeHarness(stageRules(TIER2_PLAN), teamGate)
   const wf = buildWorkflow()
   const out = await wf(h.agent, h.parallel, null, h.log, h.phase, { ...baseArgs }, null, h.workflow)
@@ -159,8 +159,8 @@ await test('Tier 3 delegates to team gate AND allows 3 fix rounds (not capped at
   // after call 3 still blocking; Tier 3 (maxFixRounds=3) runs a third fix round instead.
   const teamGate = (n) =>
     n <= 3
-      ? { clean: false, blocking: 1, verdict: 'FAIL', codexSource: 'codex', verificationSameFamily: true, verificationDegraded: false, findings: [{ severity: 'Critical', summary: 'jwt validation missing', by: 'opus' }] }
-      : { clean: true, blocking: 0, verdict: 'PASS', codexSource: 'codex', verificationSameFamily: true, verificationDegraded: false, findings: [] }
+      ? { clean: false, blocking: 1, gateStatus: 'COMPLETE', verdict: 'FAIL', codexSource: 'codex', verificationSameFamily: true, verificationDegraded: false, findings: [{ severity: 'Critical', summary: 'jwt validation missing', by: 'opus' }] }
+      : { clean: true, blocking: 0, gateStatus: 'COMPLETE', verdict: 'PASS', codexSource: 'codex', verificationSameFamily: true, verificationDegraded: false, findings: [] }
   const h = makeHarness(stageRules(TIER3_PLAN), teamGate)
   const wf = buildWorkflow()
   const out = await wf(h.agent, h.parallel, null, h.log, h.phase, { ...baseArgs }, null, h.workflow)
@@ -174,6 +174,95 @@ await test('Tier 3 delegates to team gate AND allows 3 fix rounds (not capped at
   assert.strictEqual(out.fixRounds, 3, 'three fix rounds ran (Tier 3 maxFixRounds)')
   assert.strictEqual(out.reviewVerdict, 'PASS', 'final verdict clean after 3rd fix round')
 })
+
+// ─── FAIL-CLOSED team-gate delegation (dual-adversarial pass #2 — 3 Criticals) ──────
+// A team-mode (Tier>=2) plan MUST get a COMPLETE team review. Every team-gate failure mode
+// below now STOPS the pipeline (a re-run condition) instead of silently downgrading to the
+// shallow inline 2-leg — the bug that let an auth/payment/schema plan ship after the exact
+// thin review the team gate exists to prevent.
+
+await test('FAIL CLOSED: team gate gateStatus INCOMPLETE (a core leg failed) → pipeline THROWS, never ships', async () => {
+  // dual-adversarial.js returns gateStatus:'INCOMPLETE', clean:false, blocking:0, findings:[]
+  // when a CORE Opus/Codex leg fails to run. Reading only findings/clean/blocking mis-maps that
+  // to PASS_WITH_CONCERNS with no findings → fix loop skipped → SHIP. The fix honors gateStatus.
+  const teamGate = () => ({
+    clean: false, blocking: 0, gateStatus: 'INCOMPLETE', incompleteLegs: ['codex'],
+    verdict: 'PASS_WITH_CONCERNS', codexSource: 'unavailable', findings: [],
+  })
+  const h = makeHarness(stageRules(TIER2_PLAN), teamGate)
+  const wf = buildWorkflow()
+  await assert.rejects(
+    () => wf(h.agent, h.parallel, null, h.log, h.phase, { ...baseArgs }, null, h.workflow),
+    /did NOT complete|gateStatus=INCOMPLETE/i,
+    'an INCOMPLETE team gate fails closed (throws), never proceeds to PR',
+  )
+  assert.ok(!h.calls.some((c) => /^review:/.test(c.label) || /^codex:/.test(c.label)), 'no silent inline-2-leg downgrade')
+})
+
+await test('FAIL CLOSED: team gate THROWS → pipeline THROWS, never downgrades to the inline 2-leg', async () => {
+  const teamGate = () => {
+    throw new Error('nested workflow() unavailable')
+  }
+  const h = makeHarness(stageRules(TIER2_PLAN), teamGate)
+  const wf = buildWorkflow()
+  await assert.rejects(
+    () => wf(h.agent, h.parallel, null, h.log, h.phase, { ...baseArgs }, null, h.workflow),
+    /team gate.*threw|failing closed/i,
+    'a thrown team gate fails closed',
+  )
+  assert.ok(!h.calls.some((c) => /^review:/.test(c.label) || /^codex:/.test(c.label)), 'no silent inline-2-leg downgrade')
+})
+
+await test('FAIL CLOSED: team gate returns a malformed result (no findings array) → pipeline THROWS', async () => {
+  const teamGate = () => ({ clean: true, blocking: 0, gateStatus: 'COMPLETE' }) // no findings array
+  const h = makeHarness(stageRules(TIER2_PLAN), teamGate)
+  const wf = buildWorkflow()
+  await assert.rejects(
+    () => wf(h.agent, h.parallel, null, h.log, h.phase, { ...baseArgs }, null, h.workflow),
+    /malformed result|no findings array/i,
+    'a malformed team-gate result fails closed',
+  )
+})
+
+await test('FAIL SAFE: an unreadable plan (plan-read BLOCKED) classifies Tier 2 and runs the TEAM gate, not the inline 2-leg', async () => {
+  // A transient plan-read failure must NOT silently downgrade a possibly-security-sensitive plan
+  // to the shallow Tier-1 inline review. The fix classifies an unreadable plan to Tier 2 (team).
+  const teamGate = () => ({
+    clean: true, blocking: 0, gateStatus: 'COMPLETE', verdict: 'PASS', codexSource: 'codex',
+    verificationSameFamily: true, verificationDegraded: false, findings: [],
+  })
+  const rules = [
+    { match: (l) => l === 'plan-read', reply: { status: 'BLOCKED', notes: 'transient read fault' } },
+    ...stageRules(TIER1_PLAN).filter((r) => !r.match('plan-read')),
+  ]
+  const h = makeHarness(rules, teamGate)
+  const wf = buildWorkflow()
+  const out = await wf(h.agent, h.parallel, null, h.log, h.phase, { ...baseArgs }, null, h.workflow)
+  assert.ok(h.workflowCalls.length >= 1, 'team gate invoked for the unreadable (fail-safe Tier 2) plan')
+  assert.strictEqual(h.workflowCalls[0].wargs.mode, 'team', 'unreadable plan routed to mode=team')
+  assert.ok(!h.calls.some((c) => /^review:/.test(c.label) || /^codex:/.test(c.label)), 'no inline 2-leg for the fail-safe Tier 2 plan')
+  assert.strictEqual(out.reviewVerdict, 'PASS')
+})
+
+await test('T06 honesty: verificationDegraded from the team gate propagates to the pipeline return', async () => {
+  // A degraded skeptic verification (a real run gap) must reach the orchestrator's final return
+  // so the human merge decision sees verification was incomplete. (T06's wrapper-read, end-to-end.)
+  const teamGate = () => ({
+    clean: true, blocking: 0, gateStatus: 'COMPLETE', verdict: 'PASS', codexSource: 'codex',
+    verificationSameFamily: true, verificationDegraded: true, findings: [],
+  })
+  const h = makeHarness(stageRules(TIER2_PLAN), teamGate)
+  const wf = buildWorkflow()
+  const out = await wf(h.agent, h.parallel, null, h.log, h.phase, { ...baseArgs }, null, h.workflow)
+  assert.strictEqual(out.verificationDegraded, true, 'verificationDegraded surfaced to the final return')
+  assert.strictEqual(out.verificationSameFamily, true, 'verificationSameFamily surfaced to the final return')
+})
+
+// NOTE (test-coverage limitation): the internal `tier>=2 && mode!=='team'` hard-stop assertion
+// in runDualAdversarial is a defensive invariant that the full-pipeline harness cannot reach —
+// reviewMode is always derived as `tier>=2 ? 'team' : 'standard'`, so mode is never inconsistent
+// with tier through the public flow. The above FAIL-SAFE test pins the live consequence (a
+// Tier-2 plan always runs the team gate); the raw assertion guards only a future coding error.
 
 console.log(`\n${passed} passed, ${failed} failed`)
 process.exit(failed ? 1 : 0)
