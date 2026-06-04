@@ -178,11 +178,17 @@ pre-merge gate — the `dual-adversarial` Workflow (`.claude/workflows/dual-adve
 
 ```
 Workflow({ scriptPath: "<IAGO_ROOT>/.claude/workflows/dual-adversarial.js",
-           args: { projectDir, iagoRoot, base: "origin/main", prNumber } })
+           args: { projectDir, iagoRoot, base: "origin/main", prNumber, mode: "team" } })
 ```
 
+`mode: "team"` is REQUIRED here — the final pre-merge gate always runs Team depth
+(diverse-persona panel + per-finding skeptic verification that drops both-refute false
+positives), matching the `/dual-adversarial` SKILL default. Omitting `mode` silently
+runs the thinner STANDARD gate (no team legs, no skeptic verification), so it must be
+passed explicitly. Lenses auto-derive (omit `lenses`).
+
 Read-only (Opus reviewer ∥ Codex over the PR diff). Returns `{ clean, verdict,
-findings, blocking }`. If `clean` → tell Santiago it's safe to merge. If
+findings, blocking, ... }`. If `clean` → tell Santiago it's safe to merge. If
 `blocking > 0` → surface findings, offer `/iago-prfix`. **Never merge** — Santiago merges.
 
 ### What the Orchestrator Does

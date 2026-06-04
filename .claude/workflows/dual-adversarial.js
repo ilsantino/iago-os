@@ -291,6 +291,11 @@ let lenses
 let lensesRequested
 let lensesDropped = []
 let lensSource
+// probeDegraded is the lens-config analogue of crossModelDegraded/verificationDegraded: true when
+// the changed-files probe failed or returned a malformed result and the run widened to the FULL
+// auto-selectable lens set. Surfaced in the return so the operator can tell a genuine 5-lens
+// sensitive diff from a degraded probe that silently widened — degradation honesty, not just a log.
+let probeDegraded = false
 if (Array.isArray(A.lenses) || (!lensesIsAuto && A.lenses != null)) {
   // EXPLICIT — honor the caller's lenses unchanged (array, csv, or map).
   const n = normalizeLenses(A.lenses)
@@ -340,6 +345,7 @@ if (Array.isArray(A.lenses) || (!lensesIsAuto && A.lenses != null)) {
     log(
       `WARNING: changed-files probe failed or returned a malformed result — cannot determine changed paths (DEGRADED probe — not a confirmed no-change diff); falling back to the FULL auto-selectable lens set so coverage does not shrink: [${lenses.join(', ')}]`,
     )
+    probeDegraded = true
   } else if (changedFiles.length === 0) {
     // Agent SUCCEEDED but returned no files — a real no-change diff vs base. Distinct log.
     log(`changed-files probe returned 0 files (no diff vs ${base}); auto-deriving base lenses [${lenses.join(', ')}]`)
@@ -612,4 +618,6 @@ return {
   findings,
   blocking: blocking.length,
   lenses,
+  lensSource,
+  probeDegraded,
 }

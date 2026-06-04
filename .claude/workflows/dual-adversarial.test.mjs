@@ -784,5 +784,75 @@ await test('SKILL step-3 default explanation lists the BROADENED security taxono
   )
 })
 
+// ── Side-effect guard DEGRADED branch (re-gate Important — lens:tests) ───
+await test('side-effect guard DEGRADED (snapshot agent null) → clean, no throw, warning logged', async () => {
+  // I1 guard: treeSnapshot runs a read-only agent at start + end. If that agent FAILS (null,
+  // a transient API error), the guard cannot verify the tree stayed read-only — it logs a
+  // DEGRADED warning and SKIPS the mutation assertion rather than throwing. #90 relocated
+  // treeSnapshot ahead of lens resolution, putting this branch in its risk surface; the only
+  // side-effect tests assert the THROW path. Pin the degraded path: both snapshots null →
+  // out.clean === true, NO throw, and a 'side-effect guard DEGRADED' warning is logged.
+  const h = makeHarness([
+    { match: (l) => l === 'review', reply: { verdict: 'PASS', findings: [] } },
+    { match: (l) => l === 'codex', reply: { source: 'codex', findings: [] } },
+    { match: (l) => l === 'changed-files', reply: { files: [] } },
+    { match: (l) => l === 'code quality' || l === 'completeness critic', reply: { findings: [] } },
+    { match: (l) => /side-?effect-snapshot/i.test(l), reply: null },
+  ])
+  const wf = buildWorkflow()
+  let threw = false
+  let out
+  try {
+    out = await wf(h.agent, h.parallel, null, h.log, h.phase, { ...baseArgs }, null, null)
+  } catch {
+    threw = true
+  }
+  assert.ok(!threw, 'a degraded (null) snapshot must NOT throw — the guard degrades, it does not violate')
+  assert.strictEqual(out.clean, true, 'clean with no findings even when the side-effect guard is degraded')
+  assert.ok(h.logs.some((m) => /side-?effect guard DEGRADED/i.test(m)), 'logs the side-effect-guard DEGRADED warning')
+})
+
+// ── probeDegraded surfaced in the return (re-gate Important — team:arch) ──
+await test('probeDegraded surfaces in the return on a degraded/malformed probe (degradation honesty)', async () => {
+  // The degraded-probe fallback widens to the full lens set; that degradation must be visible in
+  // the RETURN (not just logs) — the lens-config analogue of crossModelDegraded/verificationDegraded
+  // — so the operator can tell a genuine 5-lens diff from a degraded probe that widened. null AND a
+  // malformed-truthy probe → probeDegraded true, lensSource 'auto'. A precise probe → false.
+  for (const probe of [null, { files: 'nope' }]) {
+    const h = makeHarness([
+      { match: (l) => l === 'review', reply: { verdict: 'PASS', findings: [] } },
+      { match: (l) => l === 'codex', reply: { source: 'codex', findings: [] } },
+      { match: (l) => l === 'changed-files', reply: probe },
+      {
+        match: (l) =>
+          ['security', 'amplify bug-bounty', 'frontend bug-bounty', 'code quality', 'completeness critic'].includes(l),
+        reply: { findings: [] },
+      },
+    ])
+    const wf = buildWorkflow()
+    const out = await wf(h.agent, h.parallel, null, h.log, h.phase, { ...baseArgs }, null, null)
+    assert.strictEqual(out.probeDegraded, true, `probeDegraded true on a degraded probe (${JSON.stringify(probe)})`)
+    assert.strictEqual(out.lensSource, 'auto', 'lensSource is auto on the degraded path')
+  }
+  // A precise auto probe must NOT flag probeDegraded.
+  const hp = autoHarness(['src/main.tsx'])
+  const wfp = buildWorkflow()
+  const outp = await wfp(hp.agent, hp.parallel, null, hp.log, hp.phase, { ...baseArgs }, null, null)
+  assert.strictEqual(outp.probeDegraded, false, 'precise probe → probeDegraded false')
+  assert.strictEqual(outp.lensSource, 'auto', 'lensSource still auto on a precise auto-derive')
+})
+
+// ── deriveLenses tolerates garbage ARRAY ELEMENTS (re-gate Minor — lens:tests) ──
+await test('auto-derive: changed-files array with garbage elements derives from valid paths, no crash', async () => {
+  // A probe can return a well-formed array whose ELEMENTS are garbage (null, numbers, objects, '')
+  // — a plausible LLM output shape. deriveLenses must skip non-string/empty entries and derive from
+  // the valid paths without crashing, and a well-formed (non-empty array) probe is NOT degraded.
+  const h = autoHarness([null, 42, {}, '', 'amplify/data/resource.ts'])
+  const wf = buildWorkflow()
+  const out = await wf(h.agent, h.parallel, null, h.log, h.phase, { ...baseArgs }, null, null)
+  assert.deepStrictEqual(out.lenses, ['amplify', 'codeQuality', 'completeness'], 'derives from the one valid path, ignores garbage')
+  assert.strictEqual(out.probeDegraded, false, 'a well-formed array (even with garbage items) is NOT a degraded probe')
+})
+
 console.log(`\n${passed} passed, ${failed} failed`)
 process.exit(failed ? 1 : 0)
