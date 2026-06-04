@@ -86,9 +86,11 @@ Three non-negotiable gates before Stage D (OpenClaw cutover):
 
 **Model-independence layer (CEO direction 2026-06-02, elevated to top Phase-3 priority):** provider routing (odysseus `llm_core`/`endpoint_resolver`/`model_discovery` concepts ported as TS skills behind existing `AgentRuntime` interface); Shape 2 OpenAI-compatible adapter unlocks OpenRouter + local models (ollama/vLLM); dead-host cooldown + Tailscale-DNS fallback. See `docs/specs/iago-os-v2-vision.md` § Model Independence.
 
+**G-cost (cost-safety guardrail — REQUIRED before any metered route enables):** the metered / API-billed routes the OpenAI-compatible adapter unlocks (OpenRouter + paid OpenAI-compatible endpoints) ship **disabled by default** and MUST NOT be enabled until a fail-closed spend ceiling is in place — either the Phase-8 cost ledger + hard pause, OR an interim per-run/daily hard cap that halts on breach. Flat-rate / $0 routes (Claude Max, local ollama/vLLM) are unaffected, so the model-independence architecture + adapters + local models still ship in Phase 3 as the top priority. The point is narrow: metered-billing *enablement* never ships ahead of an automated fail-closed spend stop (the v2 LLM-cost-discipline principle).
+
 **G3 pre-cutover gate lands here:** systemd `LoadCredential=` strict sandboxing + Sentry/PostHog credential provisioning.
 
-**Exit criterion:** All 5+ new adapters registered; cross-runtime agent-message delivered (codex→claude via file-bus); model-independence routing layer running; G3 gate satisfied; Phase 2 still stable.
+**Exit criterion:** All 5+ new adapters registered; cross-runtime agent-message delivered (codex→claude via file-bus); model-independence routing layer running; G3 gate satisfied; **G-cost satisfied — no metered / API-billed provider route is enabled without a fail-closed spend ceiling (metered routes stay default-off until the Phase-8 cost ledger + hard pause or an interim hard cap lands)**; Phase 2 still stable.
 
 ---
 
@@ -136,6 +138,7 @@ Three non-negotiable gates before Stage D (OpenClaw cutover):
 **Goal:** Per-agent cost tracking + hard pause when budget breached; integrates with `AgentRuntime.costTap()`.
 **Effort:** 2d.
 **Trigger:** First API-billing client moves from Claude Max flat-rate to API billing.
+**G-cost dependency (pulled earlier if needed):** any metered / API-billed model route enabled in Phase 3 (OpenRouter / paid OpenAI-compatible endpoints) requires this ledger + fail-closed hard pause — or an interim per-run/daily hard cap — to be in place FIRST. Until then, metered routes stay default-off (Phase-3 G-cost gate). So while the *full* ledger is trigger-gated, a minimal fail-closed spend ceiling is a hard pre-condition the moment a metered provider is configured, not a deferral.
 
 ---
 
