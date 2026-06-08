@@ -319,16 +319,24 @@ if (Array.isArray(A.lenses) || (!lensesIsAuto && A.lenses != null)) {
       ),
     'changed-files',
   )
-  // probeOk is true ONLY when the probe returned a well-formed result with an ARRAY `files`.
-  // A null probe (agent failed) OR a truthy-but-MALFORMED result (files missing / not an array,
-  // e.g. {files:"x"}, {files:null}, {}) are BOTH degraded: we do NOT know what changed, so
-  // deriving from an empty list would silently shrink coverage to the two base lenses — dropping
-  // security/amplify/frontend on a sensitive diff while still reporting clean. Treat both as
-  // DEGRADED and fall back CONSERVATIVELY to every auto-selectable lens, so coverage can only ever
-  // grow (never shrink) on probe failure. A successful probe (incl. a genuine empty diff) still
-  // derives precisely.
-  const probeOk = !!(filesResult && Array.isArray(filesResult.files))
-  const changedFiles = probeOk ? filesResult.files : []
+  // probeOk is true ONLY when the probe returned a well-formed result with an ARRAY `files`
+  // that is EITHER empty (a genuine no-change diff) OR contains ≥1 valid path string. A null
+  // probe (agent failed), a truthy-but-MALFORMED result (files missing / not an array, e.g.
+  // {files:"x"}, {files:null}, {}), AND a NON-EMPTY array with ZERO valid path strings (e.g.
+  // [null], [''], [{}], [null,'',{}]) are ALL degraded: we do NOT know what changed. Deriving
+  // from such input would silently shrink coverage to the two base lenses — dropping
+  // security/amplify/frontend on a sensitive diff while still reporting clean (deriveLenses
+  // skips every non-string/empty element, so an all-garbage array looks identical to []). Treat
+  // all three as DEGRADED and fall back CONSERVATIVELY to every auto-selectable lens, so coverage
+  // can only ever grow (never shrink) on probe failure. A successful probe (incl. a genuine EMPTY
+  // diff) still derives precisely.
+  const probeWellFormed = !!(filesResult && Array.isArray(filesResult.files))
+  const rawFiles = probeWellFormed ? filesResult.files : []
+  // An all-invalid NON-EMPTY array is garbage masquerading as a well-formed probe — distinct from
+  // a genuinely empty ([]) no-change diff, which stays a precise (base-lens) derivation.
+  const allInvalidArray = rawFiles.length > 0 && !rawFiles.some((f) => typeof f === 'string' && f)
+  const probeOk = probeWellFormed && !allInvalidArray
+  const changedFiles = probeOk ? rawFiles : []
   const derived = probeOk ? deriveLenses(changedFiles) : AUTO_SELECTABLE_LENSES
   // Re-filter through normalizeLenses so an unknown key can never reach the dispatch loop
   // (deriveLenses / AUTO_SELECTABLE_LENSES already constrain to LENS_DEFS keys; belt-and-suspenders).
@@ -343,7 +351,7 @@ if (Array.isArray(A.lenses) || (!lensesIsAuto && A.lenses != null)) {
     // probe on a sensitive diff cannot strip the specialized lenses. Flagged distinctly from a
     // genuine no-change diff so an operator can tell them apart.
     log(
-      `WARNING: changed-files probe failed or returned a malformed result — cannot determine changed paths (DEGRADED probe — not a confirmed no-change diff); falling back to the FULL auto-selectable lens set so coverage does not shrink: [${lenses.join(', ')}]`,
+      `WARNING: changed-files probe failed, returned a malformed result, or returned only invalid/empty path entries — cannot determine changed paths (DEGRADED probe — not a confirmed no-change diff); falling back to the FULL auto-selectable lens set so coverage does not shrink: [${lenses.join(', ')}]`,
     )
     probeDegraded = true
   } else if (changedFiles.length === 0) {

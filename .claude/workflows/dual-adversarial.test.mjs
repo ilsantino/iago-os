@@ -854,5 +854,29 @@ await test('auto-derive: changed-files array with garbage elements derives from 
   assert.strictEqual(out.probeDegraded, false, 'a well-formed array (even with garbage items) is NOT a degraded probe')
 })
 
+// ── ALL-INVALID non-empty array DEGRADES (re-gate Important — codex [high]) ──
+await test('auto-derive: an ALL-INVALID non-empty array (no valid path string) DEGRADES → FULL auto-selectable set + probeDegraded, not base lenses', async () => {
+  // The hole the one-valid-path test above does NOT cover: an array whose elements are ALL
+  // invalid (e.g. [null], [''], [{}], [null,'',{}]). deriveLenses skips every element, so it
+  // looks IDENTICAL to [] and collapses to the two base lenses with probeDegraded=false —
+  // silently dropping security/amplify/frontend on a possibly-sensitive diff while reporting
+  // clean. Such an array is GARBAGE masquerading as a well-formed probe and must DEGRADE to the
+  // FULL auto-selectable set, exactly like a malformed/null probe. (A genuinely EMPTY array
+  // stays a precise no-change derivation — covered by the empty-diff test above.)
+  for (const allInvalid of [[null], [''], [{}], [null, '', {}, 42]]) {
+    const h = autoHarness(allInvalid)
+    const wf = buildWorkflow()
+    const out = await wf(h.agent, h.parallel, null, h.log, h.phase, { ...baseArgs }, null, null)
+    assert.deepStrictEqual(
+      out.lenses,
+      ['security', 'amplify', 'frontend', 'codeQuality', 'completeness'],
+      `all-invalid array ${JSON.stringify(allInvalid)} → FULL auto-selectable set (coverage cannot shrink)`,
+    )
+    assert.strictEqual(out.probeDegraded, true, `all-invalid array ${JSON.stringify(allInvalid)} flags probeDegraded`)
+    assert.ok(h.logs.some((m) => /DEGRADED probe/i.test(m)), `all-invalid array ${JSON.stringify(allInvalid)} logs a DEGRADED message`)
+    assert.ok(!h.logs.some((m) => /no diff vs/i.test(m)), `all-invalid array ${JSON.stringify(allInvalid)} does NOT log a no-change diff`)
+  }
+})
+
 console.log(`\n${passed} passed, ${failed} failed`)
 process.exit(failed ? 1 : 0)
