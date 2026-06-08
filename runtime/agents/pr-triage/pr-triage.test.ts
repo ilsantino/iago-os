@@ -1255,3 +1255,40 @@ describe("pr-triage integration (R1 daemon-owned creds)", () => {
 		).toBe(true);
 	});
 });
+
+// ───── #92 — prompt-template runId consistency (accept-current-behavior) ─────
+//
+// The #92 design decision (Santiago) is ACCEPT CURRENT BEHAVIOR: runId is
+// mandatory while a run is active. A pr-triage run is ALWAYS active when its
+// envelope is processed (the daemon armed the dead-letter timer at dispatch), so
+// omitting/garbling the runId DROPS the daily summary — it is quarantined and
+// surfaces a `pr-triage-result-timeout` ~120s later, NOT delivered. The template
+// previously self-contradicted: it called the empty default the "SAFE default"
+// and claimed the daemon "falls back to an agentId-only clear" on a missing
+// runId, while ALSO stating a missing/non-UUID value is dropped. These tests pin
+// the template to the consistent accept-current framing so the contradiction
+// cannot regress.
+describe("pr-triage prompt-template runId consistency (#92)", () => {
+	const template = fs.readFileSync(
+		path.join(__dirname, "prompt-template.md"),
+		"utf8",
+	);
+
+	it("does not frame an empty/missing runId as SAFE or as an agentId-only-clear fallback", () => {
+		// RED before the fix: both phrases were present (the self-contradiction).
+		expect(template).not.toMatch(/SAFE default/i);
+		expect(template).not.toContain("falls back to an agentId-only clear");
+	});
+
+	it("states the runId is REQUIRED and instructs replacing the empty default with the UUID", () => {
+		// "is REQUIRED" (the prose) — not a bare /REQUIRED/ which would falsely match
+		// the payload's REVIEW_REQUIRED enum value.
+		expect(template).toMatch(/is REQUIRED/);
+		// The empty-default mechanism STAYS (omit-on-empty: never emit runId:"") but
+		// the comment must instruct replacing it with the UUID and warn that leaving
+		// it empty drops the summary while a run is active.
+		expect(template).toContain('RUN_ID=""');
+		expect(template).toContain("REPLACE with the runId UUID");
+		expect(template).toMatch(/Leaving it empty DROPS/i);
+	});
+});

@@ -2352,6 +2352,60 @@ describe("makeResultTimers + dispatch arming (R1 D4 dead-letter)", () => {
 		expect(await isActiveRun("pr-triage", "")).toBe(false);
 	});
 
+	it("(RT-13, #92 gate Imp 1) isActiveRun + clearResultTimer resolve a marker-ONLY run (no in-memory timer) after a restart", async () => {
+		// #92 gate finding (lens:tests): every other RT-* test arms a LIVE in-memory
+		// timer via startResultTimer, so the `existing === undefined` marker-AUTHORITY
+		// branch — isActiveRun's durable-marker fallback and clearResultTimer's
+		// no-in-memory-timer path (both load-bearing after a daemon RESTART, where the
+		// in-memory timer is gone but the durable marker survives) — was exercised by
+		// no test. This builds a FRESH makeResultTimers (NO startResultTimer → empty
+		// timers map) and seeds the marker by hand to pin that branch directly.
+		const emitMock = vi.fn().mockResolvedValue(true);
+		const completions: Array<{ agentId: string; filename: string | null }> = [];
+		const { isActiveRun, clearResultTimer } = makeResultTimers({
+			emit: emitMock,
+			timeoutMs: 60_000,
+			onResultComplete: (agentId, filename) =>
+				completions.push({ agentId, filename }),
+		});
+
+		// Seed a durable marker as if a prior process armed it then restarted — THIS
+		// instance has no in-memory timer for the agent.
+		const markerPath = path.join(pathFor("result-pending"), "pr-triage.json");
+		await fsp.writeFile(
+			markerPath,
+			JSON.stringify({
+				agentId: "pr-triage",
+				runId: "run-marker",
+				filename: "pr-triage__marker.json",
+				deadlineMs: Date.now() + 60_000,
+			}),
+		);
+
+		// isActiveRun marker-authority branch: the marker's runId is the active run;
+		// a DIFFERENT runId is quarantined, and a MISSING runId is quarantined too —
+		// the same short-circuit-undefined Critical the live-timer RT-6 pins, but on
+		// the post-restart marker path.
+		expect(await isActiveRun("pr-triage", "run-marker")).toBe(true);
+		expect(await isActiveRun("pr-triage", "run-other")).toBe(false);
+		expect(await isActiveRun("pr-triage", undefined)).toBe(false);
+
+		// clearResultTimer marker-authority branch: a wrong-run clear is a no-op —
+		// returns false, retains the marker, and does NOT release the cron slot.
+		expect(await clearResultTimer("pr-triage", "run-other")).toBe(false);
+		await expect(fsp.access(markerPath)).resolves.toBeUndefined();
+		expect(completions).toHaveLength(0);
+
+		// The matching-run clear removes the marker and releases the slot with the
+		// marker's ORIGINAL cron filename (read from disk, since there is no in-memory
+		// timer to source it from).
+		expect(await clearResultTimer("pr-triage", "run-marker")).toBe(true);
+		await expect(fsp.access(markerPath)).rejects.toBeDefined();
+		expect(completions).toEqual([
+			{ agentId: "pr-triage", filename: "pr-triage__marker.json" },
+		]);
+	});
+
 	it("(RT-7, dual-adversarial pass #2 Important) a FAILED timeout-telemetry write retains the durable marker and does not release the slot (real timers)", async () => {
 		// Durability gate: the prior order (delete marker -> fire-and-forget emit) lost
 		// the dropped-summary signal when the telemetry append failed (ENOSPC/EACCES).
