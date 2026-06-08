@@ -21,6 +21,7 @@ import type {
 import {
 	AgentIdAlreadyRegisteredError,
 	AgentManager,
+	AgentQuarantinedError,
 	TASK_PAYLOAD_MAX_BYTES,
 } from "./agent-manager.js";
 import { CronScheduler } from "./cron-scheduler.js";
@@ -559,6 +560,96 @@ describe("AgentManager / registerAgent", () => {
 		// No persisted config on disk (the persist write was the failure).
 		const configPath = path.join(agentsDir, `${spawnedId}.json`);
 		await expect(fsp.access(configPath)).rejects.toBeDefined();
+	});
+
+	it("(C2, #92 Critical) persist-fail rollback where the marker write AND the forced shutdown BOTH throw and liveness stays alive: quarantines the orphan + blocks re-registration", async () => {
+		// #92 C2: the rollback kill can fail on the SAME degraded disk that broke
+		// persistence. writeStopMarker throws (shutdownAgentInternal aborts before
+		// runtime.shutdown), THEN the forced runtime.shutdown ALSO throws, AND the
+		// adapter liveness probe still reports alive. The PRIOR code unconditionally
+		// tore the handle down in a `finally`, stranding a live orphan invisible to
+		// boot recovery and allowing a later same-agentId register to DUPLICATE it.
+		// The fix QUARANTINES: records the orphan (in-memory + durable) and BLOCKS
+		// re-registration until released. RED without the fix: re-registration would
+		// succeed (no quarantine) and no durable quarantine record would exist.
+		const ctrl = makeMockRuntime("mock-pty-quarantine");
+		registerRuntime(ctrl.runtime);
+		const mgr = new AgentManager();
+
+		const agentsDir = pathFor("agents");
+		// (1) Break the persist write (ENOSPC) — triggers the rollback. Note the
+		// quarantine/ record write is NOT under agentsDir, so it still succeeds.
+		writeFileMock.mockImplementation((p, data, options) => {
+			if (String(p).startsWith(agentsDir)) {
+				return Promise.reject(
+					Object.assign(new Error("simulated ENOSPC"), { code: "ENOSPC" }),
+				);
+			}
+			if (writeFileState.real === null) {
+				throw new Error("writeFileState.real not initialized by vi.mock factory");
+			}
+			return writeFileState.real(p, data, options);
+		});
+		// (2) Break the rollback's stop-marker write so shutdownAgentInternal throws
+		// BEFORE reaching runtime.shutdown.
+		writeStopMarkerMock.mockRejectedValueOnce(
+			Object.assign(new Error("simulated marker EIO"), { code: "EIO" }),
+		);
+		// (3) Break the forced adapter shutdown too — termination cannot be confirmed
+		// via either kill path. The reject does NOT clear aliveByHandle, so the
+		// liveness probe below still reports the spawn alive.
+		const shutdownSpy = vi
+			.spyOn(ctrl.runtime, "shutdown")
+			.mockRejectedValue(
+				Object.assign(new Error("simulated shutdown EIO"), { code: "EIO" }),
+			);
+
+		// registerAgent still rejects with the ORIGINAL persist error (ENOSPC), not
+		// the quarantine — the caller sees the same fail-closed contract.
+		await expect(
+			mgr.registerAgent({
+				agentId: "quarantine-orphan",
+				runtimeId: "mock-pty-quarantine",
+				cwd: "/tmp/work",
+				env: {},
+				sessionId: "sess-qo",
+			}),
+		).rejects.toThrow(/ENOSPC/);
+
+		// The forced shutdown WAS attempted (and threw).
+		expect(shutdownSpy).toHaveBeenCalled();
+		// The orphan is QUARANTINED (not silently dropped) and untracked from the
+		// live registry (it is in an unknown state — not a normal tracked agent).
+		expect(mgr.isAgentQuarantined("quarantine-orphan")).toBe(true);
+		expect(mgr.listHandles()).toHaveLength(0);
+		// A durable quarantine record was written for cross-restart visibility.
+		const recordPath = path.join(pathFor("quarantine"), "quarantine-orphan.json");
+		const record = JSON.parse(await fsp.readFile(recordPath, "utf8")) as {
+			agentId: string;
+			reason: string;
+		};
+		expect(record.agentId).toBe("quarantine-orphan");
+		expect(record.reason).toMatch(/ENOSPC/);
+
+		// A later same-agentId registration is BLOCKED (regardless of org) — no
+		// duplicate spawn. It throws AgentQuarantinedError BEFORE spawning.
+		const spawnsBefore = ctrl.spawnCalls.length;
+		await expect(
+			mgr.registerAgent({
+				agentId: "quarantine-orphan",
+				runtimeId: "mock-pty-quarantine",
+				cwd: "/tmp/work",
+				env: {},
+				sessionId: "sess-qo-2",
+			}),
+		).rejects.toBeInstanceOf(AgentQuarantinedError);
+		expect(ctrl.spawnCalls.length).toBe(spawnsBefore);
+
+		// releaseQuarantinedAgent clears the block + removes the durable record so
+		// the agentId can be registered again after the operator reaps the orphan.
+		expect(await mgr.releaseQuarantinedAgent("quarantine-orphan")).toBe(true);
+		expect(mgr.isAgentQuarantined("quarantine-orphan")).toBe(false);
+		await expect(fsp.access(recordPath)).rejects.toBeDefined();
 	});
 });
 
@@ -3184,6 +3275,80 @@ describe("AgentManager / task-send-needed envelope (R1)", () => {
 		expect(sendEvents).toHaveLength(1);
 		expect(sendEvents[0].noSend).toBe(true);
 		expect(sendEvents[0].sendText).toBeUndefined();
+	});
+
+	it("(SE-6, #92 I3) a send envelope with a valid UUID runId forwards it verbatim on 'task-send-needed'", async () => {
+		// I3: the runId UUID-shape validation in processPendingTask is the seam the
+		// ENTIRE wrong-run quarantine chain depends on, but had no behavioral test.
+		// A real echo is always a UUID (the dispatch runId is randomUUID()); it must
+		// be forwarded so the send handler can run-correlate the clear.
+		const ctrl = makeMockRuntime("mock-pty-se6");
+		registerRuntime(ctrl.runtime);
+		const mgr = new AgentManager();
+		await mgr.registerAgent({
+			agentId: "pr-triage",
+			runtimeId: "mock-pty-se6",
+			cwd: "/tmp/w",
+			env: {},
+			sessionId: "sess-se6",
+		});
+
+		const runId = "3f2504e0-4f89-41d3-9a0c-0305e82c3301";
+		const filename = "pr-triage-send__1700000206-606.json";
+		writePendingTask(filename, {
+			agentId: "pr-triage",
+			sendText: "summary",
+			runId,
+		});
+
+		const sendEvents: Array<{ runId?: string }> = [];
+		mgr.on("task-send-needed", (e: { runId?: string }) => {
+			sendEvents.push(e);
+		});
+
+		await mgr._pollingTickForTests();
+
+		expect(sendEvents).toHaveLength(1);
+		expect(sendEvents[0].runId).toBe(runId);
+	});
+
+	it("(SE-7, #92 I3) a send envelope with a non-UUID / empty runId drops it to undefined (no-correlation path)", async () => {
+		// I3: a non-UUID echo — the un-substituted "$RUN_ID"/placeholder, or an empty
+		// string — must NOT be forwarded as a real runId. Forwarding it would compare
+		// a value that can NEVER equal the live run's UUID, so the pre-send wrong-run
+		// guard would QUARANTINE the legitimate daily summary. Normalizing to undefined
+		// makes a botched substitution behave like an omitted echo (no correlation).
+		const ctrl = makeMockRuntime("mock-pty-se7");
+		registerRuntime(ctrl.runtime);
+		const mgr = new AgentManager();
+		await mgr.registerAgent({
+			agentId: "pr-triage",
+			runtimeId: "mock-pty-se7",
+			cwd: "/tmp/w",
+			env: {},
+			sessionId: "sess-se7",
+		});
+
+		const sendEvents: Array<{ runId?: string }> = [];
+		mgr.on("task-send-needed", (e: { runId?: string }) => {
+			sendEvents.push(e);
+		});
+
+		const cases = ["$RUN_ID", "", "not-a-uuid", "<paste the run id here>"];
+		for (let i = 0; i < cases.length; i++) {
+			sendEvents.length = 0;
+			const filename = `pr-triage-send__1700000207-${i}.json`;
+			writePendingTask(filename, {
+				agentId: "pr-triage",
+				sendText: "summary",
+				runId: cases[i],
+			});
+			await mgr._pollingTickForTests();
+			// Only this tick's freshly-written file emits (prior files stay in
+			// pending/ but are suppressed by the per-filename sendInFlight guard).
+			expect(sendEvents).toHaveLength(1);
+			expect(sendEvents[0].runId).toBeUndefined();
+		}
 	});
 
 	it("(SE-5 dedup, Critical-1) two ticks while the send is in-flight emit 'task-send-needed' only ONCE; releaseSendSlot re-arms it", async () => {

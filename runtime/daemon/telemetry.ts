@@ -402,7 +402,12 @@ export type DaemonEvent =
 				// to retry; the dead-letter result timer is NOT armed (arming it would
 				// overwrite the live run's marker on the redispatch's new runId and
 				// quarantine the original run's legitimate result).
-				| "claim-failed";
+				| "claim-failed"
+				// Dual-adversarial #92 Critical (C1) — the durable result marker could
+				// not be written (ENOSPC/EACCES on the degraded state root), so the
+				// dispatch was ABORTED before the claim resolved the cron task. The file
+				// stays in tasks/pending/ for the next tick; no in-memory timer was armed.
+				| "marker-write-failed";
 			readonly message: string;
 	  }
 	| {

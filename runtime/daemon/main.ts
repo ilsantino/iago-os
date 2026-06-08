@@ -720,6 +720,18 @@ export function makeResultTimers(deps: {
 		filename?: string | null,
 		timeoutMs?: number,
 	) => Promise<void>;
+	// Dual-adversarial #92 Critical (C1) — load-bearing pre-claim durable marker
+	// write (no in-memory timer). Returns false on a write fault so the dispatch
+	// handler can abort BEFORE resolving the cron task.
+	persistResultMarker: (
+		agentId: string,
+		runId: string,
+		filename?: string | null,
+		timeoutMs?: number,
+	) => Promise<boolean>;
+	// Unlink the durable marker — lets the dispatch handler clean up a marker it
+	// pre-wrote for a task whose claim then faulted (#92 C1).
+	removeResultMarker: (agentId: string) => Promise<void>;
 	clearResultTimer: (agentId: string, runId?: string) => Promise<boolean>;
 	recoverResultTimers: () => Promise<void>;
 	/**
@@ -903,6 +915,65 @@ export function makeResultTimers(deps: {
 		return true;
 	};
 
+	// Atomic durable-marker write (temp-then-rename). Returns `true` when the
+	// marker is durably on disk, `false` on a write fault (ENOSPC/EACCES on a
+	// degraded state root). Shared by `startResultTimer` (which arms the in-memory
+	// timer on top) and `persistResultMarker` (the load-bearing pre-claim write —
+	// dual-adversarial #92 Critical C1). Does NOT touch the in-memory `timers` map.
+	//
+	// Minor (Opus, round 1) — do NOT `removeMarker()` before writing the new one.
+	// `atomicRenameStaleDest` ATOMICALLY replaces the prior marker (rename(2) is
+	// atomic on POSIX / NTFS MOVEFILE_REPLACE_EXISTING), so a pre-write unlink is
+	// redundant AND opens a window in which NO marker is on disk — a crash there
+	// would lose cross-restart recoverability for an in-flight run. Keeping the
+	// prior marker until the atomic rename closes that window: there is always
+	// EITHER the prior marker or the new one on disk.
+	const writeMarker = async (
+		agentId: string,
+		runId: string,
+		filename: string | null,
+		timeoutMs?: number,
+	): Promise<boolean> => {
+		const deadlineMs = Date.now() + (timeoutMs ?? defaultTimeout);
+		const marker: ResultPendingMarker = {
+			agentId,
+			runId,
+			filename,
+			deadlineMs,
+		};
+		const dst = resultPendingPath(agentId);
+		const tmp = `${dst}.tmp`;
+		try {
+			await fsp.writeFile(tmp, JSON.stringify(marker), { mode: 0o600 });
+			await atomicRenameStaleDest(tmp, dst);
+			return true;
+		} catch (err) {
+			await fsp.unlink(tmp).catch(() => undefined);
+			console.error(
+				`[daemon] result-pending marker write for ${agentId} failed: ${
+					err instanceof Error ? err.message : String(err)
+				}`,
+			);
+			return false;
+		}
+	};
+
+	// Dual-adversarial #92 Critical (C1) — the LOAD-BEARING durable marker write
+	// the dispatch handler calls BEFORE it resolves (claims) the cron task. When
+	// the marker cannot be persisted the handler ABORTS the dispatch (leaving the
+	// task in `tasks/pending/` for the next tick) instead of resolving it with no
+	// recoverable marker — the prior order (claim → marker, fall through to an
+	// in-memory-only timer on fault) left NO pending task AND NO marker after a
+	// restart in that window, silently dropping the daily summary. Unlike
+	// `startResultTimer` this does NOT arm an in-memory timer; the handler arms
+	// that (via `startResultTimer`) only AFTER a successful claim.
+	const persistResultMarker = async (
+		agentId: string,
+		runId: string,
+		filename: string | null = null,
+		timeoutMs?: number,
+	): Promise<boolean> => writeMarker(agentId, runId, filename, timeoutMs);
+
 	const startResultTimer = async (
 		agentId: string,
 		runId: string,
@@ -918,37 +989,13 @@ export function makeResultTimers(deps: {
 			clearTimeout(prior.timer);
 			timers.delete(agentId);
 		}
-		// Minor (Opus, round 1) — do NOT `removeMarker()` before writing the new
-		// one. The `atomicRenameStaleDest` below ATOMICALLY replaces the prior
-		// marker (rename(2) is atomic on POSIX / NTFS MOVEFILE_REPLACE_EXISTING), so
-		// a pre-write unlink is redundant AND opens a window in which NO marker is on
-		// disk — a crash there would lose cross-restart recoverability for an
-		// in-flight run. Keeping the prior marker until the atomic rename closes that
-		// window: there is always EITHER the prior marker or the new one on disk.
-		const deadlineMs = Date.now() + (timeoutMs ?? defaultTimeout);
-		const marker: ResultPendingMarker = {
-			agentId,
-			runId,
-			filename,
-			deadlineMs,
-		};
 		// Durable marker FIRST (atomic temp-then-rename) so a crash between write
-		// and timer-arm still leaves a recoverable marker.
-		const dst = resultPendingPath(agentId);
-		const tmp = `${dst}.tmp`;
-		try {
-			await fsp.writeFile(tmp, JSON.stringify(marker), { mode: 0o600 });
-			await atomicRenameStaleDest(tmp, dst);
-		} catch (err) {
-			await fsp.unlink(tmp).catch(() => undefined);
-			console.error(
-				`[daemon] result-pending marker write for ${agentId} failed: ${
-					err instanceof Error ? err.message : String(err)
-				}`,
-			);
-			// Fall through and still arm the in-memory timer — degraded (no
-			// cross-restart durability) but the live run is still dead-lettered.
-		}
+		// and timer-arm still leaves a recoverable marker. A write fault degrades to
+		// an in-memory-only timer (the live run is still dead-lettered in-process);
+		// cross-restart durability is guaranteed UPSTREAM by the dispatch handler's
+		// pre-claim `persistResultMarker` (#92 C1), which aborts the dispatch before
+		// the task is resolved when the marker cannot be written.
+		await writeMarker(agentId, runId, filename, timeoutMs);
 		fireTimeout(agentId, runId, filename, timeoutMs ?? defaultTimeout);
 	};
 
@@ -1031,6 +1078,8 @@ export function makeResultTimers(deps: {
 
 	return {
 		startResultTimer,
+		persistResultMarker,
+		removeResultMarker: removeMarker,
 		clearResultTimer,
 		recoverResultTimers,
 		isActiveRun,
@@ -1386,8 +1435,29 @@ export function makeTaskDispatchHandler(deps: {
 		filename?: string | null,
 		timeoutMs?: number,
 	) => Promise<void> | void;
+	// Dual-adversarial #92 Critical (C1) — persist the durable result marker
+	// BEFORE the claim resolves the cron task. Returns false on a write fault so
+	// the handler aborts the dispatch (task stays in tasks/pending/) instead of
+	// resolving it with no recoverable marker (a restart in that window silently
+	// drops the daily summary). Optional so existing dispatch unit tests that do
+	// not exercise durability need no marker plumbing.
+	persistResultMarker?: (
+		agentId: string,
+		runId: string,
+		filename?: string | null,
+		timeoutMs?: number,
+	) => Promise<boolean>;
+	// Remove the durable marker the handler pre-wrote — used to clean up after a
+	// claim fault so a crash before retry does not re-arm an orphan marker (#92 C1).
+	removeResultMarker?: (agentId: string) => Promise<void>;
 }): (evt: TaskDispatchEvent) => Promise<void> {
-	const { agentManager, emit, startResultTimer } = deps;
+	const {
+		agentManager,
+		emit,
+		startResultTimer,
+		persistResultMarker,
+		removeResultMarker,
+	} = deps;
 	return async (evt: TaskDispatchEvent): Promise<void> => {
 		try {
 			const handle = findHandleForAgent(agentManager, evt.agentId);
@@ -1529,6 +1599,43 @@ export function makeTaskDispatchHandler(deps: {
 				// from any PRIOR live run is left untouched). claimTask already emits
 				// `claim-task-failed`; this dispatch-level event keeps the dispatch
 				// taxonomy complete (one dispatch event per task).
+				//
+				// Dual-adversarial #92 Critical (C1) — durability is LOAD-BEARING.
+				// Persist the durable result marker BEFORE the claim resolves the cron
+				// task. The claim that runs next moves the file out of tasks/pending/;
+				// the prior order (claim → marker, then fall through to an in-memory-ONLY
+				// timer on a marker-write fault) left NO pending task AND NO recoverable
+				// marker after a restart in that window, silently dropping the daily
+				// summary. On a marker-write fault here: ABORT the dispatch — leave the
+				// file in tasks/pending/ for the next tick, release the held cron slot
+				// (the slot has been held since cron-fire; no claim happened so nothing
+				// emits `task-resolved`/`cron-result-complete` otherwise), and return.
+				// No in-memory timer was armed, so there is nothing to tear down.
+				if (persistResultMarker !== undefined && runId !== null) {
+					const persisted = await persistResultMarker(
+						evt.agentId,
+						runId,
+						evt.filename,
+						RESULT_TIMEOUT_MS,
+					);
+					if (!persisted) {
+						await emit({
+							kind: "pr-triage-dispatch-failed",
+							agentId: evt.agentId,
+							filename: evt.filename,
+							reason: "marker-write-failed",
+							message:
+								"durable result marker write faulted; dispatch aborted, task left in tasks/pending/ for retry",
+						});
+						if (isSendContract) {
+							agentManager.emit("cron-result-complete", {
+								agentId: evt.agentId,
+								filename: evt.filename,
+							});
+						}
+						return;
+					}
+				}
 				const claimed = await agentManager.claimTask(evt.filename, evt.agentId);
 				if (!claimed) {
 					await emit({
@@ -1539,6 +1646,17 @@ export function makeTaskDispatchHandler(deps: {
 						message:
 							"claimTask reported a pending→resolved rename fault; task left in tasks/pending/ for retry, result timer NOT armed",
 					});
+					// Dual-adversarial #92 C1 — the durable marker we pre-wrote (above) is
+					// for a task that did NOT resolve. Remove it (best-effort) so a crash
+					// before the next tick's retry does not leave a recoverable marker for
+					// an unclaimed task (recoverResultTimers would re-arm it + re-hold the
+					// slot, stalling the retry). The next tick re-dispatches under a fresh
+					// runId. The unlink may itself fault on the same degraded disk — that
+					// is acceptable: the orphan marker is then superseded by the retry's
+					// atomic marker overwrite.
+					if (removeResultMarker !== undefined) {
+						await removeResultMarker(evt.agentId);
+					}
 					// Dual-adversarial pass #2 (Critical follow-up) — the claim faulted, so
 					// claimTask emitted NO `task-resolved` and we arm NO result timer. For a
 					// send-contract (deferred-release) agent the CronScheduler slot would
@@ -2680,6 +2798,8 @@ export async function startDaemon(
 	// `pr-triage-result-timeout` rather than a silently lost notification.
 	const {
 		startResultTimer,
+		persistResultMarker,
+		removeResultMarker,
 		clearResultTimer,
 		recoverResultTimers,
 		isActiveRun,
@@ -2725,6 +2845,10 @@ export async function startDaemon(
 		agentManager,
 		emit,
 		startResultTimer,
+		// Dual-adversarial #92 Critical (C1) — load-bearing pre-claim durable marker
+		// write + the cleanup unlink for a claim-faulted dispatch.
+		persistResultMarker,
+		removeResultMarker,
 	});
 	const taskDispatchListener = (evt: TaskDispatchEvent): void => {
 		void taskDispatchHandler(evt);

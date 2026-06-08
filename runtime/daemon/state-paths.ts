@@ -52,6 +52,12 @@ export type StateKind =
 	// daemon restart mid-dispatch re-arms or immediately dead-letters the
 	// orphaned dispatch instead of silently dropping the daily summary.
 	| "result-pending"
+	// Dual-adversarial #92 Critical (C2): per-agent durable record of an orphaned
+	// spawn whose registration-rollback kill could NOT be confirmed (the handle is
+	// untracked but the process may still be live). Lets an operator — and a future
+	// boot-recovery sweep — find + reap the orphan. Written best-effort, since the
+	// disk that broke persistence is likely still faulted.
+	| "quarantine"
 	| "markers";
 
 const ALL_KINDS: ReadonlyArray<StateKind> = [
@@ -65,6 +71,7 @@ const ALL_KINDS: ReadonlyArray<StateKind> = [
 	"telemetry",
 	"session-logs",
 	"result-pending",
+	"quarantine",
 	"markers",
 ];
 

@@ -1525,6 +1525,125 @@ describe("makeTaskDispatchHandler (Plan 04d)", () => {
 			},
 		]);
 	});
+
+	it("(DH-R4, dual-adversarial #92 Critical C1) a marker-write fault ABORTS the dispatch before the claim resolves the task", async () => {
+		// C1: durability is load-bearing. persistResultMarker returns false (the
+		// durable result-pending marker could not be written). The handler MUST
+		// abort — NOT call claimTask (which would resolve the cron task out of
+		// tasks/pending/, leaving no pending task AND no marker → silent summary
+		// drop on a restart), emit dispatch-failed{marker-write-failed}, release the
+		// held cron slot so the next tick retries, and arm NO timer. RED without the
+		// fix: the handler would skip the guard, call claimTask, and arm the timer.
+		const { runtime } = makeStubRuntime("dhr4-runtime");
+		registerRuntime(runtime);
+		const handle = makeHandleFixture("pr-triage", "dhr4-runtime");
+		let claimCalled = false;
+		const mgr = makeStubManager({
+			handle,
+			claimTask: async () => {
+				claimCalled = true;
+				return true;
+			},
+		});
+		const emitMock = vi.fn().mockResolvedValue(undefined);
+		const timerCalls: string[] = [];
+		const removed: string[] = [];
+
+		const handler = makeTaskDispatchHandler({
+			agentManager: mgr,
+			emit: emitMock,
+			startResultTimer: (agentId) => {
+				timerCalls.push(agentId);
+			},
+			persistResultMarker: async () => false,
+			removeResultMarker: async (agentId) => {
+				removed.push(agentId);
+			},
+		});
+
+		const evt: TaskDispatchEvent = {
+			filename: "pr-triage__1700000404.json",
+			agentId: "pr-triage",
+			taskContent: { prompt: "do the daily triage", agentId: "pr-triage" },
+		};
+		await handler(evt);
+
+		// Claim never ran — the task stays in tasks/pending/ for the next tick.
+		expect(claimCalled).toBe(false);
+		const failed = emitMock.mock.calls
+			.map((c) => c[0])
+			.filter((e) => (e as { kind: string }).kind === "pr-triage-dispatch-failed");
+		expect(failed).toHaveLength(1);
+		expect(failed[0]).toMatchObject({ reason: "marker-write-failed" });
+		// No timer armed, and no marker cleanup needed (none was written).
+		expect(timerCalls).toHaveLength(0);
+		expect(removed).toHaveLength(0);
+		// Held cron slot released so the file (still in pending/) can be retried.
+		const emitted = (
+			mgr as unknown as {
+				_emitCalls: Array<{ event: string; payload: unknown }>;
+			}
+		)._emitCalls;
+		expect(emitted).toEqual([
+			{
+				event: "cron-result-complete",
+				payload: { agentId: "pr-triage", filename: evt.filename },
+			},
+		]);
+	});
+
+	it("(DH-R5, #92 C1) a successful marker persist proceeds to claim + arms the timer", async () => {
+		// The pre-claim marker guard aborts ONLY on a write fault. On a successful
+		// persist the dispatch proceeds exactly as before: claimTask runs and the
+		// dead-letter timer is armed. Guards against the abort firing on the happy
+		// path and pins that the marker is written with the dispatch runId.
+		const { runtime } = makeStubRuntime("dhr5-runtime");
+		registerRuntime(runtime);
+		const handle = makeHandleFixture("pr-triage", "dhr5-runtime");
+		let claimCalled = false;
+		const mgr = makeStubManager({
+			handle,
+			claimTask: async () => {
+				claimCalled = true;
+				return true;
+			},
+		});
+		const emitMock = vi.fn().mockResolvedValue(undefined);
+		const timerCalls: string[] = [];
+		const persistArgs: Array<{ agentId: string; runId: string }> = [];
+
+		const handler = makeTaskDispatchHandler({
+			agentManager: mgr,
+			emit: emitMock,
+			startResultTimer: (agentId) => {
+				timerCalls.push(agentId);
+			},
+			persistResultMarker: async (agentId, runId) => {
+				persistArgs.push({ agentId, runId });
+				return true;
+			},
+			removeResultMarker: async () => {},
+		});
+
+		const evt: TaskDispatchEvent = {
+			filename: "pr-triage__1700000405.json",
+			agentId: "pr-triage",
+			taskContent: { prompt: "do the daily triage", agentId: "pr-triage" },
+		};
+		await handler(evt);
+
+		// Marker persisted BEFORE the claim, stamped with the dispatch runId (UUID).
+		expect(persistArgs).toHaveLength(1);
+		expect(persistArgs[0].runId).toMatch(
+			/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i,
+		);
+		expect(claimCalled).toBe(true);
+		expect(timerCalls).toEqual(["pr-triage"]);
+		const failed = emitMock.mock.calls
+			.map((c) => c[0])
+			.filter((e) => (e as { kind: string }).kind === "pr-triage-dispatch-failed");
+		expect(failed).toHaveLength(0);
+	});
 });
 
 describe("composeCronAgentEnv (R1 — NO secrets, only non-secret runtime vars)", () => {
@@ -2551,8 +2670,21 @@ describe("makeResultTimers + dispatch arming (R1 D4 dead-letter)", () => {
 			(c) => (c[0] as { kind: string }).kind === "pr-triage-result-timeout",
 		);
 		expect(timeouts).toHaveLength(1);
-		// Marker removed once the re-armed timer fired.
-		await expect(fsp.access(markerPath)).rejects.toBeDefined();
+		// Marker removed once the re-armed timer fired. #92 I4 — the removal is
+		// fire-and-forget (`void removeMarker` inside fireTimeout), so its unlink
+		// microtask may not have flushed when `advanceTimersByTimeAsync` returns.
+		// Asserting absence synchronously flaked under parallel-worker contention
+		// (the unlink's real fs IO lags). Poll for absence instead: each
+		// `fsp.access` await yields to the event loop so the pending unlink settles.
+		let markerGone = false;
+		for (let i = 0; i < 100 && !markerGone; i++) {
+			markerGone = await fsp
+				.access(markerPath)
+				.then(() => false)
+				.catch(() => true);
+			if (!markerGone) await vi.advanceTimersByTimeAsync(1);
+		}
+		expect(markerGone).toBe(true);
 	});
 
 	it("(RT-9 — Task 6 #2) onResultComplete fires with the cron filename on envelope-clear AND on dead-letter timeout", async () => {
