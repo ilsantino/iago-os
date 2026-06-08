@@ -275,6 +275,32 @@ await test('FAIL SAFE: an unreadable plan (plan-read BLOCKED) classifies Tier 2 
   assert.strictEqual(out.reviewVerdict, 'PASS')
 })
 
+await test('FAIL SAFE: a DONE plan-read with garbage / no-task-heading text classifies Tier 2 (team), not the shallow inline 2-leg', async () => {
+  // The gap the BLOCKED test above does NOT cover: a read that returns status=DONE but whose
+  // text has NO `### T...` task headings (a truncated read, an error string, or any
+  // non-plan body) is garbage masquerading as success. planReadOk is true (non-empty DONE),
+  // so classifyTier runs and maps zero headings to its Tier-1 parse-failure default — which
+  // would route a possibly-security-sensitive plan to the SHALLOW inline 2-leg. The body
+  // fail-safe must escalate a no-heading DONE read to the deep TEAM gate (Tier 2), the same
+  // direction as a BLOCKED read. RED before the fix: classifyTier→1→inline review:/codex:.
+  const GARBAGE = 'Error: ENOENT failed to read the plan file; this diagnostic was returned instead of the plan body.'
+  const teamGate = () => ({
+    clean: true, blocking: 0, gateStatus: 'COMPLETE', verdict: 'PASS', codexSource: 'codex',
+    verificationSameFamily: true, verificationDegraded: false, findings: [],
+  })
+  const rules = [
+    { match: (l) => l === 'plan-read', reply: { status: 'DONE', text: GARBAGE } },
+    ...stageRules(TIER1_PLAN).filter((r) => !r.match('plan-read')),
+  ]
+  const h = makeHarness(rules, teamGate)
+  const wf = buildWorkflow()
+  const out = await wf(h.agent, h.parallel, null, h.log, h.phase, { ...baseArgs }, null, h.workflow)
+  assert.ok(h.workflowCalls.length >= 1, 'team gate invoked for the garbage-read (fail-safe Tier 2) plan')
+  assert.strictEqual(h.workflowCalls[0].wargs.mode, 'team', 'garbage-read plan routed to mode=team')
+  assert.ok(!h.calls.some((c) => /^review:/.test(c.label) || /^codex:/.test(c.label)), 'no inline 2-leg for the fail-safe Tier 2 plan')
+  assert.strictEqual(out.reviewVerdict, 'PASS')
+})
+
 await test('T06 honesty: verificationDegraded from the team gate propagates to the pipeline return', async () => {
   // A degraded skeptic verification (a real run gap) must reach the orchestrator's final return
   // so the human merge decision sees verification was incomplete. (T06's wrapper-read, end-to-end.)

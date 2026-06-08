@@ -683,6 +683,20 @@ const planReadOk =
 let tier
 if (planReadOk) {
   tier = classifyTier(planRead.text)
+  // Reconcile classifyTier's parse-failure default with the body fail-safe. classifyTier
+  // returns Tier 1 for text with ZERO `### T...` task headings (its standalone parse-failure
+  // default). But in the pipeline a real .iago/plans/*.md ALWAYS uses the `### T0N` / `### Task`
+  // convention, so a DONE read with no task headings is a truncated/garbage/error-string read
+  // masquerading as success — NOT a low-risk plan. Left alone it would route to the shallow
+  // inline 2-leg (Tier 1); fail safe to the deep TEAM gate (Tier 2), the SAME direction as an
+  // unreadable read. A read WITH headings keeps its real classifyTier tier. (The heading
+  // pattern mirrors classifyTier's taskMatches regex — keep them in sync.)
+  if (tier < 2 && !/^\s*###\s+T(?:ask|\d)/im.test(planRead.text)) {
+    log(
+      `WARNING: plan-read DONE but no parseable '### T...' task headings — treating as an unreliable/garbage read; FAILING SAFE to Tier 2 (deep team gate) instead of shallow Tier ${tier}`,
+    )
+    tier = 2
+  }
 } else {
   // FAIL SAFE: cannot classify an unreadable plan — give it the deep TEAM gate (Tier 2)
   // instead of the shallow Tier-1 inline review. The team gate diffs the CODE, not the plan,
