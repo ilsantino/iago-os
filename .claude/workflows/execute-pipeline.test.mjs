@@ -66,7 +66,12 @@ function stageRules(planText, extra = []) {
   return [
     { match: (l) => l === 'lock-acquire', reply: { status: 'ACQUIRED' } },
     { match: (l) => l === 'stress', reply: { verdict: 'PROCEED', notes: [] } },
-    { match: (l) => l === 'plan-read', reply: { status: 'DONE', text: planText } },
+    // A faithful plan-read transcription ends with the EOF sentinel PLANREAD_PROMPT
+    // appends (its absence = possibly-truncated read → body fails safe to Tier 2).
+    { match: (l) => l === 'plan-read', reply: { status: 'DONE', text: `${planText}\n===IAGO_PLAN_EOF===` } },
+    // Team-mode (Tier 2/3) reviews dispatch a dedicated plan-compliance leg alongside
+    // the delegated gate (#89 re-gate Critical). Default: compliant (no findings).
+    { match: (l) => /^plan-compliance:/.test(l), reply: { verdict: 'PASS', findings: [] } },
     { match: (l) => l === 'prep', reply: { status: 'DONE', preImplSha: 'base123', branch: 'feat/x' } },
     { match: (l) => l === 'implement', reply: { status: 'DONE' } },
     { match: (l) => /^build:/.test(l), reply: { passed: true } },
@@ -313,6 +318,117 @@ await test('T06 honesty: verificationDegraded from the team gate propagates to t
   const out = await wf(h.agent, h.parallel, null, h.log, h.phase, { ...baseArgs }, null, h.workflow)
   assert.strictEqual(out.verificationDegraded, true, 'verificationDegraded surfaced to the final return')
   assert.strictEqual(out.verificationSameFamily, true, 'verificationSameFamily surfaced to the final return')
+})
+
+await test('FAIL SAFE: a DONE plan-read MISSING the EOF sentinel (possibly truncated) classifies Tier 2 (team), not inline', async () => {
+  // #89 re-gate Important: an LLM transcribes the plan; a TRUNCATED transcription that
+  // still contains ≥1 task heading classifies on incomplete text and can drop a late
+  // risk keyword (silent under-tier). PLANREAD_PROMPT appends ===IAGO_PLAN_EOF=== after
+  // the cat; a transcription that lost the tail lost the sentinel. RED before the fix:
+  // a heading-bearing Tier-1 text without the sentinel ran the shallow inline 2-leg.
+  const teamGate = () => ({
+    clean: true, blocking: 0, gateStatus: 'COMPLETE', verdict: 'PASS', codexSource: 'codex',
+    verificationSameFamily: true, verificationDegraded: false, findings: [],
+  })
+  const rules = [
+    // headings present, NO sentinel — the truncation signature
+    { match: (l) => l === 'plan-read', reply: { status: 'DONE', text: TIER1_PLAN } },
+    ...stageRules(TIER1_PLAN).filter((r) => !r.match('plan-read')),
+  ]
+  const h = makeHarness(rules, teamGate)
+  const wf = buildWorkflow()
+  const out = await wf(h.agent, h.parallel, null, h.log, h.phase, { ...baseArgs }, null, h.workflow)
+  assert.ok(h.workflowCalls.length >= 1, 'team gate invoked for the sentinel-less (fail-safe Tier 2) read')
+  assert.strictEqual(h.workflowCalls[0].wargs.mode, 'team', 'sentinel-less read routed to mode=team')
+  assert.ok(!h.calls.some((c) => /^review:/.test(c.label) || /^codex:/.test(c.label)), 'no inline 2-leg for the fail-safe Tier 2 plan')
+  assert.strictEqual(out.reviewVerdict, 'PASS')
+})
+
+await test('team mode runs a dedicated PLAN-COMPLIANCE leg and its findings drive the fix loop', async () => {
+  // #89 re-gate Critical: the delegated team gate never reads the plan, so a Tier 2/3
+  // implementation could omit a required plan task and still PASS. The compliance leg
+  // restores the inline PASS-1: its blocking finding must trigger a fix round even when
+  // the gate itself is clean, and the re-review must run the leg again. RED before the
+  // fix: no plan-compliance agent is dispatched and the run ships with zero fix rounds.
+  const teamGate = () => ({
+    clean: true, blocking: 0, gateStatus: 'COMPLETE', verdict: 'PASS', codexSource: 'codex',
+    verificationSameFamily: true, verificationDegraded: false, findings: [],
+  })
+  let complianceCalls = 0
+  const rules = [
+    {
+      match: (l) => /^plan-compliance:/.test(l),
+      reply: () => {
+        complianceCalls++
+        return complianceCalls === 1
+          ? { verdict: 'FAIL', findings: [{ severity: 'Critical', file: 'amplify/data/resource.ts', summary: 'plan task T01 (schema migration) has no corresponding change in the diff' }] }
+          : { verdict: 'PASS', findings: [] }
+      },
+    },
+    ...stageRules(TIER2_PLAN).filter((r) => !r.match('plan-compliance:r0')),
+  ]
+  const h = makeHarness(rules, teamGate)
+  const wf = buildWorkflow()
+  const out = await wf(h.agent, h.parallel, null, h.log, h.phase, { ...baseArgs }, null, h.workflow)
+  assert.ok(h.calls.some((c) => c.label === 'plan-compliance:r0'), 'compliance leg ran on the initial review')
+  assert.ok(h.calls.some((c) => c.label === 'plan-compliance:r1'), 'compliance leg ran again on the re-review')
+  assert.strictEqual(out.fixRounds, 1, 'the compliance finding (gate clean!) triggered a fix round')
+  assert.strictEqual(out.reviewVerdict, 'PASS', 'clean after the compliance gap was fixed')
+})
+
+await test('FAIL CLOSED: a null or malformed plan-compliance leg in team mode THROWS — never proceeds without the pass', async () => {
+  const teamGate = () => ({
+    clean: true, blocking: 0, gateStatus: 'COMPLETE', verdict: 'PASS', codexSource: 'codex',
+    verificationSameFamily: true, verificationDegraded: false, findings: [],
+  })
+  // (a) NULL leg — withRetry exhausts both attempts and throws its skipped-agent error.
+  const nullRules = [
+    { match: (l) => /^plan-compliance:/.test(l), reply: null },
+    ...stageRules(TIER2_PLAN).filter((r) => !r.match('plan-compliance:r0')),
+  ]
+  const hNull = makeHarness(nullRules, teamGate)
+  await assert.rejects(
+    () => buildWorkflow()(hNull.agent, hNull.parallel, null, hNull.log, hNull.phase, { ...baseArgs }, null, hNull.workflow),
+    /plan-compliance:r0.*skipped/i,
+    'a null compliance leg fails closed (withRetry skipped-agent throw)',
+  )
+  // (b) MALFORMED leg (truthy, no findings array) — the wrapper's own guard throws.
+  const malformedRules = [
+    { match: (l) => /^plan-compliance:/.test(l), reply: { verdict: 'PASS' } },
+    ...stageRules(TIER2_PLAN).filter((r) => !r.match('plan-compliance:r0')),
+  ]
+  const hMal = makeHarness(malformedRules, teamGate)
+  await assert.rejects(
+    () => buildWorkflow()(hMal.agent, hMal.parallel, null, hMal.log, hMal.phase, { ...baseArgs }, null, hMal.workflow),
+    /plan-compliance leg failed/i,
+    'a malformed compliance leg fails closed (wrapper guard)',
+  )
+})
+
+await test('honesty propagation: crossModelDegraded + filtered flow from the team gate to the pipeline return', async () => {
+  // #89 re-gate Important + Critical: the gate's cross-model degradation flag and its
+  // skeptic-FILTERED findings (the audit trail of dropped blockers) must reach the final
+  // pipeline return for the human merge decision — a log line dies with the session.
+  // RED before the fix: both fields were absent from the wrapper and final return.
+  const FILTERED = [{ severity: 'Critical', summary: 'double-refuted by skeptics', by: 'codex' }]
+  const teamGate = () => ({
+    clean: false, blocking: 0, gateStatus: 'COMPLETE', verdict: 'PASS_WITH_CONCERNS',
+    codexSource: 'claude-fallback', crossModelDegraded: true,
+    verificationSameFamily: true, verificationDegraded: false,
+    findings: [], filtered: FILTERED,
+  })
+  const h = makeHarness(stageRules(TIER2_PLAN), teamGate)
+  const wf = buildWorkflow()
+  const out = await wf(h.agent, h.parallel, null, h.log, h.phase, { ...baseArgs }, null, h.workflow)
+  assert.strictEqual(out.crossModelDegraded, true, 'crossModelDegraded surfaced to the final return')
+  assert.deepStrictEqual(out.filtered, FILTERED, 'skeptic-filtered findings surfaced verbatim to the final return')
+  assert.strictEqual(out.reviewVerdict, 'PASS_WITH_CONCERNS', 'a not-clean gate with zero live findings stays PASS_WITH_CONCERNS')
+})
+
+await test('T08 structural: the fix agent forwards agentType executor (source-level pin)', async () => {
+  // The harness mocks agent(), so options.agentType has no behavioral effect here; the
+  // plan's T08 regression note specifies a structural source assertion instead.
+  assert.ok(/agentType:\s*'executor'/.test(SRC), "fix agent call carries agentType: 'executor'")
 })
 
 // NOTE (test-coverage limitation): the internal `tier>=2 && mode!=='team'` hard-stop assertion

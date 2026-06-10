@@ -363,8 +363,8 @@ Verdict: PROCEED (no significant issues) / PROCEED_WITH_NOTES (proceed with awar
 const PLANREAD_PROMPT = `${PREAMBLE}
 
 READ-ONLY: print the plan file so a deterministic classifier can read it. In ${projectDir} run exactly:
-  cat "${plan}"
-Return status=DONE with text = the ENTIRE verbatim file contents (do not summarize, truncate, or interpret). If the file cannot be read, return status=BLOCKED with text="". Do NOT edit, stage, or commit anything.`
+  cat "${plan}" && echo "===IAGO_PLAN_EOF==="
+Return status=DONE with text = the ENTIRE verbatim file contents INCLUDING the trailing ===IAGO_PLAN_EOF=== sentinel line (the sentinel proves the transcription reached end-of-file — a truncated transcription loses it; do not summarize, truncate, or interpret). If the file cannot be read, return status=BLOCKED with text="". Do NOT edit, stage, or commit anything.`
 
 const PREP_PROMPT = `${PREAMBLE}
 
@@ -480,15 +480,38 @@ Otherwise output exactly one comment via gh pr comment. The comment text must be
 No markdown headers, no bullets, under 300 words. Post exactly once. Return status=DONE.`
 }
 
-function summaryPrompt(preImplSha, prUrl, reviewVerdict, codexSource, rounds) {
+function summaryPrompt(preImplSha, prUrl, reviewVerdict, codexSource, rounds, vSameFamily, vDegraded) {
+  // T06 — verification honesty must reach the DURABLE summary artifact, not just the
+  // live return object (which dies with the session): a Tier 2/3 run whose skeptic
+  // verification was same-family or degraded leaves an audit trail in the .md + NDJSON.
+  const honesty =
+    `${vSameFamily ? '. NOTE: team-mode skeptic verification is same-family (Opus) — cross-model diversity came from the Codex leg only' : ''}` +
+    `${vDegraded ? '. WARNING: one or more skeptic verification agents failed to run — blocking findings were kept fail-safe but NOT fully adversarially verified' : ''}`
   return `${PREAMBLE}
 
 Write the pipeline summary. In ${projectDir}:
 1. mkdir -p .iago/summaries
-2. Write .iago/summaries/${planName}.md with frontmatter (plan, status: done, verified: today's UTC date via  date -u +%Y-%m-%d, pr) and sections: Pipeline Result (review verdict ${reviewVerdict}, codex source ${codexSource}, fix rounds ${rounds}, PR ${prUrl || '(none)'}) and Diff Stats (git diff --stat ${preImplSha}..HEAD).
-3. Append one NDJSON line to .iago/state/pipeline-runs.ndjson (mkdir -p .iago/state first): {"plan":"${planName}","pr":"${prUrl || ''}","verdict":"${reviewVerdict}","codex":"${codexSource}","rounds":${rounds},"ts":"<date -u +%Y-%m-%dT%H:%M:%SZ>"}
+2. Write .iago/summaries/${planName}.md with frontmatter (plan, status: done, verified: today's UTC date via  date -u +%Y-%m-%d, pr) and sections: Pipeline Result (review verdict ${reviewVerdict}, codex source ${codexSource}, fix rounds ${rounds}, PR ${prUrl || '(none)'}${honesty}) and Diff Stats (git diff --stat ${preImplSha}..HEAD).
+3. Append one NDJSON line to .iago/state/pipeline-runs.ndjson (mkdir -p .iago/state first): {"plan":"${planName}","pr":"${prUrl || ''}","verdict":"${reviewVerdict}","codex":"${codexSource}","rounds":${rounds},"vSameFamily":${vSameFamily === true},"vDegraded":${vDegraded === true},"ts":"<date -u +%Y-%m-%dT%H:%M:%SZ>"}
 4. COMMIT the summary so the working tree is left CLEAN for the next sequential plan's prep guard: git add .iago/summaries/${planName}.md && git commit -m "docs(summary): ${planName} pipeline result". (.iago/state/* is gitignored — do NOT stage it. This commit is local bookkeeping; it is fine that it lands after the PR push and is not part of the PR.)
 Return status=DONE.`
+}
+
+// #89 re-gate Critical — dedicated plan-compliance leg for the DELEGATED (team-mode)
+// review. The dual-adversarial.js team gate reviews the DIFF (domain routing +
+// adversarial + lenses + skeptic panel) but never reads the PLAN, so without this leg
+// a Tier 2/3 implementation could omit a required plan task and still PASS — the
+// highest-risk plans losing the exact pass (the inline reviewPrompt's PASS 1) that
+// catches a missing/incomplete task.
+function planCompliancePrompt(isReReview, preImplSha) {
+  return `${PREAMBLE}
+
+PLAN-COMPLIANCE REVIEW${isReReview ? ' (re-review after a fix round — verify previously-flagged plan gaps are now implemented)' : ''} — you are the dedicated plan-compliance leg accompanying the deep team gate for a Tier 2/3 (complex/security) plan. The team gate reviews the diff; YOUR only job is the plan.
+In ${projectDir}:
+1. Read the plan: ${plan}
+2. Read the committed changes: git diff --name-only ${preImplSha}..HEAD ; then git diff ${preImplSha}..HEAD (read affected files in full where the diff alone is ambiguous).
+3. For EACH task in the plan, verify the committed changes implement it correctly and completely. Flag every missing, incomplete, or incorrect implementation as a finding — severity Important, or Critical when the omission is security/data-integrity relevant. Do NOT review code quality, style, or anything the diff-side legs cover; plan compliance only. An empty findings array asserts every plan task is verifiably implemented.
+Return verdict (PASS / PASS_WITH_CONCERNS / FAIL) and findings (file, severity, summary).`
 }
 
 // ─── Dual-adversarial pass (Opus review ∥ Codex), used initially + per fix round ─
@@ -556,18 +579,58 @@ async function runDualAdversarial(label, isReReview, stressBlock, preImplSha, op
         `team gate (${label}) did NOT complete (gateStatus=${da.gateStatus}, incompleteLegs=[${(da.incompleteLegs || []).join(', ')}]) — a core reviewer failed; tier ${tier} requires a COMPLETE team review, failing closed (re-run), NOT downgrading to the inline 2-leg.`,
       )
     }
+    // #89 re-gate Critical — run the plan-compliance pass the delegation otherwise
+    // loses (the gate never reads the plan). Fail closed on a null leg: tier>=2
+    // requires the compliance pass to actually run, same posture as everything else
+    // in this branch.
+    const compliance = await withRetry(
+      () =>
+        agent(planCompliancePrompt(isReReview, preImplSha), {
+          label: `plan-compliance:${label}`,
+          phase: 'Review',
+          schema: REVIEW_SCHEMA,
+        }),
+      `plan-compliance:${label}`,
+    )
+    if (!compliance || !Array.isArray(compliance.findings)) {
+      throw new Error(
+        `team gate (${label}) plan-compliance leg failed after retries — tier ${tier} requires the plan-compliance pass; failing closed (re-run), NOT proceeding without it.`,
+      )
+    }
+    const merged = [
+      ...da.findings,
+      ...compliance.findings.map((f) => ({ ...f, by: f.by || 'plan-compliance' })),
+    ]
+    const mergedBlocking = merged.filter(
+      (f) => f.severity === 'Critical' || f.severity === 'Important',
+    ).length
     log(
-      `team gate (${label}): ${da.blocking} blocking, codex=${da.codexSource}` +
+      `team gate (${label}): ${da.blocking} blocking from the gate + ${compliance.findings.length} plan-compliance (${mergedBlocking} blocking total), codex=${da.codexSource}` +
         `${da.crossModelDegraded ? ' [cross-model DEGRADED]' : ''}` +
         `${da.verificationSameFamily ? ' [skeptics same-family]' : ''}` +
-        `${da.verificationDegraded ? ' [verification INCOMPLETE]' : ''}`,
+        `${da.verificationDegraded ? ' [verification INCOMPLETE]' : ''}` +
+        `${Array.isArray(da.filtered) && da.filtered.length ? ` [${da.filtered.length} skeptic-filtered — propagated]` : ''}`,
     )
     return {
-      findings: da.findings,
-      verdict: da.clean ? 'PASS' : da.blocking > 0 ? 'FAIL' : 'PASS_WITH_CONCERNS',
+      findings: merged,
+      verdict:
+        mergedBlocking > 0
+          ? 'FAIL'
+          : merged.length > 0 || !da.clean
+            ? 'PASS_WITH_CONCERNS'
+            : 'PASS',
       codexSource: da.codexSource || 'unavailable',
       verificationSameFamily: da.verificationSameFamily === true,
       verificationDegraded: da.verificationDegraded === true,
+      // #89 re-gate Important — the gate's cross-model honesty signal must reach the
+      // pipeline RETURN (the SKILL surfaces it at the merge decision); a log line
+      // alone dies with the session.
+      crossModelDegraded: da.crossModelDegraded === true,
+      // #89 re-gate Critical — skeptic-FILTERED blocking findings are an audit trail
+      // the human must see at the merge decision (a false double-refute would
+      // otherwise erase a real Critical with no visible trace). Propagated verbatim;
+      // not re-blocking here — the gate already adjudicated them.
+      filtered: Array.isArray(da.filtered) ? da.filtered : [],
     }
   }
   const [review, codex] = await parallel([
@@ -615,7 +678,18 @@ async function runDualAdversarial(label, isReReview, stressBlock, preImplSha, op
   for (const f of review.findings || []) findings.push({ ...f, by: 'opus' })
   for (const f of codex.findings || []) findings.push({ ...f, by: codex.source })
   // Inline 2-leg has no separate skeptic-verification pass, so neither flag applies.
-  return { findings, verdict, codexSource, verificationSameFamily: false, verificationDegraded: false }
+  // crossModelDegraded mirrors the team gate's semantics: true when the cross-model
+  // leg ran as a same-family fallback rather than real Codex. No skeptic panel here,
+  // so there is nothing to filter.
+  return {
+    findings,
+    verdict,
+    codexSource,
+    verificationSameFamily: false,
+    verificationDegraded: false,
+    crossModelDegraded: codex.source !== 'codex',
+    filtered: [],
+  }
 }
 
 // ─── Flow ────────────────────────────────────────────────────────────
@@ -682,7 +756,24 @@ const planReadOk =
   planRead && planRead.status === 'DONE' && typeof planRead.text === 'string' && planRead.text.trim().length > 0
 let tier
 if (planReadOk) {
-  tier = classifyTier(planRead.text)
+  // #89 re-gate Important — an LLM transcribes the plan, and a TRUNCATED transcription
+  // that still contains ≥1 task heading would classify on incomplete text and could drop
+  // a late risk keyword (a silent under-tier — the exact failure this feature prevents).
+  // PLANREAD_PROMPT appends a deterministic EOF sentinel after the cat; a transcription
+  // that lost the tail lost the sentinel too. Missing sentinel → unreliable read → fail
+  // safe to Tier 2 (over-review, the same direction as every other read fail-safe).
+  const PLAN_EOF_SENTINEL = '===IAGO_PLAN_EOF==='
+  const sawPlanEof = planRead.text.trimEnd().endsWith(PLAN_EOF_SENTINEL)
+  const planText = sawPlanEof
+    ? planRead.text.trimEnd().slice(0, -PLAN_EOF_SENTINEL.length)
+    : planRead.text
+  tier = classifyTier(planText)
+  if (tier < 2 && !sawPlanEof) {
+    log(
+      `WARNING: plan-read DONE but the ${PLAN_EOF_SENTINEL} sentinel is missing — possibly a truncated transcription; FAILING SAFE to Tier 2 (deep team gate) instead of shallow Tier ${tier}`,
+    )
+    tier = 2
+  }
   // Reconcile classifyTier's parse-failure default with the body fail-safe. classifyTier
   // returns Tier 1 for text with ZERO `### T...` task headings (its standalone parse-failure
   // default). But in the pipeline a real .iago/plans/*.md ALWAYS uses the `### T0N` / `### Task`
@@ -691,7 +782,7 @@ if (planReadOk) {
   // inline 2-leg (Tier 1); fail safe to the deep TEAM gate (Tier 2), the SAME direction as an
   // unreadable read. A read WITH headings keeps its real classifyTier tier. (The heading
   // pattern mirrors classifyTier's taskMatches regex — keep them in sync.)
-  if (tier < 2 && !/^\s*###\s+T(?:ask|\d)/im.test(planRead.text)) {
+  if (tier < 2 && !/^\s*###\s+T(?:ask|\d)/im.test(planText)) {
     log(
       `WARNING: plan-read DONE but no parseable '### T...' task headings — treating as an unreliable/garbage read; FAILING SAFE to Tier 2 (deep team gate) instead of shallow Tier ${tier}`,
     )
@@ -775,7 +866,7 @@ log(`committed on ${branch} @ ${commit.headSha || '?'}`)
 // review DELEGATES to the dual-adversarial.js team gate (diverse personas + skeptic panel).
 phase('Review')
 const reviewOpts = { mode: reviewMode, lenses: reviewLenses, skepticCap: 8, tier }
-let { findings, verdict, codexSource, verificationSameFamily, verificationDegraded } = await runDualAdversarial('r0', false, stressBlock, preImplSha, reviewOpts)
+let { findings, verdict, codexSource, verificationSameFamily, verificationDegraded, crossModelDegraded, filtered } = await runDualAdversarial('r0', false, stressBlock, preImplSha, reviewOpts)
 let rounds = 0
 // maxFixRounds is the per-plan local from the tier classifier (Tier 3 → 3, else 2) — a
 // per-plan local, NOT a module const, so a stacked multi-plan run cannot bleed one plan's
@@ -813,7 +904,7 @@ while (
   // Re-review MUST inherit the same tier opts as the initial review — otherwise a Tier 2/3
   // re-review would silently drop back to the inline 2-leg and "validate" the fixes with a
   // shallower gate than the one that found them.
-  ;({ findings, verdict, codexSource, verificationSameFamily, verificationDegraded } = await runDualAdversarial(
+  ;({ findings, verdict, codexSource, verificationSameFamily, verificationDegraded, crossModelDegraded, filtered } = await runDualAdversarial(
     `r${rounds}`,
     true,
     stressBlock,
@@ -878,7 +969,7 @@ if (noPr) {
 
 // Stage 6 — Summary + telemetry
 phase('Summary')
-const summary = await agent(summaryPrompt(preImplSha, prUrl, verdict, codexSource, rounds), {
+const summary = await agent(summaryPrompt(preImplSha, prUrl, verdict, codexSource, rounds, verificationSameFamily, verificationDegraded), {
   label: 'summary',
   phase: 'Summary',
   schema: IMPL_SCHEMA,
@@ -905,4 +996,8 @@ return {
   minorRemaining,
   verificationSameFamily,
   verificationDegraded,
+  // #89 re-gate — degradation + audit honesty at the merge decision: the orchestrator
+  // (iago-execute/iago-quick SKILL) surfaces these alongside verificationDegraded.
+  crossModelDegraded,
+  filtered,
 }

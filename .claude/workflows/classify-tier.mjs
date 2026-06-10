@@ -17,8 +17,11 @@
 // consts below (it cannot `import` this module — the harness runs the workflow body in a
 // vm wrapper that rejects both static `import` and runtime dynamic `import()`). The copy
 // in the body is the one that actually runs; THIS module is the unit-tested twin. The
-// colocated test classifyTier.test.mjs asserts the two copies have not drifted, so a
-// silent divergence fails CI rather than shipping. Edit BOTH in lockstep.
+// colocated test classifyTier.test.mjs asserts the two copies have not drifted — run it
+// (node .claude/workflows/classifyTier.test.mjs) on ANY change to either copy. NOTE: CI
+// wiring for the workflow test harnesses is still PENDING (validate-workflows.mjs is
+// compile-only), so the drift guard only fires when the harness is actually run — do not
+// rely on CI to catch a divergence yet. Edit BOTH in lockstep.
 export const TIER3_KEYWORDS = ['auth', 'cognito', 'oauth', 'payment', 'iam', 'jwt', 'allow.owner', 'webhook']
 export const TIER2_KEYWORDS = ['amplify', 'functions/', 'schema', 'gsi', 'ttl', 'migration', 'rollback']
 export function classifyTier(planText) {
