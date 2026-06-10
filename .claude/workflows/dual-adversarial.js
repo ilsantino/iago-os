@@ -221,8 +221,10 @@ function deriveLenses(changedFiles) {
   const matched = new Set(['codeQuality', 'completeness']) // base lenses ALWAYS included
   if (Array.isArray(changedFiles)) {
     for (const raw of changedFiles) {
-      if (typeof raw !== 'string' || !raw) continue
-      const p = raw.replace(/\\/g, '/') // normalize Windows separators before path checks
+      if (typeof raw !== 'string' || !raw.trim()) continue // whitespace-only is NOT a path
+      // Trim padding/CRLF residue BEFORE the path checks — an untrimmed 'Button.tsx\r' would
+      // dodge endsWith('.tsx') and silently drop its lens — then normalize Windows separators.
+      const p = raw.trim().replace(/\\/g, '/')
       const lower = p.toLowerCase()
       // amplify/** (top-level or nested) → amplify lens
       if (p.startsWith('amplify/') || p.includes('/amplify/')) matched.add('amplify')
@@ -333,8 +335,10 @@ if (Array.isArray(A.lenses) || (!lensesIsAuto && A.lenses != null)) {
   const probeWellFormed = !!(filesResult && Array.isArray(filesResult.files))
   const rawFiles = probeWellFormed ? filesResult.files : []
   // An all-invalid NON-EMPTY array is garbage masquerading as a well-formed probe — distinct from
-  // a genuinely empty ([]) no-change diff, which stays a precise (base-lens) derivation.
-  const allInvalidArray = rawFiles.length > 0 && !rawFiles.some((f) => typeof f === 'string' && f)
+  // a genuinely empty ([]) no-change diff, which stays a precise (base-lens) derivation. A
+  // whitespace-only string ('   ', '\t') is NOT a valid path — same puncture, one character wider
+  // (it passes a bare truthiness check, deriveLenses matches nothing, coverage shrinks silently).
+  const allInvalidArray = rawFiles.length > 0 && !rawFiles.some((f) => typeof f === 'string' && f.trim().length > 0)
   const probeOk = probeWellFormed && !allInvalidArray
   const changedFiles = probeOk ? rawFiles : []
   const derived = probeOk ? deriveLenses(changedFiles) : AUTO_SELECTABLE_LENSES

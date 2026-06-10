@@ -878,5 +878,42 @@ await test('auto-derive: an ALL-INVALID non-empty array (no valid path string) D
   }
 })
 
+// ── WHITESPACE-ONLY path entries are INVALID (re-gate Minor — residual of the all-invalid fix) ──
+await test('auto-derive: whitespace-only entries are invalid — all-whitespace array DEGRADES; paths trimmed before derivation', async () => {
+  // Residual sub-case of the ALL-INVALID fix above: `typeof f === 'string' && f` treats a
+  // non-empty WHITESPACE string ('   ', '\t') as a valid path → probeOk=true → deriveLenses
+  // (whose `!raw` guard also passes whitespace) matches nothing → base lenses with
+  // probeDegraded=false — the same coverage-shrink puncture, one character wider.
+  // Whitespace-only entries must count as INVALID in BOTH the allInvalidArray check AND the
+  // deriveLenses guard; valid paths are TRIMMED before derivation so padding/CRLF residue
+  // (e.g. 'packages/ui/Button.tsx\r') still selects its lens.
+  for (const allWhitespace of [['   '], ['\t'], ['  ', '\t\n']]) {
+    const h = autoHarness(allWhitespace)
+    const wf = buildWorkflow()
+    const out = await wf(h.agent, h.parallel, null, h.log, h.phase, { ...baseArgs }, null, null)
+    assert.deepStrictEqual(
+      out.lenses,
+      ['security', 'amplify', 'frontend', 'codeQuality', 'completeness'],
+      `whitespace-only array ${JSON.stringify(allWhitespace)} → FULL auto-selectable set (coverage cannot shrink)`,
+    )
+    assert.strictEqual(out.probeDegraded, true, `whitespace-only array ${JSON.stringify(allWhitespace)} flags probeDegraded`)
+    assert.ok(h.logs.some((m) => /DEGRADED probe/i.test(m)), `whitespace-only array ${JSON.stringify(allWhitespace)} logs a DEGRADED message`)
+    assert.ok(!h.logs.some((m) => /no diff vs/i.test(m)), `whitespace-only array ${JSON.stringify(allWhitespace)} does NOT log a no-change diff`)
+  }
+  // Mixed: a whitespace entry + a valid path → precise derivation from the valid path.
+  const hm = autoHarness(['   ', 'amplify/data/resource.ts'])
+  const wfm = buildWorkflow()
+  const outm = await wfm(hm.agent, hm.parallel, null, hm.log, hm.phase, { ...baseArgs }, null, null)
+  assert.deepStrictEqual(outm.lenses, ['amplify', 'codeQuality', 'completeness'], 'derives from the valid path, ignores the whitespace entry')
+  assert.strictEqual(outm.probeDegraded, false, 'a mixed array with ≥1 valid path is NOT degraded')
+  // Trimmed derivation: CRLF/padding residue must not hide a lens. 'packages/ui/Button.tsx\r'
+  // is outside src/, so the frontend lens hinges on endsWith('.tsx') — which fails untrimmed.
+  const ht = autoHarness(['packages/ui/Button.tsx\r'])
+  const wft = buildWorkflow()
+  const outt = await wft(ht.agent, ht.parallel, null, ht.log, ht.phase, { ...baseArgs }, null, null)
+  assert.deepStrictEqual(outt.lenses, ['frontend', 'codeQuality', 'completeness'], 'trims CRLF residue before deriving (Button.tsx\\r → frontend)')
+  assert.strictEqual(outt.probeDegraded, false, 'a trimmed-valid path is a precise probe')
+})
+
 console.log(`\n${passed} passed, ${failed} failed`)
 process.exit(failed ? 1 : 0)
