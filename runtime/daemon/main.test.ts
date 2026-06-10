@@ -1644,6 +1644,244 @@ describe("makeTaskDispatchHandler (Plan 04d)", () => {
 			.filter((e) => (e as { kind: string }).kind === "pr-triage-dispatch-failed");
 		expect(failed).toHaveLength(0);
 	});
+
+	it("(DH-R6, #92 re-gate C1) a marker-write fault aborts BEFORE the prompt is sent — the retry tick is a true first delivery", async () => {
+		// Pass-#2 re-gate Critical: the prompt was runtime.send-delivered BEFORE the
+		// durable marker write, so the marker-fault abort left the task pending with
+		// the prompt ALREADY in the PTY — the next tick re-SENT it (duplicate agent
+		// work; the retry's fresh-runId marker stale-quarantined the first run's
+		// legitimate envelope). With the fix the marker is persisted BEFORE the
+		// send: on a fault NOTHING was delivered, so the retry is a clean first
+		// delivery. RED without the fix: sendCalls has 1 entry.
+		const { runtime, sendCalls } = makeStubRuntime("dhr6-runtime");
+		registerRuntime(runtime);
+		const handle = makeHandleFixture("pr-triage", "dhr6-runtime");
+		let claimCalled6 = false;
+		const mgr = makeStubManager({
+			handle,
+			claimTask: async () => {
+				claimCalled6 = true;
+				return true;
+			},
+		});
+		const emitMock = vi.fn().mockResolvedValue(undefined);
+		const handler = makeTaskDispatchHandler({
+			agentManager: mgr,
+			emit: emitMock,
+			startResultTimer: () => {},
+			persistResultMarker: async () => false,
+			removeResultMarker: async () => {},
+		});
+		await handler({
+			filename: "pr-triage__1700000406.json",
+			agentId: "pr-triage",
+			taskContent: { prompt: "do the daily triage", agentId: "pr-triage" },
+		});
+		// The irreversible send NEVER happened — nothing to duplicate on retry.
+		expect(sendCalls).toHaveLength(0);
+		expect(claimCalled6).toBe(false);
+		const failed6 = emitMock.mock.calls
+			.map((c) => c[0])
+			.filter((e) => (e as { kind: string }).kind === "pr-triage-dispatch-failed");
+		expect(failed6).toHaveLength(1);
+		expect(failed6[0]).toMatchObject({ reason: "marker-write-failed" });
+	});
+
+	it("(DH-R7, #92 re-gate C1) a claim fault KEEPS the durable marker — it is the live run's only record", async () => {
+		// The prior fix REMOVED the pre-written marker on a claim fault and let the
+		// next tick re-dispatch under a fresh runId — but the prompt had already
+		// been delivered: the retry re-sent it. Now the marker is KEPT (the run is
+		// live) and the retry tick RESUMES the claim instead (DH-R8). RED without
+		// the fix: removed has 1 entry.
+		const { runtime, sendCalls } = makeStubRuntime("dhr7-runtime");
+		registerRuntime(runtime);
+		const handle = makeHandleFixture("pr-triage", "dhr7-runtime");
+		const mgr = makeStubManager({ handle, claimSucceeds: false });
+		const emitMock = vi.fn().mockResolvedValue(undefined);
+		const removed7: string[] = [];
+		const handler = makeTaskDispatchHandler({
+			agentManager: mgr,
+			emit: emitMock,
+			startResultTimer: () => {},
+			persistResultMarker: async () => true,
+			removeResultMarker: async (agentId) => {
+				removed7.push(agentId);
+			},
+		});
+		const evt: TaskDispatchEvent = {
+			filename: "pr-triage__1700000407.json",
+			agentId: "pr-triage",
+			taskContent: { prompt: "do the daily triage", agentId: "pr-triage" },
+		};
+		await handler(evt);
+		// Prompt delivered exactly once; the marker survives as the run's record.
+		expect(sendCalls).toHaveLength(1);
+		expect(removed7).toHaveLength(0);
+		const failed7 = emitMock.mock.calls
+			.map((c) => c[0])
+			.filter((e) => (e as { kind: string }).kind === "pr-triage-dispatch-failed");
+		expect(failed7).toHaveLength(1);
+		expect(failed7[0]).toMatchObject({ reason: "claim-failed" });
+	});
+
+	it("(DH-R8, #92 re-gate C1) a pending file matching the durable marker RESUMES the claim — never a second send", async () => {
+		// The retry tick after a claim fault: the durable marker references THIS
+		// filename (the prompt was delivered; only the pending→resolved rename
+		// faulted). The handler must re-attempt ONLY the claim, re-arm the timer
+		// with the ORIGINAL runId + the REMAINING deadline window, and emit
+		// dispatch-resumed. RED without the fix: the handler re-sends under a
+		// FRESH runId, stale-quarantining the live run's envelope.
+		const { runtime, sendCalls } = makeStubRuntime("dhr8-runtime");
+		registerRuntime(runtime);
+		const handle = makeHandleFixture("pr-triage", "dhr8-runtime");
+		const mgr = makeStubManager({ handle });
+		const emitMock = vi.fn().mockResolvedValue(undefined);
+		const resumed8: Array<{ runId: string; remainingMs: number }> = [];
+		const timerCalls8: string[] = [];
+		const ORIGINAL_RUN_ID = "11111111-2222-4333-8444-555555555555";
+		const handler = makeTaskDispatchHandler({
+			agentManager: mgr,
+			emit: emitMock,
+			startResultTimer: (agentId) => {
+				timerCalls8.push(agentId);
+			},
+			persistResultMarker: async () => true,
+			removeResultMarker: async () => {},
+			hasLiveResultTimer: () => false,
+			readResultMarker: async () => ({
+				runId: ORIGINAL_RUN_ID,
+				filename: "pr-triage__1700000408.json",
+				deadlineMs: Date.now() + 60_000,
+			}),
+			resumeResultTimer: (_agentId, runId, _filename, remainingMs) => {
+				resumed8.push({ runId, remainingMs });
+			},
+		});
+		const evt: TaskDispatchEvent = {
+			filename: "pr-triage__1700000408.json",
+			agentId: "pr-triage",
+			taskContent: { prompt: "do the daily triage", agentId: "pr-triage" },
+		};
+		await handler(evt);
+		// NO second delivery; the claim was re-attempted; the timer re-armed with
+		// the ORIGINAL runId and a remaining (not full) window.
+		expect(sendCalls).toHaveLength(0);
+		expect(
+			(mgr as unknown as { _claimCalls: Array<unknown> })._claimCalls,
+		).toHaveLength(1);
+		expect(resumed8).toHaveLength(1);
+		expect(resumed8[0].runId).toBe(ORIGINAL_RUN_ID);
+		expect(resumed8[0].remainingMs).toBeGreaterThan(0);
+		expect(resumed8[0].remainingMs).toBeLessThanOrEqual(60_000);
+		// The fresh-dispatch timer path (full window, NEW runId) did NOT run.
+		expect(timerCalls8).toHaveLength(0);
+		const resumedEvents = emitMock.mock.calls
+			.map((c) => c[0])
+			.filter(
+				(e) => (e as { kind: string }).kind === "pr-triage-dispatch-resumed",
+			);
+		expect(resumedEvents).toHaveLength(1);
+		expect(resumedEvents[0]).toMatchObject({ runId: ORIGINAL_RUN_ID });
+	});
+
+	it("(DH-R9, #92 re-gate C1/I1) a pending file is DEFERRED while another run is in flight — no send, no marker overwrite, telemetry once per filename", async () => {
+		// re-gate I1: dispatching a second file while a run is live re-sends into
+		// the persistent PTY and the marker overwrite strands the first run with NO
+		// completion path (superseded-run slot leak + silent summary drop). The
+		// handler now DEFERS: nothing sent, nothing claimed, live marker untouched;
+		// the polling loop re-attempts after the live run completes (envelope or
+		// dead-letter). RED without the fix: sendCalls has 2 entries.
+		const { runtime, sendCalls } = makeStubRuntime("dhr9-runtime");
+		registerRuntime(runtime);
+		const handle = makeHandleFixture("pr-triage", "dhr9-runtime");
+		const mgr = makeStubManager({ handle });
+		const emitMock = vi.fn().mockResolvedValue(undefined);
+		const persisted9: string[] = [];
+		const handler = makeTaskDispatchHandler({
+			agentManager: mgr,
+			emit: emitMock,
+			startResultTimer: () => {},
+			persistResultMarker: async (agentId) => {
+				persisted9.push(agentId);
+				return true;
+			},
+			removeResultMarker: async () => {},
+			hasLiveResultTimer: () => true, // another run is in flight
+			readResultMarker: async () => ({
+				runId: "99999999-8888-4777-8666-555555555555",
+				filename: "pr-triage__SOME_OTHER_FILE.json",
+				deadlineMs: Date.now() + 60_000,
+			}),
+			resumeResultTimer: () => {},
+		});
+		const evt: TaskDispatchEvent = {
+			filename: "pr-triage__1700000409.json",
+			agentId: "pr-triage",
+			taskContent: { prompt: "do the daily triage", agentId: "pr-triage" },
+		};
+		await handler(evt);
+		await handler(evt); // second polling tick while the run is still live
+		expect(sendCalls).toHaveLength(0);
+		expect(
+			(mgr as unknown as { _claimCalls: Array<unknown> })._claimCalls,
+		).toHaveLength(0);
+		expect(persisted9).toHaveLength(0); // live marker NOT overwritten
+		const deferred = emitMock.mock.calls
+			.map((c) => c[0])
+			.filter(
+				(e) => (e as { kind: string }).kind === "pr-triage-dispatch-deferred",
+			);
+		expect(deferred).toHaveLength(1); // once per filename, not per tick
+	});
+
+	it("(DH-R10, #92 re-gate C1) a send fault removes the pre-written marker AND releases the held cron slot", async () => {
+		// With marker-before-send, a send fault leaves a durable marker for a run
+		// whose prompt never delivered — recovery would dead-letter a phantom run.
+		// The handler must remove it (best-effort) AND release the held slot: the
+		// pre-existing send-fault branch released NOTHING, so with maxConcurrent:1
+		// every future pr-triage cron fire was overlap-prevented until restart.
+		// RED without the fix: removed is empty and _emitCalls is empty.
+		const { runtime } = makeStubRuntime("dhr10-runtime", async () => {
+			throw new Error("PTY write EPIPE");
+		});
+		registerRuntime(runtime);
+		const handle = makeHandleFixture("pr-triage", "dhr10-runtime");
+		const mgr = makeStubManager({ handle });
+		const emitMock = vi.fn().mockResolvedValue(undefined);
+		const removed10: string[] = [];
+		const handler = makeTaskDispatchHandler({
+			agentManager: mgr,
+			emit: emitMock,
+			startResultTimer: () => {},
+			persistResultMarker: async () => true,
+			removeResultMarker: async (agentId) => {
+				removed10.push(agentId);
+			},
+		});
+		const evt: TaskDispatchEvent = {
+			filename: "pr-triage__1700000410.json",
+			agentId: "pr-triage",
+			taskContent: { prompt: "do the daily triage", agentId: "pr-triage" },
+		};
+		await handler(evt);
+		expect(removed10).toEqual(["pr-triage"]);
+		const failed10 = emitMock.mock.calls
+			.map((c) => c[0])
+			.filter((e) => (e as { kind: string }).kind === "pr-triage-dispatch-failed");
+		expect(failed10).toHaveLength(1);
+		expect(failed10[0]).toMatchObject({ reason: "send-failed" });
+		const emitted10 = (
+			mgr as unknown as {
+				_emitCalls: Array<{ event: string; payload: unknown }>;
+			}
+		)._emitCalls;
+		expect(emitted10).toEqual([
+			{
+				event: "cron-result-complete",
+				payload: { agentId: "pr-triage", filename: evt.filename },
+			},
+		]);
+	});
 });
 
 describe("composeCronAgentEnv (R1 — NO secrets, only non-secret runtime vars)", () => {
