@@ -285,10 +285,16 @@ const startSnap = await treeSnapshot('start')
 //     ONE structured changed-files agent and run deriveLenses over the result.
 //  3. Any other non-array value (e.g. a csv string or {key:true} map) → treat as EXPLICIT
 //     via normalizeLenses (back-compat with the pre-auto string/map callers).
+// An EMPTY / whitespace-only / separator-only STRING (e.g. an unfilled `${lensesCsv}` template
+// slot emitting "", "   ", or a bare ",") is NOT an explicit zero-lens request — the explicit
+// zero-lens form is the ARRAY []. Routing such a string EXPLICIT would normalizeLenses it to
+// ZERO extra lenses and silently drop the security/amplify/frontend auto-derive on a sensitive
+// diff — the top-level analogue of the all-invalid/whitespace ARRAY-element degrade below.
 const lensesIsAuto =
   A.lenses === undefined ||
   A.lenses === null ||
-  (typeof A.lenses === 'string' && A.lenses.trim().toLowerCase() === 'auto')
+  (typeof A.lenses === 'string' &&
+    (A.lenses.trim().toLowerCase() === 'auto' || /^[,\s]*$/.test(A.lenses)))
 let lenses
 let lensesRequested
 let lensesDropped = []

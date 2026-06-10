@@ -915,5 +915,27 @@ await test('auto-derive: whitespace-only entries are invalid — all-whitespace 
   assert.strictEqual(outt.probeDegraded, false, 'a trimmed-valid path is a precise probe')
 })
 
+// ── EMPTY/whitespace/separator-only lenses STRING routes to AUTO (re-gate Important — team:data) ──
+await test('auto-derive: empty/whitespace/comma-only lenses STRING is treated as absent → AUTO, not explicit zero lenses', async () => {
+  // The top-level analogue of the whitespace-element fix: lensesIsAuto only matched
+  // absent/null/"auto", so an empty string "", whitespace "   "/"\t", or a bare "," was
+  // falsy-but-present → routed EXPLICIT → normalizeLenses → ZERO extra lenses — silently
+  // dropping the security/amplify/frontend auto-derive on a sensitive diff. An unfilled
+  // `${lensesCsv}` template slot emits exactly these shapes; an explicit zero-lens request is
+  // the ARRAY [] (which must stay EXPLICIT — pinned by the explicit-[] test above).
+  for (const blank of ['', '   ', '\t', ',', ' , ,']) {
+    const h = autoHarness(['src/main.tsx'])
+    const wf = buildWorkflow()
+    const out = await wf(h.agent, h.parallel, null, h.log, h.phase, { ...baseArgs, lenses: blank }, null, null)
+    assert.deepStrictEqual(
+      out.lenses,
+      ['frontend', 'codeQuality', 'completeness'],
+      `blank lenses string ${JSON.stringify(blank)} auto-derives like absent`,
+    )
+    assert.strictEqual(out.lensSource, 'auto', `blank lenses string ${JSON.stringify(blank)} → lensSource auto`)
+    assert.ok(h.calls.some((c) => c.label === 'changed-files'), `blank lenses string ${JSON.stringify(blank)} dispatches the changed-files probe`)
+  }
+})
+
 console.log(`\n${passed} passed, ${failed} failed`)
 process.exit(failed ? 1 : 0)
