@@ -651,6 +651,92 @@ describe("AgentManager / registerAgent", () => {
 		expect(mgr.isAgentQuarantined("quarantine-orphan")).toBe(false);
 		await expect(fsp.access(recordPath)).rejects.toBeDefined();
 	});
+
+	it("(C2 follow-up, #92 re-gate Critical) the quarantine block SURVIVES a daemon restart — the durable record is consulted on an in-memory miss", async () => {
+		// Pass-#2 re-gate Critical: `quarantinedAgents` is in-memory and
+		// `quarantine/<agentId>.json` was WRITE-ONLY — nothing ever re-loaded it, so
+		// a daemon restart (likely in the very degraded-disk scenario that created
+		// the quarantine) emptied the map and the orphaned agentId could re-register,
+		// spawning a DUPLICATE of the possibly-still-live orphan PTY — the exact
+		// failure the quarantine exists to prevent. The fix: assertAgentIdAvailable
+		// consults the durable record on an in-memory miss and self-heals the map.
+		// RED without it: the fresh (post-restart) manager registers the id fine.
+		const ctrl = makeMockRuntime("mock-pty-quarantine-restart");
+		registerRuntime(ctrl.runtime);
+		// Simulate the PRE-restart daemon having quarantined the orphan: only the
+		// durable record exists (the exact shape persistQuarantineRecord writes).
+		const dir = pathFor("quarantine");
+		await fsp.mkdir(dir, { recursive: true });
+		const recordPath = path.join(dir, "restart-orphan.json");
+		await fsp.writeFile(
+			recordPath,
+			JSON.stringify({
+				handleId: "agent-pre-restart-1",
+				agentId: "restart-orphan",
+				org: null,
+				reason: "simulated pre-restart rollback fault",
+				atMs: 1_700_000_000_000,
+			}),
+			{ mode: 0o600 },
+		);
+
+		// A FRESH AgentManager = the post-restart daemon (empty in-memory map).
+		const mgr = new AgentManager();
+		const spawnsBefore = ctrl.spawnCalls.length;
+		await expect(
+			mgr.registerAgent({
+				agentId: "restart-orphan",
+				runtimeId: "mock-pty-quarantine-restart",
+				cwd: "/tmp/work",
+				env: {},
+				sessionId: "sess-ro",
+			}),
+		).rejects.toBeInstanceOf(AgentQuarantinedError);
+		// Blocked BEFORE spawning — no duplicate process was created.
+		expect(ctrl.spawnCalls.length).toBe(spawnsBefore);
+		// The durable hit self-heals the in-memory map.
+		expect(mgr.isAgentQuarantined("restart-orphan")).toBe(true);
+
+		// releaseQuarantinedAgent reports TRUE for a durable-ONLY quarantine (the
+		// post-restart in-memory map is empty) — clearing a real quarantine must not
+		// read as "none existed". Use a second fresh manager so the map is empty.
+		const mgr2 = new AgentManager();
+		expect(await mgr2.releaseQuarantinedAgent("restart-orphan")).toBe(true);
+		await expect(fsp.access(recordPath)).rejects.toBeDefined();
+		// ...after which the agentId registers again normally.
+		const handle = await mgr2.registerAgent({
+			agentId: "restart-orphan",
+			runtimeId: "mock-pty-quarantine-restart",
+			cwd: "/tmp/work",
+			env: {},
+			sessionId: "sess-ro-2",
+		});
+		expect(handle.agentId).toBe("restart-orphan");
+	});
+
+	it("(C2 follow-up) a corrupt durable quarantine record still BLOCKS re-registration (fail-safe)", async () => {
+		// A record that EXISTS but cannot be parsed proves a quarantine was created;
+		// corruption lost its details, not its meaning. Treating it as absent would
+		// silently lift the duplicate-orphan block on the exact degraded disk that
+		// corrupts files — so an unreadable record fail-safe BLOCKS until released.
+		const ctrl = makeMockRuntime("mock-pty-quarantine-corrupt");
+		registerRuntime(ctrl.runtime);
+		const dir = pathFor("quarantine");
+		await fsp.mkdir(dir, { recursive: true });
+		await fsp.writeFile(path.join(dir, "corrupt-orphan.json"), "{not json", {
+			mode: 0o600,
+		});
+		const mgr = new AgentManager();
+		await expect(
+			mgr.registerAgent({
+				agentId: "corrupt-orphan",
+				runtimeId: "mock-pty-quarantine-corrupt",
+				cwd: "/tmp/work",
+				env: {},
+				sessionId: "sess-co",
+			}),
+		).rejects.toBeInstanceOf(AgentQuarantinedError);
+	});
 });
 
 describe("AgentManager / getLastStatus + isAlive (PR45 M6)", () => {

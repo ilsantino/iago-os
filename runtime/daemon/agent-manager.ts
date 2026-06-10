@@ -187,8 +187,10 @@ export class AgentQuarantinedError extends Error {
 
 /**
  * In-memory + durable record of a quarantined orphan (see `AgentQuarantinedError`).
- * Mirrored best-effort to `quarantine/<agentId>.json` so an operator — and a
- * future boot-recovery sweep — can find and reap the orphan after a crash.
+ * Mirrored best-effort to `quarantine/<agentId>.json`; the registration guard
+ * (`assertAgentIdAvailable`) re-loads that record on an in-memory miss, so the
+ * re-registration block survives a daemon restart. Auto-reaping by a boot sweep
+ * remains future work — release stays a manual `releaseQuarantinedAgent` call.
  */
 interface QuarantineRecord {
 	readonly handleId: string;
@@ -337,7 +339,10 @@ export class AgentManager extends EventEmitter {
 	// the agentId is recorded here so `assertAgentIdAvailable` BLOCKS a duplicate
 	// re-registration (REGARDLESS of org) until `releaseQuarantinedAgent` clears it
 	// after an operator reaps the orphan. Mirrored best-effort to
-	// `quarantine/<agentId>.json` for cross-restart visibility.
+	// `quarantine/<agentId>.json` for cross-restart ENFORCEMENT:
+	// `assertAgentIdAvailable` consults the durable record on an in-memory miss
+	// (re-gate C2 follow-up) and self-heals this map, so the block does NOT
+	// evaporate when the daemon restarts.
 	private readonly quarantinedAgents = new Map<string, QuarantineRecord>();
 	private bootRecoveryRan = false;
 	private cachedBootRecovery: BootRecoveryResult | null = null;
@@ -620,6 +625,16 @@ export class AgentManager extends EventEmitter {
 		console.error(
 			`[agent-manager] registration rollback could NOT confirm termination of ${handle.id} (agentId="${agentId}"); QUARANTINED. A live orphaned process may remain — manual reap may be required. Re-registration of "${agentId}" is blocked until releaseQuarantinedAgent("${agentId}") is called.`,
 		);
+		// #92 re-gate Minor — operator visibility for a live orphaned process must
+		// not depend on stderr scraping: mirror the quarantine into the durable
+		// telemetry sink. `emitTelemetry` never throws; a failed append (the same
+		// faulted disk) degrades to the console line above.
+		await emitTelemetry({
+			kind: "agent-quarantined",
+			agentId,
+			handleId: handle.id,
+			reason,
+		});
 	}
 
 	/**
@@ -641,6 +656,61 @@ export class AgentManager extends EventEmitter {
 	}
 
 	/**
+	 * #92 re-gate Critical (C2 follow-up) — load the durable quarantine record
+	 * for `agentId`, or null when none exists (ENOENT). FAIL-SAFE on a record
+	 * that exists but cannot be read or parsed: corruption/EACCES on the same
+	 * degraded disk that created the quarantine loses the record's DETAILS, not
+	 * its MEANING — a present-but-unreadable record still blocks (with a
+	 * synthesized reason) rather than silently lifting the duplicate-orphan
+	 * protection.
+	 */
+	private async readQuarantineRecord(
+		agentId: string,
+	): Promise<QuarantineRecord | null> {
+		const file = path.join(pathFor("quarantine"), `${agentId}.json`);
+		let raw: string;
+		try {
+			raw = await fsp.readFile(file, "utf8");
+		} catch (err) {
+			if (getErrnoCode(err) === "ENOENT") return null;
+			return {
+				handleId: "unknown",
+				agentId,
+				org: null,
+				reason: `unreadable quarantine record (${
+					err instanceof Error ? err.message : String(err)
+				})`,
+				atMs: 0,
+			};
+		}
+		try {
+			const parsed: unknown = JSON.parse(raw);
+			if (typeof parsed === "object" && parsed !== null) {
+				const rec = parsed as Partial<QuarantineRecord>;
+				return {
+					handleId: typeof rec.handleId === "string" ? rec.handleId : "unknown",
+					agentId,
+					org: typeof rec.org === "string" ? rec.org : null,
+					reason:
+						typeof rec.reason === "string"
+							? rec.reason
+							: "quarantine record missing reason",
+					atMs: typeof rec.atMs === "number" ? rec.atMs : 0,
+				};
+			}
+		} catch {
+			// fall through to the synthesized corrupt-record block below
+		}
+		return {
+			handleId: "unknown",
+			agentId,
+			org: null,
+			reason: "corrupt quarantine record (JSON parse failed)",
+			atMs: 0,
+		};
+	}
+
+	/**
 	 * Operator/escalation hook (#92 C2) — clear a quarantine after the orphaned
 	 * process has been confirmed reaped (manual `kill`, or a future boot-recovery
 	 * sweep). Removes the in-memory block AND the durable record so the agentId can
@@ -649,10 +719,18 @@ export class AgentManager extends EventEmitter {
 	 */
 	async releaseQuarantinedAgent(agentId: string): Promise<boolean> {
 		const existed = this.quarantinedAgents.delete(agentId);
-		await fsp
-			.unlink(path.join(pathFor("quarantine"), `${agentId}.json`))
-			.catch(() => undefined);
-		return existed;
+		// #92 re-gate (C2 follow-up) — a quarantine can exist ONLY on disk (the
+		// in-memory map is empty after a restart). Report `true` when the durable
+		// record was actually removed too, so clearing a real post-restart
+		// quarantine does not read as "none existed".
+		let fileRemoved = false;
+		try {
+			await fsp.unlink(path.join(pathFor("quarantine"), `${agentId}.json`));
+			fileRemoved = true;
+		} catch {
+			// ENOENT (no record) or a faulted unlink — either way nothing removed.
+		}
+		return existed || fileRemoved;
 	}
 
 	/**
@@ -1885,6 +1963,18 @@ export class AgentManager extends EventEmitter {
 		const quarantined = this.quarantinedAgents.get(agentId);
 		if (quarantined !== undefined) {
 			throw new AgentQuarantinedError(agentId, quarantined.reason);
+		}
+		// #92 re-gate Critical (C2 follow-up) — the in-memory map dies with the
+		// process, and a daemon restart is MOST likely in exactly the degraded-disk
+		// scenario that created a quarantine. Consult the durable
+		// `quarantine/<agentId>.json` on an in-memory miss so the block survives a
+		// restart, and self-heal the map so later checks (and isAgentQuarantined)
+		// see it without re-reading disk. Registration is a cold path — the extra
+		// read costs nothing where it matters.
+		const durable = await this.readQuarantineRecord(agentId);
+		if (durable !== null) {
+			this.quarantinedAgents.set(agentId, durable);
+			throw new AgentQuarantinedError(agentId, durable.reason);
 		}
 		// In-memory check
 		for (const tracked of this.handles.values()) {

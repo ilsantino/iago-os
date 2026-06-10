@@ -567,6 +567,51 @@ export type DaemonEvent =
 			readonly message: string;
 	  }
 	| {
+			/**
+			 * #92 re-gate Minor — a registration rollback could not confirm the
+			 * spawned PTY died (both kill attempts threw + the liveness probe did
+			 * not report dead). The agentId is QUARANTINED: re-registration is
+			 * blocked (in-memory + durable `quarantine/<agentId>.json`) until an
+			 * operator reaps the orphan and calls `releaseQuarantinedAgent`.
+			 * Durable mirror of the `[agent-manager] ... QUARANTINED` stderr line
+			 * so operator visibility does not depend on log scraping.
+			 */
+			readonly kind: "agent-quarantined";
+			readonly agentId: string;
+			readonly handleId: string;
+			readonly reason: string;
+	  }
+	| {
+			/**
+			 * #92 re-gate Critical (C1 follow-up) — a prior dispatch SENT the
+			 * prompt but faulted on the pending→resolved claim, leaving the task
+			 * file in `tasks/pending/` with the live run's durable marker intact.
+			 * A later polling tick RESUMED that dispatch: it re-attempted ONLY the
+			 * claim (never a second `runtime.send`) and re-armed the dead-letter
+			 * timer with the ORIGINAL runId and remaining deadline window.
+			 */
+			readonly kind: "pr-triage-dispatch-resumed";
+			readonly agentId: string;
+			readonly filename: string;
+			readonly runId: string;
+	  }
+	| {
+			/**
+			 * #92 re-gate Critical (C1 follow-up) / Important (I1) — a pending
+			 * task for a send-contract agent arrived while a DIFFERENT run is
+			 * still in flight (live dead-letter timer). Dispatching it would
+			 * `runtime.send` a second prompt into the persistent PTY and
+			 * overwrite the live run's marker (superseded-run slot leak + silent
+			 * summary drop). The dispatch is DEFERRED: the file stays in
+			 * `tasks/pending/` and is re-attempted after the live run completes
+			 * (envelope or dead-letter timeout). Emitted once per filename, not
+			 * per polling tick.
+			 */
+			readonly kind: "pr-triage-dispatch-deferred";
+			readonly agentId: string;
+			readonly filename: string;
+	  }
+	| {
 			readonly kind: "runtime-registration-failed";
 			readonly adapterModule: string;
 			readonly message: string;
