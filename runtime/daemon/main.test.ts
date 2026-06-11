@@ -1882,6 +1882,81 @@ describe("makeTaskDispatchHandler (Plan 04d)", () => {
 			},
 		]);
 	});
+
+	it("(DH-R11, #92 re-gate C1 follow-up) a pending file matching the durable marker RESUMES even when a boot-recovered timer is already live — no defer, no second send, no double-arm", async () => {
+		// The cross-restart bug the round-1 fix missed (DH-R8 mocks hasLiveResultTimer
+		// false; DH-R9 mocks it true with a marker for ANOTHER file — neither
+		// exercises the combined state). Pre-restart: the prompt was
+		// runtime.send-delivered, then the pending→resolved claim faulted, so the file
+		// stayed in tasks/pending/ with the durable marker KEPT (DH-R7). On restart
+		// recoverResultTimers() re-arms a LIVE in-memory timer for that SAME run. The
+		// old DEFER guard (hasLiveResultTimer === true) fired FIRST and deferred the
+		// file forever — it can only leave pending via a claim, which DEFER never
+		// performs — so the recovered timer dead-lettered and the next tick re-sent
+		// under a FRESH runId (the exact double-send C1 prevents). The fix routes by
+		// the marker's FILENAME: a marker for THIS file RESUMES (re-claim, no re-send)
+		// regardless of timer liveness. And because the recovered timer already counts
+		// down the correct window, the resume must NOT re-arm a second timer (that
+		// would leak the recovered handle — same runId, still fires, dead-letters a
+		// live run). RED without the fix: dispatch-deferred (not -resumed), no claim.
+		const { runtime, sendCalls } = makeStubRuntime("dhr11-runtime");
+		registerRuntime(runtime);
+		const handle = makeHandleFixture("pr-triage", "dhr11-runtime");
+		const mgr = makeStubManager({ handle });
+		const emitMock = vi.fn().mockResolvedValue(undefined);
+		const resumed11: Array<{ runId: string; remainingMs: number }> = [];
+		const timerCalls11: string[] = [];
+		const ORIGINAL_RUN_ID = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+		const handler = makeTaskDispatchHandler({
+			agentManager: mgr,
+			emit: emitMock,
+			startResultTimer: (agentId) => {
+				timerCalls11.push(agentId);
+			},
+			persistResultMarker: async () => true,
+			removeResultMarker: async () => {},
+			// A boot-recovered timer is ALREADY live for THIS run (the cross-restart
+			// state DH-R8/R9 never combine).
+			hasLiveResultTimer: () => true,
+			readResultMarker: async () => ({
+				runId: ORIGINAL_RUN_ID,
+				filename: "pr-triage__1700000411.json",
+				deadlineMs: Date.now() + 45_000,
+			}),
+			resumeResultTimer: (_agentId, runId, _filename, remainingMs) => {
+				resumed11.push({ runId, remainingMs });
+			},
+		});
+		const evt: TaskDispatchEvent = {
+			filename: "pr-triage__1700000411.json",
+			agentId: "pr-triage",
+			taskContent: { prompt: "do the daily triage", agentId: "pr-triage" },
+		};
+		await handler(evt);
+		// RESUMED, not deferred: claim re-attempted exactly once, NO second send.
+		expect(sendCalls).toHaveLength(0);
+		expect(
+			(mgr as unknown as { _claimCalls: Array<unknown> })._claimCalls,
+		).toHaveLength(1);
+		// The recovered timer already owns the deadline window — re-arming would leak
+		// the recovered handle, so neither resumeResultTimer NOR the fresh-dispatch
+		// startResultTimer path runs.
+		expect(resumed11).toHaveLength(0);
+		expect(timerCalls11).toHaveLength(0);
+		const resumedEvents = emitMock.mock.calls
+			.map((c) => c[0])
+			.filter(
+				(e) => (e as { kind: string }).kind === "pr-triage-dispatch-resumed",
+			);
+		expect(resumedEvents).toHaveLength(1);
+		expect(resumedEvents[0]).toMatchObject({ runId: ORIGINAL_RUN_ID });
+		const deferredEvents11 = emitMock.mock.calls
+			.map((c) => c[0])
+			.filter(
+				(e) => (e as { kind: string }).kind === "pr-triage-dispatch-deferred",
+			);
+		expect(deferredEvents11).toHaveLength(0);
+	});
 });
 
 describe("composeCronAgentEnv (R1 — NO secrets, only non-secret runtime vars)", () => {
@@ -2589,6 +2664,115 @@ describe("makeTaskSendHandler (R1)", () => {
 		expect(claimCalls).toHaveLength(1);
 		expect(cleared).toHaveLength(0);
 	});
+
+	it("(TS-13, #92 re-gate C1 follow-up) a failed send-path claim (rename fault) RETAINS the timer/marker — clearResultTimer is NOT called", async () => {
+		// The send-path claim faulted (envelope still in pending/ for retry, TS-6). The
+		// prior finally cleared the dead-letter timer/marker/held slot UNCONDITIONALLY
+		// (quarantined === false) — stripping the live run's correlation+overlap
+		// protection BEFORE the envelope was durably consumed. A subsequent cron fire
+		// then dispatched a fresh run and the retried original envelope was quarantined
+		// as stale (legit summary permanently lost on a transient claim fault). The fix
+		// clears ONLY on terminal durable consumption. RED without the fix: cleared has 1.
+		const { mgr, claimCalls } = makeSendStubManager({ claimSucceeds: false });
+		const { bot, calls } = makeFakeTelegram(async () => ({ ok: true }));
+		const emitMock = vi.fn().mockResolvedValue(true);
+		const cleared: Array<{ id: string; runId?: string }> = [];
+		const handler = makeTaskSendHandler({
+			agentManager: mgr,
+			emit: emitMock,
+			telegramBot: bot as unknown as import("../telegram/bot.js").TelegramBot,
+			clearResultTimer: (id, runId) => cleared.push({ id, runId }),
+		});
+		await handler({
+			filename: "pr-triage-send__ts13.json",
+			agentId: "pr-triage",
+			sendText: "summary",
+			runId: "run-ts13",
+		});
+		expect(claimCalls).toHaveLength(1);
+		expect(calls).toHaveLength(0); // claim faulted → NO send
+		expect(cleared).toHaveLength(0); // marker/timer/slot RETAINED for retry
+	});
+
+	it("(TS-14, #92 re-gate C1 follow-up) a noSend envelope whose telemetry record FAILS RETAINS the timer/marker — clearResultTimer is NOT called", async () => {
+		// noSend + emit→false (degraded telemetry dir, TS-5): the no-send was NOT
+		// durably recorded and the envelope was NOT claimed, so it must re-trip next
+		// tick. The prior finally cleared anyway. The fix retains the run until terminal
+		// consumption. RED without the fix: cleared has 1.
+		const { mgr, claimCalls } = makeSendStubManager();
+		const { bot } = makeFakeTelegram(async () => ({ ok: true }));
+		const emitMock = vi.fn().mockResolvedValue(false); // telemetry append fault
+		const cleared: Array<{ id: string; runId?: string }> = [];
+		const handler = makeTaskSendHandler({
+			agentManager: mgr,
+			emit: emitMock,
+			telegramBot: bot as unknown as import("../telegram/bot.js").TelegramBot,
+			clearResultTimer: (id, runId) => cleared.push({ id, runId }),
+		});
+		await handler({
+			filename: "pr-triage-send__ts14.json",
+			agentId: "pr-triage",
+			noSend: true,
+			runId: "run-ts14",
+		});
+		expect(claimCalls).toHaveLength(0); // not claimed (record failed)
+		expect(cleared).toHaveLength(0); // RETAINED for retry
+	});
+
+	it("(TS-15, #92 re-gate C1 follow-up) a noSend envelope recorded but whose claim FAULTS RETAINS the timer/marker — clearResultTimer is NOT called", async () => {
+		// noSend recorded durably (emit→true) but the pending→resolved claim faulted:
+		// the envelope is STILL in pending/ and will re-trip, so the run must be
+		// retained. The prior noSend branch IGNORED claimTask's return AND the finally
+		// cleared unconditionally. The fix clears only when the no-send is durably
+		// recorded AND the envelope is durably claimed. RED without the fix: cleared has 1.
+		const { mgr, claimCalls } = makeSendStubManager({ claimSucceeds: false });
+		const { bot } = makeFakeTelegram(async () => ({ ok: true }));
+		const emitMock = vi.fn().mockResolvedValue(true);
+		const cleared: Array<{ id: string; runId?: string }> = [];
+		const handler = makeTaskSendHandler({
+			agentManager: mgr,
+			emit: emitMock,
+			telegramBot: bot as unknown as import("../telegram/bot.js").TelegramBot,
+			clearResultTimer: (id, runId) => cleared.push({ id, runId }),
+		});
+		await handler({
+			filename: "pr-triage-send__ts15.json",
+			agentId: "pr-triage",
+			noSend: true,
+			runId: "run-ts15",
+		});
+		expect(claimCalls).toHaveLength(1); // claim attempted
+		expect(cleared).toHaveLength(0); // claim faulted → RETAINED for retry
+	});
+
+	it("(TS-16, #92 re-gate C1 follow-up) a pre-consumption THROW RETAINS the timer/marker — clearResultTimer is NOT called", async () => {
+		// The handler throws BEFORE the envelope is durably consumed (here: isActiveRun
+		// itself faults, a pre-claim path). The envelope was never claimed, so it
+		// re-trips; the prior finally cleared the run's protection anyway. The fix
+		// clears only after terminal consumption. RED without the fix: cleared has 1.
+		const { mgr, claimCalls } = makeSendStubManager();
+		const { bot, calls } = makeFakeTelegram(async () => ({ ok: true }));
+		const emitMock = vi.fn().mockResolvedValue(true);
+		const cleared: Array<{ id: string; runId?: string }> = [];
+		const handler = makeTaskSendHandler({
+			agentManager: mgr,
+			emit: emitMock,
+			telegramBot: bot as unknown as import("../telegram/bot.js").TelegramBot,
+			clearResultTimer: (id, runId) => cleared.push({ id, runId }),
+			isActiveRun: async () => {
+				throw new Error("marker read EIO");
+			},
+		});
+		await handler({
+			filename: "pr-triage-send__ts16.json",
+			agentId: "pr-triage",
+			sendText: "summary",
+			runId: "run-ts16",
+		});
+		expect(claimCalls).toHaveLength(0); // threw before claim
+		expect(calls).toHaveLength(0); // no send
+		expect(cleared).toHaveLength(0); // RETAINED for retry
+	});
 });
 
 describe("makeResultTimers + dispatch arming (R1 D4 dead-letter)", () => {
@@ -2761,6 +2945,40 @@ describe("makeResultTimers + dispatch arming (R1 D4 dead-letter)", () => {
 		expect(completions).toEqual([
 			{ agentId: "pr-triage", filename: "pr-triage__marker.json" },
 		]);
+	});
+
+	it("(RT-14, #92 re-gate C1 follow-up) isActiveRun FAILS CLOSED on a present-but-unreadable marker (non-ENOENT read error)", async () => {
+		// The prior catch returned `true` for ANY read failure — including a non-ENOENT
+		// error (EACCES/EBUSY/EISDIR on a degraded state root) where a marker MAY exist
+		// but is unreadable. Failing OPEN let a possibly-STALE envelope reach the
+		// irreversible Telegram send. The fix is symmetric with the write side
+		// (writeMarker returns false on fault → dispatch aborts BEFORE delivery): ONLY
+		// ENOENT (genuinely no marker) returns true; a present-but-unreadable marker
+		// fails CLOSED (quarantine). We force a deterministic, cross-platform non-ENOENT
+		// read error by placing a DIRECTORY where the marker FILE is expected — readFile
+		// then throws EISDIR. RED without the fix: isActiveRun returns true (fail open).
+		const emitMock = vi.fn().mockResolvedValue(true);
+		// No in-memory timer (fresh instance) → isActiveRun consults the durable marker.
+		const { isActiveRun } = makeResultTimers({
+			emit: emitMock,
+			timeoutMs: 60_000,
+		});
+
+		const dir = pathFor("result-pending");
+		await fsp.mkdir(dir, { recursive: true });
+		// A DIRECTORY at the marker path → fsp.readFile throws EISDIR (non-ENOENT),
+		// simulating a present-but-unreadable marker on a degraded disk.
+		await fsp.mkdir(path.join(dir, "pr-triage.json"), { recursive: true });
+
+		// FAIL CLOSED: even a runId-bearing envelope is quarantined while the marker is
+		// unreadable — the run cannot be confirmed.
+		expect(await isActiveRun("pr-triage", "run-anything")).toBe(false);
+		expect(await isActiveRun("pr-triage", undefined)).toBe(false);
+
+		// CONTROL: a genuine ENOENT (no marker for a DIFFERENT agent) still returns true
+		// — no active run to misattribute against, so the legacy/no-correlation path is
+		// preserved; only the unreadable case fails closed.
+		expect(await isActiveRun("other-agent", "run-x")).toBe(true);
 	});
 
 	it("(RT-7, dual-adversarial pass #2 Important) a FAILED timeout-telemetry write retains the durable marker and does not release the slot (real timers)", async () => {
@@ -3466,6 +3684,9 @@ describe("registerCronAgentWithRestart (Task 8 — deferred double-restart race)
 			on: (ev: string, cb: (...a: unknown[]) => void) => {
 				emitter.on(ev, cb);
 			},
+			off: (ev: string, cb: (...a: unknown[]) => void) => {
+				emitter.off(ev, cb);
+			},
 			emit: (ev: string, payload: unknown) => emitter.emit(ev, payload),
 		} as unknown as AgentManager;
 
@@ -3488,6 +3709,14 @@ describe("registerCronAgentWithRestart (Task 8 — deferred double-restart race)
 					handleId: fresh.id,
 				});
 			},
+			// #92 re-gate (lens:tests) — observe the agent-restarted listener count so
+			// the cleanup test can prove the returned teardown off()s it (no per-SIGHUP
+			// listener leak).
+			agentRestartedListenerCount: () => emitter.listenerCount("agent-restarted"),
+			// Simulate the cron agent's tracked handle being untracked out-of-band so
+			// the next scheduleRestart hits the deadHandle===null registerAgent FALLBACK
+			// instead of restartAgent.
+			forgetHandles: () => handles.clear(),
 		};
 	}
 
@@ -3547,6 +3776,93 @@ describe("registerCronAgentWithRestart (Task 8 — deferred double-restart race)
 		// Advance well past the original backoff: the cron-deferred restart must NOT
 		// fire — the agent is already a fresh, healthy generation.
 		await vi.advanceTimersByTimeAsync(200);
+		expect(h.restartCalls).toHaveLength(0);
+	});
+
+	it("(CR-3, #92 re-gate lens:tests) re-arm-on-restart: a SECOND crash AFTER a restart fires another cron restart (silent-death regression)", async () => {
+		// Task 8's onAgentRestarted → armExitListener(fresh) is the ONLY re-arm
+		// authority. When the cron loop's own restart fires, the OLD exit listener has
+		// already self-unsubscribed (it fired and ran its teardown microtask) and
+		// statusCb is null — so WITHOUT re-arming the fresh handle a SECOND crash is
+		// never watched and the daily job silently dies after one restart. CR-1/CR-2
+		// never fire an exit AFTER a restart, so they stay green even if the re-arm is
+		// removed. This drives two crashes and asserts the count GROWS on the second.
+		// RED without armExitListener(fresh): restartCalls stays length 1.
+		vi.useFakeTimers();
+		const h = makeRestartHarness();
+		await registerCronAgentWithRestart({
+			agentManager: h.mgr,
+			agentId: "pr-triage",
+			agentConfig,
+			isShuttingDown: () => false,
+			backoffMs: [50],
+		});
+		// First crash → one cron restart. Its restartAgent emits agent-restarted, which
+		// re-arms the exit listener on the FRESH generation.
+		h.setRestarting(false);
+		h.fireExit("crashed");
+		await vi.advanceTimersByTimeAsync(0);
+		await vi.advanceTimersByTimeAsync(60);
+		await vi.advanceTimersByTimeAsync(0);
+		expect(h.restartCalls).toHaveLength(1);
+		// SECOND crash on the FRESH generation — caught ONLY because the listener was
+		// re-armed → a second cron restart fires.
+		h.setRestarting(false);
+		h.fireExit("crashed");
+		await vi.advanceTimersByTimeAsync(0);
+		await vi.advanceTimersByTimeAsync(60);
+		await vi.advanceTimersByTimeAsync(0);
+		expect(h.restartCalls).toHaveLength(2);
+	});
+
+	it("(CR-4, #92 re-gate lens:tests) the returned cleanup off()s the agent-restarted listener (no per-SIGHUP listener leak)", async () => {
+		// registerCronAgentWithRestart subscribes onAgentRestarted to the AgentManager
+		// for the cron agent's lifetime and RETURNS a cleanup that off()s it. A SIGHUP
+		// config reload re-runs registration; without invoking that cleanup each prior
+		// listener leaks (unbounded growth + a stale generation re-armed on every
+		// subsequent restart). Untested until now. RED if the returned teardown does
+		// not remove the listener.
+		vi.useFakeTimers();
+		const h = makeRestartHarness();
+		expect(h.agentRestartedListenerCount()).toBe(0);
+		const cleanup = await registerCronAgentWithRestart({
+			agentManager: h.mgr,
+			agentId: "pr-triage",
+			agentConfig,
+			isShuttingDown: () => false,
+			backoffMs: [50],
+		});
+		expect(h.agentRestartedListenerCount()).toBe(1);
+		cleanup();
+		expect(h.agentRestartedListenerCount()).toBe(0);
+	});
+
+	it("(CR-5, #92 re-gate lens:tests) when no tracked handle exists at restart time, scheduleRestart FALLS BACK to registerAgent (not restartAgent)", async () => {
+		// scheduleRestart reuses restartAgent ONLY when the dead handle is still
+		// tracked (so it re-spawns under the SAME stable id); when the handle was
+		// already untracked it FALLS BACK to a fresh registerAgent + an explicit
+		// armExitListener (registerAgent does NOT emit agent-restarted). That fallback
+		// branch had no test. Forget the handle after startup so the crash hits it.
+		// RED if the fallback were dropped: the agent would never recover.
+		vi.useFakeTimers();
+		const h = makeRestartHarness();
+		await registerCronAgentWithRestart({
+			agentManager: h.mgr,
+			agentId: "pr-triage",
+			agentConfig,
+			isShuttingDown: () => false,
+			backoffMs: [50],
+		});
+		const registersAfterStartup = h.registerCalls.length; // 1 (the startup register)
+		// The tracked handle is gone (torn down out-of-band) → findHandleForAgent null.
+		h.forgetHandles();
+		h.setRestarting(false);
+		h.fireExit("crashed");
+		await vi.advanceTimersByTimeAsync(0);
+		await vi.advanceTimersByTimeAsync(60);
+		await vi.advanceTimersByTimeAsync(0);
+		// Recovered via the registerAgent FALLBACK (a fresh register), NOT restartAgent.
+		expect(h.registerCalls.length).toBe(registersAfterStartup + 1);
 		expect(h.restartCalls).toHaveLength(0);
 	});
 });

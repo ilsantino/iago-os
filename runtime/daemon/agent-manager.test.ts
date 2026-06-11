@@ -652,6 +652,94 @@ describe("AgentManager / registerAgent", () => {
 		await expect(fsp.access(recordPath)).rejects.toBeDefined();
 	});
 
+	it("(C2 follow-up round 2, #92 re-gate Critical) when the durable quarantine write ALSO fails, the orphan is RETAINED tracked (not torn down) + still blocks re-registration", async () => {
+		// The compound fault the round-1 C2 fix left open: the durable
+		// `quarantine/<id>.json` write happens on the SAME faulted state root that
+		// broke persistAgentConfig, so it likely ALSO fails — and the prior
+		// quarantineOrphan tore the handle down UNCONDITIONALLY then wrote the record
+		// best-effort (`.catch(() => undefined)`). Result on a compound fault: a
+		// possibly-live orphan untracked AND no durable record → after a restart the
+		// in-memory map is gone, readQuarantineRecord returns null, and a same-agentId
+		// re-register spawns a DUPLICATE beside the still-live orphan (C2 reopened).
+		// Option (a) fix: make the durable write a REQUIRED transition before
+		// untracking — on failure, do NOT teardown; RETAIN the handle tracked (visible
+		// + a second-line registry block) with the in-memory quarantine block intact,
+		// and suppress heartbeat auto-restart. Nothing can guarantee cross-restart
+		// durability on a fully-dead disk, but this never makes it WORSE by stranding a
+		// live orphan invisibly. RED without the fix: listHandles() is 0 (torn down).
+		const ctrl = makeMockRuntime("mock-pty-quarantine-nodurable");
+		registerRuntime(ctrl.runtime);
+		const mgr = new AgentManager();
+
+		const agentsDir = pathFor("agents");
+		const quarantineDir = pathFor("quarantine");
+		// (1) Break the persist write (ENOSPC) — triggers the rollback. (2) Break the
+		// durable quarantine record write too (the compound-fault: SAME degraded root).
+		writeFileMock.mockImplementation((p, data, options) => {
+			const ps = String(p);
+			if (ps.startsWith(agentsDir) || ps.startsWith(quarantineDir)) {
+				return Promise.reject(
+					Object.assign(new Error("simulated ENOSPC"), { code: "ENOSPC" }),
+				);
+			}
+			if (writeFileState.real === null) {
+				throw new Error("writeFileState.real not initialized by vi.mock factory");
+			}
+			return writeFileState.real(p, data, options);
+		});
+		// (3) Break the rollback kill so termination cannot be confirmed → quarantine.
+		writeStopMarkerMock.mockRejectedValueOnce(
+			Object.assign(new Error("simulated marker EIO"), { code: "EIO" }),
+		);
+		const shutdownSpy = vi
+			.spyOn(ctrl.runtime, "shutdown")
+			.mockRejectedValue(
+				Object.assign(new Error("simulated shutdown EIO"), { code: "EIO" }),
+			);
+
+		// Same fail-closed contract: registerAgent rejects with the ORIGINAL persist
+		// error (ENOSPC), not the quarantine.
+		await expect(
+			mgr.registerAgent({
+				agentId: "quarantine-orphan-nodurable",
+				runtimeId: "mock-pty-quarantine-nodurable",
+				cwd: "/tmp/work",
+				env: {},
+				sessionId: "sess-qon",
+			}),
+		).rejects.toThrow(/ENOSPC/);
+
+		expect(shutdownSpy).toHaveBeenCalled();
+		// Quarantined in-memory (the within-process block).
+		expect(mgr.isAgentQuarantined("quarantine-orphan-nodurable")).toBe(true);
+		// OPTION (a) — the durable write FAILED, so the orphan is RETAINED tracked
+		// (NOT torn down): it stays visible to the live registry instead of vanishing.
+		// (The C2-success test above asserts listHandles() === 0; this is the divergent
+		// branch.)
+		expect(mgr.listHandles()).toHaveLength(1);
+		expect(mgr.listHandles()[0].agentId).toBe("quarantine-orphan-nodurable");
+		// No durable record exists — the write faulted (cannot guarantee cross-restart
+		// durability on a dead disk; the retained in-memory tracking is the safety net).
+		const recordPath = path.join(
+			quarantineDir,
+			"quarantine-orphan-nodurable.json",
+		);
+		await expect(fsp.access(recordPath)).rejects.toBeDefined();
+		// Re-registration STILL blocked within this process (in-memory quarantine map),
+		// with no duplicate spawn.
+		const spawnsBefore = ctrl.spawnCalls.length;
+		await expect(
+			mgr.registerAgent({
+				agentId: "quarantine-orphan-nodurable",
+				runtimeId: "mock-pty-quarantine-nodurable",
+				cwd: "/tmp/work",
+				env: {},
+				sessionId: "sess-qon-2",
+			}),
+		).rejects.toBeInstanceOf(AgentQuarantinedError);
+		expect(ctrl.spawnCalls.length).toBe(spawnsBefore);
+	});
+
 	it("(C2 follow-up, #92 re-gate Critical) the quarantine block SURVIVES a daemon restart — the durable record is consulted on an in-memory miss", async () => {
 		// Pass-#2 re-gate Critical: `quarantinedAgents` is in-memory and
 		// `quarantine/<agentId>.json` was WRITE-ONLY — nothing ever re-loaded it, so

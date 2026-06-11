@@ -871,20 +871,36 @@ export function makeResultTimers(deps: {
 			return runId !== undefined && existing.runId === runId;
 		}
 		// No live timer (e.g. after a restart) — the durable marker is authority.
+		let raw: string;
 		try {
-			const raw = await fsp.readFile(resultPendingPath(agentId), "utf-8");
+			raw = await fsp.readFile(resultPendingPath(agentId), "utf-8");
+		} catch (err) {
+			// #92 re-gate Important (C1 follow-up round 2) — distinguish "no marker"
+			// from "marker unreadable". ONLY a genuine ENOENT means there is NO active
+			// run to validate against, so a legacy/no-correlation envelope is NOT
+			// spuriously quarantined (the prior at-most-once send behavior).
+			if ((err as NodeJS.ErrnoException).code === "ENOENT") return true;
+			// A NON-ENOENT read error (EACCES/EBUSY/EISDIR/EIO on a degraded state
+			// root) means a marker MAY exist but is unreadable. FAIL CLOSED —
+			// quarantine — symmetric with the write side (writeMarker returns false
+			// on fault → the dispatch aborts BEFORE delivery). The prior code returned
+			// `true` here (fail OPEN), letting a possibly-stale envelope reach the
+			// irreversible Telegram send.
+			return false;
+		}
+		// Marker present and readable: its runId is the authority. Require a matching
+		// runId; a missing/mismatched runId — OR a malformed marker (parse fault /
+		// non-string runId) — fails CLOSED (the marker exists, so a run is pending and
+		// the envelope cannot be confirmed as that run).
+		try {
 			const m = JSON.parse(raw) as ResultPendingMarker;
 			if (typeof m.runId === "string") {
-				// A durable marker means a run is still pending: same rule — require a
-				// matching runId; a missing/mismatched one is quarantined.
 				return runId !== undefined && m.runId === runId;
 			}
 		} catch {
-			// No marker / unreadable — nothing to validate against.
+			// fall through to fail-closed
 		}
-		// Neither a live timer nor a marker runId to compare: NO active run, so a
-		// legacy/undefined-runId envelope is NOT spuriously quarantined.
-		return true;
+		return false;
 	};
 
 	// #92 re-gate Critical (C1 follow-up) — single-flight accessors for the
@@ -1237,6 +1253,18 @@ export function makeTaskSendHandler(deps: {
 		// and would strip the CURRENT run's dead-letter/overlap protection. Skipping
 		// the clear leaves the live run intact for its own envelope (or dead-letter).
 		let quarantined = false;
+		// #92 re-gate Critical (C1 follow-up round 2) — the dead-letter
+		// timer/marker/held cron slot must be cleared ONLY when this envelope was
+		// DURABLY CONSUMED: claimed out of `pending/` (send path), or its no-send
+		// durably recorded AND claimed (noSend path). On a RETRYABLE failure — the
+		// pending→resolved claim rename faults, the `pr-triage-no-send` telemetry
+		// append faults, or the handler throws BEFORE consumption — the envelope stays
+		// in `pending/` for the next tick. Clearing the timer/marker/slot now would
+		// strip the run's correlation+overlap protection before consumption, so a
+		// subsequent cron fire dispatches a fresh run and the retried original envelope
+		// is quarantined as stale (legit summary permanently lost). Default false; set
+		// true at each TERMINAL path (durable consumption / at-most-once send done).
+		let consumed = false;
 		try {
 			// Dual-adversarial pass #2 Critical (2026-06-04) — the PRE-SEND wrong-run
 			// guard runs FIRST, before the noSend/empty-summary branch, so EVERY path
@@ -1304,8 +1332,19 @@ export function makeTaskSendHandler(deps: {
 					filename: evt.filename,
 				});
 				if (recorded) {
-					await agentManager.claimTask(evt.filename, evt.agentId);
+					// #92 re-gate C1 follow-up — terminal ONLY when the no-send is durably
+					// recorded AND the envelope is durably claimed out of pending/. A claim
+					// fault here is retryable (the envelope re-trips): keep `consumed`
+					// false so the finally RETAINS the run's marker/slot rather than
+					// stripping it before consumption (TS-15).
+					const noSendClaimed = await agentManager.claimTask(
+						evt.filename,
+						evt.agentId,
+					);
+					if (noSendClaimed) consumed = true;
 				}
+				// recorded === false → telemetry append faulted (retryable, TS-14):
+				// leave in pending/, `consumed` stays false → do NOT clear.
 				return;
 			}
 			// BOUNDED-RETRY-THEN-AT-MOST-ONCE (pass#2 Critical fix + F3 retry). The
@@ -1327,8 +1366,16 @@ export function makeTaskSendHandler(deps: {
 			if (!claimed) {
 				// Rename failed — leave in pending/ for a later retry. No send
 				// happened (no duplicate); claimTask already emitted claim-task-failed.
+				// `consumed` stays false → the finally RETAINS the run's marker/slot for
+				// the retry rather than stripping it before consumption (TS-13).
 				return;
 			}
+			// #92 re-gate C1 follow-up — the envelope is now durably OUT of pending/.
+			// Every exit from here is TERMINAL: the irreversible send either succeeds or
+			// is bounded-retried to exhaustion, and an at-most-once envelope must NEVER
+			// re-trip (a post-claim send failure/throw is recorded, not retried). So the
+			// run is complete — clear its dead-letter timer/marker/slot on the way out.
+			consumed = true;
 			if (telegramBot === null) {
 				// Local-dev / telegram-not-configured: the envelope is already
 				// resolved, so record the non-delivery ONCE with no re-trip storm.
@@ -1406,7 +1453,13 @@ export function makeTaskSendHandler(deps: {
 			// run's timer/marker/held slot — the exact dead-letter protection this branch
 			// adds. The non-quarantine paths (matching runId → the run completed; or no
 			// active run at all → nothing to wrongly clear) still clear as before.
-			if (!quarantined) {
+			// #92 re-gate C1 follow-up — also gate on `consumed`: clear ONLY when the
+			// envelope was durably consumed (terminal). A retryable failure (claim
+			// fault, no-send record fault, or a pre-consumption throw) leaves the
+			// envelope in pending/ — clearing now would strip the live run's
+			// timer/marker/held slot before consumption, and the next cron fire would
+			// then quarantine the retried envelope as stale (silent summary drop).
+			if (!quarantined && consumed) {
 				await clearResultTimer(evt.agentId, evt.runId);
 			}
 		}
@@ -1660,40 +1713,44 @@ export function makeTaskDispatchHandler(deps: {
 			// contract; every other agent gets the verbatim prompt and no timer.
 			const isSendContract =
 				startResultTimer !== undefined && evt.agentId === "pr-triage";
-			// #92 re-gate Critical (C1 follow-up) — SINGLE-FLIGHT pre-checks. The
-			// prompt delivery (runtime.send) is irreversible, so it must happen AT
-			// MOST ONCE per task file. Two guards, in order:
-			//   1. DEFER — a live dead-letter timer means a run is already in
-			//      flight for this agent (claimed, or boot-recovered). Dispatching
-			//      ANOTHER pending file now would send a second prompt into the
-			//      persistent PTY and overwrite the live run's marker — the
-			//      superseded run then has NO completion path (slot leak + silent
-			//      summary drop, re-gate I1). Leave the file in tasks/pending/;
-			//      the polling loop re-attempts each tick and proceeds once the
-			//      live run completes (envelope or dead-letter timeout).
-			//   2. RESUME — no live timer, but the durable marker references THIS
-			//      filename: a prior dispatch DELIVERED the prompt and faulted on
-			//      the pending→resolved claim. Re-attempt ONLY the claim — never
-			//      re-send — and re-arm the timer with the ORIGINAL runId and the
-			//      marker's remaining deadline window.
-			// A marker for a DIFFERENT filename with NO live timer is stale (its
-			// run already completed but the fire-and-forget unlink faulted) — fall
-			// through to a fresh dispatch, whose marker write atomically
-			// overwrites it.
-			if (isSendContract && hasLiveResultTimer?.(evt.agentId) === true) {
-				if (!deferredNotified.has(evt.filename)) {
-					deferredNotified.add(evt.filename);
-					await emit({
-						kind: "pr-triage-dispatch-deferred",
-						agentId: evt.agentId,
-						filename: evt.filename,
-					});
-				}
-				return;
-			}
-			if (isSendContract && readResultMarker !== undefined) {
-				const liveMarker = await readResultMarker(evt.agentId);
+			// #92 re-gate Critical (C1 follow-up, round 2) — SINGLE-FLIGHT pre-checks.
+			// The prompt delivery (runtime.send) is irreversible, so it must happen AT
+			// MOST ONCE per task file. The decision is driven by the durable marker's
+			// FILENAME, not merely by timer liveness — RESUME takes precedence over
+			// DEFER:
+			//   1. RESUME — the durable marker references THIS filename: a prior
+			//      dispatch DELIVERED the prompt and faulted on the pending→resolved
+			//      claim, so the file is still pending. Re-attempt ONLY the claim —
+			//      never re-send. This holds WHETHER OR NOT a live timer exists: after
+			//      a restart recoverResultTimers() re-arms a LIVE timer for that same
+			//      run, and the prior code's DEFER-first ordering (which checked only
+			//      hasLiveResultTimer) then deferred the file FOREVER — it can only
+			//      leave pending via a claim, which DEFER never performs — so the
+			//      recovered timer dead-lettered and the next tick re-sent under a
+			//      FRESH runId (the exact double-send C1 exists to prevent). Re-arm the
+			//      timer with the ORIGINAL runId + the marker's remaining window UNLESS
+			//      a boot-recovered timer is already live for it (re-arming on top
+			//      leaks the recovered handle — fireTimeout overwrites the map entry
+			//      without clearing the old one, and both carry the same runId, so the
+			//      leaked timer still fires and dead-letters a live run).
+			//   2. DEFER — a live dead-letter timer exists for a DIFFERENT file: a run
+			//      is already in flight. Dispatching this file would send a second
+			//      prompt into the persistent PTY and overwrite the live run's marker —
+			//      the superseded run then has NO completion path (slot leak + silent
+			//      summary drop, re-gate I1). Leave the file in tasks/pending/; the
+			//      polling loop re-attempts each tick and proceeds once the live run
+			//      completes (envelope or dead-letter timeout).
+			// A marker for a DIFFERENT filename with NO live timer is stale (its run
+			// already completed but the fire-and-forget unlink faulted) — fall through
+			// to a fresh dispatch, whose marker write atomically overwrites it.
+			if (isSendContract) {
+				const liveMarker =
+					readResultMarker !== undefined
+						? await readResultMarker(evt.agentId)
+						: null;
+				const timerLive = hasLiveResultTimer?.(evt.agentId) === true;
 				if (liveMarker !== null && liveMarker.filename === evt.filename) {
+					// RESUME — re-attempt ONLY the claim; never re-send.
 					deferredNotified.delete(evt.filename);
 					const resumedClaim = await agentManager.claimTask(
 						evt.filename,
@@ -1706,12 +1763,18 @@ export function makeTaskDispatchHandler(deps: {
 						// scheduler. The next tick simply resumes again.
 						return;
 					}
-					resumeResultTimer?.(
-						evt.agentId,
-						liveMarker.runId,
-						liveMarker.filename,
-						liveMarker.deadlineMs - Date.now(),
-					);
+					// Re-arm only when NO live timer already owns this run's window. A
+					// boot-recovered timer (recoverResultTimers) is already counting down
+					// the correct deadline AND has re-held the cron slot — re-arming would
+					// leak it (see comment above).
+					if (!timerLive) {
+						resumeResultTimer?.(
+							evt.agentId,
+							liveMarker.runId,
+							liveMarker.filename,
+							liveMarker.deadlineMs - Date.now(),
+						);
+					}
 					await emit({
 						kind: "pr-triage-dispatch-resumed",
 						agentId: evt.agentId,
@@ -1720,6 +1783,23 @@ export function makeTaskDispatchHandler(deps: {
 					});
 					return;
 				}
+				if (timerLive) {
+					// DEFER — a DIFFERENT run is in flight (live timer). The marker for
+					// THIS file did not match above, so dispatching now would duplicate
+					// the prompt and overwrite the live run's marker.
+					if (!deferredNotified.has(evt.filename)) {
+						deferredNotified.add(evt.filename);
+						await emit({
+							kind: "pr-triage-dispatch-deferred",
+							agentId: evt.agentId,
+							filename: evt.filename,
+						});
+					}
+					return;
+				}
+				// No live timer and no marker for THIS file → fall through to a fresh
+				// dispatch (any stale marker for another file is atomically overwritten
+				// by the marker write below).
 			}
 			const runId = isSendContract ? randomUUID() : null;
 			const promptText =

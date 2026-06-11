@@ -33,7 +33,16 @@ import * as fsp from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+	afterAll,
+	afterEach,
+	beforeAll,
+	beforeEach,
+	describe,
+	expect,
+	it,
+	vi,
+} from "vitest";
 
 import { claudePty } from "../../agent-runtime/pty/claude-pty.js";
 import {
@@ -315,6 +324,54 @@ function emittedEventsOfKind(kind: DaemonEvent["kind"]): DaemonEvent[] {
 	return out;
 }
 
+// #92 re-gate (lens:tests, isolation flake) — Case 4b runs the REAL claude-pty
+// adapter on REAL timers, so a late fire-and-forget session-log write can fire AFTER
+// afterEach has deleted IAGO_DAEMON_STATE_ROOT. getStateRoot() then falls back to
+// <homedir>/.iago-os/daemon-state — the SHARED real dir every parallel test fork
+// writes to — whose subdirs do not exist, producing ENOENT noise and cross-fork
+// contamination (this test's `cron-agent-restarted` assertion flaked under load).
+// Redirect os.homedir() (HOME/USERPROFILE) to a per-FILE scratch dir for the whole
+// run and pre-create its state subdirs, so ANY fallback write lands in an isolated,
+// existing directory rather than the shared real home. The per-test
+// IAGO_DAEMON_STATE_ROOT override still wins during each test; this only contains the
+// post-deletion fallback window.
+let homeScratch: string;
+const homeBackup: { HOME?: string; USERPROFILE?: string } = {};
+beforeAll(async () => {
+	homeScratch = await fsp.mkdtemp(
+		path.join(os.tmpdir(), "iago-pr-triage-home-"),
+	);
+	homeBackup.HOME = process.env.HOME;
+	homeBackup.USERPROFILE = process.env.USERPROFILE;
+	process.env.HOME = homeScratch;
+	process.env.USERPROFILE = homeScratch;
+	const fallbackRoot = path.join(homeScratch, ".iago-os", "daemon-state");
+	for (const sub of [
+		"session-logs",
+		"telemetry",
+		"markers",
+		"agents",
+		"result-pending",
+	]) {
+		fs.mkdirSync(path.join(fallbackRoot, sub), { recursive: true });
+	}
+});
+
+afterAll(async () => {
+	// Restore via the computed-key form (matching the afterEach loop below) so a
+	// process.env key is removed without `delete process.env.HOME` (biome noDelete) —
+	// and never assigned `undefined`, which Node coerces to the string "undefined".
+	for (const key of ["HOME", "USERPROFILE"] as const) {
+		const prev = homeBackup[key];
+		if (prev === undefined) {
+			delete process.env[key];
+		} else {
+			process.env[key] = prev;
+		}
+	}
+	await fsp.rm(homeScratch, { recursive: true, force: true }).catch(() => {});
+});
+
 beforeEach(async () => {
 	tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), "iago-pr-triage-it-"));
 	process.env.IAGO_DAEMON_STATE_ROOT = tempDir;
@@ -540,9 +597,11 @@ describe("pr-triage integration (R1 daemon-owned creds)", () => {
 
 		// R1: the RESTART re-registration must ALSO inject NO secret — a
 		// restarted pr-triage agent stays credential-free.
-		const restartCall = mockSpawn.mock.calls[
-			mockSpawn.mock.calls.length - 1
-		] as [string, string[], { env: Record<string, string> }];
+		const restartCall = mockSpawn.mock.calls[mockSpawn.mock.calls.length - 1] as [
+			string,
+			string[],
+			{ env: Record<string, string> },
+		];
 		expect(restartCall[2].env.IAGO_TELEGRAM_BOT_TOKEN).toBeUndefined();
 		expect(restartCall[2].env.IAGO_TELEGRAM_ALLOWED_USER_IDS).toBeUndefined();
 		expect(restartCall[2].env.GH_TOKEN).toBeUndefined();
@@ -858,9 +917,11 @@ describe("pr-triage integration (R1 daemon-owned creds)", () => {
 			agentConfig: trustedCfg,
 			isShuttingDown: () => false,
 		});
-		const trustedCall = mockSpawn.mock.calls[
-			mockSpawn.mock.calls.length - 1
-		] as [string, string[], { env: Record<string, string> }];
+		const trustedCall = mockSpawn.mock.calls[mockSpawn.mock.calls.length - 1] as [
+			string,
+			string[],
+			{ env: Record<string, string> },
+		];
 		expect(trustedCall[2].env.IAGO_TELEGRAM_BOT_TOKEN).toBeUndefined();
 		expect(trustedCall[2].env.GH_TOKEN).toBeUndefined();
 		// Non-secret runtime var IS forwarded for the trusted agent.
@@ -953,8 +1014,7 @@ describe("pr-triage integration (R1 daemon-owned creds)", () => {
 				.readdirSync(agentsDirPath)
 				.filter(
 					(f) =>
-						f.endsWith(".json") &&
-						fs.statSync(path.join(agentsDirPath, f)).isFile(),
+						f.endsWith(".json") && fs.statSync(path.join(agentsDirPath, f)).isFile(),
 				);
 			expect(persisted.length).toBeGreaterThanOrEqual(1);
 			for (const f of persisted) {
@@ -1021,9 +1081,9 @@ describe("pr-triage integration (R1 daemon-owned creds)", () => {
 		for (let i = 0; i < JSON_PARSE_RETRY_BUDGET; i++) {
 			await mgr._pollingTickForTests();
 			await fsp.access(pendingPath);
-			expect(
-				fs.existsSync(path.join(tempDir, "tasks/poisoned", filename)),
-			).toBe(false);
+			expect(fs.existsSync(path.join(tempDir, "tasks/poisoned", filename))).toBe(
+				false,
+			);
 		}
 
 		await mgr._pollingTickForTests();
@@ -1049,9 +1109,8 @@ describe("pr-triage integration (R1 daemon-owned creds)", () => {
 
 		// Every spawn call's env is secret-free.
 		for (const call of mockSpawn.mock.calls) {
-			const env = (
-				call as [string, string[], { env: Record<string, string> }]
-			)[2].env;
+			const env = (call as [string, string[], { env: Record<string, string> }])[2]
+				.env;
 			expect(env.IAGO_TELEGRAM_BOT_TOKEN).toBeUndefined();
 			expect(env.GH_TOKEN).toBeUndefined();
 			expect(env.IAGO_TELEGRAM_ALLOWED_USER_IDS).toBeUndefined();
@@ -1059,10 +1118,7 @@ describe("pr-triage integration (R1 daemon-owned creds)", () => {
 		// The on-disk task body (the agent's entire input) contains no token.
 		const pendingFiles = fs.readdirSync(path.join(tempDir, "tasks/pending"));
 		for (const f of pendingFiles) {
-			const body = fs.readFileSync(
-				path.join(tempDir, "tasks/pending", f),
-				"utf8",
-			);
+			const body = fs.readFileSync(path.join(tempDir, "tasks/pending", f), "utf8");
 			expect(body).not.toContain("test-gh-token");
 			expect(body).not.toContain("test-bot-token");
 		}

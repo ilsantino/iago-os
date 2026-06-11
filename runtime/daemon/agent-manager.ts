@@ -596,12 +596,16 @@ export class AgentManager extends EventEmitter {
 	 * live; rather than silently untracking it (the bug), we:
 	 *   1. record the quarantine in-memory so `assertAgentIdAvailable` blocks a
 	 *      duplicate same-agentId registration (regardless of org), and
-	 *   2. untrack the handle from the live registry + heartbeat — it is in an
+	 *   2. mirror the record to a durable `quarantine/<agentId>.json` file — a
+	 *      REQUIRED transition before untracking (#92 re-gate C2 follow-up round 2,
+	 *      option a). On SUCCESS the durable record is the cross-restart block, so
+	 *      we untrack the handle from the live registry + heartbeat — it is in an
 	 *      UNKNOWN state, so the heartbeat must NOT auto-restart/probe it as a
-	 *      normal agent; the quarantine record is now its sole tracking, and
-	 *   3. mirror the record to a durable `quarantine/<agentId>.json` file
-	 *      (best-effort — the faulted disk may reject it) + a loud operator log,
-	 *      so the orphan is recoverable, not lost.
+	 *      normal agent. On FAILURE (the same faulted disk rejects the record too)
+	 *      we do NOT untrack: the handle is RETAINED in the registry (visible +
+	 *      a second-line block) and merely DETACHED from the heartbeat/subscription,
+	 *      so a possibly-live orphan is never stranded invisibly, and
+	 *   3. emit a loud operator log + telemetry so the orphan is surfaced, not lost.
 	 */
 	private async quarantineOrphan(
 		handle: AgentHandle,
@@ -618,10 +622,55 @@ export class AgentManager extends EventEmitter {
 			atMs: Date.now(),
 		};
 		this.quarantinedAgents.set(agentId, record);
-		// Untrack from the live registry + heartbeat (idempotent: a no-op when
-		// `shutdownAgentInternal` already tore the handle down before re-throwing).
-		this.teardown(handle.id);
-		await this.persistQuarantineRecord(record).catch(() => undefined);
+		// #92 re-gate Critical (C2 follow-up round 2) — make durable quarantine
+		// creation a REQUIRED transition BEFORE untracking. The prior order
+		// (unconditional teardown, then a best-effort `.catch(() => undefined)` write)
+		// reopened C2 on a COMPOUND fault: the durable write lands on the SAME degraded
+		// state root that broke persistAgentConfig, so it likely fails too — and the
+		// teardown then untracked a possibly-live orphan with NO durable record. After
+		// a restart the in-memory map is gone, readQuarantineRecord returns null, and a
+		// same-agentId re-register spawns a DUPLICATE beside the live orphan. So:
+		// persist FIRST; untrack ONLY when the record is durably on disk (the
+		// cross-restart block). On a write fault, RETAIN the handle tracked (option a,
+		// Santiago 2026-06-10): nothing can make it durable on a fully-dead disk, but
+		// stranding a live orphan INVISIBLY is strictly worse than keeping it tracked +
+		// blocked in-memory. The within-process re-register block (the map set above)
+		// holds either way.
+		let durable = false;
+		try {
+			await this.persistQuarantineRecord(record);
+			durable = true;
+		} catch (writeErr) {
+			console.error(
+				`[agent-manager] durable quarantine record for ${handle.id} (agentId="${agentId}") could NOT be written (${
+					writeErr instanceof Error ? writeErr.message : String(writeErr)
+				}); RETAINING in-memory tracking + block — NOT untracking a possibly-live orphan.`,
+			);
+		}
+		if (durable) {
+			// Durable record is the cross-restart block — safe to untrack from the live
+			// registry + heartbeat (idempotent: a no-op when `shutdownAgentInternal`
+			// already tore the handle down before re-throwing).
+			this.teardown(handle.id);
+		} else {
+			// Durable write FAILED — do NOT teardown. Keep the handle in `this.handles`
+			// (visible/inspectable + a second-line registry block) but DETACH it from
+			// the heartbeat + status subscription so it is not auto-restarted/probed as
+			// a healthy agent — it is in an UNKNOWN state.
+			const tracked = this.handles.get(handle.id);
+			if (tracked !== undefined) {
+				try {
+					tracked.unsubscribe();
+				} catch {
+					// unsubscribe MUST be idempotent; swallow.
+				}
+				if (this.heartbeat !== undefined) {
+					this.heartbeat.unregister(handle.id);
+				}
+				// Deliberately do NOT `this.handles.delete(handle.id)` — retaining the
+				// orphan in the registry IS the point of option (a).
+			}
+		}
 		console.error(
 			`[agent-manager] registration rollback could NOT confirm termination of ${handle.id} (agentId="${agentId}"); QUARANTINED. A live orphaned process may remain — manual reap may be required. Re-registration of "${agentId}" is blocked until releaseQuarantinedAgent("${agentId}") is called.`,
 		);
@@ -638,11 +687,13 @@ export class AgentManager extends EventEmitter {
 	}
 
 	/**
-	 * Best-effort durable mirror of a quarantine record (#92 C2). Atomic
-	 * temp-then-rename so a partial write is never observed. Throws on a write
-	 * fault — the sole caller (`quarantineOrphan`) swallows it (the disk that broke
-	 * persistence is likely still faulted; the in-memory quarantine + the operator
-	 * log are the load-bearing signals).
+	 * Durable mirror of a quarantine record (#92 C2). Atomic temp-then-rename so a
+	 * partial write is never observed. Throws on a write fault — and the sole caller
+	 * (`quarantineOrphan`) now USES that throw: a durable write is a REQUIRED
+	 * transition before untracking (#92 re-gate C2 follow-up round 2, option a). On
+	 * success the orphan is untracked (the durable record is the cross-restart block);
+	 * on failure the caller RETAINS the handle tracked + blocked in-memory rather than
+	 * stranding a possibly-live orphan with no record.
 	 */
 	private async persistQuarantineRecord(
 		record: QuarantineRecord,
