@@ -21,6 +21,7 @@ import type {
 import {
 	AgentIdAlreadyRegisteredError,
 	AgentManager,
+	AgentQuarantinedError,
 	TASK_PAYLOAD_MAX_BYTES,
 } from "./agent-manager.js";
 import { CronScheduler } from "./cron-scheduler.js";
@@ -115,6 +116,32 @@ vi.mock("node:fs/promises", async (importOriginal) => {
 	};
 });
 
+// Round-2 Critical (Codex) — make `writeStopMarker` independently failable so
+// the persist-rollback test can simulate a degraded state root that breaks BOTH
+// persistence AND the marker write. Pass-through by default (so every other test
+// keeps real marker semantics); the regression test queues a one-shot rejection
+// via `writeStopMarkerMock.mockRejectedValueOnce(...)` to drive the rollback path
+// where `shutdownAgentInternal` throws BEFORE reaching `runtime.shutdown`.
+type WriteStopMarkerFn = (
+	handleId: string,
+	reason: import("./markers.js").StopMarkerReason,
+) => Promise<void>;
+const { writeStopMarkerMock, markersState } = vi.hoisted(() => ({
+	writeStopMarkerMock: vi.fn(),
+	markersState: { realWriteStopMarker: null as WriteStopMarkerFn | null },
+}));
+vi.mock("./markers.js", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("./markers.js")>();
+	markersState.realWriteStopMarker = actual.writeStopMarker as WriteStopMarkerFn;
+	return {
+		...actual,
+		writeStopMarker: (
+			handleId: string,
+			reason: import("./markers.js").StopMarkerReason,
+		) => writeStopMarkerMock(handleId, reason),
+	};
+});
+
 let tempDir: string;
 
 beforeEach(async () => {
@@ -149,6 +176,15 @@ beforeEach(async () => {
 		}
 		return writeFileState.real(p, data, options);
 	});
+	writeStopMarkerMock.mockReset();
+	writeStopMarkerMock.mockImplementation((handleId, reason) => {
+		if (markersState.realWriteStopMarker === null) {
+			throw new Error(
+				"markersState.realWriteStopMarker not initialized by vi.mock factory",
+			);
+		}
+		return markersState.realWriteStopMarker(handleId, reason);
+	});
 	vi.spyOn(console, "error").mockImplementation(() => {});
 });
 
@@ -181,9 +217,7 @@ interface CostQueueState {
 	queue: CostEvent[];
 	resolvers: Array<
 		(
-			value:
-				| { value: CostEvent; done: false }
-				| { value: undefined; done: true },
+			value: { value: CostEvent; done: false } | { value: undefined; done: true },
 		) => void
 	>;
 	closed: boolean;
@@ -263,9 +297,7 @@ function makeMockRuntime(id: string): MockRuntimeControls {
 			// moment shutdown was invoked — used by ordering assertions.
 			let markerSeen = false;
 			try {
-				await fsp.access(
-					path.join(pathFor("markers"), `${handle.id}.daemon-stop`),
-				);
+				await fsp.access(path.join(pathFor("markers"), `${handle.id}.daemon-stop`));
 				markerSeen = true;
 			} catch {
 				markerSeen = false;
@@ -410,12 +442,13 @@ describe("AgentManager / registerAgent", () => {
 		expect(hbRegister).toHaveBeenCalledWith(handle.id, expect.any(Function));
 	});
 
-	it("persist-fail after spawn: handle is tracked in-memory but no config persisted (orphan window)", async () => {
-		// Dual-adversarial Important (Finding 4): the documented partial-state
-		// window. spawn succeeds, persistAgentConfig's writeFile fails. The
-		// process is live + tracked in-memory and registerAgent still resolves
-		// with the handle (persistAgentConfig swallows the write error), but no
-		// `<handle.id>.json` lands on disk — the real orphan risk.
+	it("persist-fail after spawn: registerAgent rejects fail-closed, shuts down + untracks the spawned handle, no config on disk", async () => {
+		// Task 1 Critical (fail-closed): spawn succeeds but persistAgentConfig's
+		// writeFile fails (ENOSPC). The OLD behavior returned a tracked-but-
+		// unpersisted live handle (the orphan window). The fix rolls the spawn
+		// back: registerAgent REJECTS, the spawned handle is shut down + untracked,
+		// and no `<handle.id>.json` lands on disk. This test fails without the fix
+		// (old code resolved with a live handle) and passes with it.
 		const ctrl = makeMockRuntime("mock-pty-persist-fail");
 		registerRuntime(ctrl.runtime);
 		const mgr = new AgentManager();
@@ -430,29 +463,367 @@ describe("AgentManager / registerAgent", () => {
 				);
 			}
 			if (writeFileState.real === null) {
-				throw new Error(
-					"writeFileState.real not initialized by vi.mock factory",
-				);
+				throw new Error("writeFileState.real not initialized by vi.mock factory");
 			}
 			return writeFileState.real(p, data, options);
 		});
 
-		// registerAgent MUST NOT throw — persistAgentConfig logs + resolves.
-		const handle = await mgr.registerAgent({
-			agentId: "persist-orphan",
-			runtimeId: "mock-pty-persist-fail",
+		// registerAgent MUST reject (fail-closed) rather than resolve with a
+		// live-but-unpersisted handle.
+		await expect(
+			mgr.registerAgent({
+				agentId: "persist-orphan",
+				runtimeId: "mock-pty-persist-fail",
+				cwd: "/tmp/work",
+				env: {},
+				sessionId: "sess-po",
+			}),
+		).rejects.toThrow(/ENOSPC/);
+
+		// The process WAS spawned, then rolled back: no handle leaks in-memory.
+		expect(ctrl.spawnCalls).toHaveLength(1);
+		expect(mgr.listHandles()).toHaveLength(0);
+
+		// The spawned handle was shut down during rollback (no orphan PTY).
+		const spawnedId = `${ctrl.runtime.id}-h1`;
+		expect(mgr.getHandle(spawnedId)).toBeUndefined();
+		expect(ctrl.shutdownCalls.some((c) => c.handleId === spawnedId)).toBe(true);
+
+		// No persisted config file exists on disk (the write was the failure).
+		const configPath = path.join(agentsDir, `${spawnedId}.json`);
+		await expect(fsp.access(configPath)).rejects.toBeDefined();
+	});
+
+	it("persist-fail rollback where writeStopMarker ALSO throws: still force-kills the adapter (no orphan live PTY)", async () => {
+		// Round-2 Critical (Codex): the persist-failure rollback calls
+		// `shutdownAgentInternal`, which writes the stop marker AND cascades
+		// children BEFORE it ever reaches `runtime.shutdown`. If the same degraded
+		// state root that broke persistence ALSO makes `writeStopMarker` throw,
+		// `shutdownAgentInternal` aborts before the adapter is killed and control
+		// lands in the rollback catch. WITHOUT the force-kill fix, the `finally`
+		// then tears the handle out of `handles` while the PTY is still alive — an
+		// untracked, unrecoverable live process. WITH the fix, the rollback forces
+		// `runtime.shutdown(handle, "SIGKILL")` before teardown.
+		//
+		// This test FAILS without the fix (no shutdown call for the spawned
+		// handle) and PASSES with it.
+		const ctrl = makeMockRuntime("mock-pty-persist-marker-fail");
+		registerRuntime(ctrl.runtime);
+		const mgr = new AgentManager();
+
+		const agentsDir = pathFor("agents");
+		// (1) Break the persist write (ENOSPC) — triggers the rollback.
+		writeFileMock.mockImplementation((p, data, options) => {
+			if (String(p).startsWith(agentsDir)) {
+				return Promise.reject(
+					Object.assign(new Error("simulated ENOSPC"), { code: "ENOSPC" }),
+				);
+			}
+			if (writeFileState.real === null) {
+				throw new Error("writeFileState.real not initialized by vi.mock factory");
+			}
+			return writeFileState.real(p, data, options);
+		});
+		// (2) Break the FIRST stop-marker write (the rollback's
+		// `shutdownAgentInternal` marker write) so it throws BEFORE the adapter
+		// shutdown is reached. One-shot: only the rollback marker write fails.
+		writeStopMarkerMock.mockRejectedValueOnce(
+			Object.assign(new Error("simulated marker EIO"), { code: "EIO" }),
+		);
+
+		await expect(
+			mgr.registerAgent({
+				agentId: "persist-marker-orphan",
+				runtimeId: "mock-pty-persist-marker-fail",
+				cwd: "/tmp/work",
+				env: {},
+				sessionId: "sess-pmo",
+			}),
+		).rejects.toThrow(/ENOSPC/);
+
+		// The process WAS spawned then rolled back — no handle leaks in-memory.
+		expect(ctrl.spawnCalls).toHaveLength(1);
+		expect(mgr.listHandles()).toHaveLength(0);
+
+		const spawnedId = `${ctrl.runtime.id}-h1`;
+		expect(mgr.getHandle(spawnedId)).toBeUndefined();
+		// The KEY assertion: even though the marker write threw before
+		// `shutdownAgentInternal` could call `runtime.shutdown`, the forced
+		// adapter shutdown in the rollback catch reaped the live PTY.
+		expect(ctrl.shutdownCalls.some((c) => c.handleId === spawnedId)).toBe(true);
+		expect(
+			ctrl.shutdownCalls.some(
+				(c) => c.handleId === spawnedId && c.signal === "SIGKILL",
+			),
+		).toBe(true);
+
+		// No persisted config on disk (the persist write was the failure).
+		const configPath = path.join(agentsDir, `${spawnedId}.json`);
+		await expect(fsp.access(configPath)).rejects.toBeDefined();
+	});
+
+	it("(C2, #92 Critical) persist-fail rollback where the marker write AND the forced shutdown BOTH throw and liveness stays alive: quarantines the orphan + blocks re-registration", async () => {
+		// #92 C2: the rollback kill can fail on the SAME degraded disk that broke
+		// persistence. writeStopMarker throws (shutdownAgentInternal aborts before
+		// runtime.shutdown), THEN the forced runtime.shutdown ALSO throws, AND the
+		// adapter liveness probe still reports alive. The PRIOR code unconditionally
+		// tore the handle down in a `finally`, stranding a live orphan invisible to
+		// boot recovery and allowing a later same-agentId register to DUPLICATE it.
+		// The fix QUARANTINES: records the orphan (in-memory + durable) and BLOCKS
+		// re-registration until released. RED without the fix: re-registration would
+		// succeed (no quarantine) and no durable quarantine record would exist.
+		const ctrl = makeMockRuntime("mock-pty-quarantine");
+		registerRuntime(ctrl.runtime);
+		const mgr = new AgentManager();
+
+		const agentsDir = pathFor("agents");
+		// (1) Break the persist write (ENOSPC) — triggers the rollback. Note the
+		// quarantine/ record write is NOT under agentsDir, so it still succeeds.
+		writeFileMock.mockImplementation((p, data, options) => {
+			if (String(p).startsWith(agentsDir)) {
+				return Promise.reject(
+					Object.assign(new Error("simulated ENOSPC"), { code: "ENOSPC" }),
+				);
+			}
+			if (writeFileState.real === null) {
+				throw new Error("writeFileState.real not initialized by vi.mock factory");
+			}
+			return writeFileState.real(p, data, options);
+		});
+		// (2) Break the rollback's stop-marker write so shutdownAgentInternal throws
+		// BEFORE reaching runtime.shutdown.
+		writeStopMarkerMock.mockRejectedValueOnce(
+			Object.assign(new Error("simulated marker EIO"), { code: "EIO" }),
+		);
+		// (3) Break the forced adapter shutdown too — termination cannot be confirmed
+		// via either kill path. The reject does NOT clear aliveByHandle, so the
+		// liveness probe below still reports the spawn alive.
+		const shutdownSpy = vi
+			.spyOn(ctrl.runtime, "shutdown")
+			.mockRejectedValue(
+				Object.assign(new Error("simulated shutdown EIO"), { code: "EIO" }),
+			);
+
+		// registerAgent still rejects with the ORIGINAL persist error (ENOSPC), not
+		// the quarantine — the caller sees the same fail-closed contract.
+		await expect(
+			mgr.registerAgent({
+				agentId: "quarantine-orphan",
+				runtimeId: "mock-pty-quarantine",
+				cwd: "/tmp/work",
+				env: {},
+				sessionId: "sess-qo",
+			}),
+		).rejects.toThrow(/ENOSPC/);
+
+		// The forced shutdown WAS attempted (and threw).
+		expect(shutdownSpy).toHaveBeenCalled();
+		// The orphan is QUARANTINED (not silently dropped) and untracked from the
+		// live registry (it is in an unknown state — not a normal tracked agent).
+		expect(mgr.isAgentQuarantined("quarantine-orphan")).toBe(true);
+		expect(mgr.listHandles()).toHaveLength(0);
+		// A durable quarantine record was written for cross-restart visibility.
+		const recordPath = path.join(pathFor("quarantine"), "quarantine-orphan.json");
+		const record = JSON.parse(await fsp.readFile(recordPath, "utf8")) as {
+			agentId: string;
+			reason: string;
+		};
+		expect(record.agentId).toBe("quarantine-orphan");
+		expect(record.reason).toMatch(/ENOSPC/);
+
+		// A later same-agentId registration is BLOCKED (regardless of org) — no
+		// duplicate spawn. It throws AgentQuarantinedError BEFORE spawning.
+		const spawnsBefore = ctrl.spawnCalls.length;
+		await expect(
+			mgr.registerAgent({
+				agentId: "quarantine-orphan",
+				runtimeId: "mock-pty-quarantine",
+				cwd: "/tmp/work",
+				env: {},
+				sessionId: "sess-qo-2",
+			}),
+		).rejects.toBeInstanceOf(AgentQuarantinedError);
+		expect(ctrl.spawnCalls.length).toBe(spawnsBefore);
+
+		// releaseQuarantinedAgent clears the block + removes the durable record so
+		// the agentId can be registered again after the operator reaps the orphan.
+		expect(await mgr.releaseQuarantinedAgent("quarantine-orphan")).toBe(true);
+		expect(mgr.isAgentQuarantined("quarantine-orphan")).toBe(false);
+		await expect(fsp.access(recordPath)).rejects.toBeDefined();
+	});
+
+	it("(C2 follow-up round 2, #92 re-gate Critical) when the durable quarantine write ALSO fails, the orphan is RETAINED tracked (not torn down) + still blocks re-registration", async () => {
+		// The compound fault the round-1 C2 fix left open: the durable
+		// `quarantine/<id>.json` write happens on the SAME faulted state root that
+		// broke persistAgentConfig, so it likely ALSO fails — and the prior
+		// quarantineOrphan tore the handle down UNCONDITIONALLY then wrote the record
+		// best-effort (`.catch(() => undefined)`). Result on a compound fault: a
+		// possibly-live orphan untracked AND no durable record → after a restart the
+		// in-memory map is gone, readQuarantineRecord returns null, and a same-agentId
+		// re-register spawns a DUPLICATE beside the still-live orphan (C2 reopened).
+		// Option (a) fix: make the durable write a REQUIRED transition before
+		// untracking — on failure, do NOT teardown; RETAIN the handle tracked (visible
+		// + a second-line registry block) with the in-memory quarantine block intact,
+		// and suppress heartbeat auto-restart. Nothing can guarantee cross-restart
+		// durability on a fully-dead disk, but this never makes it WORSE by stranding a
+		// live orphan invisibly. RED without the fix: listHandles() is 0 (torn down).
+		const ctrl = makeMockRuntime("mock-pty-quarantine-nodurable");
+		registerRuntime(ctrl.runtime);
+		const mgr = new AgentManager();
+
+		const agentsDir = pathFor("agents");
+		const quarantineDir = pathFor("quarantine");
+		// (1) Break the persist write (ENOSPC) — triggers the rollback. (2) Break the
+		// durable quarantine record write too (the compound-fault: SAME degraded root).
+		writeFileMock.mockImplementation((p, data, options) => {
+			const ps = String(p);
+			if (ps.startsWith(agentsDir) || ps.startsWith(quarantineDir)) {
+				return Promise.reject(
+					Object.assign(new Error("simulated ENOSPC"), { code: "ENOSPC" }),
+				);
+			}
+			if (writeFileState.real === null) {
+				throw new Error("writeFileState.real not initialized by vi.mock factory");
+			}
+			return writeFileState.real(p, data, options);
+		});
+		// (3) Break the rollback kill so termination cannot be confirmed → quarantine.
+		writeStopMarkerMock.mockRejectedValueOnce(
+			Object.assign(new Error("simulated marker EIO"), { code: "EIO" }),
+		);
+		const shutdownSpy = vi
+			.spyOn(ctrl.runtime, "shutdown")
+			.mockRejectedValue(
+				Object.assign(new Error("simulated shutdown EIO"), { code: "EIO" }),
+			);
+
+		// Same fail-closed contract: registerAgent rejects with the ORIGINAL persist
+		// error (ENOSPC), not the quarantine.
+		await expect(
+			mgr.registerAgent({
+				agentId: "quarantine-orphan-nodurable",
+				runtimeId: "mock-pty-quarantine-nodurable",
+				cwd: "/tmp/work",
+				env: {},
+				sessionId: "sess-qon",
+			}),
+		).rejects.toThrow(/ENOSPC/);
+
+		expect(shutdownSpy).toHaveBeenCalled();
+		// Quarantined in-memory (the within-process block).
+		expect(mgr.isAgentQuarantined("quarantine-orphan-nodurable")).toBe(true);
+		// OPTION (a) — the durable write FAILED, so the orphan is RETAINED tracked
+		// (NOT torn down): it stays visible to the live registry instead of vanishing.
+		// (The C2-success test above asserts listHandles() === 0; this is the divergent
+		// branch.)
+		expect(mgr.listHandles()).toHaveLength(1);
+		expect(mgr.listHandles()[0].agentId).toBe("quarantine-orphan-nodurable");
+		// No durable record exists — the write faulted (cannot guarantee cross-restart
+		// durability on a dead disk; the retained in-memory tracking is the safety net).
+		const recordPath = path.join(
+			quarantineDir,
+			"quarantine-orphan-nodurable.json",
+		);
+		await expect(fsp.access(recordPath)).rejects.toBeDefined();
+		// Re-registration STILL blocked within this process (in-memory quarantine map),
+		// with no duplicate spawn.
+		const spawnsBefore = ctrl.spawnCalls.length;
+		await expect(
+			mgr.registerAgent({
+				agentId: "quarantine-orphan-nodurable",
+				runtimeId: "mock-pty-quarantine-nodurable",
+				cwd: "/tmp/work",
+				env: {},
+				sessionId: "sess-qon-2",
+			}),
+		).rejects.toBeInstanceOf(AgentQuarantinedError);
+		expect(ctrl.spawnCalls.length).toBe(spawnsBefore);
+	});
+
+	it("(C2 follow-up, #92 re-gate Critical) the quarantine block SURVIVES a daemon restart — the durable record is consulted on an in-memory miss", async () => {
+		// Pass-#2 re-gate Critical: `quarantinedAgents` is in-memory and
+		// `quarantine/<agentId>.json` was WRITE-ONLY — nothing ever re-loaded it, so
+		// a daemon restart (likely in the very degraded-disk scenario that created
+		// the quarantine) emptied the map and the orphaned agentId could re-register,
+		// spawning a DUPLICATE of the possibly-still-live orphan PTY — the exact
+		// failure the quarantine exists to prevent. The fix: assertAgentIdAvailable
+		// consults the durable record on an in-memory miss and self-heals the map.
+		// RED without it: the fresh (post-restart) manager registers the id fine.
+		const ctrl = makeMockRuntime("mock-pty-quarantine-restart");
+		registerRuntime(ctrl.runtime);
+		// Simulate the PRE-restart daemon having quarantined the orphan: only the
+		// durable record exists (the exact shape persistQuarantineRecord writes).
+		const dir = pathFor("quarantine");
+		await fsp.mkdir(dir, { recursive: true });
+		const recordPath = path.join(dir, "restart-orphan.json");
+		await fsp.writeFile(
+			recordPath,
+			JSON.stringify({
+				handleId: "agent-pre-restart-1",
+				agentId: "restart-orphan",
+				org: null,
+				reason: "simulated pre-restart rollback fault",
+				atMs: 1_700_000_000_000,
+			}),
+			{ mode: 0o600 },
+		);
+
+		// A FRESH AgentManager = the post-restart daemon (empty in-memory map).
+		const mgr = new AgentManager();
+		const spawnsBefore = ctrl.spawnCalls.length;
+		await expect(
+			mgr.registerAgent({
+				agentId: "restart-orphan",
+				runtimeId: "mock-pty-quarantine-restart",
+				cwd: "/tmp/work",
+				env: {},
+				sessionId: "sess-ro",
+			}),
+		).rejects.toBeInstanceOf(AgentQuarantinedError);
+		// Blocked BEFORE spawning — no duplicate process was created.
+		expect(ctrl.spawnCalls.length).toBe(spawnsBefore);
+		// The durable hit self-heals the in-memory map.
+		expect(mgr.isAgentQuarantined("restart-orphan")).toBe(true);
+
+		// releaseQuarantinedAgent reports TRUE for a durable-ONLY quarantine (the
+		// post-restart in-memory map is empty) — clearing a real quarantine must not
+		// read as "none existed". Use a second fresh manager so the map is empty.
+		const mgr2 = new AgentManager();
+		expect(await mgr2.releaseQuarantinedAgent("restart-orphan")).toBe(true);
+		await expect(fsp.access(recordPath)).rejects.toBeDefined();
+		// ...after which the agentId registers again normally.
+		const handle = await mgr2.registerAgent({
+			agentId: "restart-orphan",
+			runtimeId: "mock-pty-quarantine-restart",
 			cwd: "/tmp/work",
 			env: {},
-			sessionId: "sess-po",
+			sessionId: "sess-ro-2",
 		});
+		expect(handle.agentId).toBe("restart-orphan");
+	});
 
-		// The live process is tracked in-memory.
-		expect(mgr.getHandle(handle.id)).toBeDefined();
-		expect(ctrl.spawnCalls).toHaveLength(1);
-
-		// But NO persisted config file exists on disk — the orphan window.
-		const configPath = path.join(agentsDir, `${handle.id}.json`);
-		await expect(fsp.access(configPath)).rejects.toBeDefined();
+	it("(C2 follow-up) a corrupt durable quarantine record still BLOCKS re-registration (fail-safe)", async () => {
+		// A record that EXISTS but cannot be parsed proves a quarantine was created;
+		// corruption lost its details, not its meaning. Treating it as absent would
+		// silently lift the duplicate-orphan block on the exact degraded disk that
+		// corrupts files — so an unreadable record fail-safe BLOCKS until released.
+		const ctrl = makeMockRuntime("mock-pty-quarantine-corrupt");
+		registerRuntime(ctrl.runtime);
+		const dir = pathFor("quarantine");
+		await fsp.mkdir(dir, { recursive: true });
+		await fsp.writeFile(path.join(dir, "corrupt-orphan.json"), "{not json", {
+			mode: 0o600,
+		});
+		const mgr = new AgentManager();
+		await expect(
+			mgr.registerAgent({
+				agentId: "corrupt-orphan",
+				runtimeId: "mock-pty-quarantine-corrupt",
+				cwd: "/tmp/work",
+				env: {},
+				sessionId: "sess-co",
+			}),
+		).rejects.toBeInstanceOf(AgentQuarantinedError);
 	});
 });
 
@@ -602,6 +973,130 @@ describe("AgentManager / restartAgent", () => {
 		const stillMarker = await readStopMarker(handle.id);
 		expect(stillMarker?.reason).toBe("recycle");
 	});
+
+	it("(pass #2 Important) restart env-rewrite persist FAILURE keeps the respawn (does NOT undo a healthy rotated generation)", async () => {
+		// Task 1 made persistAgentConfig THROW. The REGISTER path rolls the spawn back
+		// fail-closed (tested above) because no live agent existed before it. The RESTART
+		// path is the asymmetric twin: the respawn ALREADY succeeded and the new generation is
+		// tracked, so doRestart CATCHES a thrown env-rewrite persist and KEEPS the respawn — a
+		// transient disk fault must not tear down a live, healthy credential-rotated agent.
+		// RED without the catch: the thrown persist propagates and restartAgent REJECTS.
+		const ctrl = makeMockRuntime("mock-pty-restart-persist");
+		registerRuntime(ctrl.runtime);
+		const mgr = new AgentManager();
+		const agentsDir = pathFor("agents");
+
+		// Register with a WORKING persist (the initial config must land on disk).
+		const handle = await mgr.registerAgent({
+			agentId: "rotate-agent",
+			runtimeId: "mock-pty-restart-persist",
+			cwd: "/tmp/work",
+			env: { OLD: "v0" },
+			sessionId: "sess-rot",
+		});
+
+		// Now break ONLY the agents-dir write so the restart's env-rewrite persist throws;
+		// marker/session-log writes (other dirs) keep working.
+		writeFileMock.mockImplementation((p, data, options) => {
+			if (String(p).startsWith(agentsDir)) {
+				return Promise.reject(
+					Object.assign(new Error("simulated ENOSPC"), { code: "ENOSPC" }),
+				);
+			}
+			if (writeFileState.real === null) {
+				throw new Error("writeFileState.real not initialized by vi.mock factory");
+			}
+			return writeFileState.real(p, data, options);
+		});
+
+		const events: Array<{
+			agentId: string;
+			handleId: string;
+			generationToken: number;
+		}> = [];
+		mgr.on("agent-restarted", (e) => events.push(e));
+
+		// Restart WITH an env override (the credential-rotation path that re-persists).
+		const restarted = await mgr.restartAgent(handle.id, "stalled", {
+			envOverride: { ROTATED: "v1" },
+		});
+
+		// Respawn KEPT despite the failed env-rewrite persist (the documented narrow window:
+		// boot recovery rebuilds from the prior config rather than undoing a live recovery).
+		expect(restarted).toBeDefined();
+		expect(ctrl.spawnCalls).toHaveLength(2); // original + respawn
+		expect(restarted.generationToken).toBe(1);
+		// The new generation is tracked + alive (NOT untracked like the register fail-closed path).
+		expect(mgr.getHandle(restarted.id)).toBeDefined();
+		// agent-restarted still announced so the cron loop re-arms on the fresh handle.
+		expect(events).toHaveLength(1);
+		expect(events[0].generationToken).toBe(restarted.generationToken);
+	});
+
+	it("(Task 8) emits agent-restarted with the new generation so the cron loop can re-arm", async () => {
+		// Task 8 (single restart authority): a heartbeat recycle (or any
+		// restartAgent caller) must ANNOUNCE the new generation so the cron-restart
+		// loop re-arms its exit listener on the fresh handle. Without this event,
+		// a heartbeat recycle leaves the new generation with no cron-side exit
+		// listener and a later exit goes un-restarted.
+		const ctrl = makeMockRuntime("mock-pty-restarted-evt");
+		registerRuntime(ctrl.runtime);
+		const mgr = new AgentManager();
+		const handle = await mgr.registerAgent({
+			agentId: "evt-agent",
+			runtimeId: "mock-pty-restarted-evt",
+			cwd: "/tmp/work",
+			env: {},
+			sessionId: "sess-evt",
+		});
+
+		const events: Array<{
+			agentId: string;
+			handleId: string;
+			generationToken: number;
+		}> = [];
+		mgr.on("agent-restarted", (e) => events.push(e));
+
+		const restarted = await mgr.restartAgent(handle.id, "stalled");
+
+		expect(events).toHaveLength(1);
+		expect(events[0]).toEqual({
+			agentId: "evt-agent",
+			handleId: handle.id,
+			generationToken: restarted.generationToken,
+		});
+		// The announced handleId resolves to the live new generation.
+		expect(mgr.getHandle(events[0].handleId)?.generationToken).toBe(
+			restarted.generationToken,
+		);
+	});
+
+	it("(Task 8) isRestarting reports true only while a restart is in flight", async () => {
+		// Task 8 (no double-restart): the cron exit listener consults isRestarting
+		// before scheduling, so a heartbeat recycle tearing the PTY down (which
+		// trips the same exited/crashed status the listener watches) does not race
+		// a competing cron restart. The flag is true DURING doRestart and clears
+		// after it settles.
+		const ctrl = makeMockRuntime("mock-pty-isrestarting");
+		registerRuntime(ctrl.runtime);
+		const mgr = new AgentManager();
+		const handle = await mgr.registerAgent({
+			agentId: "isr-agent",
+			runtimeId: "mock-pty-isrestarting",
+			cwd: "/tmp/work",
+			env: {},
+			sessionId: "sess-isr",
+		});
+
+		expect(mgr.isRestarting(handle.id)).toBe(false);
+		const p = mgr.restartAgent(handle.id, "stalled");
+		// Synchronously after kicking restartAgent, the in-flight promise is
+		// registered → isRestarting is true.
+		expect(mgr.isRestarting(handle.id)).toBe(true);
+		await p;
+		// Settled → flag cleared.
+		expect(mgr.isRestarting(handle.id)).toBe(false);
+	});
 });
 
 describe("AgentManager / spawnSubagent", () => {
@@ -639,9 +1134,7 @@ describe("AgentManager / spawnSubagent", () => {
 		await waitForCondition(() =>
 			ctrl.shutdownCalls.some((c) => c.handleId === child.id),
 		);
-		const childShutdown = ctrl.shutdownCalls.find(
-			(c) => c.handleId === child.id,
-		);
+		const childShutdown = ctrl.shutdownCalls.find((c) => c.handleId === child.id);
 		expect(childShutdown).toBeDefined();
 	});
 });
@@ -724,10 +1217,7 @@ describe("AgentManager / bootRecovery", () => {
 				org: undefined,
 				parentHandleId: undefined,
 				spawnedAt: Date.now(),
-				markerPath: path.join(
-					pathFor("markers"),
-					`${crashHandleId}.daemon-stop`,
-				),
+				markerPath: path.join(pathFor("markers"), `${crashHandleId}.daemon-stop`),
 			};
 		});
 
@@ -1011,9 +1501,7 @@ describe("AgentManager / shutdown cascade without status callback (Codex H2)", (
 		// callback semantics.
 		await mgr.shutdownAgent(parent.id, "SIGTERM");
 
-		const childShutdown = ctrl.shutdownCalls.find(
-			(s) => s.handleId === child.id,
-		);
+		const childShutdown = ctrl.shutdownCalls.find((s) => s.handleId === child.id);
 		expect(childShutdown).toBeDefined();
 		expect(mgr.getHandle(child.id)).toBeUndefined();
 		expect(mgr.getHandle(parent.id)).toBeUndefined();
@@ -1043,9 +1531,7 @@ describe("AgentManager / shutdown cascade without status callback (Codex H2)", (
 		// Child handle was shut down and removed; the new parent
 		// generation has no children linked (application layer must
 		// respawn).
-		const childShutdown = ctrl.shutdownCalls.find(
-			(s) => s.handleId === child.id,
-		);
+		const childShutdown = ctrl.shutdownCalls.find((s) => s.handleId === child.id);
 		expect(childShutdown).toBeDefined();
 		expect(mgr.getHandle(child.id)).toBeUndefined();
 		const link = mgr
@@ -1090,10 +1576,7 @@ describe("AgentManager / bootRecovery crash without marker (Codex H1)", () => {
 				org: undefined,
 				parentHandleId: undefined,
 				spawnedAt: Date.now(),
-				markerPath: path.join(
-					pathFor("markers"),
-					`${crashedHandleId}.daemon-stop`,
-				),
+				markerPath: path.join(pathFor("markers"), `${crashedHandleId}.daemon-stop`),
 			};
 		});
 
@@ -1333,9 +1816,7 @@ describe("AgentManager / EC5 cost event after parent teardown", () => {
 			provider: "anthropic",
 			model: "claude-opus-4-8",
 		});
-		await waitForCondition(
-			() => mgr.getCostSummary(parent.id).rolledUpCost > 0,
-		);
+		await waitForCondition(() => mgr.getCostSummary(parent.id).rolledUpCost > 0);
 		expect(mgr.getCostSummary(parent.id).rolledUpCost).toBeCloseTo(0.1, 6);
 
 		// Shut down the parent — cascade tears down the child too.
@@ -2322,19 +2803,13 @@ describe("AgentManager / persistAgentConfig overwrite-mode (pr84 Codex at-rest)"
 					org: opts.org,
 					parentHandleId: opts.parentHandle?.id,
 					spawnedAt: Date.now(),
-					markerPath: path.join(
-						pathFor("markers"),
-						`${fixedHandleId}.daemon-stop`,
-					),
+					markerPath: path.join(pathFor("markers"), `${fixedHandleId}.daemon-stop`),
 				};
 			};
 			registerRuntime(ctrl.runtime);
 			const mgr = new AgentManager();
 
-			const persistedFile = path.join(
-				pathFor("agents"),
-				`${fixedHandleId}.json`,
-			);
+			const persistedFile = path.join(pathFor("agents"), `${fixedHandleId}.json`);
 
 			// First registration creates the persisted config at 0600.
 			await mgr.registerAgent({
@@ -2369,15 +2844,16 @@ describe("AgentManager / persistAgentConfig overwrite-mode (pr84 Codex at-rest)"
 		},
 	);
 
-	it("swallows a persist write/rename failure and cleans up the secret-bearing .tmp (pr84 Finding 3)", async () => {
-		// Finding 3 (pr84 dual-adversarial, Important — coverage gap): the
-		// persist path writes a fresh 0o600 temp file then atomic-renames it
-		// over the dest. If the write/chmod/rename throws (ENOSPC/EACCES/
-		// ENOTDIR), the catch MUST (a) best-effort unlink the stray
-		// secret-bearing `.tmp` so a Telegram token + GH PAT are not left on
-		// disk, and (b) SWALLOW the error so a transient persist failure does
-		// not crash `registerAgent`. Only the success path was tested before.
-		// Platform-agnostic: asserts cleanup + non-throw, not POSIX mode bits.
+	it("on a persist write/rename failure: cleans up the secret-bearing .tmp AND rejects fail-closed (pr84 Finding 3 + Task 1)", async () => {
+		// Finding 3 (pr84 dual-adversarial) + Task 1 (Critical, 2026-06-02): the
+		// persist path writes a fresh 0o600 temp file then atomic-renames it over
+		// the dest. If the write/chmod/rename throws (ENOSPC/EACCES/ENOTDIR), the
+		// catch MUST (a) best-effort unlink the stray secret-bearing `.tmp` so a
+		// Telegram token + GH PAT are not left on disk, and — UPDATED for Task 1 —
+		// (b) RETHROW so `registerAgent` rolls the spawn back and REJECTS
+		// fail-closed (was: swallow + resolve, which leaked an unrecoverable
+		// tracked handle). Platform-agnostic: asserts cleanup + rejection +
+		// no-handle-leak, not POSIX mode bits.
 		const fixedHandleId = "persist-fail-fixed-h";
 		const ctrl = makeMockRuntime("mock-pty-persist-fail");
 		ctrl.runtime.spawn = async (opts: SpawnOpts): Promise<AgentHandle> => {
@@ -2392,10 +2868,7 @@ describe("AgentManager / persistAgentConfig overwrite-mode (pr84 Codex at-rest)"
 				org: opts.org,
 				parentHandleId: opts.parentHandle?.id,
 				spawnedAt: Date.now(),
-				markerPath: path.join(
-					pathFor("markers"),
-					`${fixedHandleId}.daemon-stop`,
-				),
+				markerPath: path.join(pathFor("markers"), `${fixedHandleId}.daemon-stop`),
 			};
 		};
 		registerRuntime(ctrl.runtime);
@@ -2421,7 +2894,7 @@ describe("AgentManager / persistAgentConfig overwrite-mode (pr84 Codex at-rest)"
 			return renameState.real(source, dest);
 		});
 
-		// (b) registerAgent RESOLVES despite the persist failure — error swallowed.
+		// (b) registerAgent REJECTS fail-closed on the persist failure (Task 1).
 		await expect(
 			mgr.registerAgent({
 				agentId: "persist-fail-agent",
@@ -2431,12 +2904,15 @@ describe("AgentManager / persistAgentConfig overwrite-mode (pr84 Codex at-rest)"
 				env: { IAGO_TELEGRAM_BOT_TOKEN: "secret-token", GH_TOKEN: "gh-pat" },
 				sessionId: "sess-persist-fail",
 			}),
-		).resolves.toBeDefined();
+		).rejects.toThrow(/ENOSPC/);
 
 		// (a) The stray secret-bearing `.tmp` was cleaned up by the catch's unlink.
 		await expect(fsp.stat(tmpFile)).rejects.toThrow();
 		// The dest config was never published (the rename failed before publish).
 		await expect(fsp.stat(persistedFile)).rejects.toThrow();
+		// (c) Task 1: the spawned handle was rolled back — no in-memory leak.
+		expect(mgr.listHandles()).toHaveLength(0);
+		expect(mgr.getHandle(fixedHandleId)).toBeUndefined();
 	});
 });
 
@@ -2973,6 +3449,80 @@ describe("AgentManager / task-send-needed envelope (R1)", () => {
 		expect(sendEvents).toHaveLength(1);
 		expect(sendEvents[0].noSend).toBe(true);
 		expect(sendEvents[0].sendText).toBeUndefined();
+	});
+
+	it("(SE-6, #92 I3) a send envelope with a valid UUID runId forwards it verbatim on 'task-send-needed'", async () => {
+		// I3: the runId UUID-shape validation in processPendingTask is the seam the
+		// ENTIRE wrong-run quarantine chain depends on, but had no behavioral test.
+		// A real echo is always a UUID (the dispatch runId is randomUUID()); it must
+		// be forwarded so the send handler can run-correlate the clear.
+		const ctrl = makeMockRuntime("mock-pty-se6");
+		registerRuntime(ctrl.runtime);
+		const mgr = new AgentManager();
+		await mgr.registerAgent({
+			agentId: "pr-triage",
+			runtimeId: "mock-pty-se6",
+			cwd: "/tmp/w",
+			env: {},
+			sessionId: "sess-se6",
+		});
+
+		const runId = "3f2504e0-4f89-41d3-9a0c-0305e82c3301";
+		const filename = "pr-triage-send__1700000206-606.json";
+		writePendingTask(filename, {
+			agentId: "pr-triage",
+			sendText: "summary",
+			runId,
+		});
+
+		const sendEvents: Array<{ runId?: string }> = [];
+		mgr.on("task-send-needed", (e: { runId?: string }) => {
+			sendEvents.push(e);
+		});
+
+		await mgr._pollingTickForTests();
+
+		expect(sendEvents).toHaveLength(1);
+		expect(sendEvents[0].runId).toBe(runId);
+	});
+
+	it("(SE-7, #92 I3) a send envelope with a non-UUID / empty runId drops it to undefined (no-correlation path)", async () => {
+		// I3: a non-UUID echo — the un-substituted "$RUN_ID"/placeholder, or an empty
+		// string — must NOT be forwarded as a real runId. Forwarding it would compare
+		// a value that can NEVER equal the live run's UUID, so the pre-send wrong-run
+		// guard would QUARANTINE the legitimate daily summary. Normalizing to undefined
+		// makes a botched substitution behave like an omitted echo (no correlation).
+		const ctrl = makeMockRuntime("mock-pty-se7");
+		registerRuntime(ctrl.runtime);
+		const mgr = new AgentManager();
+		await mgr.registerAgent({
+			agentId: "pr-triage",
+			runtimeId: "mock-pty-se7",
+			cwd: "/tmp/w",
+			env: {},
+			sessionId: "sess-se7",
+		});
+
+		const sendEvents: Array<{ runId?: string }> = [];
+		mgr.on("task-send-needed", (e: { runId?: string }) => {
+			sendEvents.push(e);
+		});
+
+		const cases = ["$RUN_ID", "", "not-a-uuid", "<paste the run id here>"];
+		for (let i = 0; i < cases.length; i++) {
+			sendEvents.length = 0;
+			const filename = `pr-triage-send__1700000207-${i}.json`;
+			writePendingTask(filename, {
+				agentId: "pr-triage",
+				sendText: "summary",
+				runId: cases[i],
+			});
+			await mgr._pollingTickForTests();
+			// Only this tick's freshly-written file emits (prior files stay in
+			// pending/ but are suppressed by the per-filename sendInFlight guard).
+			expect(sendEvents).toHaveLength(1);
+			expect(sendEvents[0].runId).toBeUndefined();
+		}
 	});
 
 	it("(SE-5 dedup, Critical-1) two ticks while the send is in-flight emit 'task-send-needed' only ONCE; releaseSendSlot re-arms it", async () => {

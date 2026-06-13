@@ -162,6 +162,45 @@ export class AgentIdAlreadyRegisteredError extends Error {
 }
 
 /**
+ * Dual-adversarial #92 Critical (C2) — thrown when a `registerAgent` is attempted
+ * for an `agentId` whose PRIOR registration rollback could NOT confirm the spawned
+ * PTY was terminated (both the graceful and the forced shutdown attempts threw —
+ * e.g. the same degraded disk that broke persistence also broke the kill). The
+ * orphan is recorded in a QUARANTINED state rather than silently untracked, which
+ * would (a) strand a live process invisible to boot recovery and (b) let a later
+ * same-id register spawn a DUPLICATE. The quarantine blocks re-registration
+ * REGARDLESS of org until an operator confirms the orphan is reaped and calls
+ * `releaseQuarantinedAgent`.
+ */
+export class AgentQuarantinedError extends Error {
+	readonly agentId: string;
+	readonly reason: string;
+	constructor(agentId: string, reason: string) {
+		super(
+			`Agent id "${agentId}" is quarantined: a prior registration rollback could not confirm termination of its spawned process (${reason}). Re-registration is blocked until the orphan is reaped and the quarantine is released.`,
+		);
+		this.name = "AgentQuarantinedError";
+		this.agentId = agentId;
+		this.reason = reason;
+	}
+}
+
+/**
+ * In-memory + durable record of a quarantined orphan (see `AgentQuarantinedError`).
+ * Mirrored best-effort to `quarantine/<agentId>.json`; the registration guard
+ * (`assertAgentIdAvailable`) re-loads that record on an in-memory miss, so the
+ * re-registration block survives a daemon restart. Auto-reaping by a boot sweep
+ * remains future work — release stays a manual `releaseQuarantinedAgent` call.
+ */
+interface QuarantineRecord {
+	readonly handleId: string;
+	readonly agentId: string;
+	readonly org: string | null;
+	readonly reason: string;
+	readonly atMs: number;
+}
+
+/**
  * Plan 04d I3: cap task-file payload size emitted in the
  * `'task-dispatch-needed'` event payload. Oversize files are rejected via
  * `poisonTask` with reason `oversized-task` BEFORE JSON.parse and BEFORE
@@ -294,6 +333,17 @@ export class AgentManager extends EventEmitter {
 	// PTY adapter, which stays in `running` for the whole `git clone`
 	// without refreshing `lastStatusChangeMs`).
 	private readonly livenessProbes = new Map<string, AdapterLivenessProbe>();
+	// Dual-adversarial #92 Critical (C2) — agentIds whose registration rollback
+	// could NOT confirm the spawned PTY died (both shutdown attempts threw). The
+	// process may still be live, so it is NOT silently untracked-and-forgotten:
+	// the agentId is recorded here so `assertAgentIdAvailable` BLOCKS a duplicate
+	// re-registration (REGARDLESS of org) until `releaseQuarantinedAgent` clears it
+	// after an operator reaps the orphan. Mirrored best-effort to
+	// `quarantine/<agentId>.json` for cross-restart ENFORCEMENT:
+	// `assertAgentIdAvailable` consults the durable record on an in-memory miss
+	// (re-gate C2 follow-up) and self-heals this map, so the block does NOT
+	// evaporate when the daemon restarts.
+	private readonly quarantinedAgents = new Map<string, QuarantineRecord>();
 	private bootRecoveryRan = false;
 	private cachedBootRecovery: BootRecoveryResult | null = null;
 	// Same promise-capture pattern as restartingPromises: assigned synchronously
@@ -387,15 +437,30 @@ export class AgentManager extends EventEmitter {
 	 * `persistAgentConfig` is keyed on `handle.id`, which does not exist until
 	 * `spawn` returns, so persist-before-spawn is structurally impossible.
 	 *
-	 * Partial-state windows:
+	 * DURABILITY CONTRACT (Task 1 Critical — fail-closed, 2026-06-02):
+	 * persistence is LOAD-BEARING. If `persistAgentConfig` throws after a
+	 * successful spawn (disk fault / ENOSPC / EACCES), `registerAgent` does
+	 * NOT return a live-but-unpersisted handle — it tears the spawned handle
+	 * down (`shutdownAgentInternal` → marker + cascade + `runtime.shutdown` +
+	 * `teardown`) and REJECTS. Rationale: a tracked handle with no
+	 * `agents/<id>.json` on disk is invisible to boot recovery's
+	 * `knownConfigs` AND to the on-disk uniqueness scan
+	 * (`assertAgentIdAvailable`) — so a daemon crash would strand the live
+	 * process unrecoverably AND a later `registerAgent` of the same id could
+	 * duplicate it. Fail-closed eliminates both: either a fully-registered,
+	 * recoverable agent or a clean rejection with NO leaked process.
+	 *
+	 * Partial-state windows (post-fix):
 	 *   - If `spawn` throws, no handle id exists yet — nothing is tracked and
 	 *     nothing is persisted. The caller sees the throw; there is no orphan.
-	 *   - If `persistAgentConfig` throws AFTER a successful spawn, the live
-	 *     process is tracked in-memory but has NO persisted `<handle.id>.json`.
-	 *     A daemon crash before the next persist would strand that process
-	 *     (boot recovery's `knownConfigs` would not include it). `persistAgentConfig`
-	 *     itself swallows write errors (logs to stderr, resolves) so this
-	 *     window is narrow — registration still returns the live handle.
+	 *   - If `persistAgentConfig` throws AFTER a successful spawn, the spawned
+	 *     handle is shut down + untracked before the throw propagates — no
+	 *     live process, no tracked handle, no on-disk config. There is no
+	 *     longer a "tracked-but-unpersisted" window.
+	 *
+	 * The in-process registration lock (`withAgentRegistrationLock`) is held
+	 * across the whole sequence so the rollback completes before a competing
+	 * same-id `registerAgent` re-checks availability.
 	 */
 	async registerAgent(config: RegisterAgentConfig): Promise<AgentHandle> {
 		assertSafeIdentifier(config.agentId, "agentId");
@@ -431,9 +496,299 @@ export class AgentManager extends EventEmitter {
 				org: config.org ?? null,
 				parentHandleId: null,
 			});
-			await this.persistAgentConfig(handle.id, config, runtime);
+			try {
+				await this.persistAgentConfig(handle.id, config, runtime);
+			} catch (persistErr) {
+				// Task 1 Critical (fail-closed): persistence is load-bearing. A
+				// tracked handle with no `agents/<id>.json` is unrecoverable after a
+				// crash and duplicable on re-register. Roll the spawn back — shut the
+				// live process down, cascade children, write the marker, and untrack —
+				// then reject so the caller never sees a half-registered agent.
+				// `shutdownAgentInternal` is keyed on `withParentLock(handle.id)`, a
+				// DIFFERENT lock from the `withAgentRegistrationLock(agentId)` held
+				// here, so there is no self-deadlock.
+				//
+				// Dual-adversarial #92 Critical (C2): the rollback kill can fail on the
+				// SAME degraded disk that broke persistence — `shutdownAgentInternal`
+				// writes the stop marker AND cascades children BEFORE it reaches
+				// `runtime.shutdown`, so a `writeStopMarker`/cascade throw lands in the
+				// catch WITHOUT the adapter ever being asked to die; and `runtime.shutdown`
+				// can throw too. The PRIOR code then unconditionally `teardown`'d the
+				// handle in a `finally`, untracking a process never CONFIRMED dead → a
+				// live orphan invisible to boot recovery, and a later same-agentId
+				// register could DUPLICATE it. Fix: untrack ONLY when termination is
+				// confirmed; otherwise QUARANTINE (record + block re-register + telemetry).
+				let killConfirmed = false;
+				try {
+					// Use "graceful" instead of "crash": this process was never
+					// fully registered (persistAgentConfig failed, so no config
+					// file exists). A "crash" marker would cause boot recovery
+					// to call attemptCrashReplay, find no config, and add a
+					// phantom entry to the crashes list. "graceful" is the
+					// correct semantic — the process never surfaced to the user.
+					await this.shutdownAgentInternal(handle.id, "SIGKILL", "graceful");
+					// Returned without throwing → its own `finally` reaped + untracked
+					// the handle. Termination is confirmed.
+					killConfirmed = true;
+				} catch (rollbackErr) {
+					console.error(
+						`[agent-manager] rollback shutdown of ${handle.id} after persist failure failed: ${
+							rollbackErr instanceof Error ? rollbackErr.message : String(rollbackErr)
+						}`,
+					);
+					// Force the adapter shutdown directly so the live process is reaped
+					// even when `shutdownAgentInternal` threw before reaching
+					// `runtime.shutdown` (e.g. `writeStopMarker`/cascade faulted first).
+					// Best-effort: a throw here is logged, never rethrown over the
+					// original `persistErr`.
+					try {
+						await runtime.shutdown(handle, "SIGKILL");
+						killConfirmed = true;
+					} catch (forceErr) {
+						console.error(
+							`[agent-manager] forced adapter shutdown of ${handle.id} during persist rollback failed: ${
+								forceErr instanceof Error ? forceErr.message : String(forceErr)
+							}`,
+						);
+						// Both kill attempts threw. Last resort: probe the adapter's own
+						// liveness signal — ONLY a definitive `false` lets us untrack.
+						killConfirmed = await this.confirmRuntimeDead(runtime, handle);
+					}
+				}
+				if (killConfirmed) {
+					// Reaped (or already gone) — safe to untrack. Idempotent: a no-op
+					// when `shutdownAgentInternal` already tore the handle down.
+					this.teardown(handle.id);
+				} else {
+					// #92 C2 — termination NOT confirmed. Do NOT strand a live orphan by
+					// silently untracking it. Quarantine: record it, block same-agent
+					// re-registration, persist a best-effort recovery record + telemetry.
+					await this.quarantineOrphan(handle, config.org ?? null, persistErr);
+				}
+				throw persistErr;
+			}
 			return handle;
 		});
+	}
+
+	/**
+	 * Dual-adversarial #92 Critical (C2) — probe whether the adapter considers
+	 * `handle`'s process dead. The LAST resort in the registration rollback after
+	 * both the graceful and forced shutdowns threw. Returns true ONLY on a
+	 * definitive `false` from `runtime.isAlive`; a `true` (still alive) OR a thrown
+	 * probe (the adapter itself faulting) both yield false → "cannot confirm dead"
+	 * → quarantine. Fail-safe: never untrack a possibly-live process.
+	 */
+	private async confirmRuntimeDead(
+		runtime: AgentRuntime,
+		handle: AgentHandle,
+	): Promise<boolean> {
+		try {
+			return (await runtime.isAlive(handle)) === false;
+		} catch {
+			return false;
+		}
+	}
+
+	/**
+	 * Dual-adversarial #92 Critical (C2) — record an orphaned spawn whose
+	 * registration-rollback kill could not be confirmed. The process may still be
+	 * live; rather than silently untracking it (the bug), we:
+	 *   1. record the quarantine in-memory so `assertAgentIdAvailable` blocks a
+	 *      duplicate same-agentId registration (regardless of org), and
+	 *   2. mirror the record to a durable `quarantine/<agentId>.json` file — a
+	 *      REQUIRED transition before untracking (#92 re-gate C2 follow-up round 2,
+	 *      option a). On SUCCESS the durable record is the cross-restart block, so
+	 *      we untrack the handle from the live registry + heartbeat — it is in an
+	 *      UNKNOWN state, so the heartbeat must NOT auto-restart/probe it as a
+	 *      normal agent. On FAILURE (the same faulted disk rejects the record too)
+	 *      we do NOT untrack: the handle is RETAINED in the registry (visible +
+	 *      a second-line block) and merely DETACHED from the heartbeat/subscription,
+	 *      so a possibly-live orphan is never stranded invisibly, and
+	 *   3. emit a loud operator log + telemetry so the orphan is surfaced, not lost.
+	 */
+	private async quarantineOrphan(
+		handle: AgentHandle,
+		org: string | null,
+		cause: unknown,
+	): Promise<void> {
+		const agentId = handle.agentId;
+		const reason = cause instanceof Error ? cause.message : String(cause);
+		const record: QuarantineRecord = {
+			handleId: handle.id,
+			agentId,
+			org,
+			reason,
+			atMs: Date.now(),
+		};
+		this.quarantinedAgents.set(agentId, record);
+		// #92 re-gate Critical (C2 follow-up round 2) — make durable quarantine
+		// creation a REQUIRED transition BEFORE untracking. The prior order
+		// (unconditional teardown, then a best-effort `.catch(() => undefined)` write)
+		// reopened C2 on a COMPOUND fault: the durable write lands on the SAME degraded
+		// state root that broke persistAgentConfig, so it likely fails too — and the
+		// teardown then untracked a possibly-live orphan with NO durable record. After
+		// a restart the in-memory map is gone, readQuarantineRecord returns null, and a
+		// same-agentId re-register spawns a DUPLICATE beside the live orphan. So:
+		// persist FIRST; untrack ONLY when the record is durably on disk (the
+		// cross-restart block). On a write fault, RETAIN the handle tracked (option a,
+		// Santiago 2026-06-10): nothing can make it durable on a fully-dead disk, but
+		// stranding a live orphan INVISIBLY is strictly worse than keeping it tracked +
+		// blocked in-memory. The within-process re-register block (the map set above)
+		// holds either way.
+		let durable = false;
+		try {
+			await this.persistQuarantineRecord(record);
+			durable = true;
+		} catch (writeErr) {
+			console.error(
+				`[agent-manager] durable quarantine record for ${handle.id} (agentId="${agentId}") could NOT be written (${
+					writeErr instanceof Error ? writeErr.message : String(writeErr)
+				}); RETAINING in-memory tracking + block — NOT untracking a possibly-live orphan.`,
+			);
+		}
+		if (durable) {
+			// Durable record is the cross-restart block — safe to untrack from the live
+			// registry + heartbeat (idempotent: a no-op when `shutdownAgentInternal`
+			// already tore the handle down before re-throwing).
+			this.teardown(handle.id);
+		} else {
+			// Durable write FAILED — do NOT teardown. Keep the handle in `this.handles`
+			// (visible/inspectable + a second-line registry block) but DETACH it from
+			// the heartbeat + status subscription so it is not auto-restarted/probed as
+			// a healthy agent — it is in an UNKNOWN state.
+			const tracked = this.handles.get(handle.id);
+			if (tracked !== undefined) {
+				try {
+					tracked.unsubscribe();
+				} catch {
+					// unsubscribe MUST be idempotent; swallow.
+				}
+				if (this.heartbeat !== undefined) {
+					this.heartbeat.unregister(handle.id);
+				}
+				// Deliberately do NOT `this.handles.delete(handle.id)` — retaining the
+				// orphan in the registry IS the point of option (a).
+			}
+		}
+		console.error(
+			`[agent-manager] registration rollback could NOT confirm termination of ${handle.id} (agentId="${agentId}"); QUARANTINED. A live orphaned process may remain — manual reap may be required. Re-registration of "${agentId}" is blocked until releaseQuarantinedAgent("${agentId}") is called.`,
+		);
+		// #92 re-gate Minor — operator visibility for a live orphaned process must
+		// not depend on stderr scraping: mirror the quarantine into the durable
+		// telemetry sink. `emitTelemetry` never throws; a failed append (the same
+		// faulted disk) degrades to the console line above.
+		await emitTelemetry({
+			kind: "agent-quarantined",
+			agentId,
+			handleId: handle.id,
+			reason,
+		});
+	}
+
+	/**
+	 * Durable mirror of a quarantine record (#92 C2). Atomic temp-then-rename so a
+	 * partial write is never observed. Throws on a write fault — and the sole caller
+	 * (`quarantineOrphan`) now USES that throw: a durable write is a REQUIRED
+	 * transition before untracking (#92 re-gate C2 follow-up round 2, option a). On
+	 * success the orphan is untracked (the durable record is the cross-restart block);
+	 * on failure the caller RETAINS the handle tracked + blocked in-memory rather than
+	 * stranding a possibly-live orphan with no record.
+	 */
+	private async persistQuarantineRecord(
+		record: QuarantineRecord,
+	): Promise<void> {
+		const dir = pathFor("quarantine");
+		await fsp.mkdir(dir, { recursive: true });
+		const dst = path.join(dir, `${record.agentId}.json`);
+		const tmp = `${dst}.tmp`;
+		await fsp.writeFile(tmp, JSON.stringify(record), { mode: 0o600 });
+		await atomicRenameStaleDest(tmp, dst);
+	}
+
+	/**
+	 * #92 re-gate Critical (C2 follow-up) — load the durable quarantine record
+	 * for `agentId`, or null when none exists (ENOENT). FAIL-SAFE on a record
+	 * that exists but cannot be read or parsed: corruption/EACCES on the same
+	 * degraded disk that created the quarantine loses the record's DETAILS, not
+	 * its MEANING — a present-but-unreadable record still blocks (with a
+	 * synthesized reason) rather than silently lifting the duplicate-orphan
+	 * protection.
+	 */
+	private async readQuarantineRecord(
+		agentId: string,
+	): Promise<QuarantineRecord | null> {
+		const file = path.join(pathFor("quarantine"), `${agentId}.json`);
+		let raw: string;
+		try {
+			raw = await fsp.readFile(file, "utf8");
+		} catch (err) {
+			if (getErrnoCode(err) === "ENOENT") return null;
+			return {
+				handleId: "unknown",
+				agentId,
+				org: null,
+				reason: `unreadable quarantine record (${
+					err instanceof Error ? err.message : String(err)
+				})`,
+				atMs: 0,
+			};
+		}
+		try {
+			const parsed: unknown = JSON.parse(raw);
+			if (typeof parsed === "object" && parsed !== null) {
+				const rec = parsed as Partial<QuarantineRecord>;
+				return {
+					handleId: typeof rec.handleId === "string" ? rec.handleId : "unknown",
+					agentId,
+					org: typeof rec.org === "string" ? rec.org : null,
+					reason:
+						typeof rec.reason === "string"
+							? rec.reason
+							: "quarantine record missing reason",
+					atMs: typeof rec.atMs === "number" ? rec.atMs : 0,
+				};
+			}
+		} catch {
+			// fall through to the synthesized corrupt-record block below
+		}
+		return {
+			handleId: "unknown",
+			agentId,
+			org: null,
+			reason: "corrupt quarantine record (JSON parse failed)",
+			atMs: 0,
+		};
+	}
+
+	/**
+	 * Operator/escalation hook (#92 C2) — clear a quarantine after the orphaned
+	 * process has been confirmed reaped (manual `kill`, or a future boot-recovery
+	 * sweep). Removes the in-memory block AND the durable record so the agentId can
+	 * register again. Returns true if a quarantine was cleared, false if none
+	 * existed for `agentId`.
+	 */
+	async releaseQuarantinedAgent(agentId: string): Promise<boolean> {
+		const existed = this.quarantinedAgents.delete(agentId);
+		// #92 re-gate (C2 follow-up) — a quarantine can exist ONLY on disk (the
+		// in-memory map is empty after a restart). Report `true` when the durable
+		// record was actually removed too, so clearing a real post-restart
+		// quarantine does not read as "none existed".
+		let fileRemoved = false;
+		try {
+			await fsp.unlink(path.join(pathFor("quarantine"), `${agentId}.json`));
+			fileRemoved = true;
+		} catch {
+			// ENOENT (no record) or a faulted unlink — either way nothing removed.
+		}
+		return existed || fileRemoved;
+	}
+
+	/**
+	 * Introspection accessor (#92 C2) — is `agentId` currently quarantined?
+	 */
+	isAgentQuarantined(agentId: string): boolean {
+		return this.quarantinedAgents.has(agentId);
 	}
 
 	/**
@@ -465,8 +820,13 @@ export class AgentManager extends EventEmitter {
 	 * `trackHandle`). Returns `undefined` if the handle is unknown.
 	 * Synchronous read of the in-memory tracked record — safe to call
 	 * from the Telegram bot's `/status` reply path. PR45 M6.
+	 *
+	 * Minor (Task 3 type-tighten): the return is `StatusValue | undefined`
+	 * (not the looser `string | undefined`) — `lastStatus` is already a
+	 * `StatusValue`, so the narrower type lets callers `switch` exhaustively
+	 * over the union without a string-widening cast.
 	 */
-	getLastStatus(handleId: string): string | undefined {
+	getLastStatus(handleId: string): StatusValue | undefined {
 		return this.handles.get(handleId)?.lastStatus;
 	}
 
@@ -493,6 +853,20 @@ export class AgentManager extends EventEmitter {
 	 * (no await on the hot path); callers needing ground-truth liveness
 	 * must await `runtime.isAlive(handle)` (the heartbeat loop already
 	 * does, via the per-handle probe wired in `trackHandle`).
+	 *
+	 * NAMING COLLISION (Task 3 Minor — intentional, kept-with-JSDoc per the
+	 * plan's "rename OR strengthen the JSDoc" choice): this method shares the
+	 * bare name `isAlive` with the runtime adapter's
+	 * `AgentRuntime.isAlive(handle): Promise<boolean>`, but the two are NOT
+	 * interchangeable. `AgentManager.isAlive(handleId)` is SYNCHRONOUS, keyed
+	 * by `handleId` (string), derives liveness from the CACHED `lastStatus`,
+	 * and returns `boolean | undefined`. `AgentRuntime.isAlive(handle)` is
+	 * ASYNC, takes an `AgentHandle`, actively PROBES the underlying process,
+	 * and returns `Promise<boolean>`. The differing signatures (sync vs
+	 * Promise, string vs handle, tri-state vs boolean) make an accidental
+	 * swap a type error, so the shared name is retained rather than renamed.
+	 * Do NOT call this where ground-truth liveness is required — await the
+	 * runtime probe instead.
 	 */
 	isAlive(handleId: string): boolean | undefined {
 		const tracked = this.handles.get(handleId);
@@ -561,6 +935,20 @@ export class AgentManager extends EventEmitter {
 				this.teardown(handleId);
 			}
 		});
+	}
+
+	/**
+	 * Task 8 (single restart authority) — is a restart currently in flight for
+	 * this handle id? Both restart paths (the heartbeat recycle via
+	 * `restartAgent` and the cron-restart loop's exit listener) consult this so
+	 * the SECOND arrival yields to the first instead of double-restarting. The
+	 * cron exit listener checks it before calling `scheduleRestart`: a heartbeat
+	 * recycle that is tearing the PTY down (which trips the same `exited` status
+	 * the cron listener watches) is already restarting, so the cron listener
+	 * must NOT fire a competing restart.
+	 */
+	isRestarting(handleId: string): boolean {
+		return this.restartingPromises.has(handleId);
 	}
 
 	async restartAgent(
@@ -679,8 +1067,38 @@ export class AgentManager extends EventEmitter {
 		// accumulates across restarts (atomic 0o600 temp-then-rename in
 		// persistAgentConfig). Skipped when env is unchanged (nothing to rewrite).
 		if (envOverride !== undefined) {
-			await this.persistAgentConfig(handleId, respawnConfig, existing.runtime);
+			// Task 1: persistAgentConfig now THROWS on write failure. In the
+			// restart path the respawn ALREADY succeeded and the new generation is
+			// tracked, so a failed env-rewrite must NOT undo the recovery — catch
+			// it locally and log. This is the documented narrow window: boot
+			// recovery would rebuild from the stale-but-present prior config (or
+			// none) rather than the freshly-rotated env. Distinct from the
+			// register path, where the spawn is rolled back fail-closed because no
+			// live agent existed before it.
+			try {
+				await this.persistAgentConfig(handleId, respawnConfig, existing.runtime);
+			} catch (persistErr) {
+				console.error(
+					`[agent-manager] restart env-rewrite persist for ${handleId} failed (respawn kept): ${
+						persistErr instanceof Error ? persistErr.message : String(persistErr)
+					}`,
+				);
+			}
 		}
+		// Task 8 (single restart authority) — announce the new generation so the
+		// cron-restart loop re-arms its exit listener on the FRESH handle,
+		// regardless of WHO triggered this restart (heartbeat recycle, IPC, or the
+		// cron loop itself). Without this, a heartbeat-initiated recycle would
+		// re-spawn a generation with NO cron-side exit listener, and a later exit
+		// of the cron agent would go un-restarted (silent death of the daily job).
+		// Carries the agentId so the cron loop (which keys by agentId) can match,
+		// plus the handleId + new generationToken so the listener re-arms against
+		// the exact new handle.
+		this.emit("agent-restarted", {
+			agentId: newGeneration.agentId,
+			handleId,
+			generationToken: newGeneration.generationToken,
+		});
 		return newGeneration;
 	}
 
@@ -900,10 +1318,7 @@ export class AgentManager extends EventEmitter {
 				// matches the marker's handleId. Adapters MAY return a handle
 				// with a different id (e.g., generation suffix); the recovered
 				// listing reflects what was actually tracked.
-				const recoveredId = await this.attemptCrashReplay(
-					handleId,
-					knownConfigs,
-				);
+				const recoveredId = await this.attemptCrashReplay(handleId, knownConfigs);
 				if (recoveredId !== null && this.handles.has(recoveredId)) {
 					recovered.push(recoveredId);
 				}
@@ -921,10 +1336,7 @@ export class AgentManager extends EventEmitter {
 				for (const handleId of knownConfigs.keys()) {
 					if (seenHandleIds.has(handleId)) continue;
 					crashes.push(handleId);
-					const recoveredId = await this.attemptCrashReplay(
-						handleId,
-						knownConfigs,
-					);
+					const recoveredId = await this.attemptCrashReplay(handleId, knownConfigs);
 					if (recoveredId !== null && this.handles.has(recoveredId)) {
 						recovered.push(recoveredId);
 					}
@@ -1493,11 +1905,19 @@ export class AgentManager extends EventEmitter {
 			// Best-effort cleanup of the temp file so a failed write does not
 			// leave a stray secret-bearing `.tmp` on disk.
 			await fsp.unlink(tmpFile).catch(() => undefined);
+			// Task 1 Critical (fail-closed): persistence is load-bearing. RETHROW
+			// instead of swallowing — the previous console.error-and-resolve let
+			// `registerAgent` return a tracked-but-unpersisted (unrecoverable,
+			// duplicable) handle. The caller (`registerAgent`) rolls the spawn back
+			// on this throw; the restart re-persist call site (`doRestart`) catches
+			// it locally because the respawn already succeeded (the env-rewrite is
+			// the only casualty and is the documented narrow restart window).
 			console.error(
 				`[agent-manager] persistAgentConfig for ${handleId} failed: ${
 					err instanceof Error ? err.message : String(err)
 				}`,
 			);
+			throw err instanceof Error ? err : new Error(String(err));
 		}
 	}
 
@@ -1585,16 +2005,34 @@ export class AgentManager extends EventEmitter {
 		agentId: string,
 		attemptedOrg: string | null,
 	): Promise<void> {
+		// Dual-adversarial #92 Critical (C2) — a quarantined agentId (a prior
+		// rollback could not confirm the spawned PTY died) BLOCKS re-registration
+		// REGARDLESS of org. Tearing the orphan down was the bug; re-spawning the
+		// same id while the orphan may still be live would duplicate it. Checked
+		// FIRST (before the org-scoped uniqueness walk) so a same-org re-register
+		// cannot bypass it. Clears only via `releaseQuarantinedAgent`.
+		const quarantined = this.quarantinedAgents.get(agentId);
+		if (quarantined !== undefined) {
+			throw new AgentQuarantinedError(agentId, quarantined.reason);
+		}
+		// #92 re-gate Critical (C2 follow-up) — the in-memory map dies with the
+		// process, and a daemon restart is MOST likely in exactly the degraded-disk
+		// scenario that created a quarantine. Consult the durable
+		// `quarantine/<agentId>.json` on an in-memory miss so the block survives a
+		// restart, and self-heal the map so later checks (and isAgentQuarantined)
+		// see it without re-reading disk. Registration is a cold path — the extra
+		// read costs nothing where it matters.
+		const durable = await this.readQuarantineRecord(agentId);
+		if (durable !== null) {
+			this.quarantinedAgents.set(agentId, durable);
+			throw new AgentQuarantinedError(agentId, durable.reason);
+		}
 		// In-memory check
 		for (const tracked of this.handles.values()) {
 			if (tracked.handle.agentId !== agentId) continue;
 			const existingOrg = tracked.org;
 			if (existingOrg !== attemptedOrg) {
-				throw new AgentIdAlreadyRegisteredError(
-					agentId,
-					existingOrg,
-					attemptedOrg,
-				);
+				throw new AgentIdAlreadyRegisteredError(agentId, existingOrg, attemptedOrg);
 			}
 		}
 
@@ -1631,11 +2069,7 @@ export class AgentManager extends EventEmitter {
 			const orgVal = (parsed as { org?: unknown }).org;
 			const existingOrg = typeof orgVal === "string" ? orgVal : null;
 			if (existingOrg !== attemptedOrg) {
-				throw new AgentIdAlreadyRegisteredError(
-					agentId,
-					existingOrg,
-					attemptedOrg,
-				);
+				throw new AgentIdAlreadyRegisteredError(agentId, existingOrg, attemptedOrg);
 			}
 		}
 	}
@@ -2066,6 +2500,32 @@ export class AgentManager extends EventEmitter {
 			typeof sendPromptRaw === "string" && sendPromptRaw.length > 0;
 		const hasSendText = typeof sendTextRaw === "string";
 		const isNoSend = noSendRaw === true;
+		// Critical (Codex, round 1) — carry the agent-echoed correlation runId
+		// THROUGH to the send handler so it passes the ENVELOPE's runId (not the
+		// live marker's) to `clearResultTimer`. A late/stale envelope from a prior
+		// run carries the OLD runId and is rejected by the wrong-run guard. Absent
+		// on a legacy envelope (handler then clears unconditionally).
+		const sendRunIdRaw = (parsed as { runId?: unknown }).runId;
+		// Dual-adversarial Important (escalated 2026-06-02) — normalize an EMPTY-STRING
+		// runId to `undefined` so it follows the single "no correlation" path. The
+		// prompt-template emits `runId:"$RUN_ID"`; if the agent runs it without
+		// substituting the value, the envelope carries `runId:""`. Treating `""` as a
+		// real id would compare it against the live run's UUID (never equal), and the
+		// pre-send guard would quarantine the legitimate summary; normalizing here makes
+		// `""` and absent behave identically (quarantine only when a run is active,
+		// proceed when there is none).
+		// Tightened 2026-06-04 (pass #2 team:arch finding): validate the echoed runId to a
+		// UUID SHAPE, not merely non-empty. The dispatch runId is `randomUUID()`, so a real
+		// echo is always a UUID; a non-empty NON-UUID (the un-substituted "<paste…>"
+		// placeholder) or `""` both map to `undefined` (the single "no correlation" path), so
+		// a botched substitution behaves like an omitted echo — never a stale-run mismatch
+		// that masquerades as a real-but-wrong runId.
+		const UUID_RE =
+			/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+		const sendRunId =
+			typeof sendRunIdRaw === "string" && UUID_RE.test(sendRunIdRaw.trim())
+				? sendRunIdRaw.trim()
+				: undefined;
 		if (
 			agentId === "pr-triage" &&
 			filename.startsWith("pr-triage-send__") &&
@@ -2092,6 +2552,9 @@ export class AgentManager extends EventEmitter {
 				agentId,
 				...(hasSendText ? { sendText: sendTextRaw } : {}),
 				...(isNoSend ? { noSend: true } : {}),
+				// Critical (Codex, round 1) — forward the agent-echoed runId so the
+				// send handler can run-correlate the clear. Omitted when absent.
+				...(sendRunId !== undefined ? { runId: sendRunId } : {}),
 			});
 			return;
 		}

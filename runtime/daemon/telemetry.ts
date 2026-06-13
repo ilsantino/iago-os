@@ -340,10 +340,7 @@ export type DaemonEvent =
 			 */
 			readonly kind: "task-poisoned";
 			readonly filename: string;
-			readonly reason:
-				| "json-parse-error"
-				| "missing-agent-id"
-				| "oversized-task";
+			readonly reason: "json-parse-error" | "missing-agent-id" | "oversized-task";
 			readonly errno?: string;
 	  }
 	| {
@@ -398,7 +395,19 @@ export type DaemonEvent =
 				| "listener-exception"
 				| "unregistered"
 				| "malformed-task"
-				| "no-listener";
+				| "no-listener"
+				// Dual-adversarial Critical (round 1) — the prompt reached the agent
+				// (runtime.send resolved) but the pending→resolved CLAIM failed
+				// (rename fault). The file stays in tasks/pending/ for the next tick
+				// to retry; the dead-letter result timer is NOT armed (arming it would
+				// overwrite the live run's marker on the redispatch's new runId and
+				// quarantine the original run's legitimate result).
+				| "claim-failed"
+				// Dual-adversarial #92 Critical (C1) — the durable result marker could
+				// not be written (ENOSPC/EACCES on the degraded state root), so the
+				// dispatch was ABORTED before the claim resolved the cron task. The file
+				// stays in tasks/pending/ for the next tick; no in-memory timer was armed.
+				| "marker-write-failed";
 			readonly message: string;
 	  }
 	| {
@@ -453,6 +462,27 @@ export type DaemonEvent =
 			readonly kind: "pr-triage-result-timeout";
 			readonly agentId: string;
 			readonly reason: string;
+	  }
+	| {
+			/**
+			 * Round-2 Important (Codex) — a late/stale result envelope arrived
+			 * carrying a runId that does NOT match the active run for the agent
+			 * (a prior dispatch's envelope surfacing after a newer run started,
+			 * or a duplicate emit after a restart). The send handler validates
+			 * the runId BEFORE the irreversible Telegram send and QUARANTINES the
+			 * stale envelope (claims it out of `pending/`) instead of pushing a
+			 * wrong/stale summary to the user. The current run's dead-letter
+			 * timer/marker/held slot are left intact. `runId` is the stale id from
+			 * the envelope (token-free correlation id, safe to log).
+			 *
+			 * `runId` is OPTIONAL (dual-adversarial Critical, escalated 2026-06-02):
+			 * a runId-LESS envelope (the agent omitted the optional echo) arriving
+			 * while a run is active is quarantined too, and carries no runId to log.
+			 */
+			readonly kind: "pr-triage-stale-run-dropped";
+			readonly agentId: string;
+			readonly filename: string;
+			readonly runId?: string;
 	  }
 	| {
 			/**
@@ -535,6 +565,51 @@ export type DaemonEvent =
 			readonly filename: string;
 			readonly errno?: string;
 			readonly message: string;
+	  }
+	| {
+			/**
+			 * #92 re-gate Minor — a registration rollback could not confirm the
+			 * spawned PTY died (both kill attempts threw + the liveness probe did
+			 * not report dead). The agentId is QUARANTINED: re-registration is
+			 * blocked (in-memory + durable `quarantine/<agentId>.json`) until an
+			 * operator reaps the orphan and calls `releaseQuarantinedAgent`.
+			 * Durable mirror of the `[agent-manager] ... QUARANTINED` stderr line
+			 * so operator visibility does not depend on log scraping.
+			 */
+			readonly kind: "agent-quarantined";
+			readonly agentId: string;
+			readonly handleId: string;
+			readonly reason: string;
+	  }
+	| {
+			/**
+			 * #92 re-gate Critical (C1 follow-up) — a prior dispatch SENT the
+			 * prompt but faulted on the pending→resolved claim, leaving the task
+			 * file in `tasks/pending/` with the live run's durable marker intact.
+			 * A later polling tick RESUMED that dispatch: it re-attempted ONLY the
+			 * claim (never a second `runtime.send`) and re-armed the dead-letter
+			 * timer with the ORIGINAL runId and remaining deadline window.
+			 */
+			readonly kind: "pr-triage-dispatch-resumed";
+			readonly agentId: string;
+			readonly filename: string;
+			readonly runId: string;
+	  }
+	| {
+			/**
+			 * #92 re-gate Critical (C1 follow-up) / Important (I1) — a pending
+			 * task for a send-contract agent arrived while a DIFFERENT run is
+			 * still in flight (live dead-letter timer). Dispatching it would
+			 * `runtime.send` a second prompt into the persistent PTY and
+			 * overwrite the live run's marker (superseded-run slot leak + silent
+			 * summary drop). The dispatch is DEFERRED: the file stays in
+			 * `tasks/pending/` and is re-attempted after the live run completes
+			 * (envelope or dead-letter timeout). Emitted once per filename, not
+			 * per polling tick.
+			 */
+			readonly kind: "pr-triage-dispatch-deferred";
+			readonly agentId: string;
+			readonly filename: string;
 	  }
 	| {
 			readonly kind: "runtime-registration-failed";

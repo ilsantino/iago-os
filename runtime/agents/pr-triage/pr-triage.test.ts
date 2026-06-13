@@ -33,7 +33,16 @@ import * as fsp from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+	afterAll,
+	afterEach,
+	beforeAll,
+	beforeEach,
+	describe,
+	expect,
+	it,
+	vi,
+} from "vitest";
 
 import { claudePty } from "../../agent-runtime/pty/claude-pty.js";
 import {
@@ -315,6 +324,54 @@ function emittedEventsOfKind(kind: DaemonEvent["kind"]): DaemonEvent[] {
 	return out;
 }
 
+// #92 re-gate (lens:tests, isolation flake) — Case 4b runs the REAL claude-pty
+// adapter on REAL timers, so a late fire-and-forget session-log write can fire AFTER
+// afterEach has deleted IAGO_DAEMON_STATE_ROOT. getStateRoot() then falls back to
+// <homedir>/.iago-os/daemon-state — the SHARED real dir every parallel test fork
+// writes to — whose subdirs do not exist, producing ENOENT noise and cross-fork
+// contamination (this test's `cron-agent-restarted` assertion flaked under load).
+// Redirect os.homedir() (HOME/USERPROFILE) to a per-FILE scratch dir for the whole
+// run and pre-create its state subdirs, so ANY fallback write lands in an isolated,
+// existing directory rather than the shared real home. The per-test
+// IAGO_DAEMON_STATE_ROOT override still wins during each test; this only contains the
+// post-deletion fallback window.
+let homeScratch: string;
+const homeBackup: { HOME?: string; USERPROFILE?: string } = {};
+beforeAll(async () => {
+	homeScratch = await fsp.mkdtemp(
+		path.join(os.tmpdir(), "iago-pr-triage-home-"),
+	);
+	homeBackup.HOME = process.env.HOME;
+	homeBackup.USERPROFILE = process.env.USERPROFILE;
+	process.env.HOME = homeScratch;
+	process.env.USERPROFILE = homeScratch;
+	const fallbackRoot = path.join(homeScratch, ".iago-os", "daemon-state");
+	for (const sub of [
+		"session-logs",
+		"telemetry",
+		"markers",
+		"agents",
+		"result-pending",
+	]) {
+		fs.mkdirSync(path.join(fallbackRoot, sub), { recursive: true });
+	}
+});
+
+afterAll(async () => {
+	// Restore via the computed-key form (matching the afterEach loop below) so a
+	// process.env key is removed without `delete process.env.HOME` (biome noDelete) —
+	// and never assigned `undefined`, which Node coerces to the string "undefined".
+	for (const key of ["HOME", "USERPROFILE"] as const) {
+		const prev = homeBackup[key];
+		if (prev === undefined) {
+			delete process.env[key];
+		} else {
+			process.env[key] = prev;
+		}
+	}
+	await fsp.rm(homeScratch, { recursive: true, force: true }).catch(() => {});
+});
+
 beforeEach(async () => {
 	tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), "iago-pr-triage-it-"));
 	process.env.IAGO_DAEMON_STATE_ROOT = tempDir;
@@ -554,6 +611,77 @@ describe("pr-triage integration (R1 daemon-owned creds)", () => {
 			.listHandles()
 			.filter((h) => h.agentId === "pr-triage");
 		expect(liveHandles).toHaveLength(1);
+	}, 15_000);
+
+	it("Case 4b (Task 8) — heartbeat recycle re-arms the cron exit listener; a later crash restarts exactly once (single restart authority)", async () => {
+		writePrTriageFixture();
+		const { mgr, register } = await buildSystem();
+		await register("pr-triage", { backoffMs: [10] });
+		const initialSpawns = mockSpawn.mock.calls.length;
+		expect(initialSpawns).toBe(1);
+
+		const handle = mgr.listHandles().find((h) => h.agentId === "pr-triage");
+		if (handle === undefined) throw new Error("no pr-triage handle");
+
+		// ── Phase A — simulate a HEARTBEAT recycle via restartAgent (the path the
+		// heartbeat's forceRestart callback drives). This tears down PTY gen-1 and
+		// re-spawns gen-2 under the SAME handle id, and emits `agent-restarted`.
+		await mgr.restartAgent(handle.id, "stalled");
+		// Let the `agent-restarted` re-arm + any spurious gen-1 exit-listener
+		// microtask settle.
+		await new Promise((resolve) => setTimeout(resolve, 60));
+
+		// gen-2 spawned; exactly ONE live handle (no double-restart from the
+		// recycle tripping the gen-1 cron exit listener — `isRestarting` guarded).
+		const afterRecycleSpawns = mockSpawn.mock.calls.length;
+		expect(afterRecycleSpawns).toBe(initialSpawns + 1);
+		expect(
+			mgr.listHandles().filter((h) => h.agentId === "pr-triage"),
+		).toHaveLength(1);
+		// The recycle is a heartbeat action — it must NOT have emitted a cron-side
+		// restart event (that channel is for the cron loop's own restarts).
+		expect(emittedEventsOfKind("cron-agent-restarted")).toHaveLength(0);
+
+		// ── Phase B — crash the gen-2 PTY. The KEY assertion: the cron exit
+		// listener was RE-ARMED onto gen-2 by `agent-restarted` (without Task 8 it
+		// would still be bound to the dead gen-1 PTY, so this crash would go
+		// un-restarted — silent death of the daily job).
+		const gen2Pty = ptyState.last;
+		if (gen2Pty === null) throw new Error("no gen-2 pty");
+		const noise = "completely-unrelated-noise-XYZ ".repeat(20);
+		gen2Pty.emitData(noise);
+		expect(gen2Pty.killCalls).toContain("SIGTERM");
+
+		// #92 re-gate (lens:tests) — the cron-side restart fires on an injected 10ms
+		// backoff, but the prior FIXED 120ms sleep flaked ~66% under full-suite parallel
+		// load (the restart had not emitted within the window → length 0). Poll-until
+		// instead so the wait scales with host load; the 15s test timeout is the only
+		// upper bound. The no-DOUBLE-restart property (length never exceeds 1) is proven
+		// DETERMINISTICALLY by CR-2 (fake timers, main.test.ts) and by Phase A above —
+		// here we only assert the re-arm WORKED (the gen-2 crash produced one cron
+		// restart). A spurious second restart would fail CR-2, not this e2e variant.
+		await vi.waitFor(
+			() => {
+				expect(emittedEventsOfKind("cron-agent-restarted")).toHaveLength(1);
+			},
+			{ timeout: 5000, interval: 20 },
+		);
+
+		// EXACTLY ONE cron-side restart from the gen-2 crash — not zero (listener was
+		// armed; asserted above) and not two (no double-restart; see CR-2 + Phase A).
+		const cronRestarts = emittedEventsOfKind("cron-agent-restarted");
+		expect(cronRestarts).toHaveLength(1);
+		expect(cronRestarts[0]).toMatchObject({
+			kind: "cron-agent-restarted",
+			agentId: "pr-triage",
+			attempt: 1,
+		});
+		// gen-3 spawned (recycle gen-2 + crash-restart gen-3).
+		expect(mockSpawn.mock.calls.length).toBe(initialSpawns + 2);
+		// Still exactly one live handle after the whole sequence.
+		expect(
+			mgr.listHandles().filter((h) => h.agentId === "pr-triage"),
+		).toHaveLength(1);
 	}, 15_000);
 
 	it("Case 5 — agent send envelope (sendText) routes to 'task-send-needed', NOT dispatch (daemon owns the send)", async () => {
@@ -1194,5 +1322,42 @@ describe("pr-triage integration (R1 daemon-owned creds)", () => {
 					(e as { reason: string }).reason === "malformed-task",
 			),
 		).toBe(true);
+	});
+});
+
+// ───── #92 — prompt-template runId consistency (accept-current-behavior) ─────
+//
+// The #92 design decision (Santiago) is ACCEPT CURRENT BEHAVIOR: runId is
+// mandatory while a run is active. A pr-triage run is ALWAYS active when its
+// envelope is processed (the daemon armed the dead-letter timer at dispatch), so
+// omitting/garbling the runId DROPS the daily summary — it is quarantined and
+// surfaces a `pr-triage-result-timeout` ~120s later, NOT delivered. The template
+// previously self-contradicted: it called the empty default the "SAFE default"
+// and claimed the daemon "falls back to an agentId-only clear" on a missing
+// runId, while ALSO stating a missing/non-UUID value is dropped. These tests pin
+// the template to the consistent accept-current framing so the contradiction
+// cannot regress.
+describe("pr-triage prompt-template runId consistency (#92)", () => {
+	const template = fs.readFileSync(
+		path.join(__dirname, "prompt-template.md"),
+		"utf8",
+	);
+
+	it("does not frame an empty/missing runId as SAFE or as an agentId-only-clear fallback", () => {
+		// RED before the fix: both phrases were present (the self-contradiction).
+		expect(template).not.toMatch(/SAFE default/i);
+		expect(template).not.toContain("falls back to an agentId-only clear");
+	});
+
+	it("states the runId is REQUIRED and instructs replacing the empty default with the UUID", () => {
+		// "is REQUIRED" (the prose) — not a bare /REQUIRED/ which would falsely match
+		// the payload's REVIEW_REQUIRED enum value.
+		expect(template).toMatch(/is REQUIRED/);
+		// The empty-default mechanism STAYS (omit-on-empty: never emit runId:"") but
+		// the comment must instruct replacing it with the UUID and warn that leaving
+		// it empty drops the summary while a run is active.
+		expect(template).toContain('RUN_ID=""');
+		expect(template).toContain("REPLACE with the runId UUID");
+		expect(template).toMatch(/Leaving it empty DROPS/i);
 	});
 });

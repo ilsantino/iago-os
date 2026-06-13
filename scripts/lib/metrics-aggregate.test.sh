@@ -449,6 +449,81 @@ fi
 
 rm -rf "$TMP14"
 
+# ─── Test 15: input-sink reconciliation — the NEW JS-workflow summary file
+# (.iago/state/pipeline-runs.ndjson) is read AND surfaced in js_pipeline_runs,
+# alongside the legacy per-stage directory (Task 4) ─────────────────────────
+TMP15=$(mktemp -d)
+RUNS_DIR="$TMP15/.iago/state/pipeline-runs"
+mkdir -p "$RUNS_DIR"
+
+# Legacy per-stage run (feeds stage-stats + by_session as before) …
+cat > "$RUNS_DIR/20260601-000001-plan-legacy.ndjson" <<'EOF'
+{"type":"stage_start","stage":"implement","ts":"2026-06-01T00:00:01Z","sessionId":"sess-recon"}
+{"type":"stage_end","stage":"implement","exit":"0","duration_ms":1234,"timed_out":false,"sessionId":"sess-recon","ts":"2026-06-01T00:00:03Z"}
+{"type":"pipeline_finalize","plan":"plan","pipeline_exit":"0","duration_ms":1235,"sessionId":"sess-recon","ts":"2026-06-01T00:00:03Z"}
+EOF
+
+# … and the NEW JS-workflow summary FILE (one per-plan completion line).
+cat > "$TMP15/.iago/state/pipeline-runs.ndjson" <<'EOF'
+{"plan":"feature-recon-01","pr":"https://github.com/x/y/pull/99","verdict":"clean","codex":"gpt-5.5","rounds":1,"ts":"2026-06-01T01:00:00Z"}
+EOF
+
+OUTPUT=$(cd "$TMP15" && node "$AGGREGATOR" --last 5 2>&1) || true
+# Both the legacy stage table AND the new js_pipeline_runs section must appear.
+if echo "$OUTPUT" | grep -q 'implement'; then
+  ok "reconcile: legacy stage-stats still rendered"
+else
+  nope "reconcile: legacy stage table missing"
+  echo "$OUTPUT" | sed 's/^/  /'
+fi
+if echo "$OUTPUT" | grep -q 'js_pipeline_runs' && echo "$OUTPUT" | grep -q 'feature-recon-01'; then
+  ok "reconcile: JS-workflow summary file surfaced in js_pipeline_runs"
+else
+  nope "reconcile: JS-workflow summary file NOT surfaced (input-sink mismatch)"
+  echo "$OUTPUT" | sed 's/^/  /'
+fi
+
+rm -rf "$TMP15"
+
+# ─── Test 16: JS sink present but legacy stage DIR absent — render the JS
+# section and exit 0 (the JS file IS real telemetry, not a fail-closed empty) ─
+TMP16=$(mktemp -d)
+mkdir -p "$TMP16/.iago/state"
+cat > "$TMP16/.iago/state/pipeline-runs.ndjson" <<'EOF'
+{"plan":"feature-jsonly-01","pr":"","verdict":"clean","codex":"second-claude","rounds":0,"ts":"2026-06-01T02:00:00Z"}
+EOF
+
+OUTPUT=$(cd "$TMP16" && node "$AGGREGATOR" --last 5 2>&1)
+RC=$?
+if [[ $RC -eq 0 ]] && echo "$OUTPUT" | grep -q 'feature-jsonly-01'; then
+  ok "js-only: JS sink with no legacy dir renders + exits 0"
+else
+  nope "js-only: expected exit 0 + JS row (rc=$RC)"
+  echo "$OUTPUT" | sed 's/^/  /'
+fi
+
+rm -rf "$TMP16"
+
+# ─── Test 17: BOTH sinks absent — still fail-closed (Task 4 must not weaken
+# the dual-adversarial false-green guard) ───────────────────────────────────
+TMP17=$(mktemp -d)
+# Neither the legacy dir nor the JS file exists.
+if (cd "$TMP17" && node "$AGGREGATOR" --last 1 >/dev/null 2>&1); then
+  nope "both-absent: default should still exit non-zero (fail-closed)"
+else
+  ok "both-absent: default exits non-zero (fail-closed preserved)"
+fi
+# … and --allow-empty still soft-noops when BOTH are absent.
+OUTPUT=$(cd "$TMP17" && node "$AGGREGATOR" --last 1 --allow-empty 2>&1)
+RC=$?
+if [[ $RC -eq 0 ]] && echo "$OUTPUT" | grep -q "no input files"; then
+  ok "both-absent: --allow-empty exits 0 with 'no input files'"
+else
+  nope "both-absent: --allow-empty should exit 0 + 'no input files' (rc=$RC)"
+fi
+
+rm -rf "$TMP17"
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [[ $FAIL -eq 0 ]] || exit 1

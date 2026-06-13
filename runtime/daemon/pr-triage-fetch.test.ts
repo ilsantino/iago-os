@@ -151,6 +151,125 @@ describe("fetchOpenPrs", () => {
 		expect((thrown as FetchPrsError).message).toContain("timed out");
 		expect((thrown as FetchPrsError).message).not.toContain(SECRET_TOKEN);
 	});
+
+	it("(pass #2 Important) a STALLED body read is TIME-bounded by the abort timer (does not hang the daemon)", async () => {
+		// The body read must be time-bounded, not only size-bounded (Task 7's cap). The prior
+		// code cleared the abort timer in the fetch's own finally, BEFORE readBodyCapped ran,
+		// so a trickle/stalled connection dripping bytes under the cap hung fetchOpenPrs forever
+		// on the long-lived daemon. The fix keeps the timer armed across the streaming read.
+		// Here the body reader NEVER resolves on its own — only the abort ends it. RED before
+		// the fix: the read never aborts and this call hangs (test times out). GREEN: it aborts.
+		const fetchImpl = vi.fn(
+			async (_url: string | URL | Request, init?: RequestInit) => {
+				const signal = init?.signal;
+				const reader = {
+					read: () =>
+						new Promise<{ done: boolean; value?: Uint8Array }>((_resolve, reject) => {
+							signal?.addEventListener("abort", () => {
+								const e = new Error("aborted");
+								e.name = "AbortError";
+								reject(e);
+							});
+						}),
+					cancel: async () => undefined,
+				};
+				return {
+					status: 200,
+					headers: { get: () => null },
+					body: { getReader: () => reader },
+				} as unknown as Response;
+			},
+		) as unknown as typeof fetch;
+
+		let thrown: unknown;
+		try {
+			await fetchOpenPrs(SECRET_TOKEN, { fetchImpl, timeoutMs: 10 });
+		} catch (err) {
+			thrown = err;
+		}
+		expect(thrown).toBeInstanceOf(FetchPrsError);
+		// The stalled read is aborted by the timer and mapped to the token-free "timed out".
+		expect((thrown as FetchPrsError).message).toContain("timed out");
+		expect((thrown as FetchPrsError).message).not.toContain(SECRET_TOKEN);
+	});
+
+	it("(Task 7) throws a FetchPrsError when the streamed body exceeds the byte cap (no unbounded buffer)", async () => {
+		// Task 7 (Important): the AbortController bounds TIME, never SIZE.
+		// `await res.json()` would buffer the ENTIRE body into the long-lived
+		// daemon heap. A response larger than the cap must throw `FetchPrsError`
+		// (→ pr-fetch-failed) while streaming, rather than being fully buffered.
+		// A real streaming `Response` (has `.body.getReader()`) exercises the
+		// running-byte-counter abort path. Cap set tiny so the test body trips it.
+		const big = JSON.stringify({
+			data: { search: { issueCount: 1, nodes: [{ number: 1, title: "x" }] } },
+			padding: "A".repeat(4096),
+		});
+		const fetchImpl = vi.fn(
+			async () =>
+				new Response(big, {
+					status: 200,
+					headers: { "Content-Type": "application/json" },
+				}),
+		) as unknown as typeof fetch;
+
+		let thrown: unknown;
+		try {
+			await fetchOpenPrs(SECRET_TOKEN, { fetchImpl, maxResponseBytes: 256 });
+		} catch (err) {
+			thrown = err;
+		}
+		expect(thrown).toBeInstanceOf(FetchPrsError);
+		const e = thrown as FetchPrsError;
+		expect(e.status).toBe(200);
+		expect(e.message).toContain("exceeds");
+		// Token never leaks into the overflow error.
+		expect(e.message).not.toContain(SECRET_TOKEN);
+	});
+
+	it("(Task 7) rejects on an over-cap Content-Length header (fast reject)", async () => {
+		// `Content-Length`, when present and over the cap, is the fast-reject path:
+		// the overflow is surfaced from the declared length, not from buffering the
+		// whole body. (We assert the throw + the content-length reason; whether the
+		// underlying Response eagerly primes its stream is a runtime detail.)
+		const fetchImpl = vi.fn(
+			async () =>
+				new Response(JSON.stringify({ data: { search: { nodes: [] } } }), {
+					status: 200,
+					headers: {
+						"Content-Type": "application/json",
+						"Content-Length": String(64 * 1024 * 1024),
+					},
+				}),
+		) as unknown as typeof fetch;
+
+		let thrown: unknown;
+		try {
+			await fetchOpenPrs(SECRET_TOKEN, { fetchImpl, maxResponseBytes: 1024 });
+		} catch (err) {
+			thrown = err;
+		}
+		expect(thrown).toBeInstanceOf(FetchPrsError);
+		expect((thrown as FetchPrsError).message).toContain("content-length");
+		expect((thrown as FetchPrsError).message).not.toContain(SECRET_TOKEN);
+	});
+
+	it("(Task 7) a normal under-cap response still parses cleanly", async () => {
+		// Regression guard: the byte cap must not break the happy path.
+		const nodes = [{ number: 7, title: "ok" }];
+		const fetchImpl = vi.fn(
+			async () =>
+				new Response(
+					JSON.stringify({ data: { search: { issueCount: 1, nodes } } }),
+					{ status: 200, headers: { "Content-Type": "application/json" } },
+				),
+		) as unknown as typeof fetch;
+		const result = await fetchOpenPrs(SECRET_TOKEN, {
+			fetchImpl,
+			maxResponseBytes: 8 * 1024 * 1024,
+		});
+		expect(result.nodes).toEqual(nodes);
+		expect(result.issueCount).toBe(1);
+	});
 });
 
 describe("sanitizePrPayload", () => {
@@ -171,9 +290,7 @@ describe("sanitizePrPayload", () => {
 			statusCheckRollup: {
 				state: "SUCCESS",
 				contexts: {
-					nodes: [
-						{ __typename: "CheckRun", conclusion: "SUCCESS", name: "ci" },
-					],
+					nodes: [{ __typename: "CheckRun", conclusion: "SUCCESS", name: "ci" }],
 				},
 			},
 			...overrides,
@@ -200,9 +317,7 @@ describe("sanitizePrPayload", () => {
 			[
 				rawPr({
 					comments: {
-						nodes: [
-							{ author: { login: "bot" }, body: "Hey @CLAUDE please review" },
-						],
+						nodes: [{ author: { login: "bot" }, body: "Hey @CLAUDE please review" }],
 					},
 				}),
 			],
@@ -275,10 +390,7 @@ describe("sanitizePrPayload", () => {
 	});
 
 	it("emits a null checksState when statusCheckRollup is null (no checks configured)", () => {
-		const payload = sanitizePrPayload(
-			[rawPr({ statusCheckRollup: null })],
-			NOW,
-		);
+		const payload = sanitizePrPayload([rawPr({ statusCheckRollup: null })], NOW);
 		expect(payload.prs[0].checksState).toBeNull();
 		expect(payload.prs[0].anyCheckTimedOut).toBe(false);
 	});
@@ -342,11 +454,7 @@ describe("sanitizePrPayload", () => {
 
 	it("(FIX C) totalCount reflects the TRUE issueCount, never fewer than inspected", () => {
 		// 2 inspected PRs but the server reports 137 open total (the >50 page case).
-		const payload = sanitizePrPayload(
-			[rawPr(), rawPr({ number: 43 })],
-			NOW,
-			137,
-		);
+		const payload = sanitizePrPayload([rawPr(), rawPr({ number: 43 })], NOW, 137);
 		expect(payload.prs).toHaveLength(2);
 		expect(payload.totalCount).toBe(137);
 		// Never under-reports below the inspected count even if a bad total is passed.
@@ -358,11 +466,7 @@ describe("sanitizePrPayload", () => {
 		// 2 inspected PRs but the server reports 63 open total — the >50 page
 		// case. The summary must be able to say "inspected first 2 of 63" rather
 		// than implying all 63 were classified (the falsely-reassuring triage).
-		const payload = sanitizePrPayload(
-			[rawPr(), rawPr({ number: 43 })],
-			NOW,
-			63,
-		);
+		const payload = sanitizePrPayload([rawPr(), rawPr({ number: 43 })], NOW, 63);
 		expect(payload.totalCount).toBe(63);
 		expect(payload.inspectedCount).toBe(2);
 		expect(payload.truncated).toBe(true);

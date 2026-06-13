@@ -184,6 +184,39 @@ describe("commands / parseCommand", () => {
 		}
 	});
 
+	it("parses /inject when a NEWLINE separates agent from text (any-whitespace boundary)", () => {
+		// Regression (Task 2): the old literal `indexOf(" ")` boundary returned
+		// -1 for a newline-separated `/inject agent\ntext` (no literal space
+		// before the newline) and rejected a valid invocation as "missing
+		// argument: text". `afterCmd.search(/\s/)` splits on the first whitespace
+		// of ANY kind, so a newline delimiter is honored and the payload is
+		// preserved verbatim from just past it.
+		const r = parseCommand("/inject claude-main\nhello world");
+		expect(r.ok).toBe(true);
+		if (r.ok && r.command.name === "inject") {
+			expect(r.command.agent).toBe("claude-main");
+			expect(r.command.text).toBe("hello world");
+		}
+	});
+
+	it("(Minor round 1) /inject agent\\ttext — tab delimiter drops ONLY the boundary tab and preserves payload whitespace verbatim", () => {
+		// Coverage gap from the round-1 review: the plan required BOTH the
+		// `\n`-delimited AND the `\t`-delimited boundary cases be asserted. The
+		// existing tab case (`/inject claude-main\thello world`) proves the agent
+		// split, but does not pin that ONLY the single boundary tab is consumed and
+		// the payload's own internal whitespace survives. A tab boundary followed
+		// by a payload that itself starts with whitespace + contains tabs/newlines:
+		// the slice at `firstWs + 1` must drop exactly one tab and keep the rest.
+		const r = parseCommand("/inject claude-main\t  col1\tcol2\nrow2");
+		expect(r.ok).toBe(true);
+		if (r.ok && r.command.name === "inject") {
+			expect(r.command.agent).toBe("claude-main");
+			// Boundary tab dropped; the payload's leading spaces + inner tab +
+			// newline are all preserved verbatim.
+			expect(r.command.text).toBe("  col1\tcol2\nrow2");
+		}
+	});
+
 	it("parses /status agent-foo", () => {
 		const r = parseCommand("/status agent-foo");
 		expect(r.ok).toBe(true);
