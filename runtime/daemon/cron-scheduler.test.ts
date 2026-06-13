@@ -205,9 +205,7 @@ describe("matchesCron — parser", () => {
 	});
 
 	it("(8) malformed expression throws RangeError naming the offending field", () => {
-		expect(() => matchesCron("bogus expression", new Date())).toThrow(
-			RangeError,
-		);
+		expect(() => matchesCron("bogus expression", new Date())).toThrow(RangeError);
 		expect(() =>
 			matchesCron("0 99 * * *", new Date(Date.UTC(2026, 4, 18, 0, 0, 0))),
 		).toThrow(/hour/);
@@ -438,6 +436,67 @@ describe("CronScheduler — lifecycle", () => {
 		const pending = await fsp.readdir(path.join(tempDir, "tasks/pending"));
 		expect(pending).toHaveLength(0);
 		await sch.stop();
+	});
+
+	it("(11c) runWakeCheck spawns with a SCRUBBED env — NO GH_TOKEN/IAGO_TELEGRAM_BOT_TOKEN, keeps PATH (R1 D1)", async () => {
+		vi.useFakeTimers();
+		// Plant secrets on the daemon's own env — these MUST NOT reach the
+		// wake-check bash subprocess (R1: agents/subprocesses never hold secrets).
+		const priorGhToken = process.env.GH_TOKEN;
+		const priorBotToken = process.env.IAGO_TELEGRAM_BOT_TOKEN;
+		const priorPath = process.env.PATH;
+		process.env.GH_TOKEN = "ghp_secret_should_not_leak";
+		process.env.IAGO_TELEGRAM_BOT_TOKEN = "tg_secret_should_not_leak";
+		// Guarantee PATH is present so the allowlisted-key assertion is meaningful.
+		if (process.env.PATH === undefined || process.env.PATH.length === 0) {
+			process.env.PATH = "/usr/bin";
+		}
+		try {
+			const wake = path.join(tempDir, "wake.sh");
+			fs.writeFileSync(wake, "#!/bin/bash\nexit 0\n");
+			spawnSyncMock.mockReturnValueOnce({
+				status: 0,
+				signal: null,
+				error: undefined,
+				stdout: "",
+				stderr: "",
+				pid: 4242,
+				output: [],
+			});
+			const sch = new CronScheduler({
+				agentManager: new EventEmitter(),
+				nowFn: () => new Date(Date.UTC(2026, 4, 18, 14, 0, 0)),
+			});
+			const prompt = writePromptTemplate("p.txt", "do thing");
+			sch.registerCron({
+				agentId: "pr-triage",
+				schedule: "0 14 * * *",
+				wakeCheck: wake,
+				promptTemplatePath: prompt,
+				outputTaskNamePrefix: "pr-triage",
+			});
+			sch.start();
+			await sch._tickForTests();
+
+			expect(spawnSyncMock).toHaveBeenCalledTimes(1);
+			const [cmd, args, opts] = spawnSyncMock.mock.calls[0];
+			expect(cmd).toBe("bash");
+			expect(args).toEqual([wake]);
+			const spawnedEnv: NodeJS.ProcessEnv = opts?.env ?? {};
+			// Secrets MUST be scrubbed (this fails against the old `env: process.env`).
+			expect(spawnedEnv.GH_TOKEN).toBeUndefined();
+			expect(spawnedEnv.IAGO_TELEGRAM_BOT_TOKEN).toBeUndefined();
+			// Non-secret runtime descriptor MUST survive (PTY/bash needs PATH).
+			expect(spawnedEnv.PATH).toBe(process.env.PATH);
+			await sch.stop();
+		} finally {
+			if (priorGhToken === undefined) delete process.env.GH_TOKEN;
+			else process.env.GH_TOKEN = priorGhToken;
+			if (priorBotToken === undefined) delete process.env.IAGO_TELEGRAM_BOT_TOKEN;
+			else process.env.IAGO_TELEGRAM_BOT_TOKEN = priorBotToken;
+			if (priorPath === undefined) delete process.env.PATH;
+			else process.env.PATH = priorPath;
+		}
 	});
 
 	it("(12) tick WITHOUT wakeCheck writes the task file and emits cron-fired", async () => {
@@ -779,6 +838,238 @@ describe("CronScheduler — overlap + decrement", () => {
 		expect(overlaps).toHaveLength(0);
 		await sch.stop();
 	});
+
+	it("(15 — Task 6 #2) a deferReleaseAgents slot is HELD across task-resolved and released only on cron-result-complete", async () => {
+		// Task 6 gate-finding #2 (hold-slot-until-result): for a send-contract
+		// agent (pr-triage), `task-resolved` fires at PROMPT HANDOFF, not run
+		// completion. With the agent in `deferReleaseAgents`, task-resolved must
+		// NOT release the slot — only `cron-result-complete` (emitted when the
+		// result envelope is processed or a durable dead-letter fires) does.
+		// Without the fix, the next tick could dispatch a second prompt mid-run.
+		vi.useFakeTimers();
+		const am = new EventEmitter();
+		const prompt = writePromptTemplate("p.txt", "go");
+		let nowHolder = new Date(Date.UTC(2026, 4, 18, 14, 0, 0));
+		const sch = new CronScheduler({
+			agentManager: am,
+			nowFn: () => nowHolder,
+			deferReleaseAgents: new Set(["pr-triage"]),
+		});
+		sch.registerCron({
+			agentId: "pr-triage",
+			schedule: "0 14 * * *",
+			promptTemplatePath: prompt,
+			outputTaskNamePrefix: "pr-triage",
+			maxConcurrent: 1,
+		});
+		sch.start();
+		await sch._tickForTests();
+		expect(sch._runningCountForTests().get("pr-triage")).toBe(1);
+
+		const pendingForResolve = await fsp.readdir(
+			path.join(tempDir, "tasks/pending"),
+		);
+		const emittedFilename = pendingForResolve[0] as string;
+
+		// task-resolved (prompt handoff) must NOT release the deferred slot.
+		am.emit("task-resolved", {
+			agentId: "pr-triage",
+			filename: emittedFilename,
+		});
+		expect(sch._runningCountForTests().get("pr-triage")).toBe(1);
+		expect(sch._outstandingFilenamesForTests().has("pr-triage")).toBe(true);
+
+		// A second matching tick MUST be overlap-prevented — the slot is still held.
+		nowHolder = new Date(Date.UTC(2026, 4, 18, 14, 0, 30));
+		await sch._tickForTests();
+		const evtsMid = await readTelemetry();
+		expect(
+			evtsMid.filter((e) => e.kind === "cron-overlap-prevented"),
+		).not.toHaveLength(0);
+		// Still exactly one pending file (the second tick did not dispatch).
+		expect(await fsp.readdir(path.join(tempDir, "tasks/pending"))).toHaveLength(
+			1,
+		);
+
+		// cron-result-complete (run done) releases the slot.
+		am.emit("cron-result-complete", {
+			agentId: "pr-triage",
+			filename: emittedFilename,
+		});
+		expect(sch._runningCountForTests().get("pr-triage")).toBe(0);
+		expect(sch._outstandingFilenamesForTests().has("pr-triage")).toBe(false);
+		await sch.stop();
+	});
+
+	it("(15b — round-2 Minor) restoreOutstanding re-holds a recovered in-flight slot across a restart; a matching tick is overlap-prevented until cron-result-complete", async () => {
+		// Round-2 Minor (Codex): on daemon restart, a still-future result-pending
+		// marker means a run is still in flight. The recovery path calls
+		// `restoreOutstanding(agentId, filename)` so the scheduler does NOT boot at
+		// runningCount=0 — otherwise a matching cron tick dispatches a SECOND prompt
+		// that overwrites the single marker. This test proves the re-held slot blocks
+		// the next overlapping fire and is released on run completion.
+		//
+		// FAILS without `restoreOutstanding` (no API to re-hold the slot → the tick
+		// fires a duplicate).
+		vi.useFakeTimers();
+		const am = new EventEmitter();
+		const prompt = writePromptTemplate("p.txt", "go");
+		const nowHolder = new Date(Date.UTC(2026, 4, 18, 14, 0, 0));
+		const sch = new CronScheduler({
+			agentManager: am,
+			nowFn: () => nowHolder,
+			deferReleaseAgents: new Set(["pr-triage"]),
+		});
+		sch.registerCron({
+			agentId: "pr-triage",
+			schedule: "0 14 * * *",
+			promptTemplatePath: prompt,
+			outputTaskNamePrefix: "pr-triage",
+			maxConcurrent: 1,
+		});
+
+		// Simulate boot recovery: a run was in flight when the daemon restarted.
+		const recoveredFilename = "pr-triage__recovered.json";
+		sch.restoreOutstanding("pr-triage", recoveredFilename);
+		expect(sch._runningCountForTests().get("pr-triage")).toBe(1);
+		expect(
+			sch._outstandingFilenamesForTests().get("pr-triage")?.has(recoveredFilename),
+		).toBe(true);
+
+		// Idempotent: a duplicate recovery must NOT double-count the slot.
+		sch.restoreOutstanding("pr-triage", recoveredFilename);
+		expect(sch._runningCountForTests().get("pr-triage")).toBe(1);
+
+		// A matching tick must be overlap-prevented — the recovered slot is held, so
+		// NO duplicate prompt is dispatched (no pending file written).
+		sch.start();
+		await sch._tickForTests();
+		const evts = await readTelemetry();
+		expect(
+			evts.filter((e) => e.kind === "cron-overlap-prevented"),
+		).not.toHaveLength(0);
+		expect(await fsp.readdir(path.join(tempDir, "tasks/pending"))).toHaveLength(
+			0,
+		);
+
+		// When the recovered run completes, the slot is released.
+		am.emit("cron-result-complete", {
+			agentId: "pr-triage",
+			filename: recoveredFilename,
+		});
+		expect(sch._runningCountForTests().get("pr-triage")).toBe(0);
+		expect(sch._outstandingFilenamesForTests().has("pr-triage")).toBe(false);
+		await sch.stop();
+	});
+
+	it("(16 — Task 6 #2) a non-deferred agent still releases on task-resolved (back-compat)", async () => {
+		// Regression guard: deferReleaseAgents must be opt-in. An agent NOT in the
+		// set keeps the legacy release-on-handoff behavior — task-resolved releases.
+		vi.useFakeTimers();
+		const am = new EventEmitter();
+		const prompt = writePromptTemplate("p.txt", "go");
+		const sch = new CronScheduler({
+			agentManager: am,
+			nowFn: () => new Date(Date.UTC(2026, 4, 18, 14, 0, 0)),
+			deferReleaseAgents: new Set(["pr-triage"]),
+		});
+		sch.registerCron({
+			agentId: "other-agent",
+			schedule: "0 14 * * *",
+			promptTemplatePath: prompt,
+			outputTaskNamePrefix: "other-agent",
+			maxConcurrent: 1,
+		});
+		sch.start();
+		await sch._tickForTests();
+		expect(sch._runningCountForTests().get("other-agent")).toBe(1);
+		const emitted = (
+			await fsp.readdir(path.join(tempDir, "tasks/pending"))
+		)[0] as string;
+		am.emit("task-resolved", { agentId: "other-agent", filename: emitted });
+		// Non-deferred → released immediately on handoff.
+		expect(sch._runningCountForTests().get("other-agent")).toBe(0);
+		await sch.stop();
+	});
+
+	it("(17 — Critical, round 1) a deferReleaseAgents slot is RELEASED on task-poisoned (pre-dispatch failure, no result timer)", async () => {
+		// Critical (Codex, round 1): for a DEFERRED agent (pr-triage),
+		// `task-poisoned` fires from the polling loop BEFORE any dispatch and
+		// BEFORE any result timer is armed (malformed/oversized payload). No
+		// `cron-result-complete` will ever follow, so if the deferred path held the
+		// slot here it would leak forever and `maxConcurrent: 1` would block every
+		// future cron fire. Therefore task-poisoned MUST release even for a
+		// deferred agent. Without the fix the slot stays at 1 forever.
+		vi.useFakeTimers();
+		const am = new EventEmitter();
+		const prompt = writePromptTemplate("p.txt", "go");
+		const sch = new CronScheduler({
+			agentManager: am,
+			nowFn: () => new Date(Date.UTC(2026, 4, 18, 14, 0, 0)),
+			deferReleaseAgents: new Set(["pr-triage"]),
+		});
+		sch.registerCron({
+			agentId: "pr-triage",
+			schedule: "0 14 * * *",
+			promptTemplatePath: prompt,
+			outputTaskNamePrefix: "pr-triage",
+			maxConcurrent: 1,
+		});
+		sch.start();
+		await sch._tickForTests();
+		expect(sch._runningCountForTests().get("pr-triage")).toBe(1);
+		const emitted = (
+			await fsp.readdir(path.join(tempDir, "tasks/pending"))
+		)[0] as string;
+
+		// A malformed/oversized cron task → task-poisoned, with NO result timer
+		// armed. The deferred slot must be released (not held until a
+		// cron-result-complete that will never come).
+		am.emit("task-poisoned", { agentId: "pr-triage", filename: emitted });
+		expect(sch._runningCountForTests().get("pr-triage")).toBe(0);
+		expect(sch._outstandingFilenamesForTests().has("pr-triage")).toBe(false);
+		await sch.stop();
+	});
+
+	it("(18 — Critical, round 1) a deferReleaseAgents slot is RELEASED on task-unrouted (registration orphan window)", async () => {
+		// Critical (Codex, round 1): same as (17) for `task-unrouted` — a cron task
+		// that arrives during the registration orphan window (agentId not yet
+		// registered) emits task-unrouted from the polling loop before dispatch.
+		// No result timer is armed, so the deferred slot must release here.
+		vi.useFakeTimers();
+		const am = new EventEmitter();
+		const prompt = writePromptTemplate("p.txt", "go");
+		const sch = new CronScheduler({
+			agentManager: am,
+			nowFn: () => new Date(Date.UTC(2026, 4, 18, 14, 0, 0)),
+			deferReleaseAgents: new Set(["pr-triage"]),
+		});
+		sch.registerCron({
+			agentId: "pr-triage",
+			schedule: "0 14 * * *",
+			promptTemplatePath: prompt,
+			outputTaskNamePrefix: "pr-triage",
+			maxConcurrent: 1,
+		});
+		sch.start();
+		await sch._tickForTests();
+		expect(sch._runningCountForTests().get("pr-triage")).toBe(1);
+		const emitted = (
+			await fsp.readdir(path.join(tempDir, "tasks/pending"))
+		)[0] as string;
+
+		am.emit("task-unrouted", { agentId: "pr-triage", filename: emitted });
+		expect(sch._runningCountForTests().get("pr-triage")).toBe(0);
+		expect(sch._outstandingFilenamesForTests().has("pr-triage")).toBe(false);
+
+		// And a subsequent matching tick is NOT overlap-prevented (slot is free).
+		await sch._tickForTests();
+		const evts = await readTelemetry();
+		expect(evts.filter((e) => e.kind === "cron-overlap-prevented")).toHaveLength(
+			0,
+		);
+		await sch.stop();
+	});
 });
 
 describe("validateScheduleSyntax — unconditional field parsing", () => {
@@ -934,6 +1225,111 @@ describe("CronScheduler — terminal listener filename filter", () => {
 			filename: emitted,
 		});
 		expect(sch._runningCountForTests().get("pr-triage")).toBe(0);
+		await sch.stop();
+	});
+});
+
+// R1 (feature-pr84-r1-daemon-creds): prepareCronPrompt — daemon-side
+// fetch + payload injection + zero-PR gate (replaces the bash wake-check).
+describe("CronScheduler — prepareCronPrompt (R1)", () => {
+	it("(R1-1) zero-PR skip → cron-skipped(no-open-prs), NO task file, NO wake-check spawn", async () => {
+		vi.useFakeTimers();
+		const prompt = writePromptTemplate("p.txt", "template body");
+		const sch = new CronScheduler({
+			agentManager: new EventEmitter(),
+			nowFn: () => new Date(Date.UTC(2026, 4, 18, 14, 0, 0)),
+			prepareCronPrompt: async () => ({ skip: true, reason: "no-open-prs" }),
+		});
+		sch.registerCron({
+			agentId: "pr-triage",
+			schedule: "0 14 * * *",
+			promptTemplatePath: prompt,
+			outputTaskNamePrefix: "pr-triage",
+		});
+		sch.start();
+		await sch._tickForTests();
+
+		// No bash wake-check is spawned — gating is daemon-side.
+		expect(spawnSyncMock).not.toHaveBeenCalled();
+		// No task file written.
+		const pending = await fsp.readdir(path.join(tempDir, "tasks/pending"));
+		expect(pending).toHaveLength(0);
+		const evts = await readTelemetry();
+		const skipped = evts.find((e) => e.kind === "cron-skipped");
+		expect(skipped).toBeDefined();
+		expect(skipped?.reason).toBe("no-open-prs");
+		// runningCount NOT incremented on a skip.
+		expect(sch._runningCountForTests().get("pr-triage")).toBeUndefined();
+		await sch.stop();
+	});
+
+	it("(R1-2) non-zero PRs → task file whose prompt has the injected payload and NO credentials", async () => {
+		vi.useFakeTimers();
+		const prompt = writePromptTemplate("p.txt", "ignored verbatim template");
+		const injectedPrompt =
+			'PR DATA: {"totalCount":2,"prs":[{"number":7}]}\nclassify';
+		const sch = new CronScheduler({
+			agentManager: new EventEmitter(),
+			nowFn: () => new Date(Date.UTC(2026, 4, 18, 14, 0, 0)),
+			prepareCronPrompt: async () => ({ skip: false, prompt: injectedPrompt }),
+		});
+		sch.registerCron({
+			agentId: "pr-triage",
+			schedule: "0 14 * * *",
+			promptTemplatePath: prompt,
+			outputTaskNamePrefix: "pr-triage",
+		});
+		sch.start();
+		await sch._tickForTests();
+
+		const pending = await fsp.readdir(path.join(tempDir, "tasks/pending"));
+		expect(pending).toHaveLength(1);
+		const body = await fsp.readFile(
+			path.join(tempDir, "tasks/pending", pending[0] as string),
+			"utf8",
+		);
+		const parsed = JSON.parse(body) as Record<string, unknown>;
+		expect(parsed.agentId).toBe("pr-triage");
+		expect(parsed.needsApproval).toBe(false);
+		// The injected payload (not the verbatim template) is the prompt.
+		expect(parsed.prompt).toBe(injectedPrompt);
+		expect(String(parsed.prompt)).toContain('"totalCount":2');
+		// No credential / gh / curl reference in the task body.
+		const serialized = JSON.stringify(parsed);
+		expect(serialized).not.toContain("gh ");
+		expect(serialized).not.toContain("curl");
+		expect(serialized).not.toContain("GH_TOKEN");
+		expect(serialized).not.toContain("IAGO_TELEGRAM_BOT_TOKEN");
+		// cron-fired emitted.
+		const evts = await readTelemetry();
+		expect(evts.some((e) => e.kind === "cron-fired")).toBe(true);
+		await sch.stop();
+	});
+
+	it("(R1-3) a throwing prepareCronPrompt → cron-skipped(pr-fetch-failed), no task file", async () => {
+		vi.useFakeTimers();
+		const prompt = writePromptTemplate("p.txt", "template");
+		const sch = new CronScheduler({
+			agentManager: new EventEmitter(),
+			nowFn: () => new Date(Date.UTC(2026, 4, 18, 14, 0, 0)),
+			prepareCronPrompt: async () => {
+				throw new Error("boom");
+			},
+		});
+		sch.registerCron({
+			agentId: "pr-triage",
+			schedule: "0 14 * * *",
+			promptTemplatePath: prompt,
+			outputTaskNamePrefix: "pr-triage",
+		});
+		sch.start();
+		await sch._tickForTests();
+
+		const pending = await fsp.readdir(path.join(tempDir, "tasks/pending"));
+		expect(pending).toHaveLength(0);
+		const evts = await readTelemetry();
+		const skipped = evts.find((e) => e.kind === "cron-skipped");
+		expect(skipped?.reason).toBe("pr-fetch-failed");
 		await sch.stop();
 	});
 });

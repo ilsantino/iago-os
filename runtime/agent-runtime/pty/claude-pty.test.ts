@@ -257,10 +257,7 @@ describe("claude-pty adapter", () => {
 		expect(cb).toHaveBeenCalledWith("crashed", undefined);
 		// Allow the queued marker write to flush.
 		await new Promise((resolve) => setImmediate(resolve));
-		const markerFile = path.join(
-			pathFor("markers"),
-			`${handle.id}.daemon-stop`,
-		);
+		const markerFile = path.join(pathFor("markers"), `${handle.id}.daemon-stop`);
 		const raw = await fsp.readFile(markerFile, "utf8");
 		const marker = JSON.parse(raw) as { reason: string };
 		expect(marker.reason).toBe("crash");

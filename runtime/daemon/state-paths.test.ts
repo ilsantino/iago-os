@@ -134,6 +134,56 @@ describe("state-paths", () => {
 				expect(fs.statSync(dir).isDirectory()).toBe(true);
 			}
 		});
+
+		it.skipIf(process.platform === "win32")(
+			"creates every state dir at mode 0700 (daemon-private; pr84 at-rest)",
+			async () => {
+				// State dirs (esp. `agents/`) hold daemon-owned secrets, so they
+				// must be 0700 — no group/other traversal. `mkdirSync`'s mode is
+				// applied on CREATION, which this covers; the upgrade-hardening
+				// case below covers the chmod-on-every-call path. POSIX-only.
+				const tempDir = await fsp.mkdtemp(
+					path.join(os.tmpdir(), "iago-dirs-mode-"),
+				);
+				tempDirs.push(tempDir);
+				process.env.IAGO_DAEMON_STATE_ROOT = tempDir;
+
+				ensureStateDirsSync();
+
+				for (const kind of ALL_KINDS) {
+					const dir = path.join(tempDir, kind);
+					expect(fs.statSync(dir).mode & 0o777).toBe(0o700);
+				}
+			},
+		);
+
+		it.skipIf(process.platform === "win32")(
+			"tightens an EXISTING 0755 state dir to 0700 (upgrade hardening; pr84)",
+			async () => {
+				// `mkdirSync`'s `mode` is applied ONLY on directory CREATION. A
+				// daemon upgraded from an older build that created `agents/` at the
+				// default ~0755 would leave secret-bearing configs world-readable.
+				// `ensureStateDirsSync` now `chmodSync`s on EVERY call so a
+				// pre-existing loose dir is tightened to 0700. Fails pre-fix (the
+				// 0755 mode survived); passes after. POSIX-only.
+				const tempDir = await fsp.mkdtemp(
+					path.join(os.tmpdir(), "iago-dirs-upgrade-"),
+				);
+				tempDirs.push(tempDir);
+				process.env.IAGO_DAEMON_STATE_ROOT = tempDir;
+
+				// Pre-create one state dir at the loose 0755 an older build used.
+				const agentsDir = path.join(tempDir, "agents");
+				fs.mkdirSync(agentsDir, { recursive: true, mode: 0o755 });
+				fs.chmodSync(agentsDir, 0o755);
+				expect(fs.statSync(agentsDir).mode & 0o777).toBe(0o755);
+
+				ensureStateDirsSync();
+
+				// The existing dir is tightened, not left at 0755.
+				expect(fs.statSync(agentsDir).mode & 0o777).toBe(0o700);
+			},
+		);
 	});
 
 	describe("pathFor", () => {
@@ -183,9 +233,7 @@ describe("state-paths", () => {
 
 	describe("assertSafeIdentifier", () => {
 		it("accepts an opaque random-style taskId", () => {
-			expect(() =>
-				assertSafeIdentifier("alpha__abc-123", "taskId"),
-			).not.toThrow();
+			expect(() => assertSafeIdentifier("alpha__abc-123", "taskId")).not.toThrow();
 		});
 
 		it("rejects empty string", () => {
@@ -207,15 +255,11 @@ describe("state-paths", () => {
 		});
 
 		it("rejects '..' substring", () => {
-			expect(() => assertSafeIdentifier("foo..bar", "taskId")).toThrow(
-				TypeError,
-			);
+			expect(() => assertSafeIdentifier("foo..bar", "taskId")).toThrow(TypeError);
 		});
 
 		it("rejects NUL byte", () => {
-			expect(() => assertSafeIdentifier("foo\0bar", "taskId")).toThrow(
-				TypeError,
-			);
+			expect(() => assertSafeIdentifier("foo\0bar", "taskId")).toThrow(TypeError);
 		});
 
 		it("rejects identifier longer than 200 chars", () => {

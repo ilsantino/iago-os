@@ -123,7 +123,9 @@ previous attempt was interrupted.
   ```
 
   The `v2-gh-token` item MUST be a GitHub classic PAT scoped to
-  `repo + read:org` (Plan 04 wake-check requires `read:org`) with 90-day
+  `repo + read:org` (the daemon's OWN org-wide PR GraphQL fetch —
+  `author:ilsantino is:pr is:open` — requires `read:org`; the bash wake-check is
+  retired) with 90-day
   expiry. Regenerate quarterly via
   `runtime/deploy/provision-credentials.sh gh-token`.
 
@@ -336,7 +338,7 @@ T+02:00  Telegram rotation (per spec § 3 procedure):
          response (because we revoked — old token is dead).
 
 T+05:00  Terminal (a): provision the new Telegram credential AND gh-token
-         (Plan 04 PR-triage agent requires gh-token at first wake-check;
+         (the daemon holds gh-token for its OWN PR-triage GraphQL fetch;
          matches cutover.sh:461 verbatim)
            bash runtime/deploy/provision-credentials.sh telegram-token gh-token
          (terminal a is Santiago's Windows box — repo-relative path,

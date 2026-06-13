@@ -60,7 +60,7 @@ This stage produces 5–8 plan files (`NN-*.md`) that, when executed through the
 These bindings are locked by the ADR + master prompt + memory entries. Any plan contradicting them is wrong.
 
 - **Multi-shape mandatory** — `AgentRuntime` is the polymorphic interface; PTY is Shape 1 of 5. Adapter declares `interfaceVersion: "v1"`.
-- **One Telegram bot, per-agent file-bus tagging** — per-agent bot tokens rejected.
+- **One Telegram bot, per-agent file-bus tagging** — per-agent bot tokens rejected. *(Reaffirmed 2026-05-29: KEPT; per-agent identity via sticky `/agent <id>` + optional forum-topics on the single bot, tokens still rejected.)* *(SUPERSEDED 2026-05-30 — Santiago LOCKED: reversed to per-agent bots for standing agents + one chief bot for ephemeral workers; affects Phase 3+, NOT Phase 1 scope; ADR `.iago/decisions/2026-05-30-per-agent-bots-and-chief-tier.md`.)*
 - **systemd `LoadCredential=` for HTTP-shape auth** (Phase 3 prereq, decision locked now). 1Password CLI provisioning-only.
 - **Streamlit fallback dropped** — full Next.js dashboard ships in Phase 6, not Phase 1.
 - **session.jsonl two-phase replay required in Phase 1** (pause intake → replay up to HWM → resume) — not deferred.
@@ -74,6 +74,7 @@ These bindings are locked by the ADR + master prompt + memory entries. Any plan 
 - **No Postgres.** SQLite for cost ledger (Phase 8). JSON/JSONL for everything else.
 - **Pipeline preserved.** `scripts/execute-pipeline.sh` runs unchanged. Phase 1 does NOT wire daemon-driven pipeline invocation (that is Phase 2+).
 - **Garry-impressed completeness standard.** No TODOs without a tracked issue + date; no "good enough for now"; every failure path handled and tested.
+- **Amendment 2026-05-29 (cortextOS video alignment — affects Phase 3+, NOT Phase 1):** Three constraints above are REFINED for later phases, not Phase 1: (1) the no-agent-to-agent-messaging stance is refined to permit agents as file-bus producers (typed `agent-message`/`task-assignment` envelopes; no broker) — lands in new Phase 3.5 `feature-v2-agent-comms-channel`; (2) a `role:"chief"` capability flag (NOT a new shape) authorizes peer-task production — lands in Phase 3 `feature-v2-supervisor-role`, reusing the Phase-1 `spawnSubagent` semantics; (3) 'One Telegram bot' (line 63) is KEPT — per-agent identity comes via sticky default-target + optional forum-topics, never per-agent tokens. Phase 1 scope and acceptance criteria are UNCHANGED. Trail: `.iago/research/2026-05-29-cortextos-comms-gap-analysis.md`. Pending Santiago re-lock of the vision/master-prompt anti-scope bullets before those plans execute. **Update 2026-05-30:** item (3) is reversed — per-agent bots for standing agents + one chief bot for ephemeral workers/broadcast (forum-topics dropped; per-agent bots are private DMs). Phase 1 scope still UNCHANGED. ADR `.iago/decisions/2026-05-30-per-agent-bots-and-chief-tier.md`.
 
 ## Open questions to capture (not block) during planning
 

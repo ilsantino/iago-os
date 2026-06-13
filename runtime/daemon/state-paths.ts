@@ -45,6 +45,19 @@ export type StateKind =
 	| "agents"
 	| "telemetry"
 	| "session-logs"
+	// Task 6 (result-envelope dead-letter durability): per-agent durable
+	// markers `<agentId>.json` recording an in-flight pr-triage dispatch's
+	// correlation runId + deadline. Written at dispatch, removed when the
+	// result envelope is processed (or the timer fires). Scanned at boot so a
+	// daemon restart mid-dispatch re-arms or immediately dead-letters the
+	// orphaned dispatch instead of silently dropping the daily summary.
+	| "result-pending"
+	// Dual-adversarial #92 Critical (C2): per-agent durable record of an orphaned
+	// spawn whose registration-rollback kill could NOT be confirmed (the handle is
+	// untracked but the process may still be live). Lets an operator — and a future
+	// boot-recovery sweep — find + reap the orphan. Written best-effort, since the
+	// disk that broke persistence is likely still faulted.
+	| "quarantine"
 	| "markers";
 
 const ALL_KINDS: ReadonlyArray<StateKind> = [
@@ -57,6 +70,8 @@ const ALL_KINDS: ReadonlyArray<StateKind> = [
 	"agents",
 	"telemetry",
 	"session-logs",
+	"result-pending",
+	"quarantine",
 	"markers",
 ];
 
@@ -81,10 +96,37 @@ export function pathFor(kind: StateKind): string {
 
 export function ensureStateDirsSync(): void {
 	for (const kind of ALL_KINDS) {
-		fs.mkdirSync(pathFor(kind), { recursive: true });
+		// 0o700: state dirs are daemon-private. Persisted agent configs under
+		// `agents/` carry per-agent env, so other local users on the host must not
+		// be able to traverse/read them. (R1 removed daemon-owned SECRETS from the
+		// cron-agent env: composeCronAgentEnv NO LONGER injects the Telegram bot
+		// token or GH PAT — only PATH/HOME/SHELL/LANG/IAGO_DAEMON_STATE_ROOT. The
+		// 0o700 mode stays as defense-in-depth for per-agent env and any future
+		// secret-bearing agent type.) The mode survives a 0o022 umask (no
+		// group/other bits to clear). systemd `LoadCredential=` adds at-rest
+		// ENCRYPTION on top in Phase 2 — filesystem perms ≠ encryption.
+		const dir = pathFor(kind);
+		fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+		// pr84 IMPORTANT (upgrade hardening): `mkdirSync`'s `mode` is applied
+		// ONLY when the directory is CREATED. A daemon upgraded from an older
+		// build that created `agents/` (or any state dir) at the default
+		// ~0o755 would leave secret-bearing configs world-readable. chmod on
+		// EVERY call so an existing dir is tightened to 0o700 too. POSIX-only:
+		// NTFS ignores POSIX bits (the daemon's at-rest target is the POSIX
+		// VPS), and `chmod` on Windows would no-op the group/other clearing.
+		if (!isWindows) {
+			fs.chmodSync(dir, 0o700);
+		}
 	}
 }
 
+/**
+ * Windows reserved-name check assumes the agentId regex already forbids
+ * "." — if reusing this check for less-restrictive ID surfaces (e.g.,
+ * handle IDs with extensions), expand pattern to
+ * /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\.[^.]+)?$/i to cover "con.txt"
+ * / "con.foo.bar" / etc. which are also NTFS-illegal.
+ */
 const WINDOWS_RESERVED = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i;
 const AGENT_ID_PATTERN = /^[a-z][a-z0-9\-]{0,62}$/;
 

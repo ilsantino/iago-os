@@ -1,7 +1,6 @@
 {
-	"_comment": "14:00 UTC = 09:00 EST = 06:00 PST. Daily. Hermes wake-check runs first; if no open PRs, LLM call skipped (saves $0.10). maxConcurrent=1 prevents overlap if a slow run wedges past the next tick. systemd unit Environment=TZ=UTC (Plan 01a) locks tick interpretation regardless of VPS host timezone.",
+	"_comment": "14:00 UTC = 09:00 EST = 06:00 PST. Daily. R1 (feature-pr84-r1-daemon-creds): the daemon's prepareCronPrompt now fetches open PRs, gates on zero PRs (replacing the retired bash wake-check), and injects a sanitized scalar payload — so there is no wakeCheck field and the agent holds no GH_TOKEN. maxConcurrent=1 prevents overlap if a slow run wedges past the next tick. systemd unit Environment=TZ=UTC (Plan 01a) locks tick interpretation regardless of VPS host timezone.",
 	"schedule": "0 14 * * *",
-	"wakeCheck": "runtime/agents/pr-triage/wake-check.sh",
 	"prompt": "runtime/agents/pr-triage/prompt-template.md",
 	"outputTaskNamePrefix": "pr-triage",
 	"maxConcurrent": 1

@@ -105,6 +105,16 @@ is the authorization to call Workflow):
 IAGO_ROOT="${IAGO_OS_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null)}"
 echo "$IAGO_ROOT/.claude/workflows/execute-pipeline.js"   # absolute scriptPath
 ```
+
+Before the Workflow call, grep the plan for a line-anchored `## Stress Test` heading
+and pass `skipStress: true` only when present (otherwise OMIT it — the Workflow uses
+strict `=== true`, so a missing value runs the full Opus stress agent):
+```bash
+grep -q '^## Stress Test' "<absolute plan path>" && echo skip || echo run
+```
+Quick plans are written WITHOUT a `## Stress Test` section, so this normally prints
+`run` and the flag is omitted — stress still runs (correct for the lightweight path).
+
 ```
 Workflow({
   scriptPath: "<IAGO_ROOT>/.claude/workflows/execute-pipeline.js",
@@ -112,7 +122,8 @@ Workflow({
     plan: "<absolute plan path>",
     projectDir: "<absolute project dir>",
     iagoRoot: "<IAGO_ROOT>",
-    noTag: <true ONLY if --no-tag was passed, else omit>
+    noTag: <true ONLY if --no-tag was passed, else omit>,
+    skipStress: <true ONLY if the plan has a `## Stress Test` section, else omit>
   }
 })
 ```
