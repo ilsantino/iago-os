@@ -597,11 +597,9 @@ describe("pr-triage integration (R1 daemon-owned creds)", () => {
 
 		// R1: the RESTART re-registration must ALSO inject NO secret — a
 		// restarted pr-triage agent stays credential-free.
-		const restartCall = mockSpawn.mock.calls[mockSpawn.mock.calls.length - 1] as [
-			string,
-			string[],
-			{ env: Record<string, string> },
-		];
+		const restartCall = mockSpawn.mock.calls[
+			mockSpawn.mock.calls.length - 1
+		] as [string, string[], { env: Record<string, string> }];
 		expect(restartCall[2].env.IAGO_TELEGRAM_BOT_TOKEN).toBeUndefined();
 		expect(restartCall[2].env.IAGO_TELEGRAM_ALLOWED_USER_IDS).toBeUndefined();
 		expect(restartCall[2].env.GH_TOKEN).toBeUndefined();
@@ -654,11 +652,23 @@ describe("pr-triage integration (R1 daemon-owned creds)", () => {
 		gen2Pty.emitData(noise);
 		expect(gen2Pty.killCalls).toContain("SIGTERM");
 
-		// Wait for the cron-side restart (injected 10ms backoff) to fire.
-		await new Promise((resolve) => setTimeout(resolve, 120));
+		// #92 re-gate (lens:tests) — the cron-side restart fires on an injected 10ms
+		// backoff, but the prior FIXED 120ms sleep flaked ~66% under full-suite parallel
+		// load (the restart had not emitted within the window → length 0). Poll-until
+		// instead so the wait scales with host load; the 15s test timeout is the only
+		// upper bound. The no-DOUBLE-restart property (length never exceeds 1) is proven
+		// DETERMINISTICALLY by CR-2 (fake timers, main.test.ts) and by Phase A above —
+		// here we only assert the re-arm WORKED (the gen-2 crash produced one cron
+		// restart). A spurious second restart would fail CR-2, not this e2e variant.
+		await vi.waitFor(
+			() => {
+				expect(emittedEventsOfKind("cron-agent-restarted")).toHaveLength(1);
+			},
+			{ timeout: 5000, interval: 20 },
+		);
 
-		// EXACTLY ONE cron-side restart from the gen-2 crash — not zero (listener
-		// was armed) and not two (no double-restart).
+		// EXACTLY ONE cron-side restart from the gen-2 crash — not zero (listener was
+		// armed; asserted above) and not two (no double-restart; see CR-2 + Phase A).
 		const cronRestarts = emittedEventsOfKind("cron-agent-restarted");
 		expect(cronRestarts).toHaveLength(1);
 		expect(cronRestarts[0]).toMatchObject({
@@ -917,11 +927,9 @@ describe("pr-triage integration (R1 daemon-owned creds)", () => {
 			agentConfig: trustedCfg,
 			isShuttingDown: () => false,
 		});
-		const trustedCall = mockSpawn.mock.calls[mockSpawn.mock.calls.length - 1] as [
-			string,
-			string[],
-			{ env: Record<string, string> },
-		];
+		const trustedCall = mockSpawn.mock.calls[
+			mockSpawn.mock.calls.length - 1
+		] as [string, string[], { env: Record<string, string> }];
 		expect(trustedCall[2].env.IAGO_TELEGRAM_BOT_TOKEN).toBeUndefined();
 		expect(trustedCall[2].env.GH_TOKEN).toBeUndefined();
 		// Non-secret runtime var IS forwarded for the trusted agent.
@@ -1014,7 +1022,8 @@ describe("pr-triage integration (R1 daemon-owned creds)", () => {
 				.readdirSync(agentsDirPath)
 				.filter(
 					(f) =>
-						f.endsWith(".json") && fs.statSync(path.join(agentsDirPath, f)).isFile(),
+						f.endsWith(".json") &&
+						fs.statSync(path.join(agentsDirPath, f)).isFile(),
 				);
 			expect(persisted.length).toBeGreaterThanOrEqual(1);
 			for (const f of persisted) {
@@ -1081,9 +1090,9 @@ describe("pr-triage integration (R1 daemon-owned creds)", () => {
 		for (let i = 0; i < JSON_PARSE_RETRY_BUDGET; i++) {
 			await mgr._pollingTickForTests();
 			await fsp.access(pendingPath);
-			expect(fs.existsSync(path.join(tempDir, "tasks/poisoned", filename))).toBe(
-				false,
-			);
+			expect(
+				fs.existsSync(path.join(tempDir, "tasks/poisoned", filename)),
+			).toBe(false);
 		}
 
 		await mgr._pollingTickForTests();
@@ -1109,8 +1118,9 @@ describe("pr-triage integration (R1 daemon-owned creds)", () => {
 
 		// Every spawn call's env is secret-free.
 		for (const call of mockSpawn.mock.calls) {
-			const env = (call as [string, string[], { env: Record<string, string> }])[2]
-				.env;
+			const env = (
+				call as [string, string[], { env: Record<string, string> }]
+			)[2].env;
 			expect(env.IAGO_TELEGRAM_BOT_TOKEN).toBeUndefined();
 			expect(env.GH_TOKEN).toBeUndefined();
 			expect(env.IAGO_TELEGRAM_ALLOWED_USER_IDS).toBeUndefined();
@@ -1118,7 +1128,10 @@ describe("pr-triage integration (R1 daemon-owned creds)", () => {
 		// The on-disk task body (the agent's entire input) contains no token.
 		const pendingFiles = fs.readdirSync(path.join(tempDir, "tasks/pending"));
 		for (const f of pendingFiles) {
-			const body = fs.readFileSync(path.join(tempDir, "tasks/pending", f), "utf8");
+			const body = fs.readFileSync(
+				path.join(tempDir, "tasks/pending", f),
+				"utf8",
+			);
 			expect(body).not.toContain("test-gh-token");
 			expect(body).not.toContain("test-bot-token");
 		}
