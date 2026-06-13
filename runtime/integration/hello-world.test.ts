@@ -328,8 +328,8 @@ async function readTelemetryKinds(): Promise<Set<string>> {
 // Tests
 // ---------------------------------------------------------------------------
 
-describe("Phase 1 hello-world end-to-end (mocked PTY + Telegram)", () => {
-	it("claude-pty adapter registers via side-effect import at startDaemon load", async () => {
+describe("daemon integration: auto-start, boot recovery, shutdown (mocked PTY + Telegram)", () => {
+	it("claude-pty adapter is registered via startDaemon's loadAdapterFailIsolated dynamic import", async () => {
 		const daemon = await buildDaemon({ withBot: false, agents: [] });
 		const ids = listRuntimes().map((r) => r.id);
 		expect(ids).toContain("claude-pty");

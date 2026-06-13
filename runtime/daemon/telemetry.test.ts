@@ -35,7 +35,11 @@ async function readLines(filePath: string): Promise<string[]> {
 describe("telemetry.emit", () => {
 	it("writes one valid NDJSON line with required keys", async () => {
 		process.env.CLAUDE_CODE_SESSION_ID = "session-A";
-		await emit({ kind: "daemon-start", pid: 12345, nodeVersion: "v20.10.0" });
+		// emit() returns true when the line durably landed (the daemon's
+		// ndjsonAlert durability gate depends on this contract).
+		expect(
+			await emit({ kind: "daemon-start", pid: 12345, nodeVersion: "v20.10.0" }),
+		).toBe(true);
 
 		const lines = await readLines(getTelemetryPath());
 		expect(lines).toHaveLength(1);
@@ -94,9 +98,11 @@ describe("telemetry.emit", () => {
 		await fsp.mkdir(targetPath, { recursive: true });
 		const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 
+		// emit() resolves false (not undefined) on write failure — it must never
+		// throw, but the boolean lets durability-sensitive callers react.
 		await expect(
 			emit({ kind: "daemon-start", pid: 1, nodeVersion: "v20.10.0" }),
-		).resolves.toBeUndefined();
+		).resolves.toBe(false);
 		expect(errSpy).toHaveBeenCalled();
 	});
 

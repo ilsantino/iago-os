@@ -66,7 +66,8 @@ export const KNOWN_PATTERNS: ReadonlyArray<KnownPattern> = [
 // cursor positioning, box-drawing). Without stripping these, a startup banner
 // can exceed the 100-byte fail-closed threshold before any seed pattern
 // matches, triggering a spurious "crashed" → daemon restart loop.
-const ANSI_ESCAPE_RE = /\x1b(?:\[[0-9;]*[A-Za-z]|\][^\x07]*(?:\x07|\x1b\\)|[@-_])/g;
+const ANSI_ESCAPE_RE =
+	/\x1b(?:\[[0-9;]*[A-Za-z]|\][^\x07]*(?:\x07|\x1b\\)|[@-_])/g;
 
 function stripAnsi(s: string): string {
 	return s.replace(ANSI_ESCAPE_RE, "");

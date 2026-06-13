@@ -105,6 +105,16 @@ is the authorization to call Workflow):
 IAGO_ROOT="${IAGO_OS_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null)}"
 echo "$IAGO_ROOT/.claude/workflows/execute-pipeline.js"   # absolute scriptPath
 ```
+
+Before the Workflow call, grep the plan for a line-anchored `## Stress Test` heading
+and pass `skipStress: true` only when present (otherwise OMIT it — the Workflow uses
+strict `=== true`, so a missing value runs the full Opus stress agent):
+```bash
+grep -q '^## Stress Test' "<absolute plan path>" && echo skip || echo run
+```
+Quick plans are written WITHOUT a `## Stress Test` section, so this normally prints
+`run` and the flag is omitted — stress still runs (correct for the lightweight path).
+
 ```
 Workflow({
   scriptPath: "<IAGO_ROOT>/.claude/workflows/execute-pipeline.js",
@@ -112,7 +122,8 @@ Workflow({
     plan: "<absolute plan path>",
     projectDir: "<absolute project dir>",
     iagoRoot: "<IAGO_ROOT>",
-    noTag: <true ONLY if --no-tag was passed, else omit>
+    noTag: <true ONLY if --no-tag was passed, else omit>,
+    skipStress: <true ONLY if the plan has a `## Stress Test` section, else omit>
   }
 })
 ```
@@ -124,7 +135,15 @@ The Workflow runs the full pipeline as tracked subagents (no `claude -p` fragili
 transient API errors auto-retry, no static turn caps):
 stress → implement → build gate → **commit** → **dual adversarial (Opus ∥ Codex)** →
 fix + regression tests (≤2 rounds) → PR → summary. It returns `{ branch, prUrl,
-reviewVerdict, codexSource, fixRounds }` and notifies you on completion.
+reviewVerdict, codexSource, fixRounds, minorRemaining, verificationSameFamily,
+verificationDegraded, crossModelDegraded, filtered }` and notifies you on completion.
+At the merge decision, surface ALL THREE honesty signals to Santiago — never declare safe
+to merge without them: `verificationDegraded === true` (skeptic verification did not fully
+run — a real gate gap, Tier 2/3), `crossModelDegraded === true` (the Codex leg fell back to
+the same Claude family — the GPT-5.5 cross-model guarantee silently degraded), and a
+non-empty `filtered` (the Critical/Important findings the skeptics double-refuted and
+DROPPED — list each with its `reasons`; a false double-refute could erase a real Critical
+with no other visible trace).
 
 After the async GitHub review-fix loop reports clean, run the pre-merge gate (pass #2):
 ```

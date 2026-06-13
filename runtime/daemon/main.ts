@@ -88,17 +88,12 @@ import type {
 	AgentMessage,
 	AgentShape,
 } from "../agent-runtime/types.js";
-// Side-effect import — registers `claude-pty` in the polymorphic registry at
-// module load time. Adapter registration failures are fail-isolated inside
-// the adapter module itself; the daemon detects missing registration via
-// `listRuntimes()` at startup (Codex H1 + Opus C2 fix).
-import "../agent-runtime/pty/claude-pty.js";
 import {
 	type ApprovalRequest,
 	listPendingApprovals,
 	recoverStrandedApprovals,
 } from "../telegram/approval-bus.js";
-import { TelegramBot } from "../telegram/bot.js";
+import { type AgentManagerInterface, TelegramBot } from "../telegram/bot.js";
 
 import {
 	AgentManager,
@@ -111,11 +106,27 @@ import {
 	getCredentialEnvVars,
 	loadSystemdCredentials,
 } from "./cred-bootstrap.js";
-import { CronScheduler, type RegisterCronOpts } from "./cron-scheduler.js";
+import { composeRuntimeEnv } from "./cron-agent-env.js";
+import {
+	CronScheduler,
+	type PrepareCronPrompt,
+	type RegisterCronOpts,
+	type RegisteredCron,
+} from "./cron-scheduler.js";
 import { HeartbeatController } from "./heartbeat.js";
 import { IpcServer } from "./ipc-server.js";
-import { ensureStateDirsSync, pathFor } from "./state-paths.js";
-import { type DaemonEvent, emit } from "./telemetry.js";
+import {
+	FetchPrsError,
+	fetchOpenPrs,
+	sanitizePrPayload,
+} from "./pr-triage-fetch.js";
+import {
+	atomicRenameStaleDest,
+	ensureStateDirsSync,
+	getStateRoot,
+	pathFor,
+} from "./state-paths.js";
+import { type DaemonEvent, PR_TRIAGE_ALERT_KINDS, emit } from "./telemetry.js";
 
 /**
  * Per-stage shutdown timeout (ms). Opus I4: the daemon shutdown path
@@ -126,6 +137,59 @@ import { type DaemonEvent, emit } from "./telemetry.js";
  * (heartbeat + bot + ipc + handle loop ≈ 4 stages × 10s, fits under 30s).
  */
 export const SHUTDOWN_STAGE_TIMEOUT_MS = 10_000;
+
+/**
+ * Adapter modules that the daemon loads via `loadAdapterFailIsolated()`. Each
+ * entry is a runtime specifier importable from `runtime/daemon/main.ts`.
+ * Adding a new built-in adapter only requires appending its specifier here.
+ *
+ * Codex H1 + Opus C2: switching from a top-level `import "..."` (which would
+ * crash the daemon if the module threw at registerRuntime) to dynamic
+ * imports inside a try/catch makes the registration boundary explicitly
+ * fail-isolated — per `runtime/agent-runtime/README.md` § "Fail-isolated
+ * policy". A broken adapter still throws at the registry layer, the daemon
+ * catches it here, emits `runtime-registration-failed` telemetry, and boots
+ * with the remaining adapters.
+ */
+const BUILT_IN_ADAPTER_MODULES: readonly string[] = [
+	"../agent-runtime/pty/claude-pty.js",
+];
+
+/**
+ * Dynamically import an adapter module so that a top-level throw (from
+ * `registerRuntime` failures, broken imports, or module-evaluation errors) is
+ * caught at the boundary and converted into a stderr log + a
+ * `runtime-registration-failed` telemetry event. The daemon continues
+ * booting with whichever adapters did register.
+ *
+ * The stack trace is truncated to the first 3 lines — enough for triage
+ * without bloating the telemetry NDJSON line or leaking PII from a deep
+ * stack.
+ */
+export async function loadAdapterFailIsolated(
+	adapterModule: string,
+): Promise<{ loaded: boolean; error?: Error }> {
+	try {
+		await import(adapterModule);
+		return { loaded: true };
+	} catch (err) {
+		const error = err instanceof Error ? err : new Error(String(err));
+		const stackTrace = (error.stack ?? error.message)
+			.split("\n")
+			.slice(0, 3)
+			.join("\n");
+		console.error(
+			`[daemon] adapter ${adapterModule} failed to register: ${error.message}`,
+		);
+		await emit({
+			kind: "runtime-registration-failed",
+			adapterModule,
+			message: error.message,
+			stackTrace,
+		});
+		return { loaded: false, error };
+	}
+}
 
 export async function withTimeout<T>(
 	label: string,
@@ -515,6 +579,894 @@ export interface TaskDispatchEvent {
 }
 
 /**
+ * R1 (feature-pr84-r1-daemon-creds, D2) — payload of the `'task-send-needed'`
+ * event `AgentManager.processPendingTask` emits when a pr-triage RESULT
+ * envelope (`pr-triage-send__*.json`) lands. The daemon owns the Telegram send,
+ * so the agent never holds the bot token. Exactly one of `sendText` / `noSend`
+ * is present (the producer-branch discriminator).
+ */
+export interface TaskSendEvent {
+	readonly filename: string;
+	readonly agentId: string;
+	readonly sendText?: string;
+	readonly noSend?: boolean;
+	/**
+	 * Critical (Codex, round 1) — the per-dispatch correlation id the daemon
+	 * stamped into the PROMPT (`{{RUN_ID}}` / the runId-echo instruction) and the
+	 * agent echoed back in its result envelope. Carried THROUGH from the envelope
+	 * (NOT re-read from the live on-disk marker) so the send handler can pass the
+	 * ENVELOPE's runId to `clearResultTimer`: a late/stale envelope from a PRIOR
+	 * run carries the OLD runId, fails the wrong-run guard, and cannot clear the
+	 * CURRENT run's timer/marker or release its slot. Absent on a legacy envelope
+	 * (or one whose agent failed to echo it) — the handler then clears
+	 * unconditionally by agentId (degraded, but the dead-letter timer is the
+	 * cross-restart backstop).
+	 */
+	readonly runId?: string;
+}
+
+/**
+ * R1 (feature-pr84-r1-daemon-creds, D4) — dead-letter deadline. A dispatched
+ * pr-triage PROMPT that does not produce a result envelope within this window
+ * emits `pr-triage-result-timeout`. `.unref()`'d so it never keeps the process
+ * alive; does NOT survive a daemon restart (next cron fire recovers; full
+ * durability = deferred #5).
+ */
+export const RESULT_TIMEOUT_MS = 120_000;
+
+/**
+ * F3 (R1 dual-adversarial Important) — bounded retry backoff (ms) for the
+ * daemon's Telegram send in `makeTaskSendHandler`. The envelope is CLAIMED
+ * (pending→resolved) before the send (at-most-once: prevents the duplicate-send
+ * storm), so a SINGLE transient `{ ok: false }` (429 / network blip) would
+ * otherwise permanently drop the day's summary with no retry. These delays add a
+ * BOUNDED in-handler retry — at most `1 + length` total send attempts — before
+ * the `pr-triage-telegram-send-failed` telemetry fires, so a transient blip is
+ * retried rather than lost. Strictly bounded (no unbounded loop, no storm); the
+ * delays are `await`ed inside the already-fire-and-forget send handler so the
+ * poll loop is not blocked (`processPendingTask` returned before the handler
+ * ran). Exported so the regression test can advance fake timers deterministically.
+ *
+ *   attempt 1 fails → wait 250ms  → attempt 2
+ *   attempt 2 fails → wait 1000ms → attempt 3
+ *   attempt 3 fails → emit pr-triage-telegram-send-failed (give up; at-most-once)
+ */
+export const TELEGRAM_SEND_RETRY_BACKOFF_MS: readonly number[] = [250, 1000];
+
+/**
+ * Task 6 (Critical) — the durable, run-correlated dead-letter marker. Written
+ * to `result-pending/<agentId>.json` at dispatch and removed when the result
+ * envelope is processed (or the in-memory timer fires). Carries the per-dispatch
+ * `runId` so a late/wrong-run envelope cannot clear the CURRENT run's marker,
+ * and a `deadlineMs` (absolute epoch) so a boot scan can decide re-arm vs
+ * immediate dead-letter.
+ */
+export interface ResultPendingMarker {
+	readonly agentId: string;
+	readonly runId: string;
+	readonly filename: string | null;
+	readonly deadlineMs: number;
+}
+
+/**
+ * Task 6 — durable result-pending marker path for an agentId.
+ */
+function resultPendingPath(agentId: string): string {
+	return path.join(pathFor("result-pending"), `${agentId}.json`);
+}
+
+/**
+ * Task 6 (Critical — result-envelope run-correlation + dead-letter durability,
+ * escalated 2026-06-02) — build the shared result-timer closures the dispatch
+ * handler and the send handler both use.
+ *
+ * The PRIOR design keyed an in-memory `.unref()`'d timer by BARE `agentId` and
+ * relied on `maxConcurrent: 1` to make a single-key map "sufficient". Two holes:
+ *   (a) NOT durable across restart — a dispatch in flight when the daemon
+ *       restarts lost its timer, so `pr-triage-result-timeout` never fired and
+ *       the daily summary was silently dropped (no durable pending work to
+ *       recover); and
+ *   (b) fragile to re-fire / a future `maxConcurrent > 1` — a late envelope from
+ *       a PRIOR run could clear the CURRENT run's key (wrong-run attribution).
+ *
+ * This design closes both:
+ *   - CORRELATION: every dispatch is stamped with a `runId`. The marker and the
+ *     in-memory timer both carry it. `clearResultTimer(agentId, runId)` clears
+ *     ONLY when the runId matches the active run — a stale/wrong-run envelope is
+ *     ignored (returns `false`) and never clears a live timer or marker.
+ *   - DURABILITY: `startResultTimer` writes a `result-pending/<agentId>.json`
+ *     marker (atomically) carrying `{runId, deadlineMs, filename}`. The marker
+ *     survives a restart; `recoverResultTimers()` (called from boot) scans the
+ *     dir and either RE-ARMS a still-future deadline or IMMEDIATELY dead-letters
+ *     an expired/orphaned one (`pr-triage-result-timeout`) — the dropped-summary
+ *     hole is gone.
+ *   - IDEMPOTENCY: a re-armed dispatch carries the SAME runId as its marker, so
+ *     the recovery path cannot double-emit a timeout for a run already cleared.
+ *
+ * The in-memory timer is still `.unref()`'d (never keeps the process alive); the
+ * durable marker is the cross-restart backstop. `startResultTimer` is async (it
+ * writes the marker) — callers that cannot await fire-and-forget it.
+ */
+export function makeResultTimers(deps: {
+	emit: (event: DaemonEvent) => Promise<unknown>;
+	timeoutMs?: number;
+	/**
+	 * Task 6 gate-finding #2 (hold-slot-until-result) — invoked when a run
+	 * COMPLETES: the envelope is processed (`clearResultTimer`) OR the durable
+	 * dead-letter timeout fires (live, re-armed, or boot-recovered). `filename`
+	 * is the ORIGINAL cron task filename (from the marker), so the daemon can
+	 * release exactly the right CronScheduler concurrency slot. Optional — when
+	 * omitted, the result timers behave as before (no slot coupling).
+	 */
+	onResultComplete?: (agentId: string, filename: string | null) => void;
+	/**
+	 * Round-2 Minor (Codex) — invoked when `recoverResultTimers` RE-ARMS a
+	 * still-future dead-letter marker after a restart. The recovered run is still
+	 * in flight (no result envelope yet), so its CronScheduler concurrency slot
+	 * must be RE-HELD — otherwise the scheduler boots with `runningCount=0` and a
+	 * matching cron tick could dispatch a SECOND prompt that overwrites the single
+	 * `result-pending/<agentId>.json` marker, reintroducing duplicate/stale-run
+	 * behavior under non-daily cadences. The symmetric `onResultComplete` releases
+	 * the slot when the recovered run finally completes (envelope or dead-letter).
+	 * `filename` is the original cron task filename from the marker; `null` →
+	 * nothing to re-hold (manual / filename-less run). Optional — when omitted the
+	 * recovery path behaves as before (no slot re-hold).
+	 */
+	onResultRecovered?: (agentId: string, filename: string | null) => void;
+}): {
+	startResultTimer: (
+		agentId: string,
+		runId: string,
+		filename?: string | null,
+		timeoutMs?: number,
+	) => Promise<void>;
+	// Dual-adversarial #92 Critical (C1) — load-bearing pre-claim durable marker
+	// write (no in-memory timer). Returns false on a write fault so the dispatch
+	// handler can abort BEFORE resolving the cron task.
+	persistResultMarker: (
+		agentId: string,
+		runId: string,
+		filename?: string | null,
+		timeoutMs?: number,
+	) => Promise<boolean>;
+	// Unlink the durable marker — lets the dispatch handler clean up a marker it
+	// pre-wrote for a task whose claim then faulted (#92 C1).
+	removeResultMarker: (agentId: string) => Promise<void>;
+	clearResultTimer: (agentId: string, runId?: string) => Promise<boolean>;
+	recoverResultTimers: () => Promise<void>;
+	/**
+	 * Round-2 Important (Codex) — is `runId` the ACTIVE run for `agentId`?
+	 *
+	 * The send handler consults this BEFORE the irreversible Telegram send so a
+	 * late/stale envelope (carrying an OLD runId from a prior dispatch) is
+	 * quarantined instead of delivered. Authority order matches
+	 * `clearResultTimer`:
+	 *   - if an in-memory timer exists → its runId is authoritative;
+	 *   - else fall back to the durable on-disk marker's runId (survives a
+	 *     restart that dropped the in-memory timer);
+	 *   - if NEITHER exists → there is no active run to validate against. Return
+	 *     `true` so a legacy/undefined-runId envelope, or one whose marker was
+	 *     already cleared by a concurrent path, is NOT spuriously quarantined
+	 *     (degrades to the prior at-most-once send behavior). A `runId` of
+	 *     `undefined` (legacy producer / missing echo) also returns `true` — the
+	 *     guard only blocks a DEFINITE mismatch.
+	 */
+	isActiveRun: (agentId: string, runId?: string) => Promise<boolean>;
+	/**
+	 * #92 re-gate Critical (C1 follow-up) — is a dead-letter timer LIVE in this
+	 * process for `agentId`? The dispatch handler consults this BEFORE the
+	 * irreversible `runtime.send`: a live timer means a run is already in
+	 * flight (claimed, or boot-recovered), so another pending task for the
+	 * agent must be DEFERRED — a second send would duplicate the prompt and
+	 * overwrite the live run's marker (superseded-run leak, re-gate I1).
+	 */
+	hasLiveResultTimer: (agentId: string) => boolean;
+	/**
+	 * #92 re-gate Critical (C1 follow-up) — read the durable result marker for
+	 * `agentId`; null when absent or unreadable/malformed. The dispatch handler
+	 * uses it to RESUME a sent-but-unclaimed dispatch: a marker referencing the
+	 * SAME pending filename with no live timer means the prompt was already
+	 * delivered and only the claim faulted — re-claim, never re-send.
+	 */
+	readResultMarker: (agentId: string) => Promise<ResultPendingMarker | null>;
+	/**
+	 * #92 re-gate Critical (C1 follow-up) — re-arm the in-memory dead-letter
+	 * timer for a RESUMED dispatch, preserving the original runId/filename and
+	 * the marker's remaining deadline window. Does NOT rewrite the durable
+	 * marker — it is already correct for this run.
+	 */
+	resumeResultTimer: (
+		agentId: string,
+		runId: string,
+		filename: string | null,
+		remainingMs: number,
+	) => void;
+} {
+	const { emit } = deps;
+	const onResultComplete = deps.onResultComplete;
+	const onResultRecovered = deps.onResultRecovered;
+	const defaultTimeout = deps.timeoutMs ?? RESULT_TIMEOUT_MS;
+	// agentId → { runId, filename, timer }. The runId guards against a
+	// stale/wrong-run envelope clearing the live run's timer; the filename is the
+	// original cron task filename, echoed to `onResultComplete` on completion so
+	// the daemon releases the correct held cron slot (Task 6 #2).
+	const timers = new Map<
+		string,
+		{ runId: string; filename: string | null; timer: NodeJS.Timeout }
+	>();
+
+	const removeMarker = async (agentId: string): Promise<void> => {
+		await fsp.unlink(resultPendingPath(agentId)).catch(() => undefined);
+	};
+
+	const fireTimeout = (
+		agentId: string,
+		runId: string,
+		filename: string | null,
+		delayMs: number,
+	): void => {
+		const t = setTimeout(
+			() => {
+				const active = timers.get(agentId);
+				// Only fire if THIS run is still the active one (a re-fire/overwrite
+				// would have replaced it with a new runId).
+				if (active === undefined || active.runId !== runId) return;
+				// Dual-adversarial Important (escalated 2026-06-02) — DURABILITY GATE.
+				// Record the timeout BEFORE unlinking the durable marker / releasing the
+				// slot. `emit` returns false (it never throws) when the telemetry append
+				// fails (ENOSPC/EACCES); the prior order (delete marker → fire-and-forget
+				// emit) meant a failed append lost the dropped-summary signal — the very
+				// event this timeout exists to surface — with nothing for boot recovery
+				// (`recoverResultTimers`) to re-scan. On a failed record: RETAIN the
+				// marker + timer entry so the next boot re-surfaces it; do NOT remove or
+				// release. Fire-and-forget async so the poll loop is not blocked.
+				void (async () => {
+					const recorded = await emit({
+						kind: "pr-triage-result-timeout",
+						agentId,
+						reason: "no-envelope-before-deadline",
+					});
+					if (!recorded) return;
+					// Re-check this run is still current (a fresh dispatch may have armed a
+					// new timer for this agent while we awaited the telemetry write).
+					const stillActive = timers.get(agentId);
+					if (stillActive === undefined || stillActive.runId !== runId) return;
+					timers.delete(agentId);
+					// Marker removal is fire-and-forget AFTER the durable timeout record
+					// (the same ordering as before the gate — the release does not wait on
+					// the unlink, and a re-dispatch atomically overwrites the marker).
+					void removeMarker(agentId);
+					// Task 6 #2 — the run is OVER (dead-lettered). Release the held cron
+					// slot so the NEXT cron tick can dispatch.
+					onResultComplete?.(agentId, filename);
+				})();
+			},
+			Math.max(0, delayMs),
+		);
+		if (typeof t.unref === "function") t.unref();
+		timers.set(agentId, { runId, filename, timer: t });
+	};
+
+	// Round-2 Important (Codex) + dual-adversarial Critical (escalated 2026-06-02)
+	// — pre-send wrong-run guard. An envelope is "active" only when its runId
+	// MATCHES the agent's live run (in-memory timer first, then the durable on-disk
+	// marker). The PRIOR design short-circuited `runId === undefined` to `true`,
+	// which let a runId-LESS envelope (a NORMAL agent failure mode — the echo line
+	// is explicitly optional per prompt-template.md, so the agent may omit it)
+	// bypass the guard entirely: a late/stale summary from a PRIOR run would be
+	// pushed to Telegram while a live run is still pending. The fix: when there IS
+	// an active run (live timer OR durable marker) for the agent, REQUIRE a
+	// matching runId — a missing (`undefined`/empty-string, normalized upstream to
+	// `undefined`) or mismatched runId returns `false` (quarantine). ONLY when
+	// there is NO active run at all do we return `true` (the legacy/no-correlation
+	// path — nothing to misattribute against).
+	const isActiveRun = async (
+		agentId: string,
+		runId?: string,
+	): Promise<boolean> => {
+		const existing = timers.get(agentId);
+		if (existing !== undefined) {
+			// A live run is in flight: only the matching runId is its envelope. A
+			// missing runId (undefined) cannot be confirmed as this run → quarantine.
+			return runId !== undefined && existing.runId === runId;
+		}
+		// No live timer (e.g. after a restart) — the durable marker is authority.
+		let raw: string;
+		try {
+			raw = await fsp.readFile(resultPendingPath(agentId), "utf-8");
+		} catch (err) {
+			// #92 re-gate Important (C1 follow-up round 2) — distinguish "no marker"
+			// from "marker unreadable". ONLY a genuine ENOENT means there is NO active
+			// run to validate against, so a legacy/no-correlation envelope is NOT
+			// spuriously quarantined (the prior at-most-once send behavior).
+			if ((err as NodeJS.ErrnoException).code === "ENOENT") return true;
+			// A NON-ENOENT read error (EACCES/EBUSY/EISDIR/EIO on a degraded state
+			// root) means a marker MAY exist but is unreadable. FAIL CLOSED —
+			// quarantine — symmetric with the write side (writeMarker returns false
+			// on fault → the dispatch aborts BEFORE delivery). The prior code returned
+			// `true` here (fail OPEN), letting a possibly-stale envelope reach the
+			// irreversible Telegram send.
+			return false;
+		}
+		// Marker present and readable: its runId is the authority. Require a matching
+		// runId; a missing/mismatched runId — OR a malformed marker (parse fault /
+		// non-string runId) — fails CLOSED (the marker exists, so a run is pending and
+		// the envelope cannot be confirmed as that run).
+		try {
+			const m = JSON.parse(raw) as ResultPendingMarker;
+			if (typeof m.runId === "string") {
+				return runId !== undefined && m.runId === runId;
+			}
+		} catch {
+			// fall through to fail-closed
+		}
+		return false;
+	};
+
+	// #92 re-gate Critical (C1 follow-up) — single-flight accessors for the
+	// dispatch handler. `hasLiveResultTimer` is the defer signal (a run is in
+	// flight in-process); `readResultMarker` is the resume key (a durable marker
+	// for the SAME pending filename = prompt already delivered, claim faulted);
+	// `resumeResultTimer` re-arms without rewriting the marker.
+	const hasLiveResultTimer = (agentId: string): boolean => timers.has(agentId);
+
+	const readResultMarker = async (
+		agentId: string,
+	): Promise<ResultPendingMarker | null> => {
+		try {
+			const raw = await fsp.readFile(resultPendingPath(agentId), "utf-8");
+			const m = JSON.parse(raw) as ResultPendingMarker;
+			if (
+				typeof m.agentId !== "string" ||
+				typeof m.runId !== "string" ||
+				typeof m.deadlineMs !== "number"
+			) {
+				return null;
+			}
+			return {
+				agentId: m.agentId,
+				runId: m.runId,
+				filename: typeof m.filename === "string" ? m.filename : null,
+				deadlineMs: m.deadlineMs,
+			};
+		} catch {
+			return null;
+		}
+	};
+
+	const resumeResultTimer = (
+		agentId: string,
+		runId: string,
+		filename: string | null,
+		remainingMs: number,
+	): void => {
+		fireTimeout(agentId, runId, filename, Math.max(0, remainingMs));
+	};
+
+	const clearResultTimer = async (
+		agentId: string,
+		runId?: string,
+	): Promise<boolean> => {
+		const existing = timers.get(agentId);
+		// Wrong-run guard: if a runId is supplied and it does NOT match the active
+		// run, this is a stale/late envelope from a prior dispatch — ignore it.
+		// (A MISSING runId is handled by the send handler's pre-send quarantine,
+		// which skips the clear entirely when there is an active run — see
+		// `makeTaskSendHandler`. An explicit `clearResultTimer(agentId)` with no
+		// runId remains an intentional unconditional clear for the internal
+		// overwrite/recovery paths.)
+		if (
+			existing !== undefined &&
+			runId !== undefined &&
+			existing.runId !== runId
+		) {
+			return false;
+		}
+		// Capture the filename BEFORE deleting so the slot release targets the
+		// correct cron task. Fall back to the on-disk marker's filename when no
+		// in-memory timer exists (e.g. cleared after a re-arm or via the
+		// unconditional overwrite path).
+		let completedFilename: string | null = existing?.filename ?? null;
+		if (existing === undefined) {
+			try {
+				const raw = await fsp.readFile(resultPendingPath(agentId), "utf-8");
+				const m = JSON.parse(raw) as ResultPendingMarker;
+				// Critical (Codex, round 1) — wrong-run guard for the NO-in-memory-timer
+				// path too. After a daemon restart the in-memory timer is gone but the
+				// durable marker survives (re-armed or pending recovery). A stale
+				// envelope from a PRIOR run (different runId) must NOT clear the current
+				// marker or release the slot here either — the marker's runId is the
+				// authority when there is no live timer.
+				if (
+					runId !== undefined &&
+					typeof m.runId === "string" &&
+					m.runId !== runId
+				) {
+					return false;
+				}
+				if (typeof m.filename === "string") completedFilename = m.filename;
+			} catch {
+				// no marker — leave completedFilename null
+			}
+		}
+		if (existing !== undefined) {
+			clearTimeout(existing.timer);
+			timers.delete(agentId);
+		}
+		await removeMarker(agentId);
+		// Task 6 #2 — the envelope was processed (run complete). Release the held
+		// cron slot. Skipped only on the wrong-run guard above (early return).
+		onResultComplete?.(agentId, completedFilename);
+		return true;
+	};
+
+	// Atomic durable-marker write (temp-then-rename). Returns `true` when the
+	// marker is durably on disk, `false` on a write fault (ENOSPC/EACCES on a
+	// degraded state root). Shared by `startResultTimer` (which arms the in-memory
+	// timer on top) and `persistResultMarker` (the load-bearing pre-claim write —
+	// dual-adversarial #92 Critical C1). Does NOT touch the in-memory `timers` map.
+	//
+	// Minor (Opus, round 1) — do NOT `removeMarker()` before writing the new one.
+	// `atomicRenameStaleDest` ATOMICALLY replaces the prior marker (rename(2) is
+	// atomic on POSIX / NTFS MOVEFILE_REPLACE_EXISTING), so a pre-write unlink is
+	// redundant AND opens a window in which NO marker is on disk — a crash there
+	// would lose cross-restart recoverability for an in-flight run. Keeping the
+	// prior marker until the atomic rename closes that window: there is always
+	// EITHER the prior marker or the new one on disk.
+	const writeMarker = async (
+		agentId: string,
+		runId: string,
+		filename: string | null,
+		timeoutMs?: number,
+	): Promise<boolean> => {
+		const deadlineMs = Date.now() + (timeoutMs ?? defaultTimeout);
+		const marker: ResultPendingMarker = {
+			agentId,
+			runId,
+			filename,
+			deadlineMs,
+		};
+		const dst = resultPendingPath(agentId);
+		const tmp = `${dst}.tmp`;
+		try {
+			await fsp.writeFile(tmp, JSON.stringify(marker), { mode: 0o600 });
+			await atomicRenameStaleDest(tmp, dst);
+			return true;
+		} catch (err) {
+			await fsp.unlink(tmp).catch(() => undefined);
+			console.error(
+				`[daemon] result-pending marker write for ${agentId} failed: ${
+					err instanceof Error ? err.message : String(err)
+				}`,
+			);
+			return false;
+		}
+	};
+
+	// Dual-adversarial #92 Critical (C1) — the LOAD-BEARING durable marker write
+	// the dispatch handler calls BEFORE it resolves (claims) the cron task. When
+	// the marker cannot be persisted the handler ABORTS the dispatch (leaving the
+	// task in `tasks/pending/` for the next tick) instead of resolving it with no
+	// recoverable marker — the prior order (claim → marker, fall through to an
+	// in-memory-only timer on fault) left NO pending task AND NO marker after a
+	// restart in that window, silently dropping the daily summary. Unlike
+	// `startResultTimer` this does NOT arm an in-memory timer; the handler arms
+	// that (via `startResultTimer`) only AFTER a successful claim.
+	const persistResultMarker = async (
+		agentId: string,
+		runId: string,
+		filename: string | null = null,
+		timeoutMs?: number,
+	): Promise<boolean> => writeMarker(agentId, runId, filename, timeoutMs);
+
+	const startResultTimer = async (
+		agentId: string,
+		runId: string,
+		filename: string | null = null,
+		timeoutMs?: number,
+	): Promise<void> => {
+		// Re-fire overwrites: clear-then-set (single in-flight per agent). This is
+		// an OVERWRITE, not a run completion, so it MUST NOT fire onResultComplete
+		// (that would release the cron slot for a run that is being superseded, not
+		// finished). Tear down the prior in-memory timer directly.
+		const prior = timers.get(agentId);
+		if (prior !== undefined) {
+			clearTimeout(prior.timer);
+			timers.delete(agentId);
+		}
+		// Durable marker FIRST (atomic temp-then-rename) so a crash between write
+		// and timer-arm still leaves a recoverable marker. A write fault degrades to
+		// an in-memory-only timer (the live run is still dead-lettered in-process);
+		// cross-restart durability is guaranteed UPSTREAM by the dispatch handler's
+		// pre-claim `persistResultMarker` (#92 C1), which aborts the dispatch before
+		// the task is resolved when the marker cannot be written.
+		await writeMarker(agentId, runId, filename, timeoutMs);
+		fireTimeout(agentId, runId, filename, timeoutMs ?? defaultTimeout);
+	};
+
+	/**
+	 * Task 6 — boot-time recovery. Scan `result-pending/` for markers orphaned by
+	 * a restart. A future deadline RE-ARMS a fresh in-memory timer (same runId,
+	 * so idempotent); an expired/at-deadline marker is IMMEDIATELY dead-lettered
+	 * (`pr-triage-result-timeout`) and removed — closing the silent-drop hole.
+	 */
+	const recoverResultTimers = async (): Promise<void> => {
+		let entries: string[];
+		try {
+			entries = await fsp.readdir(pathFor("result-pending"));
+		} catch {
+			return; // dir absent — nothing to recover
+		}
+		const now = Date.now();
+		for (const entry of entries) {
+			if (!entry.endsWith(".json")) continue;
+			const full = path.join(pathFor("result-pending"), entry);
+			let marker: ResultPendingMarker;
+			try {
+				marker = JSON.parse(await fsp.readFile(full, "utf-8"));
+			} catch {
+				// Malformed marker — remove so it does not strand forever.
+				await fsp.unlink(full).catch(() => undefined);
+				continue;
+			}
+			if (
+				typeof marker.agentId !== "string" ||
+				typeof marker.runId !== "string" ||
+				typeof marker.deadlineMs !== "number"
+			) {
+				await fsp.unlink(full).catch(() => undefined);
+				continue;
+			}
+			const markerFilename =
+				typeof marker.filename === "string" ? marker.filename : null;
+			const remaining = marker.deadlineMs - now;
+			if (remaining > 0) {
+				// Re-arm a fresh timer for the REMAINING window, preserving the runId
+				// + filename. `fireTimeout` wires the dead-letter emit AND the
+				// onResultComplete slot release, so the recovered run behaves exactly
+				// like a live one (and is idempotent — same runId).
+				fireTimeout(marker.agentId, marker.runId, markerFilename, remaining);
+				// Round-2 Minor (Codex) — the recovered run is still IN FLIGHT (no
+				// envelope yet), so RE-HOLD its CronScheduler concurrency slot.
+				// Without this the scheduler boots at runningCount=0 and a matching
+				// cron tick could dispatch a SECOND prompt that overwrites the single
+				// result-pending marker (duplicate/stale-run under non-daily cadences).
+				// The symmetric onResultComplete (wired into fireTimeout above and into
+				// clearResultTimer) releases it when the recovered run completes.
+				onResultRecovered?.(marker.agentId, markerFilename);
+			} else {
+				// Already past deadline at boot — dead-letter immediately so the
+				// orphaned dispatch is not silently lost.
+				//
+				// Dual-adversarial pass #2 Important (2026-06-04) — DURABILITY GATE,
+				// the mirror of the live `fireTimeout` path. Record the timeout BEFORE
+				// unlinking the durable marker / releasing the slot. `emit` returns
+				// false (it never throws) when the telemetry append fails
+				// (ENOSPC/EACCES); the prior order (unlink → ignore emit's boolean)
+				// PERMANENTLY lost the orphaned-dispatch signal — the very event this
+				// branch exists to surface — leaving nothing for the NEXT boot's
+				// `recoverResultTimers` to re-scan. On a failed record: RETAIN the
+				// marker (skip the unlink + slot release) so the next recovery
+				// re-surfaces it (regression: `RT-12`).
+				const recorded = await emit({
+					kind: "pr-triage-result-timeout",
+					agentId: marker.agentId,
+					reason: "orphaned-dispatch-recovered",
+				});
+				if (!recorded) continue;
+				await fsp.unlink(full).catch(() => undefined);
+				// Task 6 #2 — release the held cron slot for the orphaned run.
+				onResultComplete?.(marker.agentId, markerFilename);
+			}
+		}
+	};
+
+	return {
+		startResultTimer,
+		persistResultMarker,
+		removeResultMarker: removeMarker,
+		clearResultTimer,
+		recoverResultTimers,
+		isActiveRun,
+		hasLiveResultTimer,
+		readResultMarker,
+		resumeResultTimer,
+	};
+}
+
+/**
+ * R1 (feature-pr84-r1-daemon-creds, D2/D4) — build the handler the daemon
+ * subscribes to `AgentManager`'s `'task-send-needed'` event. The DAEMON owns the
+ * Telegram send so the pr-triage agent never holds the bot token nor makes a
+ * network call.
+ *
+ * Behavior per event (mirrors the alert branch's durability rule):
+ *   - `noSend`, or an EMPTY `sendText` (Minor: an empty string is "nothing to
+ *     send", never deliver a blank Telegram message) → emit `pr-triage-no-send`
+ *     (D4: distinguishes "nothing to send" from "agent died").
+ *   - else → BOUNDED-RETRY-THEN-AT-MOST-ONCE. CLAIM (resolve) the envelope
+ *     BEFORE sending (at-most-once — prevents the duplicate-send storm), then
+ *     call `telegramBot.sendAgentNotification(sendText)` with a BOUNDED retry
+ *     (`TELEGRAM_SEND_RETRY_BACKOFF_MS`): a transient `{ ok: false }` (429 /
+ *     network blip) is retried up to `1 + backoff.length` total attempts before
+ *     the existing `pr-triage-telegram-send-failed` telemetry fires. The retry
+ *     is strictly bounded (no unbounded loop, no storm); the inter-attempt
+ *     delays are `await`ed inside this already-fire-and-forget handler so the
+ *     poll loop never blocks. After the budget is spent the day's summary is
+ *     lost (at-most-once). The ONLY durable trace is the
+ *     `pr-triage-telegram-send-failed` telemetry line; the next daily cron fire
+ *     is an INDEPENDENT fresh fetch of CURRENT PRs, NOT a re-send of the dropped
+ *     summary (there is no mechanism that re-surfaces a specific dropped run).
+ *   - claim (resolve) the envelope file BEFORE the send (at-most-once); on a
+ *     degraded telemetry dir the noSend branch leaves it in `pending/` to re-trip.
+ *   - always `clearResultTimer(agentId)` in a `finally` (the agent produced a
+ *     result, so the dead-letter timer is no longer relevant).
+ *
+ * `telegramBot` may be null in local-dev (`config.telegram` absent);
+ * `sendAgentNotification` already guards that and returns `{ ok: false }`.
+ *
+ * `backoffMs` is an injectable test seam (defaults to
+ * `TELEGRAM_SEND_RETRY_BACKOFF_MS`) so the regression test can drive the bounded
+ * retry under fake timers without the production 250ms/1000ms waits.
+ */
+export function makeTaskSendHandler(deps: {
+	agentManager: AgentManager;
+	emit: (event: DaemonEvent) => Promise<unknown>;
+	telegramBot: TelegramBot | null;
+	// Task 6 + Critical (Codex, round 1) — accepts the run-correlated async clear.
+	// The handler passes the ENVELOPE's runId (`evt.runId`, echoed by the agent),
+	// NOT the live marker's runId, so a stale/wrong-run envelope (carrying an OLD
+	// runId) fails the wrong-run guard and cannot clear the current run's
+	// dead-letter timer/marker or release its held slot.
+	//
+	// noConfusingVoidType: this callback is intentionally
+	// "awaitable-or-fire-and-forget" — the production `clearResultTimer` returns
+	// `Promise<boolean>`, but several unit-test mocks pass a synchronous
+	// `() => void`; the handler `await`s either form. The `biome-ignore` sits on the
+	// return-type line itself (round-2 Minor fix) so biome associates the
+	// suppression with the offending union node — placing it above the multi-line
+	// JSDoc reported `suppressions/unused`.
+	clearResultTimer: (
+		agentId: string,
+		runId?: string,
+		// biome-ignore lint/suspicious/noConfusingVoidType: awaitable-or-fire-and-forget (see note above)
+	) => Promise<boolean> | void;
+	// Round-2 Important (Codex) — pre-send wrong-run guard. Consulted BEFORE the
+	// irreversible Telegram send: a late/stale envelope (carrying an OLD runId
+	// from a prior dispatch) is QUARANTINED — claimed out of `pending/` and
+	// recorded as telemetry — instead of delivered to the user. Without this the
+	// stale summary was sent first and the runId mismatch was only caught
+	// afterward in `clearResultTimer` (too late — the send already happened).
+	// Optional: when omitted (legacy callers / tests that do not exercise the
+	// guard) the handler behaves as before (no pre-send validation).
+	isActiveRun?: (agentId: string, runId?: string) => Promise<boolean>;
+	backoffMs?: readonly number[];
+}): (evt: TaskSendEvent) => Promise<void> {
+	const { agentManager, emit, telegramBot, clearResultTimer, isActiveRun } =
+		deps;
+	const backoffMs = deps.backoffMs ?? TELEGRAM_SEND_RETRY_BACKOFF_MS;
+	return async (evt: TaskSendEvent): Promise<void> => {
+		// Dual-adversarial Critical (escalated 2026-06-02) — set when the pre-send
+		// guard quarantines this envelope (stale OR missing-runId against an active
+		// run). A quarantined envelope must NOT reach the `finally`'s
+		// `clearResultTimer`: a missing-runId clear matches the live timer by agentId
+		// and would strip the CURRENT run's dead-letter/overlap protection. Skipping
+		// the clear leaves the live run intact for its own envelope (or dead-letter).
+		let quarantined = false;
+		// #92 re-gate Critical (C1 follow-up round 2) — the dead-letter
+		// timer/marker/held cron slot must be cleared ONLY when this envelope was
+		// DURABLY CONSUMED: claimed out of `pending/` (send path), or its no-send
+		// durably recorded AND claimed (noSend path). On a RETRYABLE failure — the
+		// pending→resolved claim rename faults, the `pr-triage-no-send` telemetry
+		// append faults, or the handler throws BEFORE consumption — the envelope stays
+		// in `pending/` for the next tick. Clearing the timer/marker/slot now would
+		// strip the run's correlation+overlap protection before consumption, so a
+		// subsequent cron fire dispatches a fresh run and the retried original envelope
+		// is quarantined as stale (legit summary permanently lost). Default false; set
+		// true at each TERMINAL path (durable consumption / at-most-once send done).
+		let consumed = false;
+		try {
+			// Dual-adversarial pass #2 Critical (2026-06-04) — the PRE-SEND wrong-run
+			// guard runs FIRST, before the noSend/empty-summary branch, so EVERY path
+			// (send, noSend, empty-summary) is validated against the ACTIVE run
+			// consistently. Previously the noSend/empty branch returned BEFORE this
+			// guard: a runId-LESS noSend envelope (a NORMAL failure mode — the echo is
+			// optional per prompt-template.md) arriving while a NEWER run is active left
+			// `quarantined === false`, so the `finally` called
+			// `clearResultTimer(agentId, undefined)` and stripped the CURRENT run's
+			// dead-letter timer/marker/held cron slot (silent summary drop + duplicate
+			// dispatch). Hoisting the guard above the noSend branch closes that twin of
+			// the SEND-path bug `TS-12b` covers (regression: `TS-12c`/`TS-12d`).
+			//
+			// Round-2 Important (Codex) + dual-adversarial Critical (escalated
+			// 2026-06-02) — validate the envelope against the ACTIVE run BEFORE the
+			// irreversible Telegram send. A late/stale envelope from a PRIOR dispatch
+			// must NOT be pushed to the user; the post-send `clearResultTimer` guard
+			// only stops it from clearing the CURRENT run's timer — it cannot un-send a
+			// message already delivered. `isActiveRun` is called even when the envelope
+			// carries NO runId: a runId-less envelope cannot be confirmed as the live
+			// run, so when a run IS active it is quarantined too (the prior
+			// `evt.runId !== undefined` gate let it bypass the guard and push a stale
+			// summary). `isActiveRun` returns `true` (no quarantine) only when there is
+			// NO active run to misattribute against — so a matching-runId completion
+			// (send OR noSend) and the legacy no-correlation path both proceed and clear
+			// normally. On quarantine: claim the envelope out of `pending/` (stop the
+			// re-trip), record `pr-triage-stale-run-dropped`, skip everything below, AND
+			// set `quarantined` so the `finally` does NOT run `clearResultTimer` (a
+			// runId-less clear would match the live timer by agentId and strip the
+			// current run's timer/marker/held slot).
+			if (isActiveRun !== undefined) {
+				const active = await isActiveRun(evt.agentId, evt.runId);
+				if (!active) {
+					quarantined = true;
+					await emit({
+						kind: "pr-triage-stale-run-dropped",
+						agentId: evt.agentId,
+						filename: evt.filename,
+						...(evt.runId !== undefined ? { runId: evt.runId } : {}),
+					});
+					// Quarantine: remove from pending/ so it does not re-trip. A failed
+					// claim (disk fault) leaves it in pending/ for a later tick — still
+					// no send happened, so no duplicate/stale delivery.
+					await agentManager.claimTask(evt.filename, evt.agentId);
+					return;
+				}
+			}
+			// Minor (empty-summary guard): treat an explicit `noSend` OR an
+			// empty/whitespace-only `sendText` as "nothing to send" — never deliver
+			// a blank Telegram message. An agent that computes an empty summary but
+			// forgets the `noSend` discriminator must not produce a blank push. This
+			// runs AFTER the wrong-run guard above: a noSend/empty envelope that
+			// belongs to the live run (matching runId) or arrives with no active run
+			// records `pr-triage-no-send` and clears normally; a stale/runId-less one
+			// was already quarantined (so its summary is not mis-recorded as a
+			// legitimate "nothing to send" for the live run).
+			const isEmptySendText =
+				evt.noSend !== true &&
+				(evt.sendText === undefined || evt.sendText.trim().length === 0);
+			if (evt.noSend === true || isEmptySendText) {
+				// D4: empty summary — record-and-resolve, no send.
+				const recorded = await emit({
+					kind: "pr-triage-no-send",
+					agentId: evt.agentId,
+					filename: evt.filename,
+				});
+				if (recorded) {
+					// #92 re-gate C1 follow-up — terminal ONLY when the no-send is durably
+					// recorded AND the envelope is durably claimed out of pending/. A claim
+					// fault here is retryable (the envelope re-trips): keep `consumed`
+					// false so the finally RETAINS the run's marker/slot rather than
+					// stripping it before consumption (TS-15).
+					const noSendClaimed = await agentManager.claimTask(
+						evt.filename,
+						evt.agentId,
+					);
+					if (noSendClaimed) consumed = true;
+				}
+				// recorded === false → telemetry append faulted (retryable, TS-14):
+				// leave in pending/, `consumed` stays false → do NOT clear.
+				return;
+			}
+			// BOUNDED-RETRY-THEN-AT-MOST-ONCE (pass#2 Critical fix + F3 retry). The
+			// Telegram send is an IRREVERSIBLE side effect, so CLAIM the envelope
+			// (move pending→resolved) BEFORE sending. `claimTask` returns false if
+			// the rename failed (disk fault): then we do NOT send — the envelope
+			// stays in pending/ for a later retry, with NO duplicate because no send
+			// happened. Once the envelope is durably out of pending/, a post-send
+			// fault can never re-trip a SECOND send (the prior bug: send-then-claim
+			// re-sent the same summary every 5s when the claim rename failed, because
+			// claimTask swallowed the error and returned). To avoid losing the day's
+			// summary on a SINGLE transient blip (F3), the send below runs a BOUNDED
+			// in-handler retry (`TELEGRAM_SEND_RETRY_BACKOFF_MS`) before giving up.
+			// After the bounded retry is exhausted the run's summary is lost
+			// (recorded as telemetry, surfaced next daily run) — acceptable for a
+			// notification, and it still eliminates the unbounded re-trip / telemetry
+			// storm on a persistently-undeliverable envelope.
+			const claimed = await agentManager.claimTask(evt.filename, evt.agentId);
+			if (!claimed) {
+				// Rename failed — leave in pending/ for a later retry. No send
+				// happened (no duplicate); claimTask already emitted claim-task-failed.
+				// `consumed` stays false → the finally RETAINS the run's marker/slot for
+				// the retry rather than stripping it before consumption (TS-13).
+				return;
+			}
+			// #92 re-gate C1 follow-up — the envelope is now durably OUT of pending/.
+			// Every exit from here is TERMINAL: the irreversible send either succeeds or
+			// is bounded-retried to exhaustion, and an at-most-once envelope must NEVER
+			// re-trip (a post-claim send failure/throw is recorded, not retried). So the
+			// run is complete — clear its dead-letter timer/marker/slot on the way out.
+			consumed = true;
+			if (telegramBot === null) {
+				// Local-dev / telegram-not-configured: the envelope is already
+				// resolved, so record the non-delivery ONCE with no re-trip storm.
+				await emit({
+					kind: "pr-triage-telegram-send-failed",
+					agentId: evt.agentId,
+					filename: evt.filename,
+					alertKind: "pr-triage-telegram-send-failed",
+					details: "telegram-not-configured",
+				});
+				return;
+			}
+			const sendText = evt.sendText ?? "";
+			// F3: BOUNDED retry around the send. The envelope is already claimed
+			// (at-most-once), so a transient `{ ok: false }` (429 / network blip)
+			// would otherwise lose the day's summary with no retry. Try once, then
+			// retry up to `backoffMs.length` more times with short awaited delays.
+			// Strictly bounded (max `1 + backoffMs.length` attempts) so it can never
+			// storm; only after the budget is spent does the send-failed telemetry
+			// fire (give up — at-most-once). The delays are awaited inside this
+			// fire-and-forget handler, so the poll loop is not blocked.
+			let r = await telegramBot.sendAgentNotification(sendText);
+			for (let attempt = 0; !r.ok && attempt < backoffMs.length; attempt++) {
+				await new Promise<void>((resolve) => {
+					const t = setTimeout(resolve, backoffMs[attempt]);
+					if (typeof t.unref === "function") t.unref();
+				});
+				r = await telegramBot.sendAgentNotification(sendText);
+			}
+			if (!r.ok) {
+				// Bounded retry exhausted. Envelope already resolved (at-most-once).
+				// Record the failed delivery; do NOT re-trip (which would duplicate
+				// or storm). REUSE the Plan-04d kind; `details` is a token-free
+				// status/error label.
+				await emit({
+					kind: "pr-triage-telegram-send-failed",
+					agentId: evt.agentId,
+					filename: evt.filename,
+					alertKind: "pr-triage-telegram-send-failed",
+					details: `${r.status ?? ""} ${r.error ?? ""}`.trim(),
+				});
+			}
+		} catch (err) {
+			// Never let the send path crash the polling/dispatch loop. Surface
+			// the failure as telemetry; leave the file in pending/ for retry.
+			await emit({
+				kind: "pr-triage-telegram-send-failed",
+				agentId: evt.agentId,
+				filename: evt.filename,
+				alertKind: "pr-triage-telegram-send-failed",
+				details: `send-handler-exception ${err instanceof Error ? err.message : String(err)}`,
+			});
+		} finally {
+			// R1 dual-adversarial round-1 Critical fix: ALWAYS release the
+			// per-filename send in-flight guard, regardless of send outcome.
+			// Without this, the next polling tick would suppress every
+			// subsequent `task-send-needed` emit for this filename — a failed
+			// send (left in `pending/` to re-trip) would never fire again.
+			agentManager.releaseSendSlot(evt.filename);
+			// Task 6 + Critical (Codex, round 1) — clear the dead-letter timer for
+			// the run THIS ENVELOPE belongs to. Use the runId the AGENT ECHOED into
+			// the envelope (`evt.runId`), NOT the runId re-read from the live on-disk
+			// marker. Reading the marker was the bug: the marker always holds the
+			// CURRENT run's runId, so `existing.runId !== runId` could never be true
+			// and the wrong-run guard was dead. With the envelope's runId, a
+			// late/stale envelope from a PRIOR run carries the OLD runId, fails the
+			// guard inside `clearResultTimer` (returns false), and leaves the CURRENT
+			// run's timer + marker + held slot intact.
+			//
+			// Dual-adversarial Critical (escalated 2026-06-02) — SKIP the clear entirely
+			// when this envelope was QUARANTINED by the pre-send guard. A quarantined
+			// envelope is missing/stale against an ACTIVE run; calling
+			// `clearResultTimer(agentId, undefined)` would match the live timer by
+			// agentId (the runId guard is skipped on `undefined`) and strip the CURRENT
+			// run's timer/marker/held slot — the exact dead-letter protection this branch
+			// adds. The non-quarantine paths (matching runId → the run completed; or no
+			// active run at all → nothing to wrongly clear) still clear as before.
+			// #92 re-gate C1 follow-up — also gate on `consumed`: clear ONLY when the
+			// envelope was durably consumed (terminal). A retryable failure (claim
+			// fault, no-send record fault, or a pre-consumption throw) leaves the
+			// envelope in pending/ — clearing now would strip the live run's
+			// timer/marker/held slot before consumption, and the next cron fire would
+			// then quarantine the retried envelope as stale (silent summary drop).
+			if (!quarantined && consumed) {
+				await clearResultTimer(evt.agentId, evt.runId);
+			}
+		}
+	};
+}
+
+/**
  * Plan 04d Task 3 — build the dispatch handler the daemon subscribes to
  * `AgentManager`'s `'task-dispatch-needed'` event. Extracted into a
  * factory so main.test.ts can exercise the handler directly without
@@ -572,11 +1524,91 @@ export interface TaskDispatchEvent {
  * Phase 2 — do not reintroduce per-task spawn semantics without
  * coordinating with the runtime adapter contract.
  */
+
+/**
+ * Critical (Codex, round 1) — append a per-dispatch run-correlation instruction
+ * to the dispatched PROMPT. The agent MUST copy this exact `runId` into its
+ * result envelope's `runId` field. The daemon then compares the ENVELOPE's runId
+ * (carried through `task-send-needed`) against the live marker's runId, so a
+ * late/stale envelope from a PRIOR run (carrying an OLD runId) cannot clear the
+ * CURRENT run's dead-letter timer/marker or release its slot. Without this echo
+ * the send handler had to re-read the runId from the live on-disk marker — which
+ * by construction ALWAYS matched the active timer, defeating the wrong-run guard.
+ *
+ * Plain text (no markup) and clearly framed as a daemon instruction, not PR data.
+ */
+export function appendRunIdInstruction(prompt: string, runId: string): string {
+	return `${prompt}\n\n---\nDAEMON RUN CORRELATION (not PR data): when you write your result envelope, include the field "runId":"${runId}" exactly as given, alongside the existing agentId/sendText (or agentId/noSend) fields. This lets the daemon correlate your result with this specific run.`;
+}
+
 export function makeTaskDispatchHandler(deps: {
 	agentManager: AgentManager;
-	emit: (event: DaemonEvent) => Promise<void>;
+	// Promise<unknown>: the handler awaits emit and ignores the result, so it
+	// accepts both the real telemetry `emit` (now Promise<boolean> — reports
+	// durable-write success) and the Promise<void> mocks used in tests.
+	emit: (event: DaemonEvent) => Promise<unknown>;
+	// R1 (feature-pr84-r1-daemon-creds, D4) + Task 6 — arm the durable,
+	// run-correlated dead-letter timer after a successful pr-triage PROMPT
+	// dispatch. The handler stamps a fresh `runId` per dispatch and threads it
+	// into the marker so a wrong-run envelope cannot clear the live run. The
+	// matching `task-send-needed` handler clears it when the agent's result
+	// envelope arrives. Optional so the existing handler unit tests (which only
+	// assert dispatch behavior) need no timer plumbing.
+	startResultTimer?: (
+		agentId: string,
+		runId: string,
+		filename?: string | null,
+		timeoutMs?: number,
+	) => Promise<void> | void;
+	// Dual-adversarial #92 Critical (C1) — persist the durable result marker
+	// BEFORE the claim resolves the cron task. Returns false on a write fault so
+	// the handler aborts the dispatch (task stays in tasks/pending/) instead of
+	// resolving it with no recoverable marker (a restart in that window silently
+	// drops the daily summary). Optional so existing dispatch unit tests that do
+	// not exercise durability need no marker plumbing.
+	persistResultMarker?: (
+		agentId: string,
+		runId: string,
+		filename?: string | null,
+		timeoutMs?: number,
+	) => Promise<boolean>;
+	// Remove the durable marker the handler pre-wrote — used to clean up after a
+	// send fault so recovery cannot dead-letter a phantom never-delivered run
+	// (#92 C1; the claim-fault path now KEEPS the marker — see resume below).
+	removeResultMarker?: (agentId: string) => Promise<void>;
+	// #92 re-gate Critical (C1 follow-up) — single-flight pre-checks. A live
+	// timer DEFERS a new pending file (a run is in flight; a second send would
+	// duplicate the prompt + overwrite the live marker). A durable marker
+	// referencing the SAME pending filename with no live timer RESUMES: the
+	// prompt was already delivered, only the claim faulted — re-claim, never
+	// re-send. All optional so dispatch unit tests need no timer plumbing.
+	hasLiveResultTimer?: (agentId: string) => boolean;
+	readResultMarker?: (agentId: string) => Promise<{
+		runId: string;
+		filename: string | null;
+		deadlineMs: number;
+	} | null>;
+	resumeResultTimer?: (
+		agentId: string,
+		runId: string,
+		filename: string | null,
+		remainingMs: number,
+	) => void;
 }): (evt: TaskDispatchEvent) => Promise<void> {
-	const { agentManager, emit } = deps;
+	const {
+		agentManager,
+		emit,
+		startResultTimer,
+		persistResultMarker,
+		removeResultMarker,
+		hasLiveResultTimer,
+		readResultMarker,
+		resumeResultTimer,
+	} = deps;
+	// #92 re-gate (C1 follow-up) — defer telemetry is once-per-filename, not
+	// once-per-polling-tick (a deferred file is re-attempted every tick while
+	// the live run drains; per-tick events would be a telemetry storm).
+	const deferredNotified = new Set<string>();
 	return async (evt: TaskDispatchEvent): Promise<void> => {
 		try {
 			const handle = findHandleForAgent(agentManager, evt.agentId);
@@ -588,6 +1620,64 @@ export function makeTaskDispatchHandler(deps: {
 					reason: "unregistered",
 					message: "no live handle at dispatch time",
 				});
+				return;
+			}
+			// pr84-gap-closure (Codex H1) — defense in depth. The normal
+			// polling path short-circuits an `ndjsonAlert` envelope in
+			// `AgentManager.processPendingTask` BEFORE the
+			// `task-dispatch-needed` emit, so this branch is not reached in
+			// production. It guards any path that drives the handler directly
+			// (tests, future re-routing): a record-and-resolve alert must
+			// emit the telegram-send-failed telemetry kind + claim the file,
+			// NEVER fall through to `malformed-task` on its absent `prompt`.
+			// The `finally` block still releases the dispatch slot on this
+			// early return.
+			//
+			// Codex H1 follow-up (un-scoped-bypass close): mirror the polling
+			// path's scoping. Fire ONLY when (a) `agentId === "pr-triage"`
+			// (daemon-owned producer, not self-declared), (b) the alert kind
+			// is in the daemon-owned `PR_TRIAGE_ALERT_KINDS` set, and (c) there
+			// is NO non-empty `prompt` field. Any other shape falls through to
+			// the prompt-validation / dispatch path below so an alert field on
+			// a real prompt task (or for another agent / unknown kind) cannot
+			// short-circuit dispatch.
+			const ndjsonAlert = (evt.taskContent as { ndjsonAlert?: unknown })
+				.ndjsonAlert;
+			const alertPromptRaw = (evt.taskContent as { prompt?: unknown }).prompt;
+			const alertHasPrompt =
+				typeof alertPromptRaw === "string" && alertPromptRaw.length > 0;
+			// I-3 (dual-adversarial pass #2): mirror the polling-path
+			// filename-provenance check — require the FILENAME to match the
+			// pr-triage producer convention (`pr-triage__<ts>-<pid>.json`).
+			// `tasks/pending/` is the generic shared bus; a foreign producer's
+			// file with a pr-triage-shaped body must NOT be record-and-resolved
+			// as an alert (it would destroy the real producer's signal). Any
+			// non-matching filename falls through to prompt-validation/dispatch.
+			if (
+				evt.agentId === "pr-triage" &&
+				evt.filename.startsWith("pr-triage__") &&
+				typeof ndjsonAlert === "string" &&
+				PR_TRIAGE_ALERT_KINDS.has(ndjsonAlert) &&
+				!alertHasPrompt
+			) {
+				const detailsRaw = (evt.taskContent as { details?: unknown }).details;
+				const details = typeof detailsRaw === "string" ? detailsRaw : "";
+				// pr84 minor (durability symmetry with agent-manager.ts
+				// processPendingTask): `emit` returns whether the record durably
+				// landed. Claim (resolve) the alert file ONLY when it did —
+				// otherwise leave it in `pending/` so the alert re-trips next tick
+				// instead of being silently resolved without ever surfacing the
+				// signal on a degraded telemetry dir (ENOSPC/EACCES).
+				const recorded = await emit({
+					kind: "pr-triage-telegram-send-failed",
+					agentId: evt.agentId,
+					filename: evt.filename,
+					alertKind: ndjsonAlert,
+					details,
+				});
+				if (recorded) {
+					await agentManager.claimTask(evt.filename, evt.agentId);
+				}
 				return;
 			}
 			// Dual-adversarial I-E fix (extends async-bot M-3): validate
@@ -614,15 +1704,156 @@ export function makeTaskDispatchHandler(deps: {
 				});
 				return;
 			}
-			const promptText = promptRaw;
+			// Critical (Codex, round 1) — stamp the per-dispatch correlation runId
+			// BEFORE building the prompt message so it can be ECHOED to the agent and
+			// REUSED when arming the dead-letter timer. The SAME runId must reach the
+			// agent (so it copies it into its envelope) AND the marker (so the send
+			// handler's wrong-run guard has a value to compare the envelope's runId
+			// against). Scoped to pr-triage — the only agent on the daemon-owned send
+			// contract; every other agent gets the verbatim prompt and no timer.
+			const isSendContract =
+				startResultTimer !== undefined && evt.agentId === "pr-triage";
+			// #92 re-gate Critical (C1 follow-up, round 2) — SINGLE-FLIGHT pre-checks.
+			// The prompt delivery (runtime.send) is irreversible, so it must happen AT
+			// MOST ONCE per task file. The decision is driven by the durable marker's
+			// FILENAME, not merely by timer liveness — RESUME takes precedence over
+			// DEFER:
+			//   1. RESUME — the durable marker references THIS filename: a prior
+			//      dispatch DELIVERED the prompt and faulted on the pending→resolved
+			//      claim, so the file is still pending. Re-attempt ONLY the claim —
+			//      never re-send. This holds WHETHER OR NOT a live timer exists: after
+			//      a restart recoverResultTimers() re-arms a LIVE timer for that same
+			//      run, and the prior code's DEFER-first ordering (which checked only
+			//      hasLiveResultTimer) then deferred the file FOREVER — it can only
+			//      leave pending via a claim, which DEFER never performs — so the
+			//      recovered timer dead-lettered and the next tick re-sent under a
+			//      FRESH runId (the exact double-send C1 exists to prevent). Re-arm the
+			//      timer with the ORIGINAL runId + the marker's remaining window UNLESS
+			//      a boot-recovered timer is already live for it (re-arming on top
+			//      leaks the recovered handle — fireTimeout overwrites the map entry
+			//      without clearing the old one, and both carry the same runId, so the
+			//      leaked timer still fires and dead-letters a live run).
+			//   2. DEFER — a live dead-letter timer exists for a DIFFERENT file: a run
+			//      is already in flight. Dispatching this file would send a second
+			//      prompt into the persistent PTY and overwrite the live run's marker —
+			//      the superseded run then has NO completion path (slot leak + silent
+			//      summary drop, re-gate I1). Leave the file in tasks/pending/; the
+			//      polling loop re-attempts each tick and proceeds once the live run
+			//      completes (envelope or dead-letter timeout).
+			// A marker for a DIFFERENT filename with NO live timer is stale (its run
+			// already completed but the fire-and-forget unlink faulted) — fall through
+			// to a fresh dispatch, whose marker write atomically overwrites it.
+			if (isSendContract) {
+				const liveMarker =
+					readResultMarker !== undefined
+						? await readResultMarker(evt.agentId)
+						: null;
+				const timerLive = hasLiveResultTimer?.(evt.agentId) === true;
+				if (liveMarker !== null && liveMarker.filename === evt.filename) {
+					// RESUME — re-attempt ONLY the claim; never re-send.
+					deferredNotified.delete(evt.filename);
+					const resumedClaim = await agentManager.claimTask(
+						evt.filename,
+						evt.agentId,
+					);
+					if (!resumedClaim) {
+						// claimTask already emitted `claim-task-failed`, and the ORIGINAL
+						// dispatch's claim-fault branch already released the held cron
+						// slot once — re-releasing on every retry tick would spam the
+						// scheduler. The next tick simply resumes again.
+						return;
+					}
+					// Re-arm only when NO live timer already owns this run's window. A
+					// boot-recovered timer (recoverResultTimers) is already counting down
+					// the correct deadline AND has re-held the cron slot — re-arming would
+					// leak it (see comment above).
+					if (!timerLive) {
+						resumeResultTimer?.(
+							evt.agentId,
+							liveMarker.runId,
+							liveMarker.filename,
+							liveMarker.deadlineMs - Date.now(),
+						);
+					}
+					await emit({
+						kind: "pr-triage-dispatch-resumed",
+						agentId: evt.agentId,
+						filename: evt.filename,
+						runId: liveMarker.runId,
+					});
+					return;
+				}
+				if (timerLive) {
+					// DEFER — a DIFFERENT run is in flight (live timer). The marker for
+					// THIS file did not match above, so dispatching now would duplicate
+					// the prompt and overwrite the live run's marker.
+					if (!deferredNotified.has(evt.filename)) {
+						deferredNotified.add(evt.filename);
+						await emit({
+							kind: "pr-triage-dispatch-deferred",
+							agentId: evt.agentId,
+							filename: evt.filename,
+						});
+					}
+					return;
+				}
+				// No live timer and no marker for THIS file → fall through to a fresh
+				// dispatch (any stale marker for another file is atomically overwritten
+				// by the marker write below).
+			}
+			const runId = isSendContract ? randomUUID() : null;
+			const promptText =
+				runId !== null ? appendRunIdInstruction(promptRaw, runId) : promptRaw;
 			const runtime: AgentRuntime = resolveRuntime(handle.runtime);
 			const message: AgentMessage = {
 				kind: "prompt",
 				payload: { text: promptText },
 			};
+			// #92 re-gate Critical (C1 follow-up) — persist the durable marker
+			// BEFORE the irreversible send. The prior order (send → marker) meant a
+			// marker-write fault aborted a dispatch whose prompt was ALREADY
+			// delivered: the retry tick re-SENT the same prompt (duplicate agent
+			// work), and the retry's fresh-runId marker stale-quarantined the first
+			// run's legitimate envelope. Aborting BEFORE the send makes the retry a
+			// true first delivery. On a fault: emit, release the held cron slot so
+			// the retry tick is not overlap-prevented, and leave the file pending.
+			// No in-memory timer was armed, so there is nothing to tear down.
+			if (persistResultMarker !== undefined && runId !== null) {
+				const persisted = await persistResultMarker(
+					evt.agentId,
+					runId,
+					evt.filename,
+					RESULT_TIMEOUT_MS,
+				);
+				if (!persisted) {
+					await emit({
+						kind: "pr-triage-dispatch-failed",
+						agentId: evt.agentId,
+						filename: evt.filename,
+						reason: "marker-write-failed",
+						message:
+							"durable result marker write faulted; dispatch aborted BEFORE prompt delivery, task left in tasks/pending/ for retry",
+					});
+					if (isSendContract) {
+						agentManager.emit("cron-result-complete", {
+							agentId: evt.agentId,
+							filename: evt.filename,
+						});
+					}
+					return;
+				}
+			}
 			try {
 				await runtime.send(handle, message);
 			} catch (err) {
+				// The marker pre-written above references a run whose prompt never
+				// delivered — remove it (best-effort) so boot recovery cannot
+				// dead-letter a phantom run, and release the held cron slot (this
+				// branch previously released NOTHING: with maxConcurrent:1 every
+				// future pr-triage cron fire was overlap-prevented until restart).
+				if (runId !== null && removeResultMarker !== undefined) {
+					await removeResultMarker(evt.agentId);
+				}
 				await emit({
 					kind: "pr-triage-dispatch-failed",
 					agentId: evt.agentId,
@@ -630,10 +1861,89 @@ export function makeTaskDispatchHandler(deps: {
 					reason: "send-failed",
 					message: err instanceof Error ? err.message : String(err),
 				});
+				if (isSendContract) {
+					agentManager.emit("cron-result-complete", {
+						agentId: evt.agentId,
+						filename: evt.filename,
+					});
+				}
 				return;
 			}
+			deferredNotified.delete(evt.filename);
 			try {
-				await agentManager.claimTask(evt.filename, evt.agentId);
+				// Dual-adversarial Critical (round 1) — HONOR claimTask's return on
+				// the dispatch path (was discarded). `claimTask` now returns `false`
+				// on a pending→resolved rename fault (EACCES/ENOSPC/EBUSY) and the
+				// send/alert legs already honor it; the dispatch leg must too. On a
+				// failed claim the SAME file is still in `tasks/pending/`, so the next
+				// polling tick would re-dispatch the SAME prompt under a NEW runId.
+				// Arming the result timer here would OVERWRITE the marker with the new
+				// runId (startResultTimer's clear-then-set), making the redispatch
+				// authoritative — and when the FIRST run finally writes its envelope
+				// (carrying the ORIGINAL runId) the send handler's wrong-run guard
+				// quarantines the legitimate daily summary as stale. So on `false`:
+				// do NOT arm/overwrite the timer, surface dispatch-failed telemetry,
+				// and leave the file in pending/ for the next tick to retry (the marker
+				// from any PRIOR live run is left untouched). claimTask already emits
+				// `claim-task-failed`; this dispatch-level event keeps the dispatch
+				// taxonomy complete (one dispatch event per task).
+				const claimed = await agentManager.claimTask(evt.filename, evt.agentId);
+				if (!claimed) {
+					await emit({
+						kind: "pr-triage-dispatch-failed",
+						agentId: evt.agentId,
+						filename: evt.filename,
+						reason: "claim-failed",
+						message:
+							"claimTask reported a pending→resolved rename fault; task left in tasks/pending/ for retry, result timer NOT armed; the live run's durable marker is KEPT — the next tick RESUMES the claim without re-sending",
+					});
+					// #92 re-gate Critical (C1 follow-up) — the durable marker pre-written
+					// before the send is KEPT: the prompt WAS delivered, so that marker is
+					// the live run's only durable record and the resume path (top of this
+					// handler) keys off it to re-claim WITHOUT a duplicate send. Removing
+					// it (the prior behavior) made the retry re-dispatch under a fresh
+					// runId — a second prompt into the persistent PTY, and the fresh
+					// marker stale-quarantined the first run's legitimate envelope.
+					// Dual-adversarial pass #2 (Critical follow-up) — the claim faulted, so
+					// claimTask emitted NO `task-resolved` and we arm NO result timer. For a
+					// send-contract (deferred-release) agent the CronScheduler slot would
+					// otherwise stay HELD forever (it is released only via
+					// `cron-result-complete`, which the result timer fires); with
+					// `maxConcurrent: 1` the next cron tick is then overlap-prevented and the
+					// file we just left in tasks/pending/ is NEVER retried (permanent stall —
+					// the leak the round-1 fix's own "leave for next tick to retry" comment
+					// assumed away). Release the held slot HERE so the next tick can retry,
+					// WITHOUT arming/overwriting any live run's durable marker. Gated on
+					// `isSendContract` so non-deferred agents (whose slot already released at
+					// `task-resolved`) are not double-released.
+					if (isSendContract) {
+						agentManager.emit("cron-result-complete", {
+							agentId: evt.agentId,
+							filename: evt.filename,
+						});
+					}
+					return;
+				}
+				// R1 (feature-pr84-r1-daemon-creds, D4) + Task 6 — the PROMPT was
+				// dispatched (claimed) successfully. Arm the durable, run-correlated
+				// dead-letter timer so an agent that crashes WITHOUT writing a result
+				// envelope surfaces as `pr-triage-result-timeout` rather than a
+				// silently lost notification — AND survives a daemon restart via the
+				// `result-pending/<agentId>.json` marker. The runId stamped into the
+				// marker is the SAME one echoed into the prompt above, so a
+				// stale/wrong-run envelope (carrying a DIFFERENT runId) cannot clear
+				// the live run. The `task-send-needed` handler clears it (by the
+				// ENVELOPE's runId) when the agent's `pr-triage-send__*.json` envelope
+				// arrives. Awaited so the marker is durable before this handler returns
+				// (the in-flight guard is still held by the polling loop).
+				if (startResultTimer !== undefined && runId !== null) {
+					await startResultTimer(
+						evt.agentId,
+						runId,
+						evt.filename,
+						RESULT_TIMEOUT_MS,
+					);
+				}
 			} catch (err) {
 				// claimTask itself surfaces `claim-task-failed` telemetry on
 				// fs.rename errors and resolves — a throw here is unexpected
@@ -647,6 +1957,17 @@ export function makeTaskDispatchHandler(deps: {
 					reason: "listener-exception",
 					message: err instanceof Error ? err.message : String(err),
 				});
+				// Dual-adversarial pass #2 (Minor) — claimTask THREW, so neither
+				// `task-resolved` nor the result timer fired; for a send-contract
+				// (deferred-release) agent the CronScheduler slot would leak until daemon
+				// restart (overlap-preventing every future pr-triage cron fire). Release it
+				// here — same reasoning as the claim-fault path above.
+				if (isSendContract) {
+					agentManager.emit("cron-result-complete", {
+						agentId: evt.agentId,
+						filename: evt.filename,
+					});
+				}
 			}
 		} catch (err) {
 			await emit({
@@ -664,6 +1985,107 @@ export function makeTaskDispatchHandler(deps: {
 			// cron-fired task wedged in `pending/` until daemon restart.
 			agentManager.releaseDispatchSlot(evt.filename);
 		}
+	};
+}
+
+/**
+ * R1 (feature-pr84-r1-daemon-creds) — the placeholder in
+ * `prompt-template.md` the daemon substitutes the sanitized scalar PR payload
+ * JSON into. The agent reads ONLY this injected data (no gh/curl/token).
+ */
+export const PR_DATA_PLACEHOLDER = "{{PR_DATA_JSON}}";
+
+/**
+ * R1 (feature-pr84-r1-daemon-creds) — the default `prepareCronPrompt` for the
+ * pr-triage cron. Holds `GH_TOKEN` in the daemon's own process; fetches all
+ * open PRs, sanitizes them to a scalar payload (no raw bodies), and:
+ *   - on fetch error → `{ skip: true, reason: "pr-fetch-failed" }` (do NOT
+ *     spawn with stale/no data),
+ *   - `totalCount === 0` → `{ skip: true, reason: "no-open-prs" }` (REPLACES the
+ *     bash wake-check gate — zero PRs means no spawn, no notification),
+ *   - else → read the template once and substitute the payload JSON into the
+ *     `{{PR_DATA_JSON}}` placeholder, returning `{ skip: false, prompt }`.
+ *
+ * The fetch is bounded by `fetchTimeoutMs` (default 15s, like the old
+ * `WAKE_CHECK_TIMEOUT_MS`) so a hung GitHub call cannot wedge the 60s tick.
+ *
+ * Gated to `agentId === "pr-triage"` — any other cron with no GH_TOKEN need
+ * gets the verbatim template (the hook returns the template unchanged with no
+ * fetch). A missing `GH_TOKEN` skips the fetch with `pr-fetch-failed` so the
+ * daemon never spawns the agent with stale data.
+ *
+ * Exported for unit testability — main.test.ts drives it with an injected
+ * fetch + readFile + token.
+ */
+export function makePrTriageCronPrompt(deps: {
+	// Static token (tests). Prefer `getToken` in production so a SIGHUP credential
+	// rotation (which updates process.env.GH_TOKEN) is picked up at fire-time.
+	token?: string | undefined;
+	getToken?: () => string | undefined;
+	fetchImpl?: typeof fetch;
+	fetchTimeoutMs?: number;
+	readTemplate?: (templatePath: string) => string;
+	nowFn?: () => number;
+}): PrepareCronPrompt {
+	const readTemplate =
+		deps.readTemplate ?? ((p: string) => fs.readFileSync(p, "utf8"));
+	const nowFn = deps.nowFn ?? (() => Date.now());
+	return async (cron: RegisteredCron) => {
+		// Only the pr-triage cron uses the daemon-fetch path. Any other cron
+		// (none today) falls back to the verbatim template — no fetch, no token.
+		if (cron.agentId !== "pr-triage") {
+			try {
+				return { skip: false, prompt: readTemplate(cron.promptTemplatePath) };
+			} catch {
+				return { skip: true, reason: "prepare-skip" };
+			}
+		}
+		// pass#2 fix: read the PAT at FIRE time (live process.env via getToken), not
+		// a value captured once at startDaemon — so a SIGHUP rotation takes effect
+		// without a full daemon restart. Falls back to the static `token` for tests.
+		const token = deps.getToken ? deps.getToken() : deps.token;
+		if (typeof token !== "string" || token.length === 0) {
+			// No credential → cannot fetch → do NOT spawn with stale data.
+			return { skip: true, reason: "pr-fetch-failed" };
+		}
+		let payload: ReturnType<typeof sanitizePrPayload>;
+		try {
+			const { nodes, issueCount } = await fetchOpenPrs(token, {
+				...(deps.fetchImpl !== undefined ? { fetchImpl: deps.fetchImpl } : {}),
+				...(deps.fetchTimeoutMs !== undefined
+					? { timeoutMs: deps.fetchTimeoutMs }
+					: {}),
+			});
+			// FIX C: pass the TRUE open-PR count (search.issueCount) so the summary's
+			// reported total is honest past the 50-node inspected page, not capped.
+			payload = sanitizePrPayload(nodes, nowFn(), issueCount);
+		} catch (err) {
+			// Minor (fetch-error observability): FetchPrsError is token-free but
+			// carries the HTTP status (401 vs 403 vs 429 vs null for a network /
+			// timeout error). Surface it via `exitCode` so the `cron-skipped`
+			// telemetry distinguishes a revoked PAT from a rate-limit without
+			// server-side logs. We still never echo the error message (it could
+			// carry context); only the numeric status flows out.
+			const status =
+				err instanceof FetchPrsError && typeof err.status === "number"
+					? err.status
+					: null;
+			return { skip: true, reason: "pr-fetch-failed", exitCode: status };
+		}
+		if (payload.totalCount === 0) {
+			// Zero open PRs → no spawn (replaces the wake-check exit-1 gate).
+			return { skip: true, reason: "no-open-prs" };
+		}
+		let template: string;
+		try {
+			template = readTemplate(cron.promptTemplatePath);
+		} catch {
+			return { skip: true, reason: "prepare-skip" };
+		}
+		const prompt = template
+			.split(PR_DATA_PLACEHOLDER)
+			.join(JSON.stringify(payload, null, 2));
+		return { skip: false, prompt };
 	};
 }
 
@@ -704,6 +2126,73 @@ export const CRON_AGENT_RESTART_BACKOFF_MS: readonly number[] = [
 	5_000, 30_000, 60_000,
 ];
 
+// R1 (feature-pr84-r1-daemon-creds, D1) — the daemon-owned set of NON-SECRET
+// process-level vars a trusted cron agent's PTY needs to actually run a shell.
+// The canonical definition (and the doc explaining WHY each key is safe) lives
+// in `./cron-agent-env.ts` so `cron-scheduler.ts` can share the SAME allowlist
+// and `composeRuntimeEnv` helper without a circular import (main.ts →
+// cron-scheduler.ts). Re-exported here for back-compat with existing importers.
+export { CRON_AGENT_RUNTIME_ALLOWLIST } from "./cron-agent-env.js";
+
+/**
+ * R1 (feature-pr84-r1-daemon-creds) — the daemon-owned set of agentIds for
+ * which the daemon overlays the NON-SECRET `CRON_AGENT_RUNTIME_ALLOWLIST`
+ * runtime descriptors. (Renamed from `CRON_AGENT_SECRET_TRUSTED_AGENTS`: there
+ * are no secrets in the overlay anymore, only runtime vars.)
+ *
+ * `agentId` is daemon-controlled (the registration key passed to
+ * `registerCronAgentWithRestart`, NOT a self-declared config field). The gate
+ * is now non-security-critical (runtime descriptors leak no credential) but is
+ * kept so the multi-tenant isolation contract stays crisp: an untrusted /
+ * client agent still gets `baseEnv` UNCHANGED (no PATH injection), exactly as
+ * the claude-pty isolation invariant Test 7 encodes.
+ */
+export const CRON_AGENT_RUNTIME_TRUSTED_AGENTS: ReadonlySet<string> = new Set([
+	"pr-triage",
+]);
+
+/**
+ * R1 (feature-pr84-r1-daemon-creds) — pure env-composition helper. Returns
+ * `baseEnv` UNCHANGED unless `agentId` is in the daemon-owned
+ * `CRON_AGENT_RUNTIME_TRUSTED_AGENTS` set, in which case it returns a shallow
+ * copy of `baseEnv` overlaid with ONLY the `CRON_AGENT_RUNTIME_ALLOWLIST`
+ * NON-SECRET base-runtime vars (`PATH`/`HOME`/`SHELL`/`LANG` + the
+ * `IAGO_DAEMON_STATE_ROOT` rendezvous dir) — taking only the keys actually
+ * present (non-empty string) in `daemonEnv`. Absent/empty values are skipped so
+ * we never materialize empty-string env entries.
+ *
+ * CRITICAL SECURITY PROPERTY (D1): NO secret is EVER copied into the composed
+ * agent env. The former secret allowlist is gone; `IAGO_TELEGRAM_BOT_TOKEN`,
+ * `GH_TOKEN`, and `IAGO_TELEGRAM_ALLOWED_USER_IDS` present in `daemonEnv` are
+ * NOT overlaid because they are not in `CRON_AGENT_RUNTIME_ALLOWLIST`. The
+ * daemon still holds those secrets in its OWN process.env for its own
+ * fetch/send — it just no longer hands them to any agent.
+ *
+ * The runtime-var overlay is required because node-pty REPLACES the parent env
+ * (claude-pty.ts), so without them the spawned shell cannot locate the `claude`
+ * binary. An untrusted agent gets `baseEnv` UNCHANGED: the multi-tenant
+ * isolation invariant is preserved for it (no PATH injection).
+ */
+export function composeCronAgentEnv(
+	agentId: string,
+	baseEnv: Record<string, string>,
+	daemonEnv: NodeJS.ProcessEnv,
+): Record<string, string> {
+	if (!CRON_AGENT_RUNTIME_TRUSTED_AGENTS.has(agentId)) return baseEnv;
+	const merged: Record<string, string> = { ...baseEnv };
+	// ONLY the non-secret runtime descriptors are overlaid — NO secrets. A
+	// declared `baseEnv` value already present for a key is overwritten by the
+	// daemon's process.env value (the daemon's runtime descriptors are
+	// authoritative). The scrubbed overlay is produced by the SAME
+	// `composeRuntimeEnv` helper the back-compat wake-check uses — single source
+	// of truth for the allowlist.
+	const runtime = composeRuntimeEnv(daemonEnv);
+	for (const [key, value] of Object.entries(runtime)) {
+		if (typeof value === "string") merged[key] = value;
+	}
+	return merged;
+}
+
 /**
  * Dual-adversarial I-C fix — register a cron-driven agent and arm a
  * restart loop that re-spawns the agent if its persistent PTY exits.
@@ -722,9 +2211,26 @@ export const CRON_AGENT_RESTART_BACKOFF_MS: readonly number[] = [
  * re-registration with exponential backoff
  * (`CRON_AGENT_RESTART_BACKOFF_MS`). Each successful re-registration
  * emits `cron-agent-restarted`; budget exhaustion emits
- * `cron-agent-restart-failed`. Re-registration succeeded — the new
- * handle gets its own status callback so a second exit reuses the same
- * restart loop.
+ * `cron-agent-restart-failed`.
+ *
+ * SINGLE RESTART AUTHORITY (Task 8, feature-daemon-recovery-hardening) —
+ * two restart subsystems act on the same agentId: THIS cron-restart loop's
+ * exit listener AND the heartbeat-driven recycle (`AgentManager.restartAgent`
+ * / `doRestart`). Left uncoupled they would race / double-restart, and a
+ * heartbeat recycle would re-spawn a generation with NO cron-side exit
+ * listener (so a later exit goes un-restarted — silent death of the daily
+ * job). This loop resolves both:
+ *   1. RE-ARM ON EVERY RESTART. The loop subscribes to the AgentManager's
+ *      `agent-restarted` event and re-arms its exit listener on the FRESH
+ *      handle whenever ANY path restarts this agentId — heartbeat recycle,
+ *      IPC, or this loop itself. The cron-side listener therefore always
+ *      tracks the live generation.
+ *   2. NO DOUBLE-RESTART. The exit listener consults
+ *      `agentManager.isRestarting(handleId)` before scheduling: a heartbeat
+ *      recycle tearing the PTY down trips the same `exited` status this
+ *      listener watches, but the recycle is already in flight, so the listener
+ *      yields (the recycle's `agent-restarted` re-arms). The loop only OWNS a
+ *      restart when it is the sole actor (a genuine unsolicited crash).
  *
  * The helper short-circuits when `isShuttingDown()` returns true (the
  * daemon teardown drains the polling loop and removes listeners; a
@@ -738,15 +2244,87 @@ export async function registerCronAgentWithRestart(deps: {
 	agentId: string;
 	agentConfig: AgentConfigShape;
 	isShuttingDown: () => boolean;
-}): Promise<void> {
+	/**
+	 * pr84-gap-closure (brief D3) — injectable restart backoff schedule.
+	 * Defaults to `CRON_AGENT_RESTART_BACKOFF_MS`. A test seam (mirrors
+	 * `CronScheduler` `nowFn` / `startPollingLoop` `intervalMs`) so the
+	 * restart-loop integration test can drive a real-timer restart in
+	 * ~10ms instead of the production 5s, without faking timers (which
+	 * would break Phase B's real-I/O marker poll).
+	 */
+	backoffMs?: readonly number[];
+}): Promise<() => void> {
 	const { agentManager, agentId, agentConfig, isShuttingDown } = deps;
+	const backoffMs = deps.backoffMs ?? CRON_AGENT_RESTART_BACKOFF_MS;
+
+	// R1 (feature-pr84-r1-daemon-creds) — compose the per-agent env the daemon
+	// hands to `registerAgent`. For an agent in the daemon-owned
+	// `CRON_AGENT_RUNTIME_TRUSTED_AGENTS` set, overlay ONLY the NON-SECRET
+	// `CRON_AGENT_RUNTIME_ALLOWLIST` runtime descriptors (PATH/HOME/SHELL/LANG)
+	// present in `process.env` (skip absent/empty). NO secret is ever injected —
+	// the agent holds no token (the daemon does its own GitHub fetch + Telegram
+	// send). Any agent NOT in the set gets ONLY its declared `agentConfig.env`
+	// (multi-tenant isolation preserved). Used for BOTH the initial registration
+	// and the restart re-registration.
+	const composeAgentEnv = (): Record<string, string> =>
+		composeCronAgentEnv(agentId, agentConfig.env, process.env);
+
+	// Task 8 — the single live exit-listener unsubscribe for THIS agent. Re-armed
+	// (prior torn down first) on every restart, so exactly ONE listener is armed
+	// against the live generation at any time.
+	let currentUnsubscribe: (() => void) | null = null;
+
+	// Task 8 (Important, dual-adversarial pass #2) — close the cross-subsystem
+	// deferred double-restart race. A cron-owned restart waits out `backoffMs`
+	// (~5s) BEFORE it fires `restartAgent`. If another actor (heartbeat recycle,
+	// IPC) restarts this agent DURING that wait, the agent is already a fresh,
+	// healthy generation — firing the cron-deferred restart anyway would recycle
+	// it spuriously. `isRestarting(handle.id)` (checked at listener-fire time)
+	// cannot catch this: the recycle can start AND complete inside the backoff
+	// window, after the cron listener already committed to scheduling. So track the
+	// pending backoff timer + a monotonic generation; `onAgentRestarted` (the
+	// re-arm authority, fired by ANY restart) cancels the pending timer and bumps
+	// the generation, and the awaiting `scheduleRestart` aborts when its captured
+	// generation is stale. Cancelling resolves the wait (never `clearTimeout`
+	// alone — that would strand the awaiting promise forever).
+	let pendingRestart: {
+		timer: ReturnType<typeof setTimeout>;
+		resolve: () => void;
+	} | null = null;
+	let restartGeneration = 0;
+	const cancelPendingRestart = (): void => {
+		restartGeneration++;
+		if (pendingRestart !== null) {
+			clearTimeout(pendingRestart.timer);
+			pendingRestart.resolve();
+			pendingRestart = null;
+		}
+	};
 
 	const armExitListener = (handle: AgentHandle): void => {
+		// Task 8 — tear down any prior listener before arming the new one so two
+		// generations never both watch for exit (a stale listener on a dead PTY is
+		// harmless but a duplicate live one would double-count an exit).
+		if (currentUnsubscribe !== null) {
+			try {
+				currentUnsubscribe();
+			} catch {
+				// best-effort
+			}
+			currentUnsubscribe = null;
+		}
 		const runtime: AgentRuntime = resolveRuntime(handle.runtime);
 		let scheduled = false;
 		const unsubscribe = runtime.onStatusChanged(handle, (status) => {
 			if (status !== "exited" && status !== "crashed") return;
 			if (scheduled) return;
+			// Task 8 (no double-restart) — if a restart is ALREADY in flight for
+			// this handle (a heartbeat recycle tearing the PTY down trips the same
+			// `exited`/`crashed` status this listener watches), yield: the recycle
+			// owns the restart and its `agent-restarted` event will re-arm this
+			// listener on the fresh generation. The cron loop only owns a restart
+			// when it is the sole actor (a genuine unsolicited crash).
+			if (agentManager.isRestarting(handle.id)) return;
 			scheduled = true;
 			// Defer the actual unsubscribe + retry to a microtask so the
 			// status-callback site is not entangled with PTY teardown.
@@ -756,41 +2334,111 @@ export async function registerCronAgentWithRestart(deps: {
 				} catch {
 					// best-effort
 				}
+				if (currentUnsubscribe === unsubscribe) currentUnsubscribe = null;
 				await scheduleRestart(1);
 			})();
 		});
+		currentUnsubscribe = unsubscribe;
 	};
+
+	// Task 8 (re-arm on every restart) — subscribe ONCE to the AgentManager's
+	// `agent-restarted` event. Whenever ANY path restarts this agentId (heartbeat
+	// recycle, IPC, or this cron loop's own `restartAgent` call), re-arm the
+	// exit listener on the FRESH handle so the cron-side restart authority always
+	// tracks the live generation. Filtered by agentId (the manager hosts many).
+	const onAgentRestarted = (evt: {
+		agentId?: unknown;
+		handleId?: unknown;
+	}): void => {
+		if (evt.agentId !== agentId || typeof evt.handleId !== "string") return;
+		if (isShuttingDown()) return;
+		const fresh = agentManager.getHandle(evt.handleId);
+		if (fresh === undefined) return;
+		// Task 8 (Important) — a fresh generation now exists (this restart, by ANY
+		// actor: heartbeat recycle, IPC, or this cron loop's own restartAgent).
+		// Cancel any cron-deferred restart still waiting out its backoff so it does
+		// not recycle the healthy fresh generation. Harmless when WE are the actor
+		// (no pending timer remains by the time our own restartAgent emits this).
+		cancelPendingRestart();
+		armExitListener(fresh);
+	};
+	agentManager.on("agent-restarted", onAgentRestarted);
 
 	const scheduleRestart = async (attempt: number): Promise<void> => {
 		if (isShuttingDown()) return;
-		if (attempt > CRON_AGENT_RESTART_BACKOFF_MS.length) {
+		if (attempt > backoffMs.length) {
 			await emit({
 				kind: "cron-agent-restart-failed",
 				agentId,
 			});
 			return;
 		}
-		const delay = CRON_AGENT_RESTART_BACKOFF_MS[attempt - 1];
+		// Task 8 (Important) — snapshot the generation BEFORE the backoff wait. If a
+		// concurrent restart lands during the wait, `cancelPendingRestart` bumps the
+		// generation (and resolves this wait) so we abort below instead of recycling
+		// the now-fresh generation.
+		const gen = restartGeneration;
+		const delay = backoffMs[attempt - 1];
 		await new Promise<void>((resolve) => {
-			const t = setTimeout(resolve, delay);
-			if (typeof t.unref === "function") t.unref();
+			const timer = setTimeout(() => {
+				pendingRestart = null;
+				resolve();
+			}, delay);
+			if (typeof timer.unref === "function") timer.unref();
+			pendingRestart = { timer, resolve };
 		});
 		if (isShuttingDown()) return;
+		// Task 8 (Important) — a concurrent restart (heartbeat recycle / IPC) landed
+		// while we waited out the backoff; the agent is already a fresh generation.
+		// Abort to avoid a spurious double-restart of a healthy generation.
+		if (restartGeneration !== gen) return;
 		try {
-			const handle = await agentManager.registerAgent({
-				agentId,
-				runtimeId: agentConfig.runtimeId,
-				...(agentConfig.org !== undefined ? { org: agentConfig.org } : {}),
-				cwd: agentConfig.cwd,
-				env: agentConfig.env,
-				sessionId: makeDaemonStartupSessionId(agentId),
-			});
+			// pr84 R2: on a PTY crash the AgentManager cascades child shutdown
+			// but does NOT teardown the crashed handle itself — it lingers in
+			// `handles`. A plain `registerAgent` would ADD a second handle for
+			// the same agentId (same-org re-register is allowed), and
+			// `findHandleForAgent` (insertion order) would keep resolving the
+			// DEAD one — every post-restart dispatch silently no-ops while
+			// telemetry falsely signals recovery. So when the dead handle is
+			// still tracked, reuse `restartAgent`: it tears the dead handle
+			// down and re-spawns under the SAME stable id (SpawnOpts.restoreId),
+			// guaranteeing exactly ONE live handle per agentId. The env is
+			// RE-COMPOSED here (envOverride) so the respawn picks up the current
+			// NON-SECRET runtime descriptors (PATH/HOME/SHELL/LANG + the state-root
+			// rendezvous dir) from the daemon's live `process.env` — under R1 the
+			// agent holds NO secret, so this is a runtime-descriptor refresh, not a
+			// secret refresh. Because the handle id is stable, no new
+			// `<handleId>.json` accumulates (the twin orphan-config finding).
+			const deadHandle = findHandleForAgent(agentManager, agentId);
+			let handle: AgentHandle;
+			if (deadHandle !== null) {
+				// `restartAgent` emits `agent-restarted`, which re-arms the exit
+				// listener via `onAgentRestarted` (the single re-arm authority) — so
+				// this branch does NOT call `armExitListener` itself (that would
+				// double-arm). Task 8.
+				handle = await agentManager.restartAgent(deadHandle.id, "crash", {
+					envOverride: composeAgentEnv(),
+				});
+			} else {
+				// No tracked handle at all (e.g. it was already torn down). Fall
+				// back to a fresh registration so the agent still recovers.
+				// `registerAgent` does NOT emit `agent-restarted`, so arm the exit
+				// listener explicitly below.
+				handle = await agentManager.registerAgent({
+					agentId,
+					runtimeId: agentConfig.runtimeId,
+					...(agentConfig.org !== undefined ? { org: agentConfig.org } : {}),
+					cwd: agentConfig.cwd,
+					env: composeAgentEnv(),
+					sessionId: makeDaemonStartupSessionId(agentId),
+				});
+				armExitListener(handle);
+			}
 			await emit({
 				kind: "cron-agent-restarted",
 				agentId,
 				attempt,
 			});
-			armExitListener(handle);
 		} catch (err) {
 			console.error(
 				`[daemon] cron-agent restart attempt ${attempt} for ${agentId} failed: ${err instanceof Error ? err.message : String(err)}`,
@@ -805,7 +2453,7 @@ export async function registerCronAgentWithRestart(deps: {
 			runtimeId: agentConfig.runtimeId,
 			...(agentConfig.org !== undefined ? { org: agentConfig.org } : {}),
 			cwd: agentConfig.cwd,
-			env: agentConfig.env,
+			env: composeAgentEnv(),
 			sessionId: makeDaemonStartupSessionId(agentId),
 		});
 		armExitListener(handle);
@@ -814,6 +2462,9 @@ export async function registerCronAgentWithRestart(deps: {
 			`[daemon] startup registerAgent(${agentId}) failed: ${err instanceof Error ? err.message : String(err)} — agent will be unrouted`,
 		);
 	}
+	return () => {
+		agentManager.off("agent-restarted", onAgentRestarted);
+	};
 }
 
 /**
@@ -956,12 +2607,16 @@ export function computeRunUnder(
  */
 export interface SighupHandlerDeps {
 	/** Re-reads credstore into `process.env`. May throw — surfaced as `cred-reload-failed`. */
-	readonly loadCredentials: () => {
-		read: readonly string[];
-		failed: readonly string[];
-	} | void;
+	readonly loadCredentials: () =>
+		| {
+				read: readonly string[];
+				failed: readonly string[];
+		  }
+		| undefined;
 	/** Telemetry emit. No-throw via internal try/catch (telemetry.ts swallows write errors). */
-	readonly emit: (event: DaemonEvent) => Promise<void>;
+	// Promise<unknown>: callers await emit and ignore the result, so this
+	// accepts the real telemetry `emit` (Promise<boolean>) and Promise<void> mocks.
+	readonly emit: (event: DaemonEvent) => Promise<unknown>;
 	/**
 	 * Returns the current set of credential env-var names. Called fresh on
 	 * every SIGHUP so Phase 3+ additions to `CREDENTIALS` (e.g., the commented
@@ -1029,8 +2684,7 @@ export function registerSighupHandler(
 			const errInfo: { errorCode: string } =
 				err instanceof Error
 					? {
-							errorCode:
-								(err as NodeJS.ErrnoException).code ?? err.constructor.name,
+							errorCode: (err as NodeJS.ErrnoException).code ?? err.constructor.name,
 						}
 					: { errorCode: "unknown" };
 			try {
@@ -1118,8 +2772,7 @@ export function registerSighupHandler(
 				const errInfo: { errorCode: string } =
 					err instanceof Error
 						? {
-								errorCode:
-									(err as NodeJS.ErrnoException).code ?? err.constructor.name,
+								errorCode: (err as NodeJS.ErrnoException).code ?? err.constructor.name,
 							}
 						: { errorCode: "unknown" };
 				try {
@@ -1202,15 +2855,26 @@ export async function startDaemon(
 
 	ensureStateDirsSync();
 
+	// pass#2 fix (state-root rendezvous): resolve the daemon's state root and
+	// materialize it into process.env so EVERY consumer — including the cron-agent
+	// env overlay (composeCronAgentEnv, which forwards IAGO_DAEMON_STATE_ROOT into
+	// the agent's PTY) — sees the SAME absolute path. Without this, when the env
+	// var is unset the daemon falls back to <cwd>/runtime/state or
+	// ~/.iago-os/daemon-state while the agent keeps its hardcoded agent-config
+	// default, so the agent's pr-triage-send__ envelope lands in a directory the
+	// daemon never polls (notification silently lost until the dead-letter timer).
+	process.env.IAGO_DAEMON_STATE_ROOT = getStateRoot();
+
 	const config = overrideConfig ?? (await loadConfig());
 
-	// Codex H1 + Opus C2: claude-pty is registered via the top-level
-	// side-effect `import "../agent-runtime/pty/claude-pty.js"` (see
-	// imports above — guarantees registration at module load, not at
-	// startDaemon() call time). Validate registration so the operator
-	// sees an explicit error if the adapter failed to register rather
-	// than discovering it via a "No AgentRuntime registered for id"
-	// surprise on first registerAgent().
+	// Codex H1 + Opus C2 + Plan 04 fail-isolation: dynamically import every
+	// built-in adapter module wrapped in `loadAdapterFailIsolated` so a single
+	// broken adapter does NOT crash the daemon — the daemon logs the failure
+	// to stderr, emits `runtime-registration-failed` telemetry, and continues
+	// booting with the adapters that did register.
+	for (const specifier of BUILT_IN_ADAPTER_MODULES) {
+		await loadAdapterFailIsolated(specifier);
+	}
 	const loadedRuntimes = listRuntimes().map((r) => r.id);
 	if (!loadedRuntimes.includes("claude-pty")) {
 		console.error(
@@ -1299,7 +2963,26 @@ export async function startDaemon(
 			"AgentManager.startPollingLoop not found — 07b not landed or class shape changed post-compile",
 		);
 	}
-	const scheduler = new CronScheduler({ agentManager });
+	// R1 (feature-pr84-r1-daemon-creds) — the daemon owns the GitHub fetch +
+	// Telegram send. `prepareCronPrompt` runs the fetch + sanitize + payload
+	// injection for pr-triage and gates the spawn on zero PRs (replacing the
+	// retired bash wake-check). The daemon holds `GH_TOKEN` in its OWN
+	// process.env (cred-bootstrap); the agent never sees it.
+	const scheduler = new CronScheduler({
+		agentManager,
+		prepareCronPrompt: makePrTriageCronPrompt({
+			getToken: () => process.env.GH_TOKEN,
+		}),
+		// Task 6 gate-finding #2 (hold-slot-until-result) — pr-triage is the only
+		// send-contract agent: its `claimTask` emits `task-resolved` at prompt
+		// HANDOFF (the prompt enters the persistent PTY), not at run completion.
+		// Hold its concurrency slot until the result envelope is processed OR a
+		// durable dead-letter timeout fires (both surface as `cron-result-complete`
+		// from `makeResultTimers.onResultComplete`). Without this, a slow run lets
+		// the next cron tick dispatch a second prompt that overwrites the single
+		// dead-letter timer and emits a stale/duplicate envelope.
+		deferReleaseAgents: new Set(["pr-triage"]),
+	});
 	const agentsDir = resolveAgentsDir();
 	const cronEntries = await loadCronEntries(agentsDir);
 	for (const opts of cronEntries) {
@@ -1334,6 +3017,7 @@ export async function startDaemon(
 	// (`scheduleCronAgentRestart`) subscribes to the runtime's status
 	// callback and re-runs `registerAgent` on exit/crash with
 	// exponential backoff (3 attempts at 5s/30s/60s).
+	const cronRestartCleanups: Array<() => void> = [];
 	for (const opts of cronEntries) {
 		let agentConfig: AgentConfigShape;
 		try {
@@ -1344,13 +3028,61 @@ export async function startDaemon(
 			);
 			continue;
 		}
-		await registerCronAgentWithRestart({
-			agentManager,
-			agentId: opts.agentId,
-			agentConfig,
-			isShuttingDown: () => shuttingDown,
-		});
+		cronRestartCleanups.push(
+			await registerCronAgentWithRestart({
+				agentManager,
+				agentId: opts.agentId,
+				agentConfig,
+				isShuttingDown: () => shuttingDown,
+			}),
+		);
 	}
+
+	// R1 (feature-pr84-r1-daemon-creds, D4) + Task 6 — shared dead-letter timer
+	// closures the dispatch handler (arm-on-dispatch) and the send handler
+	// (clear-on-envelope) both use. A dispatched pr-triage PROMPT that produces
+	// no result envelope within `RESULT_TIMEOUT_MS` surfaces as
+	// `pr-triage-result-timeout` rather than a silently lost notification.
+	const {
+		startResultTimer,
+		persistResultMarker,
+		removeResultMarker,
+		clearResultTimer,
+		recoverResultTimers,
+		isActiveRun,
+		hasLiveResultTimer,
+		readResultMarker,
+		resumeResultTimer,
+	} = makeResultTimers({
+		emit,
+		// Task 6 gate-finding #2 (hold-slot-until-result) — when a pr-triage run
+		// COMPLETES (envelope processed or durable dead-letter fires), emit the
+		// run-completion event on the AgentManager so the CronScheduler releases
+		// the cron concurrency slot it has been HOLDING since dispatch (the slot
+		// is NOT released at `claimTask`/prompt-handoff for send-contract agents).
+		// Carries the original cron task filename so the correct slot is released.
+		onResultComplete: (agentId, filename) => {
+			if (filename === null) return;
+			agentManager.emit("cron-result-complete", { agentId, filename });
+		},
+		// Round-2 Minor (Codex) — re-hold the cron concurrency slot for an in-flight
+		// run recovered from a still-future result-pending marker after a restart,
+		// so a matching cron tick cannot dispatch a second prompt that overwrites the
+		// single marker (duplicate/stale-run under non-daily cadences). Released
+		// later via the onResultComplete chain above.
+		onResultRecovered: (agentId, filename) => {
+			if (filename === null) return;
+			scheduler.restoreOutstanding(agentId, filename);
+		},
+	});
+	// Task 6 (Critical) — recover dead-letter markers orphaned by a restart: a
+	// dispatch in flight when the daemon went down left a durable
+	// `result-pending/<agentId>.json` marker. Re-arm a still-future deadline or
+	// immediately dead-letter an expired one, so the daily summary is never
+	// silently dropped across a restart. Runs alongside bootRecovery /
+	// recoverStrandedApprovals; awaited so recovery completes before the polling
+	// loop starts.
+	await recoverResultTimers();
 
 	// Plan 04d Task 3 — subscribe the dispatch handler BEFORE
 	// `startPollingLoop` (called below at the post-shutdown-guard step) so
@@ -1359,7 +3091,21 @@ export async function startDaemon(
 	// `agentManager.stopPollingLoop()` so a tick that fires during
 	// shutdown does not silently decrement via the listener-less
 	// `claimTask` fallback path.
-	const taskDispatchHandler = makeTaskDispatchHandler({ agentManager, emit });
+	const taskDispatchHandler = makeTaskDispatchHandler({
+		agentManager,
+		emit,
+		startResultTimer,
+		// Dual-adversarial #92 Critical (C1) — load-bearing pre-SEND durable marker
+		// write + the cleanup unlink for a send-faulted dispatch.
+		persistResultMarker,
+		removeResultMarker,
+		// #92 re-gate Critical (C1 follow-up) — single-flight pre-checks: defer a
+		// new pending file while a run is in flight; resume (re-claim, never
+		// re-send) a sent-but-unclaimed dispatch via its durable marker.
+		hasLiveResultTimer,
+		readResultMarker,
+		resumeResultTimer,
+	});
 	const taskDispatchListener = (evt: TaskDispatchEvent): void => {
 		void taskDispatchHandler(evt);
 	};
@@ -1379,18 +3125,7 @@ export async function startDaemon(
 		bot = new TelegramBot({
 			token: config.telegram.token,
 			allowedUserIds: config.telegram.allowedUserIds,
-			agentManager: {
-				getHandle: (id) => agentManager.getHandle(id),
-				listHandles: () => agentManager.listHandles(),
-				shutdownAgent: (id, signal) => agentManager.shutdownAgent(id, signal),
-				restartAgent: (id, reason) =>
-					agentManager.restartAgent(
-						id,
-						reason as "stalled" | "rss-exceeded" | "crash",
-					),
-				getShape: async (agentId: string): Promise<AgentShape | null> =>
-					getShapeForAgent(agentManager, agentId),
-			},
+			agentManager: buildBotAgentManagerAdapter(agentManager),
 			injectIntoAgent: async (agentId, text) => {
 				await injectIntoAgent(agentManager, agentId, text);
 			},
@@ -1398,9 +3133,32 @@ export async function startDaemon(
 		await bot.start();
 	}
 
+	// R1 (feature-pr84-r1-daemon-creds, D2/D4) — subscribe the send handler
+	// AFTER `bot` is constructed so it owns the live TelegramBot reference (may
+	// be null in local-dev; `sendAgentNotification` guards that). The handler
+	// sends the agent's text summary to Santiago itself and clears the
+	// dead-letter timer when the result envelope arrives. Teardown removes this
+	// listener alongside the dispatch listener in `shutdown`.
+	const taskSendHandler = makeTaskSendHandler({
+		agentManager,
+		emit,
+		telegramBot: bot,
+		clearResultTimer,
+		// Round-2 Important (Codex) — pre-send wrong-run guard: drop a stale-runId
+		// envelope BEFORE the irreversible Telegram send instead of after.
+		isActiveRun,
+	});
+	const taskSendListener = (evt: TaskSendEvent): void => {
+		void taskSendHandler(evt);
+	};
+	agentManager.on("task-send-needed", taskSendListener);
+
 	// `shuttingDown` is declared above (hoisted for the I-C cron-agent
 	// restart loop). All assignments happen inside `shutdown`.
 	const shutdownHandlers = new Set<() => void>();
+	for (const cleanup of cronRestartCleanups) {
+		shutdownHandlers.add(cleanup);
+	}
 	let resolveShutdownPromise!: () => void;
 	const shutdownPromise = new Promise<void>((resolve) => {
 		resolveShutdownPromise = resolve;
@@ -1502,6 +3260,17 @@ export async function startDaemon(
 		} catch (err) {
 			console.error(
 				`[daemon] removeListener(task-dispatch-needed) failed: ${err instanceof Error ? err.message : String(err)}`,
+			);
+		}
+		// R1 (feature-pr84-r1-daemon-creds) — drop the send listener too so a
+		// tick that fires during shutdown cannot route a send envelope into a
+		// torn-down handler. Order is irrelevant relative to the dispatch
+		// listener removal; both must run before the daemon exits.
+		try {
+			agentManager.removeListener("task-send-needed", taskSendListener);
+		} catch (err) {
+			console.error(
+				`[daemon] removeListener(task-send-needed) failed: ${err instanceof Error ? err.message : String(err)}`,
 			);
 		}
 		// Opus I4: bound each stage with `withTimeout`. A hung adapter
@@ -1755,6 +3524,37 @@ export async function getShapeForAgent(
 		if (h.agentId === agentId) return h.shape;
 	}
 	return null;
+}
+
+/**
+ * Build the `AgentManagerInterface` adapter the Telegram bot consumes.
+ *
+ * Extracted from the inline `new TelegramBot({ agentManager: {…} })` literal so
+ * the COMPOSITION wiring — which manager methods the bot actually receives — is
+ * a unit-testable surface. dual-adversarial #B: `getLastStatus`/`isAlive` were
+ * present on the real `AgentManager` and consumed (optionally) by the bot's
+ * `/status` renderer, but the inline literal forwarded neither, so the
+ * `Last status:`/`Alive:` lines silently never rendered in production while the
+ * mock-injected bot unit tests still passed. Forwarding them here (and pinning
+ * the forward with `buildBotAgentManagerAdapter` tests) closes that gap.
+ */
+export function buildBotAgentManagerAdapter(
+	agentManager: AgentManager,
+): AgentManagerInterface {
+	return {
+		getHandle: (id) => agentManager.getHandle(id),
+		listHandles: () => agentManager.listHandles(),
+		shutdownAgent: (id, signal) => agentManager.shutdownAgent(id, signal),
+		restartAgent: (id, reason) =>
+			agentManager.restartAgent(
+				id,
+				reason as "stalled" | "rss-exceeded" | "crash",
+			),
+		getShape: async (agentId: string): Promise<AgentShape | null> =>
+			getShapeForAgent(agentManager, agentId),
+		getLastStatus: (id) => agentManager.getLastStatus(id),
+		isAlive: (id) => agentManager.isAlive(id),
+	};
 }
 
 export async function injectIntoAgent(

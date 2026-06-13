@@ -13,7 +13,20 @@
 
 export type AgentShape = "pty" | "http" | "mcp" | "event" | "daemon";
 
-export type InterfaceVersion = "v1";
+/**
+ * Centralized adapter interface version. Locked per
+ * `.iago/decisions/2026-05-15-agent-shape-taxonomy.md` § Interface versioning.
+ * Phase 1 — Phase 2 stays `"v1"`. `RuntimeAdapterShim` covers v1↔v2 migration
+ * when Phase 3 introduces breaking changes; adapters do NOT migrate in place.
+ *
+ * All adapter modules MUST import this const rather than spelling the literal
+ * `"v1"` inline. The `InterfaceVersion` type below is the typeof of the const
+ * so the literal `"v1"` still satisfies the type (TypeScript narrows
+ * correctly), but the const remains the single source of truth.
+ */
+export const INTERFACE_VERSION = "v1" as const;
+
+export type InterfaceVersion = typeof INTERFACE_VERSION;
 
 export type StatusValue = "running" | "idle" | "exited" | "crashed" | "unknown";
 

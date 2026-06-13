@@ -96,6 +96,18 @@ This ensures we're on the latest main with no conflicts.
 For each plan in order, invoke the **Workflow tool** (this skill invocation is the
 authorization to call it — Workflow opt-in). Use the absolute paths from step 2:
 
+Before each Workflow call, detect whether the plan was already stress-tested so the
+Workflow can skip the (otherwise pure-waste) Opus stress spawn. Grep the plan for a
+line-anchored `## Stress Test` heading:
+
+```bash
+grep -q '^## Stress Test' "<absolute plan path>" && echo skip || echo run
+```
+
+If it prints `skip`, add `skipStress: true` to `args`; otherwise OMIT the flag (the
+Workflow uses strict `=== true`, so a missing value falls through to running the full
+Opus stress agent — fail-safe toward more review).
+
 ```
 Workflow({
   scriptPath: "<WF>",                      // .claude/workflows/execute-pipeline.js (absolute)
@@ -103,14 +115,29 @@ Workflow({
     plan: "<absolute plan path>",
     projectDir: "<absolute PROJECT_DIR>",
     iagoRoot: "<IAGO_ROOT>",
-    noTag: <true ONLY if --no-review was passed, else omit>
+    noTag: <true ONLY if --no-review was passed, else omit>,
+    skipStress: <true ONLY if the plan has a `## Stress Test` section, else omit>
   }
 })
 ```
 
 The Workflow runs in the background as tracked subagents and notifies you on
 completion; its return value carries `{ branch, prUrl, prNumber, reviewVerdict,
-codexSource, fixRounds, minorRemaining }`. Run plans ONE AT A TIME — wait for each
+codexSource, fixRounds, minorRemaining, verificationSameFamily, verificationDegraded,
+crossModelDegraded, filtered }`.
+**At the merge decision, surface ALL THREE honesty signals to Santiago — never declare a
+PR safe to merge without them:**
+- `verificationDegraded === true` — the skeptic verification did not fully run (a real
+  gate gap; Tier 2/3 only).
+- `crossModelDegraded === true` — the Codex leg fell back to the same Claude family, so
+  the GPT-5.5 cross-model guarantee silently degraded; flag it (re-run for a true
+  cross-model pass).
+- `filtered` (non-empty) — the Critical/Important findings the team-gate skeptics
+  double-refuted and DROPPED. List each (with its `reasons`): a false double-refute could
+  erase a real Critical with no other visible trace, so this is the audit trail the human
+  must see.
+`verificationSameFamily` is the always-true structural note that the skeptics are
+same-family Opus. Run plans ONE AT A TIME — wait for each
 to complete before launching the next (the next plan builds on the previous
 plan's commits).
 

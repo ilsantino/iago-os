@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { spawnSync } from "node:child_process";
 /**
  * Phase 1 rollback dry-run.
  *
@@ -11,9 +12,8 @@
  */
 import { access } from "node:fs/promises";
 import * as path from "node:path";
-import { spawnSync } from "node:child_process";
-import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const runtimeRoot = resolve(here, "..");
@@ -67,11 +67,7 @@ if (psResult.status === 0) {
 }
 
 // Step 2 — runtime/ directory + migration doc exist.
-const migrationDoc = path.join(
-	runtimeRoot,
-	"migration",
-	"phase-1-rollback.md",
-);
+const migrationDoc = path.join(runtimeRoot, "migration", "phase-1-rollback.md");
 if (!(await exists(migrationDoc))) {
 	report("Step 2: rollback doc present", "FAIL", `missing ${migrationDoc}`);
 } else {
@@ -124,11 +120,7 @@ if (allPresent) {
 }
 
 // Step 5 — pipeline script remains runnable.
-const pipelineScript = path.join(
-	repoRoot,
-	"scripts",
-	"execute-pipeline.sh",
-);
+const pipelineScript = path.join(repoRoot, "scripts", "execute-pipeline.sh");
 if (!(await exists(pipelineScript))) {
 	report(
 		"Step 5: pipeline runnable after rollback",
