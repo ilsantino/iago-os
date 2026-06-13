@@ -110,11 +110,21 @@ Workflow({
 
 The Workflow runs in the background as tracked subagents and notifies you on
 completion; its return value carries `{ branch, prUrl, prNumber, reviewVerdict,
-codexSource, fixRounds, minorRemaining, verificationSameFamily, verificationDegraded }`.
-For a Tier 2/3 (team-gate) plan, **surface `verificationDegraded` to Santiago at the merge
-decision** — `true` means the skeptic verification did not fully run (a real gate gap, the
-in-pipeline analogue of `crossModelDegraded`); `verificationSameFamily` is the always-true
-structural note that the skeptics are same-family Opus. Run plans ONE AT A TIME — wait for each
+codexSource, fixRounds, minorRemaining, verificationSameFamily, verificationDegraded,
+crossModelDegraded, filtered }`.
+**At the merge decision, surface ALL THREE honesty signals to Santiago — never declare a
+PR safe to merge without them:**
+- `verificationDegraded === true` — the skeptic verification did not fully run (a real
+  gate gap; Tier 2/3 only).
+- `crossModelDegraded === true` — the Codex leg fell back to the same Claude family, so
+  the GPT-5.5 cross-model guarantee silently degraded; flag it (re-run for a true
+  cross-model pass).
+- `filtered` (non-empty) — the Critical/Important findings the team-gate skeptics
+  double-refuted and DROPPED. List each (with its `reasons`): a false double-refute could
+  erase a real Critical with no other visible trace, so this is the audit trail the human
+  must see.
+`verificationSameFamily` is the always-true structural note that the skeptics are
+same-family Opus. Run plans ONE AT A TIME — wait for each
 to complete before launching the next (the next plan builds on the previous
 plan's commits).
 

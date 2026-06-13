@@ -125,9 +125,14 @@ transient API errors auto-retry, no static turn caps):
 stress → implement → build gate → **commit** → **dual adversarial (Opus ∥ Codex)** →
 fix + regression tests (≤2 rounds) → PR → summary. It returns `{ branch, prUrl,
 reviewVerdict, codexSource, fixRounds, minorRemaining, verificationSameFamily,
-verificationDegraded }` and notifies you on completion. For a Tier 2/3 (team-gate) plan,
-surface `verificationDegraded === true` to Santiago at the merge decision (the skeptic
-verification did not fully run — a real gate gap).
+verificationDegraded, crossModelDegraded, filtered }` and notifies you on completion.
+At the merge decision, surface ALL THREE honesty signals to Santiago — never declare safe
+to merge without them: `verificationDegraded === true` (skeptic verification did not fully
+run — a real gate gap, Tier 2/3), `crossModelDegraded === true` (the Codex leg fell back to
+the same Claude family — the GPT-5.5 cross-model guarantee silently degraded), and a
+non-empty `filtered` (the Critical/Important findings the skeptics double-refuted and
+DROPPED — list each with its `reasons`; a false double-refute could erase a real Critical
+with no other visible trace).
 
 After the async GitHub review-fix loop reports clean, run the pre-merge gate (pass #2):
 ```
