@@ -148,9 +148,13 @@ with no other visible trace).
 After the async GitHub review-fix loop reports clean, run the pre-merge gate (pass #2):
 ```
 Workflow({ scriptPath: "<IAGO_ROOT>/.claude/workflows/dual-adversarial.js",
-           args: { projectDir: "<dir>", iagoRoot: "<IAGO_ROOT>", base: "origin/main", prNumber: "<#>" } })
+           args: { projectDir: "<dir>", iagoRoot: "<IAGO_ROOT>", base: "origin/main", prNumber: "<#>", mode: "team" } })
 ```
-If it returns `clean`, tell Santiago it's safe to merge. Never merge yourself.
+`mode: "team"` is REQUIRED — the pre-merge gate always runs Team depth (skeptic
+verification of every Critical/Important finding); omitting it silently runs the
+shallower standard gate. Lead on `clean` (the authoritative merge signal); if
+`gateStatus === "INCOMPLETE"`, a core leg failed — re-run the gate. If it returns
+`clean`, tell Santiago it's safe to merge. Never merge yourself.
 
 Review-fix loop runs async via GitHub Action (`claude-review-fix.yml`).
 
