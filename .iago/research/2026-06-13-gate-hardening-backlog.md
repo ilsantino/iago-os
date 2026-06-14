@@ -83,6 +83,26 @@ around the call, failing closed on any change.
   Critical).
 - CI-wiring of the 3 `.test.mjs` workflow harnesses (overlaps the #89 drift-guard item).
 
+## From #90's reconcile re-gate (2026-06-13, deferred)
+
+### GH-16 — deriveLenses directory checks case-SENSITIVE while extension/security checks case-INSENSITIVE (Important; team:arch ∥ codex ∥ team:data)
+`dual-adversarial.js` `deriveLenses()` (~L230/L235) runs the amplify/src **directory**
+predicates against the case-preserving `p` (`p.startsWith('amplify/')`,
+`p.startsWith('src/')`, `p.includes('/amplify/'|'/src/')`) while the `.tsx` extension and
+the security taxonomy run against `lower` — with an in-function comment asserting
+"coverage must never SHRINK on a case variation." A PascalCase/upper committed dir
+(`Amplify/data/resource.ts`, `Src/api/client.ts`) silently drops the amplify/frontend
+lens — exactly the coverage-shrink the function claims to prevent. **NOT a merge
+regression** — the bug pre-exists in #90 HEAD `51c3a0a` (verified via `git show`); the
+2026-06-13 reconcile merge touched only `SKILL.md`. Low real-world likelihood (iaGO
+mandates lowercase `amplify/`+`src/`; git preserves committed canonical case; `.tsx`
+still routes to frontend regardless of dir case), untested (only lowercase dirs +
+uppercase `.TSX` covered). Fix: lowercase the two dir-prefix checks (compare against
+`lower`) + add mixed-case `Amplify/`/`Src/` regression tests. Deferred per "don't iterate
+review-infra to clean" — rides this gate-hardening PR with the rest. Same coverage-shrink
+family as the probe-transcription-trust Critical above (different vector: well-formed
+upper-case path vs omitted path).
+
 ## Note
 Issue A (crossModelDegraded + filtered not surfaced by the iago-execute/iago-quick SKILLs
 despite an in-code comment claiming they were) is FIXED in this PR — it was a shipped
