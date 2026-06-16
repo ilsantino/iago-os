@@ -209,6 +209,65 @@ await test('team:data leg fails (null) in team mode → gateStatus INCOMPLETE, c
   assert.ok(out.incompleteLegs.includes('team:data'), 'incompleteLegs names the failed team leg')
 })
 
+await test('a failed AUTO-DERIVED load-bearing lens (security) → gateStatus INCOMPLETE, clean=false (gate-hardening re-gate)', async () => {
+  // Consistency with the team-leg rule: a failed auto-derived specialized lens
+  // (security/amplify/frontend) is load-bearing — it was derived BECAUSE the diff touches that
+  // surface, so a silent skip under-reviews a sensitive diff. It must make the gate INCOMPLETE,
+  // not report a shippable verdict with the security review silently missing. 'src/auth/login.ts'
+  // derives security + frontend + base; the security leg fails (null) every retry.
+  const h = makeHarness([
+    { match: (l) => l === 'review', reply: { verdict: 'PASS', findings: [] } },
+    { match: (l) => l === 'codex', reply: { source: 'codex', findings: [] } },
+    { match: (l) => l === 'changed-files', reply: { files: ['src/auth/login.ts'], eofSeen: true } },
+    { match: (l) => l === 'security', reply: null }, // the load-bearing lens fails every retry
+    { match: (l) => ['frontend bug-bounty', 'code quality', 'completeness critic'].includes(l), reply: { findings: [] } },
+  ])
+  const wf = buildWorkflow()
+  const out = await wf(h.agent, h.parallel, null, h.log, h.phase, { ...baseArgs }, null, null)
+  assert.strictEqual(out.gateStatus, 'INCOMPLETE', 'a failed auto-derived security lens makes the gate INCOMPLETE')
+  assert.strictEqual(out.clean, false, 'an INCOMPLETE gate is never clean')
+  assert.ok(out.incompleteLegs.includes('lens:security'), 'incompleteLegs names the failed load-bearing lens')
+})
+
+await test('a failed BASE lens (codeQuality) does NOT make the gate INCOMPLETE (non-load-bearing)', async () => {
+  // The negative control: the always-on base lenses (codeQuality/completeness) are NOT
+  // load-bearing — a failed base lens stays non-blocking (logged), so the gate can still be
+  // clean. Only the auto-derived specialized lenses (security/amplify/frontend) and team legs
+  // escalate to INCOMPLETE. 'docs/readme.md' derives ONLY the two base lenses.
+  const h = makeHarness([
+    { match: (l) => l === 'review', reply: { verdict: 'PASS', findings: [] } },
+    { match: (l) => l === 'codex', reply: { source: 'codex', findings: [] } },
+    { match: (l) => l === 'changed-files', reply: { files: ['docs/readme.md'], eofSeen: true } },
+    { match: (l) => l === 'code quality', reply: null }, // base lens fails — must stay non-blocking
+    { match: (l) => l === 'completeness critic', reply: { findings: [] } },
+  ])
+  const wf = buildWorkflow()
+  const out = await wf(h.agent, h.parallel, null, h.log, h.phase, { ...baseArgs }, null, null)
+  assert.strictEqual(out.gateStatus, 'COMPLETE', 'a failed base lens does NOT make the gate INCOMPLETE')
+  assert.strictEqual(out.clean, true, 'gate stays clean despite a failed non-load-bearing base lens')
+  assert.ok(out.incompleteLegs.includes('lens:codeQuality'), 'the failed base lens is still recorded (non-blocking)')
+})
+
+await test('a failed load-bearing lens under a DEGRADED probe is NOT INCOMPLETE (speculative fallback, subsumed by probeDegraded)', async () => {
+  // The !probeDegraded scope: when the probe DEGRADED, the full lens set ran SPECULATIVELY (we
+  // cannot know what changed), so a failing speculative specialized lens is subsumed by
+  // probeDegraded — NOT a load-bearing gap. (A PRECISE derivation that fails IS load-bearing —
+  // see the security-lens test above.) A null changed-files probe → degraded → full set; the
+  // speculative security lens then fails.
+  const h = makeHarness([
+    { match: (l) => l === 'review', reply: { verdict: 'PASS', findings: [] } },
+    { match: (l) => l === 'codex', reply: { source: 'codex', findings: [] } },
+    { match: (l) => l === 'changed-files', reply: null }, // degraded probe → full speculative set
+    { match: (l) => l === 'security', reply: null }, // a speculative lens fails
+    { match: (l) => ['amplify bug-bounty', 'frontend bug-bounty', 'code quality', 'completeness critic'].includes(l), reply: { findings: [] } },
+  ])
+  const wf = buildWorkflow()
+  const out = await wf(h.agent, h.parallel, null, h.log, h.phase, { ...baseArgs }, null, null)
+  assert.strictEqual(out.probeDegraded, true, 'probe degraded (null) → full speculative lens set')
+  assert.strictEqual(out.gateStatus, 'COMPLETE', 'a failing SPECULATIVE lens under a degraded probe is NOT INCOMPLETE')
+  assert.strictEqual(out.clean, true, 'gate stays clean — probeDegraded already surfaces the degradation')
+})
+
 // ── Team verification truth table ───────────────────────────────────────
 function teamRules({ critFrom = 'review', skeptic } = {}) {
   return [
@@ -965,7 +1024,7 @@ await test('side-effect guard DEGRADED (snapshot agent null) → clean, no throw
   const h = makeHarness([
     { match: (l) => l === 'review', reply: { verdict: 'PASS', findings: [] } },
     { match: (l) => l === 'codex', reply: { source: 'codex', findings: [] } },
-    { match: (l) => l === 'changed-files', reply: { files: [] } },
+    { match: (l) => l === 'changed-files', reply: { files: [], eofSeen: true } },
     { match: (l) => l === 'code quality' || l === 'completeness critic', reply: { findings: [] } },
     { match: (l) => /side-?effect-snapshot/i.test(l), reply: null },
   ])

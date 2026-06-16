@@ -60,9 +60,10 @@ canary `/iago-fast`. Full finding ledger in the plan's `## Stress Test`.
 
 ## Deferred (follow-up plan)
 
-Path-lens auto-injection (timing-broken at classify-time — needs post-commit diff),
-`--tier-override` escape hatch, `KNOWN_LENS_KEYS` drift-detection. All three ship together
-once the post-commit lens seam (`reviewLenses`) is wired.
+Two of the three originally-deferred items have since SHIPPED: path-lens auto-injection (now
+auto-lens derivation from the diff at review time, PR #90 — the post-commit timing fix) and the
+`tier_override` escape valve (now a clamped, frontmatter-only field, PR #96 / feature-gate-hardening
+plan 01). `KNOWN_LENS_KEYS` drift-detection remains the open follow-up.
 
 ## Git topology note
 

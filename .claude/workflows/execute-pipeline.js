@@ -917,11 +917,18 @@ if (planReadOk) {
   const planText = sawPlanEof
     ? planRead.text.trimEnd().slice(0, -PLAN_EOF_SENTINEL.length)
     : planRead.text
-  // tier_override frontmatter escape valve — an operator can force the review depth for a
-  // plan whose prose mis-classifies. Clamp to [1,3]: a 0 (or any out-of-range value) is
-  // IGNORED, never honored — tier_override:0 would otherwise void both fail-safes below
-  // (sentinel + headings), declaring a possibly-truncated plan Tier 0 and skipping the gate.
-  const overrideMatch = planText.match(/^tier_override:\s*(\d)/im)
+  // tier_override FRONTMATTER escape valve — an operator can force the review depth for a
+  // plan whose prose mis-classifies (a substring keyword can over-tier it). Parsed ONLY from
+  // the leading `---...---` YAML frontmatter block, never from prose/code (this repo writes
+  // plans ABOUT its own pipeline, so a `tier_override:` line in an example must not
+  // self-downgrade). The FULL integer is captured (\d+) and clamped to [1,3]: a 0, a
+  // multi-digit typo (10/12/13), or any out-of-range value is IGNORED, never honored — a
+  // single-digit capture would truncate `10`→`1` and silently honor it. Crucially the
+  // read-integrity fail-safes below are NOT suppressed by ANY override — a truncated/garbage
+  // read still escalates regardless, since the lost tail is exactly where a late security
+  // keyword would hide and the override cannot attest to text it never saw.
+  const frontmatter = (planText.match(/^---\r?\n([\s\S]*?)\r?\n---/) || [])[1] || ''
+  const overrideMatch = frontmatter.match(/^tier_override:[ \t]*(\d+)[ \t]*$/im)
   let tierOverride
   if (overrideMatch) {
     const parsed = Number.parseInt(overrideMatch[1], 10)
@@ -929,14 +936,16 @@ if (planReadOk) {
       tierOverride = parsed
       log(`tier_override frontmatter found: forcing Tier ${tierOverride}`)
     } else {
-      log(`WARNING: tier_override: ${parsed} is out of range [1-3]; ignoring (a 0/out-of-range override would void the sentinel + headings fail-safes)`)
+      log(`WARNING: tier_override: ${overrideMatch[1]} is out of range [1-3]; ignoring (only 1-3 are honored; 0/out-of-range is dropped, and no override can void the fail-safes below)`)
     }
   }
   tier = classifyTier(planText, { tier_override: tierOverride })
   // FAIL SAFE on a missing EOF sentinel — a truncated transcription may have dropped a late
   // Tier-3 keyword, so escalate to Tier 3 (security gate + maxFixRounds=3), not just Tier 2.
-  // A valid operator tier_override is an explicit declaration that overrides this fail-safe.
-  if (tier < 3 && !sawPlanEof && tierOverride === undefined) {
+  // NOT suppressed by a tier_override: a truncated read cannot be trusted even when the
+  // operator declared a lower tier (the override survives in the frontmatter, but the lost
+  // tail is exactly where a late security keyword would hide).
+  if (tier < 3 && !sawPlanEof) {
     log(
       `WARNING: plan-read DONE but the ${PLAN_EOF_SENTINEL} sentinel is missing — possibly a truncated transcription; FAILING SAFE to Tier 3 (security gate + maxFixRounds=3) instead of shallow Tier ${tier}`,
     )

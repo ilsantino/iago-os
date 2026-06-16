@@ -433,6 +433,101 @@ await test('plan 01 Task 4: headings-missing WITH sentinel stays Tier 2 (maxFixR
   )
 })
 
+// ── tier_override ORCHESTRATION-level parsing (re-gate Critical + Importants) ──
+// The classifyTier unit tests exercise the function-body clamp; these drive the WORKFLOW so
+// the frontmatter regex itself is under test (the buggy single-digit / whole-text version).
+const OVERRIDE_AUTH_PLAN = (n) => `---
+phase: x
+tier_override: ${n}
+---
+# Plan
+### Task T01
+Add an auth check.`
+
+await test('re-gate Critical: a multi-digit tier_override (10) in frontmatter is REJECTED — keyword Tier 3 wins (team gate)', async () => {
+  // /^tier_override:[ \t]*(\d+)[ \t]*$/ captures the FULL integer; 10 ∉ [1,3] → ignored. The
+  // plan's `auth` keyword then classifies Tier 3 → team gate. The OLD single-digit regex
+  // captured '1' and silently down-tiered this security plan to the shallow inline 2-leg.
+  const teamGate = () => ({ clean: true, blocking: 0, gateStatus: 'COMPLETE', verdict: 'PASS', codexSource: 'codex', verificationSameFamily: true, verificationDegraded: false, findings: [] })
+  const h = makeHarness(stageRules(OVERRIDE_AUTH_PLAN(10)), teamGate)
+  const wf = buildWorkflow()
+  const out = await wf(h.agent, h.parallel, null, h.log, h.phase, { ...baseArgs }, null, h.workflow)
+  assert.ok(h.workflowCalls.length >= 1 && h.workflowCalls[0].wargs.mode === 'team', 'override 10 rejected → keyword Tier 3 → team gate')
+  assert.ok(!h.calls.some((c) => /^review:/.test(c.label) || /^codex:/.test(c.label)), 'no inline 2-leg (NOT down-tiered to Tier 1)')
+  assert.strictEqual(out.reviewVerdict, 'PASS')
+})
+
+await test('valid tier_override:1 in frontmatter LOWERS an auth plan to Tier 1 (inline) on a complete read', async () => {
+  // A complete read (EOF sentinel + headings present) lets a valid override correct an
+  // over-tier: tier_override:1 on a plan whose `auth` keyword would be Tier 3 → Tier 1 inline.
+  const h = makeHarness(
+    stageRules(OVERRIDE_AUTH_PLAN(1), [
+      { match: (l) => /^review:/.test(l), reply: { verdict: 'PASS', findings: [] } },
+      { match: (l) => /^codex:/.test(l), reply: { source: 'codex', findings: [] } },
+    ]),
+    () => { throw new Error('team gate must NOT run for a valid tier_override:1 plan') },
+  )
+  const wf = buildWorkflow()
+  const out = await wf(h.agent, h.parallel, null, h.log, h.phase, { ...baseArgs }, null, h.workflow)
+  assert.strictEqual(h.workflowCalls.length, 0, 'valid override:1 → inline 2-leg, no team delegation')
+  assert.ok(h.calls.some((c) => c.label === 'review:r0') && h.calls.some((c) => c.label === 'codex:r0'), 'inline 2-leg ran')
+  assert.strictEqual(out.reviewVerdict, 'PASS')
+})
+
+await test('re-gate Important: tier_override:1 does NOT suppress the missing-sentinel fail-safe (truncated read → Tier 3)', async () => {
+  // The override survives in the leading frontmatter even on a truncated read, but the lost tail
+  // is where a late security keyword hides — so a missing EOF sentinel still escalates to Tier 3
+  // REGARDLESS of the override. teamGate blocks calls 1-3, clean on 4 → only Tier 3 (cap 3)
+  // reaches the clean call, proving the fail-safe fired over the override.
+  const teamGate = (n) => n <= 3
+    ? { clean: false, blocking: 1, gateStatus: 'COMPLETE', verdict: 'FAIL', codexSource: 'codex', verificationSameFamily: true, verificationDegraded: false, findings: [{ severity: 'Critical', summary: 'late keyword maybe lost', by: 'opus' }] }
+    : { clean: true, blocking: 0, gateStatus: 'COMPLETE', verdict: 'PASS', codexSource: 'codex', verificationSameFamily: true, verificationDegraded: false, findings: [] }
+  const rules = [
+    { match: (l) => l === 'plan-read', reply: { status: 'DONE', text: OVERRIDE_AUTH_PLAN(1) } }, // NO sentinel
+    ...stageRules(TIER2_PLAN).filter((r) => !r.match('plan-read')),
+  ]
+  const h = makeHarness(rules, teamGate)
+  const wf = buildWorkflow()
+  const out = await wf(h.agent, h.parallel, null, h.log, h.phase, { ...baseArgs }, null, h.workflow)
+  assert.ok(h.workflowCalls.length >= 1 && h.workflowCalls[0].wargs.mode === 'team', 'truncated read → team gate despite override:1')
+  assert.strictEqual(out.fixRounds, 3, 'Tier 3 (maxFixRounds=3) — the sentinel fail-safe fired over the override')
+})
+
+await test('re-gate Minor: a column-0 tier_override:1 in PROSE (no frontmatter fence) is NOT honored', async () => {
+  // The override is parsed ONLY from the leading `---...---` frontmatter, so a `tier_override:`
+  // line in the plan BODY (e.g. a plan documenting this very feature) cannot self-downgrade.
+  // planD has no fence → override ignored → the `auth` keyword classifies Tier 3 → team gate.
+  // The OLD whole-text /im regex matched any column-0 line and would have down-tiered to Tier 1.
+  const planD = `# Plan
+### Task T01
+Add an auth check.
+tier_override: 1`
+  const teamGate = () => ({ clean: true, blocking: 0, gateStatus: 'COMPLETE', verdict: 'PASS', codexSource: 'codex', verificationSameFamily: true, verificationDegraded: false, findings: [] })
+  const h = makeHarness(stageRules(planD), teamGate)
+  const wf = buildWorkflow()
+  const out = await wf(h.agent, h.parallel, null, h.log, h.phase, { ...baseArgs }, null, h.workflow)
+  assert.ok(h.workflowCalls.length >= 1 && h.workflowCalls[0].wargs.mode === 'team', 'prose tier_override ignored → keyword Tier 3 → team gate')
+  assert.ok(!h.calls.some((c) => /^review:/.test(c.label) || /^codex:/.test(c.label)), 'no inline 2-leg (NOT down-tiered by a prose line)')
+})
+
+await test('re-gate Important: skeptic-filtered findings ACCUMULATE across fix rounds (cumulative audit trail)', async () => {
+  // allFiltered must carry EVERY round's skeptic-dropped findings, not just the last round's.
+  // Round 0 drops F0 (and blocks on a Critical → fix round); round 1 (re-review) drops F1 and is
+  // clean. out.filtered must contain BOTH. RED if allFiltered.push(...) is reverted to a
+  // per-round `filtered = ...` reassignment (only F1 would survive).
+  const F0 = { severity: 'Critical', summary: 'round-0 dropped blocker', by: 'codex' }
+  const F1 = { severity: 'Critical', summary: 'round-1 dropped blocker', by: 'codex' }
+  const teamGate = (n) =>
+    n === 1
+      ? { clean: false, blocking: 1, gateStatus: 'COMPLETE', verdict: 'FAIL', codexSource: 'codex', verificationSameFamily: true, verificationDegraded: false, findings: [{ severity: 'Critical', summary: 'real blocker', by: 'opus' }], filtered: [F0] }
+      : { clean: true, blocking: 0, gateStatus: 'COMPLETE', verdict: 'PASS', codexSource: 'codex', verificationSameFamily: true, verificationDegraded: false, findings: [], filtered: [F1] }
+  const h = makeHarness(stageRules(TIER2_PLAN), teamGate)
+  const wf = buildWorkflow()
+  const out = await wf(h.agent, h.parallel, null, h.log, h.phase, { ...baseArgs }, null, h.workflow)
+  assert.strictEqual(out.fixRounds, 1, 'one fix round ran (round-0 blocker)')
+  assert.deepStrictEqual(out.filtered, [F0, F1], 'filtered accumulates BOTH rounds (cumulative, not last-only)')
+})
+
 await test('team mode runs a dedicated PLAN-COMPLIANCE leg and its findings drive the fix loop', async () => {
   // #89 re-gate Critical: the delegated team gate never reads the plan, so a Tier 2/3
   // implementation could omit a required plan task and still PASS. The compliance leg

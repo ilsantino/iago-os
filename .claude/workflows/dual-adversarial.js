@@ -669,11 +669,27 @@ const blocking = findings.filter((f) => f.severity === 'Critical' || f.severity 
 // missing a load-bearing team leg must not report a shippable verdict (re-run condition). The
 // failed leg is already enumerated in incompleteLegs above, so the INCOMPLETE log names it.
 const teamIncomplete = mode === 'team' && teamDefs.some((def, i) => !teamResults[i])
-const coreIncomplete = !review || !codex || teamIncomplete
+// A failed AUTO-DERIVED specialized lens (security/amplify/frontend) is load-bearing the same
+// way a team leg is: it was derived BECAUSE the diff touches that surface, so a silent skip
+// under-reviews a sensitive diff while the gate still reports a shippable verdict. So a failed
+// auto-derived specialized lens ALSO makes the gate INCOMPLETE (re-run). The always-on base
+// lenses (codeQuality/completeness) and any EXPLICIT-path lenses stay non-blocking — a failed
+// cosmetic or operator-chosen lens should not force a re-run.
+const LOAD_BEARING_LENSES = ['security', 'amplify', 'frontend']
+// Only when the probe was PRECISE (not a degraded fallback): a degraded probe runs the full
+// lens set SPECULATIVELY (we cannot know what changed), so a failing speculative lens is
+// already subsumed by probeDegraded — not a load-bearing gap. A PRECISE derivation means the
+// diff genuinely touches that surface, so a failed specialized lens there IS load-bearing.
+const lensIncomplete =
+  lensSource === 'auto' &&
+  !probeDegraded &&
+  lenses.some((key, i) => LOAD_BEARING_LENSES.includes(key) && !lensResults[i])
+const coreIncomplete = !review || !codex || teamIncomplete || lensIncomplete
 const gateStatus = coreIncomplete ? 'INCOMPLETE' : 'COMPLETE'
-// `clean` requires BOTH core legs to have actually run AND no blocking findings — a
-// half-completed review must never report clean. Extra lens failures are non-blocking
-// by design; only the two core legs are load-bearing for `clean`.
+// `clean` requires the core legs to have actually run AND no blocking findings — a
+// half-completed review must never report clean. A failed team leg (team mode) or a failed
+// auto-derived load-bearing lens (security/amplify/frontend) also blocks `clean` via
+// gateStatus; only a failed base/explicit lens stays non-blocking.
 const clean = gateStatus === 'COMPLETE' && blocking.length === 0
 // The Codex leg fell back to the SAME Claude family — the cross-model GPT-5.5 guarantee
 // silently degraded to two same-family passes. Surface it so the human gate can re-run.
