@@ -71,7 +71,9 @@ function makeHarness(rules, opts = {}) {
       }
     }
     // Default changed-files probe → empty diff → base lenses. Caller rules above win.
-    if (label === 'changed-files') return { files: [] }
+    // eofSeen:true models a HEALTHY probe (sentinel present); without it probeOk is false and
+    // every auto-path test would degrade to the full lens set (plan 02 Task 1).
+    if (label === 'changed-files') return { files: [], eofSeen: true }
     // The auto-derive path ALWAYS appends the two base lenses (codeQuality + completeness),
     // whose leg labels are LENS_DEFS[key].title. Give them clean empty-findings defaults so
     // auto-path tests that don't care about lens output don't see them as incomplete legs.
@@ -187,6 +189,26 @@ await test('team mode appends team:data and team:arch legs tagged correctly', as
   assert.ok(h.calls.some((c) => c.label === 'team:arch'), 'team:arch leg ran')
 })
 
+await test('team:data leg fails (null) in team mode → gateStatus INCOMPLETE, clean=false (plan 02 Task 4)', async () => {
+  // A load-bearing team leg (team:data/team:arch) that fails to run makes a Tier 2/3 gate
+  // INCOMPLETE — it must NOT report a shippable verdict. Previously a null team leg was
+  // non-blocking (like a lens), so the gate could report clean while a load-bearing leg never
+  // ran. RED before the fix: gateStatus 'COMPLETE', clean true. (No changed-files rule → the
+  // makeHarness default probe runs; no snapshot rule → the side-effect guard degrades, as in
+  // every other team test.)
+  const h = makeHarness([
+    { match: (l) => l === 'review', reply: { verdict: 'PASS', findings: [] } },
+    { match: (l) => l === 'codex', reply: { source: 'codex', findings: [] } },
+    { match: (l) => l === 'team:data', reply: null }, // leg fails every retry → null
+    { match: (l) => l === 'team:arch', reply: { findings: [] } },
+  ])
+  const wf = buildWorkflow()
+  const out = await wf(h.agent, h.parallel, null, h.log, h.phase, { ...baseArgs, mode: 'team' }, null, null)
+  assert.strictEqual(out.gateStatus, 'INCOMPLETE', 'a null team leg makes the team-mode gate INCOMPLETE')
+  assert.strictEqual(out.clean, false, 'an INCOMPLETE gate is never clean')
+  assert.ok(out.incompleteLegs.includes('team:data'), 'incompleteLegs names the failed team leg')
+})
+
 // ── Team verification truth table ───────────────────────────────────────
 function teamRules({ critFrom = 'review', skeptic } = {}) {
   return [
@@ -277,6 +299,23 @@ await test('a bare refute (no evidence) counts as a confirm — finding kept (C1
   )
   assert.strictEqual(out.blocking, 1, 'evidence-free refute is treated as a confirm — kept')
   assert.deepStrictEqual(out.filtered, [], 'not filtered when refutes lack evidence')
+})
+
+await test('a filename-ONLY refute (no file:line, no code construct) is NOT evidence — finding kept (plan 02 Task 3)', async () => {
+  // Tightened refuteHasEvidence: a bare filename ("the sanitize.ts module ensures this") is no
+  // longer sufficient — a refute needs a file:line pair, an explicit line ref, OR a filename
+  // PLUS a code-distinctive construct (operator / call shape / Dynamo idiom). So both skeptics
+  // refuting with filename-only reasons are coerced to confirms and the Critical is KEPT.
+  // (Before: the .ts filename alone passed the old citesCode regex → the finding was dropped.)
+  const h = makeHarness(
+    teamRules({
+      skeptic: () => ({ real: false, reason: 'The sanitize.ts module ensures this is safe' }),
+    }),
+  )
+  const wf = buildWorkflow()
+  const out = await wf(h.agent, h.parallel, null, h.log, h.phase, { ...baseArgs, mode: 'team' }, null, null)
+  assert.strictEqual(out.blocking, 1, 'filename-only refute is not evidence → Critical kept')
+  assert.deepStrictEqual(out.filtered, [], 'nothing filtered when refutes cite no specific code')
 })
 
 await test('Minor findings are kept un-verified (never sent to skeptics, never dropped)', async () => {
@@ -468,7 +507,7 @@ await test('start snapshot is captured BEFORE the changed-files probe (probe mut
       match: (l) => l === 'changed-files',
       reply: () => {
         order.push('changed-files')
-        return { files: ['src/main.tsx'] }
+        return { files: ['src/main.tsx'], eofSeen: true }
       },
     },
     { match: (l) => l === 'review', reply: { verdict: 'PASS', findings: [] } },
@@ -515,7 +554,7 @@ function autoHarness(files, extraRules = []) {
   return makeHarness([
     { match: (l) => l === 'review', reply: { verdict: 'PASS', findings: [] } },
     { match: (l) => l === 'codex', reply: { source: 'codex', findings: [] } },
-    { match: (l) => l === 'changed-files', reply: { files } },
+    { match: (l) => l === 'changed-files', reply: { files, eofSeen: true } },
     // every possible lens leg → empty findings (we assert on which ran, not their output)
     { match: (l) => Object.values(LENS_TITLE).includes(l), reply: { findings: [] } },
     ...extraRules,
@@ -765,7 +804,7 @@ await test('team mode + auto-derived multi-lens diff: lens and team findings att
     // a sensitive diff: amplify auth handler + a .tsx → derives security, amplify, frontend, +base (5)
     {
       match: (l) => l === 'changed-files',
-      reply: { files: ['amplify/functions/auth/handler.ts', 'src/Widget.tsx'] },
+      reply: { files: ['amplify/functions/auth/handler.ts', 'src/Widget.tsx'], eofSeen: true },
     },
     { match: (l) => l === 'security', reply: { findings: [{ severity: 'Minor', summary: 'SEC-LENS-MARK' }] } },
     { match: (l) => l === 'amplify bug-bounty', reply: { findings: [] } },
@@ -808,6 +847,27 @@ await test('auto-derive: .TSX (uppercase ext) outside src/ → frontend lens (ca
   }
 })
 
+// ── Case-insensitive amplify/ and src/ directory prefixes (plan 02 Task 2) ──
+await test('auto-derive: Amplify/ (uppercase dir prefix) → amplify lens (case-insensitive, plan 02 Task 2)', async () => {
+  // The amplify predicate matched the raw path `p`, so an uppercase `Amplify/data/resource.ts`
+  // did NOT derive the amplify lens — an amplify diff passing the final gate with NO amplify
+  // review. The fix lowercases the directory-prefix checks (same coverage-cannot-shrink
+  // invariant as the .tsx extension + security taxonomy). RED before: no amplify lens.
+  const h = autoHarness(['Amplify/data/resource.ts'])
+  const wf = buildWorkflow()
+  const out = await wf(h.agent, h.parallel, null, h.log, h.phase, { ...baseArgs }, null, null)
+  assert.ok(out.lenses.includes('amplify'), 'Amplify/ (uppercase) derives the amplify lens')
+  assert.deepStrictEqual(out.lenses, ['amplify', 'codeQuality', 'completeness'], 'amplify + base, exact')
+})
+
+await test('auto-derive: Src/ (uppercase dir prefix) → frontend lens (case-insensitive, plan 02 Task 2)', async () => {
+  const h = autoHarness(['Src/api/client.ts'])
+  const wf = buildWorkflow()
+  const out = await wf(h.agent, h.parallel, null, h.log, h.phase, { ...baseArgs }, null, null)
+  assert.ok(out.lenses.includes('frontend'), 'Src/ (uppercase) derives the frontend lens')
+  assert.deepStrictEqual(out.lenses, ['frontend', 'codeQuality', 'completeness'], 'frontend + base, exact')
+})
+
 // ── Malformed-truthy changed-files probe → FULL set (round-2 Critical — codex) ──
 await test('auto-derive: MALFORMED-truthy probe (non-array files) → FULL auto-selectable set, DEGRADED log (not base lenses)', async () => {
   // round-2 Critical: a truthy-but-malformed probe result (files is not an array — {files:"x"},
@@ -840,6 +900,34 @@ await test('auto-derive: MALFORMED-truthy probe (non-array files) → FULL auto-
       `malformed probe ${JSON.stringify(malformed)} does NOT log a no-change diff`,
     )
   }
+})
+
+// ── EOF-sentinel trust on the changed-files probe (plan 02 Task 1) ───────
+await test('auto-derive: well-formed files but eofSeen=false (truncated probe) → FULL set + probeDegraded, distinct missing-sentinel log', async () => {
+  // A probe that returns a well-formed path array but LOST the ===IAGO_FILES_EOF=== sentinel
+  // may be a TRUNCATED transcription — a late path could be missing, silently dropping its
+  // lens. Treat eofSeen=false (or absent) as DEGRADED → the FULL auto-selectable set, so
+  // coverage cannot shrink on a truncated probe. Logged distinctly from a malformed shape.
+  const h = makeHarness([
+    { match: (l) => l === 'review', reply: { verdict: 'PASS', findings: [] } },
+    { match: (l) => l === 'codex', reply: { source: 'codex', findings: [] } },
+    { match: (l) => l === 'changed-files', reply: { files: ['src/main.tsx'], eofSeen: false } },
+    {
+      match: (l) =>
+        ['security', 'amplify bug-bounty', 'frontend bug-bounty', 'code quality', 'completeness critic'].includes(l),
+      reply: { findings: [] },
+    },
+  ])
+  const wf = buildWorkflow()
+  const out = await wf(h.agent, h.parallel, null, h.log, h.phase, { ...baseArgs }, null, null)
+  assert.deepStrictEqual(
+    out.lenses,
+    ['security', 'amplify', 'frontend', 'codeQuality', 'completeness'],
+    'eofSeen=false → FULL auto-selectable set (coverage cannot shrink on a truncated probe)',
+  )
+  assert.strictEqual(out.probeDegraded, true, 'eofSeen=false flags probeDegraded')
+  assert.ok(h.logs.some((m) => /sentinel was MISSING/i.test(m)), 'logs the missing-sentinel degradation distinctly')
+  assert.ok(!h.logs.some((m) => /no diff vs/i.test(m)), 'does NOT log a no-change diff')
 })
 
 // ── SKILL ↔ code security-taxonomy sync (round-2 Minor — codex) ──────────

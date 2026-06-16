@@ -134,7 +134,13 @@ const SNAPSHOT_SCHEMA = {
 const CHANGED_FILES_SCHEMA = {
   type: 'object',
   required: ['files'],
-  properties: { files: { type: 'array', items: { type: 'string' } } },
+  properties: {
+    files: { type: 'array', items: { type: 'string' } },
+    // eofSeen — true iff the ===IAGO_FILES_EOF=== sentinel followed the git output, proving the
+    // probe ran to completion (not a truncated transcription). NOT in `required` and NOT
+    // defaulted: an absent/false eofSeen is treated as DEGRADED (full lens set), like a null probe.
+    eofSeen: { type: 'boolean' },
+  },
 }
 
 const PREAMBLE = `You are a read-only adversarial reviewer (pre-merge gate, pass #2). Work in ${projectDir}. Do NOT edit files, commit, push, or merge — only review and report.
@@ -145,6 +151,12 @@ OPERATING STANCE — aggressive and independent:
 - You are ONE independent leg of a multi-model gate. Review from the diff and source ALONE; do not assume another leg will catch what you skip, and do not soften a finding because "someone else probably saw it."
 - Stay grounded: every finding must be defensible from the actual code. Do not invent files, lines, code paths, or attack chains.`
 
+// THREE-dot diff invariant: when execute-pipeline.js delegates here with base=preImplSha,
+// preImplSha is always a direct ancestor of HEAD (captured at PREP before implementation), so
+// `A...HEAD` (merge-base) and `A..HEAD` produce identical output. Three-dot is used because in a
+// STANDALONE pre-merge run base=origin/main may have DIVERGED from the feature branch, and
+// three-dot correctly shows only the feature-branch delta (not commits added to main meanwhile).
+// Do NOT change to two-dot — two-dot is wrong for the standalone base=origin/main case.
 const diffExpr = `git diff ${base}...HEAD`
 
 // Re-review integrity check — injected ONLY when the pipeline forwards isReReview. Mirrors the
@@ -246,13 +258,15 @@ function deriveLenses(changedFiles) {
       // dodge endsWith('.tsx') and silently drop its lens — then normalize Windows separators.
       const p = raw.trim().replace(/\\/g, '/')
       const lower = p.toLowerCase()
+      // All path checks below are case-INSENSITIVE (matched against `lower`): the
+      // coverage-must-never-shrink-on-case-variation invariant applies to ALL THREE
+      // predicates — the amplify directory-prefix, the src directory-prefix, AND the .tsx
+      // extension — not only the extension. An uppercase `Amplify/`, `Src/`, or `.TSX` must
+      // still select its lens (same invariant as the security taxonomy below).
       // amplify/** (top-level or nested) → amplify lens
-      if (p.startsWith('amplify/') || p.includes('/amplify/')) matched.add('amplify')
+      if (lower.startsWith('amplify/') || lower.includes('/amplify/')) matched.add('amplify')
       // src/** OR any *.tsx (even outside src/, e.g. packages/ui/Button.tsx) → frontend lens.
-      // Extension check is case-INSENSITIVE (lower.endsWith) so an uppercase `.TSX`/`.Tsx` still
-      // selects the frontend lens — coverage must never shrink on a case variation (same
-      // invariant as the security taxonomy below).
-      if (p.startsWith('src/') || p.includes('/src/') || lower.endsWith('.tsx')) matched.add('frontend')
+      if (lower.startsWith('src/') || lower.includes('/src/') || lower.endsWith('.tsx')) matched.add('frontend')
       // any security-relevant path → security lens. Broad ON PURPOSE: a spurious
       // security-lens run is just extra cost, but a MISSED one lets a permissions /
       // tenant-isolation / authz diff pass the final pre-merge gate with NO deep security
@@ -342,7 +356,7 @@ if (Array.isArray(A.lenses) || (!lensesIsAuto && A.lenses != null)) {
   const filesResult = await withRetry(
     () =>
       agent(
-        `${PREAMBLE}\n\nREAD-ONLY changed-files probe (for lens auto-config). In ${projectDir} run exactly:\n  git diff --name-only ${base}...HEAD\nReturn files = the list of changed paths (one per line in the git output), as an array of strings. Empty array if the diff is empty. Do NOT edit, stage, commit, or run anything else.`,
+        `${PREAMBLE}\n\nREAD-ONLY changed-files probe (for lens auto-config). In ${projectDir} run exactly:\n  git diff --name-only ${base}...HEAD && echo '===IAGO_FILES_EOF==='\nReturn files = the list of changed paths (one per line in the git output, EXCLUDING the ===IAGO_FILES_EOF=== sentinel line), as an array of strings (empty array if the diff is empty), AND eofSeen = true ONLY if the ===IAGO_FILES_EOF=== sentinel line actually appeared at the end of the output (it proves the command ran to completion and the path list is not truncated; set eofSeen false or omit it if the sentinel did not appear). Do NOT edit, stage, commit, or run anything else.`,
         { label: 'changed-files', phase: 'Review', schema: CHANGED_FILES_SCHEMA, model: 'opus' },
       ),
     'changed-files',
@@ -365,7 +379,10 @@ if (Array.isArray(A.lenses) || (!lensesIsAuto && A.lenses != null)) {
   // whitespace-only string ('   ', '\t') is NOT a valid path — same puncture, one character wider
   // (it passes a bare truthiness check, deriveLenses matches nothing, coverage shrinks silently).
   const allInvalidArray = rawFiles.length > 0 && !rawFiles.some((f) => typeof f === 'string' && f.trim().length > 0)
-  const probeOk = probeWellFormed && !allInvalidArray
+  // eofSeen gate: a well-formed path list that LOST its ===IAGO_FILES_EOF=== sentinel may be a
+  // truncated transcription — treat it as DEGRADED (full lens set) exactly like a malformed/null
+  // probe, so a lost tail cannot silently drop a specialized lens. Absent eofSeen → false → degraded.
+  const probeOk = probeWellFormed && !allInvalidArray && !!filesResult.eofSeen
   const changedFiles = probeOk ? rawFiles : []
   const derived = probeOk ? deriveLenses(changedFiles) : AUTO_SELECTABLE_LENSES
   // Re-filter through normalizeLenses so an unknown key can never reach the dispatch loop
@@ -376,12 +393,16 @@ if (Array.isArray(A.lenses) || (!lensesIsAuto && A.lenses != null)) {
   lensesDropped = n.dropped
   lensSource = 'auto'
   if (!probeOk) {
-    // Probe FAILED (null) or returned a MALFORMED result (non-array files) — degraded either way.
-    // Run the FULL auto-selectable lens set (not just the base two) so a transient/skipped/garbled
-    // probe on a sensitive diff cannot strip the specialized lenses. Flagged distinctly from a
-    // genuine no-change diff so an operator can tell them apart.
+    // Probe FAILED (null), returned a MALFORMED result (non-array / all-invalid files), or ran
+    // but LOST its ===IAGO_FILES_EOF=== sentinel (a possibly-truncated path list) — degraded
+    // either way. Run the FULL auto-selectable lens set (not just the base two) so a
+    // transient/skipped/garbled/truncated probe on a sensitive diff cannot strip the specialized
+    // lenses. Flagged distinctly (missing-sentinel vs malformed) so an operator can tell apart.
+    const sentinelMissing = probeWellFormed && !allInvalidArray && !filesResult.eofSeen
     log(
-      `WARNING: changed-files probe failed, returned a malformed result, or returned only invalid/empty path entries — cannot determine changed paths (DEGRADED probe — not a confirmed no-change diff); falling back to the FULL auto-selectable lens set so coverage does not shrink: [${lenses.join(', ')}]`,
+      sentinelMissing
+        ? `WARNING: changed-files probe returned a well-formed path list but the ===IAGO_FILES_EOF=== sentinel was MISSING — the probe may be truncated and the path list incomplete (DEGRADED probe); falling back to the FULL auto-selectable lens set so coverage does not shrink: [${lenses.join(', ')}]`
+        : `WARNING: changed-files probe failed, returned a malformed result, or returned only invalid/empty path entries — cannot determine changed paths (DEGRADED probe — not a confirmed no-change diff); falling back to the FULL auto-selectable lens set so coverage does not shrink: [${lenses.join(', ')}]`,
     )
     probeDegraded = true
   } else if (changedFiles.length === 0) {
@@ -459,21 +480,29 @@ Method: read the ACTUAL diff (${diffExpr}) and the relevant source files IN FULL
 This is READ-ONLY: do NOT edit, commit, push, or merge. Return real (boolean) and reason (your evidence).`
 }
 
-// A skeptic "refute" (real=false) only counts if it cites CONCRETE CODE evidence.
-// The failure mode this guards is LLM hallucination — a confident, fluent,
-// uncited claim ("this input is fully validated upstream before use"). Word-count
-// is exactly the wrong proxy for that mode (a hallucination is wordy by nature),
-// so a refute MUST point at code — a specific file path/extension OR an explicit
-// line ref (`line 42`, `L42`, `:42`). A bare or merely verbose reason with no
-// citation is NOT a refutation and is coerced to a confirm (keep the finding).
+// A skeptic "refute" (real=false) only counts if it cites SPECIFIC code, not merely a
+// filename. The failure mode this guards is LLM hallucination — a confident, fluent, uncited
+// claim ("this input is fully validated upstream before use"). A bare filename is NOT enough:
+// generic words (return/if/check/throws/validate/sanitize) appear in plain prose AND inside
+// filenames (sanitize.ts), so a generic-word + filename combo over-matches (stress E1/P3).
+// Three accepted forms:
+//   (1) a file:line pair (auth.ts:42) — strongest, self-contained localization;
+//   (2) an explicit line reference (line 42 / L42) anywhere in the reason;
+//   (3) a filename PLUS a code-DISTINCTIVE construct — an operator, a call shape (`name(args)`),
+//       or a DynamoDB/Amplify idiom (attribute_not_exists, allow.owner) — none of which appear
+//       in prose or filenames.
+// A bare or merely verbose reason with no such citation is coerced to a confirm (keep the finding).
 function refuteHasEvidence(reason) {
   if (!reason || typeof reason !== 'string') return false
   const r = reason.trim()
   if (r.length < 12) return false
-  // Require a code citation: a file path/extension or an explicit line ref. A
-  // confident-but-uncited argument (however wordy) does NOT qualify.
-  const citesCode = /[\w/.-]+\.(ts|tsx|js|jsx|mjs|cjs|py|sh|json|md)\b/i.test(r) || /\b(line|L)\s*\d+|:\d+\b/i.test(r)
-  return citesCode
+  const hasFileLine = /[\w/.-]+\.\w+:\d+/.test(r)
+  const hasLineRef = /\b(?:line|L)\s*\d+\b/i.test(r)
+  const hasFileExt = /[\w/.-]+\.(ts|tsx|js|jsx|mjs|cjs|py|sh|json|md)\b/i.test(r)
+  // Code-distinctive constructs ONLY — no generic NL words (return/if/check/throws), which
+  // over-match prose and filenames. Operators, a call shape, or a Dynamo/Amplify idiom.
+  const hasCodeConstruct = /attribute_not_exists|allow\.owner|===|!==|=>|&&|\|\||\b[A-Za-z_$][\w$]*\([^)]*\)/.test(r)
+  return hasFileLine || hasLineRef || (hasFileExt && hasCodeConstruct)
 }
 
 // NOTE: treeSnapshot + the `startSnap` capture were moved ABOVE the lens-resolution block
@@ -543,13 +572,16 @@ lenses.forEach((key, i) => {
     incompleteLegs.push(`lens:${key}`)
   }
 })
-// TEAM breadth — collect the two extra reviewer legs (non-blocking like the lenses).
+// TEAM breadth — collect the two extra reviewer legs. In team mode a FAILED team leg makes the
+// gate INCOMPLETE (a re-run condition — see teamIncomplete below), UNLIKE the non-blocking
+// lenses: team:data/team:arch are load-bearing for a Tier 2/3 review and must not be silently
+// skipped while the gate still reports a shippable verdict.
 teamDefs.forEach((def, i) => {
   const r = teamResults[i]
   if (r) {
     for (const f of r.findings || []) findings.push({ ...f, by: def.key })
   } else {
-    log(`WARNING: ${def.key} team leg failed (non-blocking)`)
+    log(`WARNING: ${def.key} team leg failed — team-mode gate INCOMPLETE (re-run, not a shippable verdict)`)
     incompleteLegs.push(def.key)
   }
 })
@@ -633,7 +665,11 @@ const blocking = findings.filter((f) => f.severity === 'Critical' || f.severity 
 // a RE-RUN condition, distinct from `blocking` (fixable code findings). Track it as a
 // structured status so the orchestrator routes "re-run the gate" vs "fix findings"
 // correctly and never sends an incomplete-gate signal to /iago-prfix.
-const coreIncomplete = !review || !codex
+// A failed team leg (team:data/team:arch) in team mode is ALSO INCOMPLETE — a Tier 2/3 review
+// missing a load-bearing team leg must not report a shippable verdict (re-run condition). The
+// failed leg is already enumerated in incompleteLegs above, so the INCOMPLETE log names it.
+const teamIncomplete = mode === 'team' && teamDefs.some((def, i) => !teamResults[i])
+const coreIncomplete = !review || !codex || teamIncomplete
 const gateStatus = coreIncomplete ? 'INCOMPLETE' : 'COMPLETE'
 // `clean` requires BOTH core legs to have actually run AND no blocking findings — a
 // half-completed review must never report clean. Extra lens failures are non-blocking

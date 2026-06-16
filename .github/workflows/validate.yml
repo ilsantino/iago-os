@@ -42,6 +42,30 @@ jobs:
           node-version: "20"
       - run: node scripts/validate-workflows.mjs
 
+  # Behavioral + drift-guard harnesses for the workflow scripts. Runs AFTER validate-workflows
+  # (compile-only) so the workflows are known to parse before they are behavior-tested. No
+  # `npm install` — the harnesses import only Node built-ins (node:assert/fs/path/url) plus the
+  # local ./classify-tier.mjs sibling (root deps @biomejs/biome + typescript are unused). No
+  # `permissions:` block — the job only reads checked-out files and runs node (no GitHub API,
+  # no $GITHUB_OUTPUT writes), so the default `contents: read` suffices. The harnesses must NOT
+  # be added to scripts/validate-workflows.mjs's glob: it wraps each file in a vm.Script async
+  # wrapper that rejects their top-level await/import; they run directly with `node` here.
+  test-workflows:
+    name: Test Workflows
+    runs-on: ubuntu-latest
+    needs: [validate-workflows]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: classifyTier unit tests
+        run: node .claude/workflows/classifyTier.test.mjs
+      - name: execute-pipeline behavioral tests
+        run: node .claude/workflows/execute-pipeline.test.mjs
+      - name: dual-adversarial behavioral tests
+        run: node .claude/workflows/dual-adversarial.test.mjs
+
   runtime-checks:
     name: Runtime (typecheck + tests)
     runs-on: ubuntu-latest

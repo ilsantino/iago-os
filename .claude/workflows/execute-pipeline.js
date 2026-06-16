@@ -126,6 +126,22 @@ const PLANTEXT_SCHEMA = {
   },
 }
 
+// Read-only HEAD + porcelain snapshot used to assert the plan-compliance leg never
+// committed or dirtied the tree (it is strictly read-only). Mirrors dual-adversarial.js's
+// SNAPSHOT_SCHEMA — head + porcelain are captured SEPARATELY so the guard catches BOTH a
+// HEAD advance (a committed change) AND an uncommitted dirty tree (porcelain non-empty,
+// HEAD unchanged) — the latter is the common "edited but forgot to commit" failure mode the
+// HEAD-only check would miss.
+const SNAP_SCHEMA = {
+  type: 'object',
+  required: ['status'],
+  properties: {
+    status: { type: 'string', enum: ['DONE', 'BLOCKED'] },
+    head: { type: 'string' },
+    porcelain: { type: 'string' },
+  },
+}
+
 const COMMIT_SCHEMA = {
   type: 'object',
   required: ['status'],
@@ -285,9 +301,9 @@ function hasBlocking(findings) {
 // ERR_VM_DYNAMIC_IMPORT_CALLBACK_MISSING), so the RUNNING copy must live here;
 // classify-tier.mjs is the unit-tested twin and classifyTier.test.mjs asserts the two
 // copies have not drifted. Edit BOTH in lockstep.
-const TIER3_KEYWORDS = ['auth', 'cognito', 'oauth', 'payment', 'iam', 'jwt', 'allow.owner', 'webhook']
+const TIER3_KEYWORDS = ['auth', 'cognito', 'oauth', 'payment', 'iam', 'jwt', 'allow.owner', 'webhook', 'rbac', 'tenant', 'sql', 'xss', 'csrf', 'injection', 'stripe', 'billing', 'authz', 'role', 'permission', 'idor', 'secret', 'credential']
 const TIER2_KEYWORDS = ['amplify', 'functions/', 'schema', 'gsi', 'ttl', 'migration', 'rollback']
-function classifyTier(planText) {
+function classifyTier(planText, overrides = {}) {
   const text = typeof planText === 'string' ? planText : ''
   const lower = text.toLowerCase()
   // (1) taskCount — count `### Task` / `### T<n>` headings (line-anchored, leading ws OK).
@@ -299,9 +315,9 @@ function classifyTier(planText) {
   if (taskCount === 0) return 1
   // (2) fileCount — unique paths across all `- **files:**` bullets (comma/space-separated).
   const files = new Set()
-  const fileBullets = text.match(/^\s*-\s*\*\*files:\*\*\s*(.+)$/gim) || []
+  const fileBullets = text.match(/^\s*(?:-\s*)?\*\*[Ff]iles?:\*\*\s*(.+)$/gim) || []
   for (const bullet of fileBullets) {
-    const body = bullet.replace(/^\s*-\s*\*\*files:\*\*\s*/i, '')
+    const body = bullet.replace(/^\s*(?:-\s*)?\*\*[Ff]iles?:\*\*\s*/i, '')
     for (const raw of body.split(/[,\s]+/)) {
       const p = raw.trim().replace(/[`'"]/g, '')
       if (p) files.add(p)
@@ -311,12 +327,17 @@ function classifyTier(planText) {
   // (3) keyword scan across the FULL text (case-insensitive substring).
   const hasTier3 = TIER3_KEYWORDS.some((k) => lower.includes(k))
   const hasTier2 = TIER2_KEYWORDS.some((k) => lower.includes(k))
-  // (4) classify.
+  // (4) classify. An explicit, in-range operator tier_override (1-3) wins over keyword
+  // tiers; it CANNOT select Tier 0 — a tier_override:0 would void the EOF-sentinel and
+  // headings fail-safes in the pipeline, so the orchestration call site clamps to [1,3]
+  // and the function-body guard mirrors that range.
+  if (typeof overrides.tier_override === 'number' && overrides.tier_override >= 1 && overrides.tier_override <= 3) return overrides.tier_override
   if (hasTier3) return 3
   if (hasTier2 || taskCount > 8) return 2
   if (taskCount <= 2 && fileCount <= 3 && !hasTier3 && !hasTier2) return 0
   return 1
 }
+// END classifyTier
 
 // ─── Prompt builders ─────────────────────────────────────────────────
 function reviewPrompt(isReReview, stressBlock, preImplSha, domainsSelected) {
@@ -577,7 +598,21 @@ In ${projectDir}:
 1. Read the plan: ${plan}
 2. Read the committed changes: git diff --name-only ${preImplSha}..HEAD ; then git diff ${preImplSha}..HEAD (read affected files in full where the diff alone is ambiguous).
 3. For EACH task in the plan, verify the committed changes implement it correctly and completely. Flag every missing, incomplete, or incorrect implementation as a finding — severity Important, or Critical when the omission is security/data-integrity relevant. Do NOT review code quality, style, or anything the diff-side legs cover; plan compliance only. An empty findings array asserts every plan task is verifiably implemented.
+
+READ-ONLY: do NOT edit any file, do NOT stage, do NOT commit, do NOT run any build or test command. Your ONLY permitted operations are: reading files (cat, git show, git diff), reading git history (git log, git diff --name-only). Any write operation here corrupts the pipeline tree.
 Return verdict (PASS / PASS_WITH_CONCERNS / FAIL) and findings (file, severity, summary).`
+}
+
+// Read-only HEAD + porcelain snapshot prompt bracketing the plan-compliance leg (plan 03
+// Task 4). Deterministic git reads only — VERBATIM output (no summarization) so the guard's
+// comparison is exact; a haiku agent that pads/truncates the sha would false-trigger the guard.
+function complianceSnapPrompt(when) {
+  return `${PREAMBLE}
+
+READ-ONLY tree snapshot (${when} the plan-compliance leg) to verify that leg made no edits or commits. In ${projectDir} run exactly:
+  git rev-parse HEAD
+  git status --porcelain
+Return status=DONE with head = the EXACT git rev-parse HEAD output (the full sha, verbatim, no summarization) and porcelain = the FULL git status --porcelain output (empty string if the tree is clean). Do NOT edit, stage, commit, or run anything else.`
 }
 
 // ─── Dual-adversarial pass (Opus review ∥ Codex), used initially + per fix round ─
@@ -652,6 +687,14 @@ async function runDualAdversarial(label, isReReview, stressBlock, preImplSha, op
     // loses (the gate never reads the plan). Fail closed on a null leg: tier>=2
     // requires the compliance pass to actually run, same posture as everything else
     // in this branch.
+    // Read-only guard (plan 03 Task 4) — snapshot HEAD + porcelain BEFORE and AFTER the
+    // strictly-read-only compliance leg; fail closed if it advanced HEAD (committed) OR
+    // dirtied the tree (uncommitted edit). A side-effecting compliance agent must never
+    // silently corrupt the pipeline tree or advance it under the next sequential plan.
+    const preComplianceSnap = await withRetry(
+      () => agent(complianceSnapPrompt('before'), { label: 'compliance-pre-snap', phase: 'Review', schema: SNAP_SCHEMA, model: 'haiku' }),
+      'compliance-pre-snap',
+    )
     const compliance = await withRetry(
       () =>
         agent(planCompliancePrompt(isReReview, preImplSha), {
@@ -661,6 +704,28 @@ async function runDualAdversarial(label, isReReview, stressBlock, preImplSha, op
         }),
       `plan-compliance:${label}`,
     )
+    const postComplianceSnap = await withRetry(
+      () => agent(complianceSnapPrompt('after'), { label: 'compliance-post-snap', phase: 'Review', schema: SNAP_SCHEMA, model: 'haiku' }),
+      'compliance-post-snap',
+    )
+    // Fail closed on a detected side effect. Both snapshots must carry a head to assert; a
+    // missing head (e.g. a BLOCKED snapshot) degrades the guard (log) rather than block an
+    // otherwise-clean review — same posture as dual-adversarial's side-effect guard. The
+    // porcelain comparison (NOT just HEAD) catches an edit-but-don't-commit leg whose HEAD
+    // is unchanged but whose tree is now dirty.
+    if (preComplianceSnap && postComplianceSnap && preComplianceSnap.head && postComplianceSnap.head) {
+      const headAdvanced = preComplianceSnap.head.trim() !== postComplianceSnap.head.trim()
+      const treeDirtied = (postComplianceSnap.porcelain || '').trim() !== (preComplianceSnap.porcelain || '').trim()
+      if (headAdvanced || treeDirtied) {
+        throw new Error(
+          `plan-compliance leg (${label}) advanced HEAD or dirtied the tree — a read-only compliance agent must not commit or edit; failing closed. HEAD ${preComplianceSnap.head.trim()} → ${postComplianceSnap.head.trim()}; porcelain "${(preComplianceSnap.porcelain || '').trim()}" → "${(postComplianceSnap.porcelain || '').trim()}".`,
+        )
+      }
+    } else {
+      log(
+        `WARNING: plan-compliance read-only guard DEGRADED (${label}) — could not capture a HEAD/porcelain snapshot; the read-only invariant could not be verified for this leg`,
+      )
+    }
     if (!compliance || !Array.isArray(compliance.findings)) {
       throw new Error(
         `team gate (${label}) plan-compliance leg failed after retries — tier ${tier} requires the plan-compliance pass; failing closed (re-run), NOT proceeding without it.`,
@@ -852,12 +917,30 @@ if (planReadOk) {
   const planText = sawPlanEof
     ? planRead.text.trimEnd().slice(0, -PLAN_EOF_SENTINEL.length)
     : planRead.text
-  tier = classifyTier(planText)
-  if (tier < 2 && !sawPlanEof) {
+  // tier_override frontmatter escape valve — an operator can force the review depth for a
+  // plan whose prose mis-classifies. Clamp to [1,3]: a 0 (or any out-of-range value) is
+  // IGNORED, never honored — tier_override:0 would otherwise void both fail-safes below
+  // (sentinel + headings), declaring a possibly-truncated plan Tier 0 and skipping the gate.
+  const overrideMatch = planText.match(/^tier_override:\s*(\d)/im)
+  let tierOverride
+  if (overrideMatch) {
+    const parsed = Number.parseInt(overrideMatch[1], 10)
+    if (parsed >= 1 && parsed <= 3) {
+      tierOverride = parsed
+      log(`tier_override frontmatter found: forcing Tier ${tierOverride}`)
+    } else {
+      log(`WARNING: tier_override: ${parsed} is out of range [1-3]; ignoring (a 0/out-of-range override would void the sentinel + headings fail-safes)`)
+    }
+  }
+  tier = classifyTier(planText, { tier_override: tierOverride })
+  // FAIL SAFE on a missing EOF sentinel — a truncated transcription may have dropped a late
+  // Tier-3 keyword, so escalate to Tier 3 (security gate + maxFixRounds=3), not just Tier 2.
+  // A valid operator tier_override is an explicit declaration that overrides this fail-safe.
+  if (tier < 3 && !sawPlanEof && tierOverride === undefined) {
     log(
-      `WARNING: plan-read DONE but the ${PLAN_EOF_SENTINEL} sentinel is missing — possibly a truncated transcription; FAILING SAFE to Tier 2 (deep team gate) instead of shallow Tier ${tier}`,
+      `WARNING: plan-read DONE but the ${PLAN_EOF_SENTINEL} sentinel is missing — possibly a truncated transcription; FAILING SAFE to Tier 3 (security gate + maxFixRounds=3) instead of shallow Tier ${tier}`,
     )
-    tier = 2
+    tier = 3
   }
   // Reconcile classifyTier's parse-failure default with the body fail-safe. classifyTier
   // returns Tier 1 for text with ZERO `### T...` task headings (its standalone parse-failure
@@ -882,6 +965,7 @@ if (planReadOk) {
     `WARNING: plan-read ${planRead ? planRead.status : 'null'}/empty after retries — cannot classify risk tier; FAILING SAFE to Tier 2 (deep team gate) rather than Tier-1 inline review for a possibly-security-sensitive plan`,
   )
 }
+// Tier 0 === Tier 1 intentionally: no lighter path wired yet (deferred — see quick-260530 §Cut from this pass). When a Tier-0 fast path ships, branch here on tier === 0.
 const maxFixRounds = tier >= 3 ? 3 : 2
 const reviewMode = tier >= 2 ? 'team' : 'standard'
 const reviewLenses = []
@@ -952,6 +1036,11 @@ log(`committed on ${branch} @ ${commit.headSha || '?'}`)
 phase('Review')
 const reviewOpts = { mode: reviewMode, lenses: reviewLenses, skepticCap: 8, tier }
 let { findings, verdict, codexSource, verificationSameFamily, verificationDegraded, crossModelDegraded, filtered, domainsSelected } = await runDualAdversarial('r0', false, stressBlock, preImplSha, reviewOpts)
+// Accumulate the skeptic-FILTERED (double-refute-dropped) findings across EVERY fix round —
+// each round's runDualAdversarial returns only THAT round's filtered set, so without this the
+// pipeline return would carry only the last round's audit trail and silently lose round 0's
+// dropped blockers. Intentionally cumulative; do NOT revert to the per-round `filtered`.
+const allFiltered = [...(filtered || [])]
 let rounds = 0
 // maxFixRounds is the per-plan local from the tier classifier (Tier 3 → 3, else 2) — a
 // per-plan local, NOT a module const, so a stacked multi-plan run cannot bleed one plan's
@@ -999,6 +1088,9 @@ while (
     domainsSelected,
   })
   ;({ findings, verdict, codexSource, verificationSameFamily, verificationDegraded, crossModelDegraded, filtered } = reReview)
+  // push (mutate) rather than reassign — keeps `allFiltered` a const and immune to the
+  // formatter's let→const flip; same cumulative effect.
+  allFiltered.push(...(filtered || []))
   if (reReview.domainsSelected && reReview.domainsSelected.length > 0) {
     domainsSelected = reReview.domainsSelected
   }
@@ -1113,5 +1205,6 @@ return {
   // #89 re-gate — degradation + audit honesty at the merge decision: the orchestrator
   // (iago-execute/iago-quick SKILL) surfaces these alongside verificationDegraded.
   crossModelDegraded,
-  filtered,
+  // Cumulative across all fix rounds (allFiltered), not just the last round's set.
+  filtered: allFiltered,
 }

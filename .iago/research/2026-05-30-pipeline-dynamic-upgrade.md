@@ -66,7 +66,8 @@ once the post-commit lens seam (`reviewLenses`) is wired.
 
 ## Git topology note
 
-Team mode is unmerged: PR #86 squash-merged an earlier snapshot of
-`chore/cc-config-optimization`; team-mode + lens commits were added afterward and are NOT
-in `origin/main`. This work branches off that HEAD (`feat/pipeline-risk-tiering`); its PR
-to main is **cumulative** (carries the unmerged team-mode work too).
+Team mode and auto-lens derivation are now MERGED into `origin/main`. PR #89 (`a5900b5`)
+shipped the risk-tier classifier + team-gate delegation; PR #90 (`068c93e`) shipped auto-lens
+configuration from the diff. Both landed in `origin/main` as of 2026-06-14. The earlier
+topology note here (which predated those merges) is superseded — the dynamic-pipeline upgrade
+is live on `main`, so a new branch off `main` carries only its own delta.
