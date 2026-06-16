@@ -676,14 +676,15 @@ const teamIncomplete = mode === 'team' && teamDefs.some((def, i) => !teamResults
 // lenses (codeQuality/completeness) and any EXPLICIT-path lenses stay non-blocking — a failed
 // cosmetic or operator-chosen lens should not force a re-run.
 const LOAD_BEARING_LENSES = ['security', 'amplify', 'frontend']
-// Only when the probe was PRECISE (not a degraded fallback): a degraded probe runs the full
-// lens set SPECULATIVELY (we cannot know what changed), so a failing speculative lens is
-// already subsumed by probeDegraded — not a load-bearing gap. A PRECISE derivation means the
-// diff genuinely touches that surface, so a failed specialized lens there IS load-bearing.
+// A failed auto-derived load-bearing lens ALWAYS makes the gate INCOMPLETE — even under a
+// DEGRADED probe where the lens ran speculatively. probeDegraded is only a non-blocking RETURN
+// caveat (the consumer SKILL routes on `clean` first and treats it as defensive breadth), so it
+// does NOT force a re-run on its own. If we ran a load-bearing lens (precise OR speculative) and
+// it FAILED, the security/amplify/frontend surface went unreviewed — the gate must fail closed,
+// not ship clean and rely on a caveat the consumer ignores. End-to-end invariant: a failed
+// load-bearing lens is never silently shipped.
 const lensIncomplete =
-  lensSource === 'auto' &&
-  !probeDegraded &&
-  lenses.some((key, i) => LOAD_BEARING_LENSES.includes(key) && !lensResults[i])
+  lensSource === 'auto' && lenses.some((key, i) => LOAD_BEARING_LENSES.includes(key) && !lensResults[i])
 const coreIncomplete = !review || !codex || teamIncomplete || lensIncomplete
 const gateStatus = coreIncomplete ? 'INCOMPLETE' : 'COMPLETE'
 // `clean` requires the core legs to have actually run AND no blocking findings — a

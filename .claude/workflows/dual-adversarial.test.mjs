@@ -248,24 +248,25 @@ await test('a failed BASE lens (codeQuality) does NOT make the gate INCOMPLETE (
   assert.ok(out.incompleteLegs.includes('lens:codeQuality'), 'the failed base lens is still recorded (non-blocking)')
 })
 
-await test('a failed load-bearing lens under a DEGRADED probe is NOT INCOMPLETE (speculative fallback, subsumed by probeDegraded)', async () => {
-  // The !probeDegraded scope: when the probe DEGRADED, the full lens set ran SPECULATIVELY (we
-  // cannot know what changed), so a failing speculative specialized lens is subsumed by
-  // probeDegraded — NOT a load-bearing gap. (A PRECISE derivation that fails IS load-bearing —
-  // see the security-lens test above.) A null changed-files probe → degraded → full set; the
-  // speculative security lens then fails.
+await test('a failed load-bearing lens under a DEGRADED probe is ALSO INCOMPLETE (never silently shipped)', async () => {
+  // probeDegraded is only a non-blocking caveat the consumer ignores when routing on `clean`,
+  // so a failed load-bearing lens must force INCOMPLETE even under a degraded probe — otherwise
+  // a security surface that ran speculatively but FAILED would ship clean (the producer/consumer
+  // gap the re-gate flagged). A null changed-files probe → degraded → full speculative set; the
+  // security lens then fails (null).
   const h = makeHarness([
     { match: (l) => l === 'review', reply: { verdict: 'PASS', findings: [] } },
     { match: (l) => l === 'codex', reply: { source: 'codex', findings: [] } },
     { match: (l) => l === 'changed-files', reply: null }, // degraded probe → full speculative set
-    { match: (l) => l === 'security', reply: null }, // a speculative lens fails
+    { match: (l) => l === 'security', reply: null }, // a load-bearing lens fails
     { match: (l) => ['amplify bug-bounty', 'frontend bug-bounty', 'code quality', 'completeness critic'].includes(l), reply: { findings: [] } },
   ])
   const wf = buildWorkflow()
   const out = await wf(h.agent, h.parallel, null, h.log, h.phase, { ...baseArgs }, null, null)
   assert.strictEqual(out.probeDegraded, true, 'probe degraded (null) → full speculative lens set')
-  assert.strictEqual(out.gateStatus, 'COMPLETE', 'a failing SPECULATIVE lens under a degraded probe is NOT INCOMPLETE')
-  assert.strictEqual(out.clean, true, 'gate stays clean — probeDegraded already surfaces the degradation')
+  assert.strictEqual(out.gateStatus, 'INCOMPLETE', 'a failed load-bearing lens forces INCOMPLETE even under a degraded probe')
+  assert.strictEqual(out.clean, false, 'never ships clean with an unreviewed load-bearing surface')
+  assert.ok(out.incompleteLegs.includes('lens:security'), 'incompleteLegs names the failed load-bearing lens')
 })
 
 // ── Team verification truth table ───────────────────────────────────────
