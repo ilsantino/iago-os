@@ -17,8 +17,8 @@
 | 2026-06-02 | merge | PR #84 — close pr-triage alert/credential gaps; R1 "agents never hold secrets" daemon-creds rework. Tail deferred → daemon-recovery-hardening. | [#84](https://github.com/ilsantino/iago-os/pull/84) → `6953ea7` |
 | 2026-05-31 | merge | PRs #85/#87/#88 — per-agent Telegram bots + agent-to-agent messaging (#85); recover lost daemon test coverage (#87, DD-R1 Critical deferred); restore `/industry-patterns` domain files (#88). | `a014801` / `5f1c1c0` / `aeeba9e` |
 | 2026-05-30 | merge | PR #86 — upgrade the review gate + clean up Claude Code config. | [#86](https://github.com/ilsantino/iago-os/pull/86) → `7f26f1b` |
-| 2026-05-29 | merge | PR #83 — rebuild the execution pipeline as a harness-native Workflow (bash deprecated 1 cycle; commit-before-review for Codex). | [#83](https://github.com/ilsantino/iago-os/pull/83) → `7aa0f09` |
 | 2026-05-30 | spec | cortextOS comms gap-analysis → per-agent bots (standing) + chief bot (ephemeral) + file-bus envelope. ADR `.iago/decisions/2026-05-30-per-agent-bots-and-chief-tier.md` (shipped #85). | `docs/v2-cortextos-comms-replan` |
+| 2026-05-29 | merge | PR #83 — rebuild the execution pipeline as a harness-native Workflow (bash deprecated 1 cycle; commit-before-review for Codex). | [#83](https://github.com/ilsantino/iago-os/pull/83) → `7aa0f09` |
 | 2026-05-28 | plan | Planned + stress-tested: `feature-lead-hunt-scrapling` (Scrapling MCP + `/lead-hunt`), `feature-pr84-gap-closure`, `feature-mwp-restructure-{docs,clients,code}` — restructure awaiting `/iago-execute`. | (planned) |
 | 2026-05-20 | merge | PRs #66/#68/#70/#71/#72 — Phase 2 dual-review artifacts, cutover/rollback executables (Plan 03a/03b), README v2 reframe, strategy-sync + observability ADRs. | merged |
 
