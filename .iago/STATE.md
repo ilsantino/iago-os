@@ -1,12 +1,13 @@
 # State — iaGO-OS
 
-> **Phase:** v2 Phase 2 (VPS bootstrap) ~80% + a review-infra / daemon-hardening wave landed on main (#83–#94). Cutover off OpenClaw NOT yet executed (human-triggered; tentative 2026-05-25 target slipped). Deferred surface fully mapped — `.iago/research/2026-06-13-deferred-backlog-index.md`: ~38 OPEN items (+4 adjacent) across 3 workstreams (A gate-hardening / B daemon-durability / C cutover-gate) + 2 tracked Criticals (GH-15 probe-transcription-trust, DD-R1 registration-orphan PR#87); zero untracked Criticals. Next candidates: gate-hardening PR (Workstream A) + durability-hardening PR (Workstream B) — both Santiago's go/no-go.
-> **Tag:** v0.1.0 | **Updated:** 2026-06-14
+> **Phase:** v2 Phase 2 (VPS bootstrap) ~80% + a review-infra / daemon-hardening wave landed on main (#83–#94). Cutover off OpenClaw NOT yet executed (human-triggered; tentative 2026-05-25 target slipped). Deferred surface fully mapped — `.iago/research/2026-06-13-deferred-backlog-index.md`: ~38 OPEN items (+4 adjacent) across 3 workstreams (A gate-hardening / B daemon-durability / C cutover-gate) + 2 tracked Criticals (GH-15 probe-transcription-trust, DD-R1 registration-orphan PR#87); zero untracked Criticals. Workstream A (gate-hardening) landed via #96 (+ a follow-up wiring PR — production Tier 2/3 onto the dual-adversarial AUTO lens path); durability-hardening PR (Workstream B) remains — Santiago's go/no-go.
+> **Tag:** v0.1.0 | **Updated:** 2026-06-16
 
 ## Active
 
 | Date | Mode | Description | Commit |
 |------|------|-------------|--------|
+| 2026-06-16 | merge | PR #96 — harden the review pipeline's own gate scripts (risk-tiering keywords + tier_override clamp, reviewer-input integrity, compliance read-only guard, classifyTier drift-guard + CI wiring). Workstream A. | [#96](https://github.com/ilsantino/iago-os/pull/96) → `3bb7f68` |
 | 2026-06-14 | merge | PR #94 — metered-model spend guardrail recorded in model-independence ADR (fail-closed spend ceiling). | [#94](https://github.com/ilsantino/iago-os/pull/94) → `6807d04` |
 | 2026-06-14 | merge | PR #90 — auto-configure the code-review gate from the diff (deriveLenses by changed paths). | [#90](https://github.com/ilsantino/iago-os/pull/90) → `068c93e` |
 | 2026-06-13 | merge | PR #89 — scale code-review depth to each plan's risk level (Tier 1/2/3 gate). | [#89](https://github.com/ilsantino/iago-os/pull/89) → `a5900b5` |
@@ -28,7 +29,7 @@
 |-------|----------|--------|
 | `docs/v2-roadmap-project` has 2 redundant commits | Minor | `a11d920` (G-cost gate) + `67b3d21` (review fixes) sit ahead of main in ancestry, but their content already landed on main via #91 (`a9c02ad`) — verified `a11d920..origin/main` ROADMAP+vision diff is empty. Disposition: **abandon** (content-equivalent orphans, nothing to re-PR). |
 | VPS cutover off OpenClaw not executed | Tracked | Human-triggered step; cutover-gate checklist = Workstream C (runs at deploy, not before). |
-| 2 tracked Criticals open | Tracked | GH-15 probe-transcription-trust (owned by gate-hardening PR), DD-R1 registration-orphan PR#87 (owned by durability-hardening PR). |
+| 2 tracked Criticals open | Tracked | GH-15 probe-transcription-trust — #96 shipped the fail-closed compliance read-only guard (mitigation); residual haiku sha-snapshot transcription jitter remains a Minor. DD-R1 registration-orphan PR#87 (owned by durability-hardening PR). |
 
 ## Recent Decisions
 
