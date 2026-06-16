@@ -60,13 +60,15 @@ canary `/iago-fast`. Full finding ledger in the plan's `## Stress Test`.
 
 ## Deferred (follow-up plan)
 
-Path-lens auto-injection (timing-broken at classify-time — needs post-commit diff),
-`--tier-override` escape hatch, `KNOWN_LENS_KEYS` drift-detection. All three ship together
-once the post-commit lens seam (`reviewLenses`) is wired.
+Two of the three originally-deferred items have since SHIPPED: path-lens auto-injection (now
+auto-lens derivation from the diff at review time, PR #90 — the post-commit timing fix) and the
+`tier_override` escape valve (now a clamped, frontmatter-only field, PR #96 / feature-gate-hardening
+plan 01). `KNOWN_LENS_KEYS` drift-detection remains the open follow-up.
 
 ## Git topology note
 
-Team mode is unmerged: PR #86 squash-merged an earlier snapshot of
-`chore/cc-config-optimization`; team-mode + lens commits were added afterward and are NOT
-in `origin/main`. This work branches off that HEAD (`feat/pipeline-risk-tiering`); its PR
-to main is **cumulative** (carries the unmerged team-mode work too).
+Team mode and auto-lens derivation are now MERGED into `origin/main`. PR #89 (`a5900b5`)
+shipped the risk-tier classifier + team-gate delegation; PR #90 (`068c93e`) shipped auto-lens
+configuration from the diff. Both landed in `origin/main` as of 2026-06-14. The earlier
+topology note here (which predated those merges) is superseded — the dynamic-pipeline upgrade
+is live on `main`, so a new branch off `main` carries only its own delta.
