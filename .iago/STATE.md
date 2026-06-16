@@ -1,6 +1,6 @@
 # State — iaGO-OS
 
-> **Phase:** v2 Phase 2 (VPS bootstrap) ~80% + a review-infra / daemon-hardening wave landed on main (#83–#94). Cutover off OpenClaw NOT yet executed (human-triggered; tentative 2026-05-25 target slipped). Deferred surface fully mapped — `.iago/research/2026-06-13-deferred-backlog-index.md`: 38 OPEN items across 3 workstreams (A gate-hardening / B daemon-durability / C cutover-gate) + 2 tracked Criticals (GH-15 probe-transcription-trust, DD-R1 registration-orphan PR#87); zero untracked Criticals. Next candidates: gate-hardening PR (Workstream A) + durability-hardening PR (Workstream B) — both Santiago's go/no-go.
+> **Phase:** v2 Phase 2 (VPS bootstrap) ~80% + a review-infra / daemon-hardening wave landed on main (#83–#94). Cutover off OpenClaw NOT yet executed (human-triggered; tentative 2026-05-25 target slipped). Deferred surface fully mapped — `.iago/research/2026-06-13-deferred-backlog-index.md`: ~38 OPEN items (+4 adjacent) across 3 workstreams (A gate-hardening / B daemon-durability / C cutover-gate) + 2 tracked Criticals (GH-15 probe-transcription-trust, DD-R1 registration-orphan PR#87); zero untracked Criticals. Next candidates: gate-hardening PR (Workstream A) + durability-hardening PR (Workstream B) — both Santiago's go/no-go.
 > **Tag:** v0.1.0 | **Updated:** 2026-06-14
 
 ## Active
@@ -26,7 +26,7 @@
 
 | Issue | Severity | Detail |
 |-------|----------|--------|
-| `docs/v2-roadmap-project` has 2 unmerged commits | Minor | `a11d920` (G-cost spend-ceiling gate in ROADMAP + vision) + `67b3d21` (review fixes) sit ahead of main with no open PR. Decide: PR to main, fold into next docs change, or abandon. |
+| `docs/v2-roadmap-project` has 2 redundant commits | Minor | `a11d920` (G-cost gate) + `67b3d21` (review fixes) sit ahead of main in ancestry, but their content already landed on main via #91 (`a9c02ad`) — verified `a11d920..origin/main` ROADMAP+vision diff is empty. Disposition: **abandon** (content-equivalent orphans, nothing to re-PR). |
 | VPS cutover off OpenClaw not executed | Tracked | Human-triggered step; cutover-gate checklist = Workstream C (runs at deploy, not before). |
 | 2 tracked Criticals open | Tracked | GH-15 probe-transcription-trust (owned by gate-hardening PR), DD-R1 registration-orphan PR#87 (owned by durability-hardening PR). |
 
