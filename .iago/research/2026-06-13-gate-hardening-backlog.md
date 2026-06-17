@@ -1,5 +1,14 @@
 # Gate-hardening backlog — for a dedicated review-infra PR
 
+> ✅ **RESOLVED 2026-06-17 — do NOT treat any GH-NN below as open.** All 16 items shipped
+> in PR #96 (`3bb7f68`, the 4 `feature-gate-hardening/01-04` plans) + PR #97 (`4d8a448`,
+> production AUTO-lens wiring), verified against merged code. GH-01–GH-14 and GH-16 CLOSED;
+> GH-15 (probe-transcription-trust) **downgraded Critical → Minor** — #96's `eofSeen`
+> fail-safe (`dual-adversarial.js:385`) mitigates the truncation exploit; the residual is a
+> deterministic `git diff --name-only` probe (Minor, tracked). Per-item file:line evidence:
+> see the Workstream A section of `2026-06-13-deferred-backlog-index.md`. The text below is
+> retained for provenance only.
+
 **Date:** 2026-06-13
 **Source:** PR #89 (`feat/auto-tier-review-depth`) final dual-adversarial re-gate
 (`wf_865dd2bf-12a`, team mode + 4 lenses, **real Codex, no degradation, every blocking

@@ -14,16 +14,21 @@ row carries: **id · one-line · severity · owning workstream · source-note + 
 range · re-scope trigger**. Read a row, then open the cited source for the full
 rationale. When an item is fixed, strike it here AND in its source tracker.
 
-**Bottom line:** ~38 distinct OPEN items across 3 workstreams + 1 standalone.
-**Exactly 2 are Critical-severity, and both are TRACKED** (GH-15, DD-R1). No
-untracked Criticals exist. The audit's one historical "Critical crack"
-(PC-02 cron-restart-pins-dead-handle) was **FIXED in #92** — see *Recently closed*.
+**Bottom line (updated 2026-06-17):** **Zero open Criticals.** Workstream A is
+**fully CLOSED** by #96 (`3bb7f68`) + #97 (`4d8a448`) — verified against merged code.
+GH-15 (probe-transcription-trust) is **downgraded Critical → Minor** (mitigated by the
+#96 eofSeen fail-safe; residual = swap the LLM-transcribed file list for a deterministic
+`git diff --name-only`). DD-R1 (registration-orphan) is **CLOSED** by #92 (`b3af16c`).
+The audit's one historical "Critical crack" (PC-02 cron-restart-pins-dead-handle) was
+**FIXED in #92**. Remaining open surface: Workstream B (daemon-durability, 0 Critical /
+4 Important / 13 Minor — rides a durability-hardening PR) + Workstream C (cutover-gate,
+deploy-time) + SA-01. See *Recently closed* and the per-workstream sections.
 
 ## Source trackers (canonical — this index derives from them)
 
 | Tracker | Workstream | Items |
 |---|---|---|
-| `.iago/research/2026-06-13-gate-hardening-backlog.md` | A — gate-hardening PR (unblocked: #89 merged) | 16 |
+| `.iago/research/2026-06-13-gate-hardening-backlog.md` | A — gate-hardening PR — ✅ **CLOSED by #96/#97 (2026-06-16)** | ~~16~~ → 0 open (GH-15 → Minor residual) |
 | `.iago/research/2026-06-13-daemon-durability-deferrals.md` | B — durability-hardening PR (unblocked: #92 merged) | 14 (+4 adjacent) |
 | `.iago/research/2026-05-30-pr84-gate-findings-and-cutover-gates.md` + `.iago/research/2026-05-28-pr84-gap-closure.md` | C — daemon cutover-gate checklist (runs at VPS deploy, NOT a code PR) | 7 |
 | `.iago/research/2026-06-02-pipeline-efficiency-teardown.md` | standalone | 1 |
@@ -35,33 +40,48 @@ Related MEMORY pointers: `project_daemon_registration_orphan_window` (DD-R1),
 
 | Workstream | Critical | Important | Minor | Total |
 |---|---|---|---|---|
-| A — gate-hardening | 1 (GH-15) | 5 | 10 | 16 |
+| ~~A — gate-hardening~~ ✅ CLOSED #96/#97 | 0 (GH-15 → Minor) | 0 | GH-15 residual + 2 accepted over-tier | ~~16~~ → 0 open |
 | B — daemon-durability (core) | 0 | 3 | 11 | 14 |
-| B — adjacent (test-infra + related-prior) | 1 (DD-R1) | 1 | 2 | 4 |
+| B — adjacent (test-infra + related-prior) | ~~1 (DD-R1)~~ → 0 (closed #92) | 1 (DD-R2) | 2 | 4 |
 | C — cutover-gate (pr84 Phase-2) | — (deploy blockers) | 3 | 4 | 7 |
 | standalone | 0 | 0 | 1 (design) | 1 |
-| **distinct OPEN total** | **2** | — | — | **~38 core + 4 adjacent** |
+| **distinct OPEN total** | **0** | **4** (DD-01/02/03 + DD-R2) | — | **~21 open** (A closed, DD-R1 closed) |
 
-## The 2 open Criticals (both tracked — no cracks)
+## Open Criticals: NONE (both former Criticals resolved 2026-06-17)
 
-- **GH-15 · probe-transcription-trust** — the dual-adversarial gate feeds the
-  reviewer an LLM-transcribed changed-files list instead of a deterministic
-  `git diff --name-only`; a hallucinated/omitted path mis-scopes review.
-  Gate-calibrated **Critical**. Source: gate-hardening-backlog L81-83.
-  Trigger: dedicated gate-hardening PR. (Re-confirmed by #90's reconcile re-gate
-  as the "valid-but-incomplete probe" codex finding.)
-- **DD-R1 · registration-orphan window** — PR #87 deferred Critical; the
-  daemon registration durability gap that D1/D2 extend. Source:
-  daemon-durability-deferrals L144-145 + MEMORY `project_daemon_registration_orphan_window`.
-  Trigger: resilient-vs-durable design decision → durability-hardening PR.
+- ~~**GH-15 · probe-transcription-trust**~~ → **DOWNGRADED Critical → Minor (2026-06-17).**
+  #96 (`3bb7f68`, plan 02 Task 1) shipped the `eofSeen` sentinel fail-safe:
+  `dual-adversarial.js:385` `probeOk = … && !!filesResult.eofSeen`, so a truncated/lost
+  changed-files transcription now takes the DEGRADED path (full `AUTO_SELECTABLE_LENSES`)
+  instead of silently narrowing review. The exploit (a hallucinated/omitted path
+  mis-scoping review) is mitigated. **Residual (Minor, tracked):** the file list is still
+  LLM-transcribed rather than a deterministic `git diff --name-only` fed straight in —
+  a defense-in-depth deterministic-probe swap, no longer Critical.
+- ~~**DD-R1 · registration-orphan window**~~ → **CLOSED 2026-06-13 by #92 (`b3af16c`).**
+  Santiago chose HARDEN (durable over resilient); `agent-manager.ts:440` carries the
+  fail-closed `DURABILITY CONTRACT` rollback (durable quarantine record + cross-restart
+  `assertAgentIdAvailable`). Recovery-hardening plan archived 2026-06-17. See MEMORY
+  `project_daemon_registration_orphan_window` (CLOSED note).
 
 ---
 
-## Workstream A — Gate-hardening PR (16)
+## ~~Workstream A — Gate-hardening PR (16)~~ — ✅ CLOSED by #96/#97 (verified 2026-06-17)
 
-Unblocked now #89 merged (`a5900b5`). The #89 final re-gate's 7 Importants + #90's
-reconcile re-gate's GH-16 ARE the top of this backlog. Trigger for all: **dedicated
-gate-hardening PR**.
+**All 16 items are resolved — do NOT treat any GH-NN as open.** #96 (`3bb7f68`) shipped
+the 4 gate-hardening plans (`feature-gate-hardening/01-04`); #97 (`4d8a448`) wired the
+production Tier 2/3 pipeline onto the dual-adversarial AUTO lens path so the deriveLenses
+fixes actually fire. Verified against merged code 2026-06-17:
+
+- **GH-01** ✅ `classify-tier.mjs:24` broadened TIER3 keywords + `:54` tier_override clamped `[1,3]` (plan 01 T1/T2). Residual Minor: `auth`→`author` / `role` bare-substring over-tier (accepted safe over-tier).
+- **GH-02/03** ✅ `execute-pipeline.js:574-581` durable honesty signal (vSameFamily/vDegraded + NDJSON) + `:833` inline `crossModelDegraded` (plan 03 T1/T2).
+- **GH-04** ✅ `execute-pipeline.js:602` READ-ONLY guard + `:701/714/727` compliance pre/post HEAD+porcelain snapshot fail-closed (plan 03 T3/T4).
+- **GH-05** ✅ `.github/workflows/validate.yml` `test-workflows` job wires the 3 `.test.mjs` harnesses (plan 04 T1). **GH-06** ✅ drift-guard anchored to `// END classifyTier` sentinel (plan 04 T2). **GH-10** ✅ stale topology note corrected (plan 04 T3).
+- **GH-07** ✅ Tier-0≡Tier-1 documented; **GH-08** ✅ fileCount regex `[Ff]iles?` (plan 01 T3); **GH-09** ✅ EOF-sentinel escalation raised to `tier < 3` (plan 01 T4).
+- **GH-11** ✅ three-dot diff invariant documented (plan 02 T6); **GH-12** ✅ `execute-pipeline.js:1065/1115/1231` `allFiltered` accumulates across rounds (plan 02 T5); **GH-13** ✅ `dual-adversarial.js:499-505` refuteHasEvidence requires file:line or file+construct (plan 02 T3); **GH-14** ✅ `:671/688` team-leg failure → INCOMPLETE (plan 02 T4).
+- **GH-15** ⬇️ **Critical → Minor** — `dual-adversarial.js:385` eofSeen fail-safe mitigates; residual = deterministic `git diff --name-only` probe (Minor, tracked).
+- **GH-16** ✅ `dual-adversarial.js:267/269` `lower.startsWith('amplify/'|'src/')` — case-insensitive dir checks; no `p.startsWith` remains. #97 `reviewLenses='auto'` makes it effective in production (plan 02 T2 + #97 wiring).
+
+_The provenance table below is retained for audit; every row is closed/mitigated per the dispositions above._
 
 | id | one-line | severity | source (L#) |
 |---|---|---|---|
@@ -139,7 +159,15 @@ and `2026-05-28-pr84-gap-closure.md` Phase-2 deferrals (CG-06/07).
 
 ---
 
-## Recently CLOSED — verified in #92's merged code (do NOT re-defer)
+## Recently CLOSED — verified in merged code (do NOT re-defer)
+
+**Workstream A — all 16 GH items (#96 `3bb7f68` + #97 `4d8a448`), verified 2026-06-17.**
+GH-01 through GH-14 and GH-16 CLOSED; GH-15 downgraded Critical → Minor (eofSeen fail-safe,
+residual deterministic-probe). Per-item file:line evidence in the Workstream A section above.
+
+**DD-R1 · registration-orphan window (#92 `b3af16c`, 2026-06-13).** Fail-closed
+`DURABILITY CONTRACT` rollback at `agent-manager.ts:440`. Recovery-hardening plan archived
+2026-06-17 to `.iago/plans/_archive/2026-06-daemon-recovery-hardening/`.
 
 - **PC-02 / R2 · cron-restart-pins-dead-handle** — the audit's only historical
   "Critical crack." FIXED at `runtime/daemon/main.ts:2400-2419` (tears the dead
@@ -155,11 +183,15 @@ and `2026-05-28-pr84-gap-closure.md` Phase-2 deferrals (CG-06/07).
 #94 is a clean 2-line-ADR merge; #90 is this index's home PR (single-SKILL.md
 keep-both reconcile + re-gate). Once both merge, the surface is exactly:
 
-1. **Gate-hardening PR** (Workstream A, 16) — unblocked; the 7 Importants the
-   #89 re-gate re-confirmed + GH-16 from #90's re-gate sit at the top.
-2. **Durability-hardening PR** (Workstream B, 14 core + 4 adjacent) — unblocked.
+1. ~~**Gate-hardening PR** (Workstream A, 16)~~ — ✅ **DONE** via #96 (`3bb7f68`) + #97
+   (`4d8a448`). All 16 closed; GH-15 → Minor residual. Nothing left here.
+2. **Durability-hardening PR** (Workstream B) — **NEXT open code PR.** 0 Critical (DD-R1
+   closed by #92) / 4 Important (DD-01/02/03 delivery-integrity + DD-R2 quarantine
+   boot-surfacing) / 13 Minor (incl. DD-T1/T2). Daemon not yet deployed → bounded risk,
+   but the Importants should land before the Phase 7 cutover.
 3. **Cutover-gate checklist** (Workstream C, 7) — run only when deploying the
-   daemon off OpenClaw, NOT before.
+   daemon off OpenClaw, NOT before (CG-01 R1-residual is code-able now; CG-02/07 are
+   deploy-time).
 4. **SA-01** — its own pipeline-efficiency follow-on plan.
 
 This index is the map; the 4 trackers are the territory.
