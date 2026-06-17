@@ -183,12 +183,35 @@ await test('Tier 2 delegates to the team gate on BOTH the initial review AND the
     assert.strictEqual(c.wargs.mode, 'team', 'every delegation passes mode=team')
     assert.strictEqual(c.wargs.base, 'base123', 'delegation reviews preImplSha..HEAD')
     assert.strictEqual(c.wargs.skepticCap, 8, 'skepticCap forwarded')
+    assert.strictEqual(c.wargs.lenses, 'auto', 'every delegation forwards lenses:auto (AUTO path → load-bearing lenses on BOTH initial + re-review)')
     assert.ok(String(c.ref.scriptPath || '').endsWith('dual-adversarial.js'), 'delegates to dual-adversarial.js')
   }
   // The inline review/codex agents must NOT run in team mode (no double-review).
   assert.ok(!h.calls.some((c) => /^review:/.test(c.label) || /^codex:/.test(c.label)), 'no inline 2-leg in team mode')
   assert.strictEqual(out.fixRounds, 1, 'one fix round ran')
   assert.strictEqual(out.reviewVerdict, 'PASS', 'final verdict from the clean re-review')
+})
+
+await test('team delegation forwards lenses:"auto" → dual-adversarial.js AUTO path (NOT explicit [], which skips the load-bearing lenses + INCOMPLETE guard)', async () => {
+  // #96 added auto-derived load-bearing lenses (security/amplify/frontend) + an
+  // INCOMPLETE-on-failed-load-bearing-lens guard to dual-adversarial.js, but BOTH fire ONLY on
+  // its AUTO path (lensSource==='auto'). dual-adversarial.js treats an explicit Array (incl. [])
+  // as the EXPLICIT path → zero path-derived lenses + the guard unreachable. So the production
+  // Tier 2/3 delegation MUST forward lenses:'auto' (or omit it), never an explicit []. RED before
+  // this follow-up: reviewLenses=[] → wargs.lenses=[] (an array) → dual-adversarial.js EXPLICIT
+  // path → the #96 hardening was dead code from /iago-execute (the gap this test closes).
+  const teamGate = () => ({
+    clean: true, blocking: 0, gateStatus: 'COMPLETE', verdict: 'PASS', codexSource: 'codex',
+    verificationSameFamily: true, verificationDegraded: false, findings: [],
+  })
+  const h = makeHarness(stageRules(TIER2_PLAN), teamGate)
+  const wf = buildWorkflow()
+  await wf(h.agent, h.parallel, null, h.log, h.phase, { ...baseArgs }, null, h.workflow)
+  assert.strictEqual(h.workflowCalls.length, 1, 'team gate invoked once (clean initial review)')
+  const { lenses } = h.workflowCalls[0].wargs
+  // 'auto' (string) is dual-adversarial.js's AUTO-path trigger; an explicit Array (incl. []) is NOT.
+  assert.strictEqual(lenses, 'auto', `Tier 2/3 delegation must forward lenses:'auto' for the AUTO path; got ${JSON.stringify(lenses)} (an explicit array skips the auto-derived load-bearing lenses)`)
+  assert.ok(!Array.isArray(lenses), 'lenses must NOT be an explicit array (an array takes dual-adversarial.js EXPLICIT path → zero load-bearing lenses, guard unreachable)')
 })
 
 await test('team delegation threads stressBlock (initial) + isReReview (re-review) into the gate', async () => {
@@ -256,6 +279,7 @@ await test('Tier 3 delegates to team gate AND allows 3 fix rounds (not capped at
   assert.strictEqual(h.workflowCalls.length, 4, 'team gate invoked 4 times (initial + 3 re-reviews for maxFixRounds=3)')
   for (const c of h.workflowCalls) {
     assert.strictEqual(c.wargs.mode, 'team', 'all delegations pass mode=team')
+    assert.strictEqual(c.wargs.lenses, 'auto', 'all delegations forward lenses:auto (AUTO path → load-bearing lenses)')
   }
   assert.ok(!h.calls.some((c) => /^review:/.test(c.label) || /^codex:/.test(c.label)), 'no inline 2-leg in team mode')
   assert.strictEqual(out.fixRounds, 3, 'three fix rounds ran (Tier 3 maxFixRounds)')

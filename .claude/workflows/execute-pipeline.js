@@ -621,15 +621,21 @@ Return status=DONE with head = the EXACT git rev-parse HEAD output (the full sha
 //        whole review to the dedicated dual-adversarial.js team gate (Opus + Codex +
 //        team:data + team:arch + a per-finding skeptic panel) instead of running the
 //        thinner inline 2-leg. 'standard' (Tier 0/1) runs today's inline 2-leg unchanged.
-// @param {string[]} [opts.lenses=[]]    extra independent lenses forwarded to the team
-//        gate (reserved seam for the deferred path-lens auto-injection; empty today).
+// @param {string[]|'auto'} [opts.lenses='auto']  extra independent lenses forwarded to the
+//        team gate. Default 'auto' → dual-adversarial.js auto-derives the load-bearing
+//        security/amplify/frontend lenses from the changed-file paths (and arms its
+//        INCOMPLETE-on-failed-load-bearing-lens guard, which gates on lensSource==='auto').
+//        Pass an explicit array (incl. []) ONLY to opt OUT of auto-derivation — that takes the
+//        gate's EXPLICIT path (no path-derived lenses, guard unreachable).
 // @param {number} [opts.skepticCap=8]   bounds the team gate's skeptic fan-out.
 // @param {number} [opts.tier=1]         the plan's risk tier (for the safety assertion).
 // @param {string[]} [opts.domainsSelected=[]]  round-0 domain selection threaded into a
 //        re-review as a focus hint so the re-reviewer does not re-derive domain selection
 //        — standard/inline 2-leg only; all modules stay loaded and the team gate routes itself.
 async function runDualAdversarial(label, isReReview, stressBlock, preImplSha, opts = {}) {
-  const { mode = 'standard', lenses = [], skepticCap = 8, tier = 1, domainsSelected = [] } = opts
+  // lenses default 'auto' (NOT []): an omitting caller gets dual-adversarial.js's AUTO path
+  // (path-derived load-bearing lenses), never the EXPLICIT-empty trap that silently skips them.
+  const { mode = 'standard', lenses = 'auto', skepticCap = 8, tier = 1, domainsSelected = [] } = opts
   // A Tier>=2 plan MUST run team mode — a silent 'standard' fallback would give a complex
   // Amplify/security change the same shallow gate as a CSS tweak. Convert that coding
   // mistake into a hard stop rather than a quiet under-review.
@@ -977,7 +983,14 @@ if (planReadOk) {
 // Tier 0 === Tier 1 intentionally: no lighter path wired yet (deferred — see quick-260530 §Cut from this pass). When a Tier-0 fast path ships, branch here on tier === 0.
 const maxFixRounds = tier >= 3 ? 3 : 2
 const reviewMode = tier >= 2 ? 'team' : 'standard'
-const reviewLenses = []
+// 'auto' (NOT an explicit []): a Tier 2/3 team delegation must take dual-adversarial.js's AUTO
+// lens path so the changed-files probe fires and derives the load-bearing security/amplify/frontend
+// lenses — AND arms its INCOMPLETE-on-failed-load-bearing-lens guard (gated on lensSource==='auto').
+// An explicit array (incl. []) takes the gate's EXPLICIT path → zero path-derived lenses + that
+// guard unreachable, silently under-reviewing a sensitive Amplify/auth diff. Inert for 'standard'
+// (Tier 1) mode, which runs the inline 2-leg and never forwards lenses to the team gate. An
+// operator opt-out would pass an explicit array here (the EXPLICIT seam stays available downstream).
+const reviewLenses = 'auto'
 log(`risk tier ${tier} — review '${reviewMode}', maxFixRounds ${maxFixRounds}`)
 
 // Stage 1 — Prep + Implement
