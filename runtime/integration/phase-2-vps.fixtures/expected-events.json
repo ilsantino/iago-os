@@ -1,79 +1,86 @@
 [
-  {
-    "kind": "daemon-start",
-    "expected_count_per_24h": 1,
-    "criticality": "required",
-    "extras_keys": ["pid", "nodeVersion", "runUnder"],
-    "note": "First start under systemd. Acceptance criterion #5: runUnder MUST be \"systemd\" on the VPS (not \"local\" or \"test\")."
-  },
-  {
-    "kind": "cred-bootstrap-loaded",
-    "expected_count_per_24h": 1,
-    "criticality": "required",
-    "extras_keys": ["credentialsLoaded"],
-    "note": "Emitted by startDaemon() right after loadSystemdCredentials(). credentialsLoaded carries credstore FILE NAMES (e.g. [\"iago-telegram-token\"]) that wrote to env on this boot — NEVER the values."
-  },
-  {
-    "kind": "agent-registered",
-    "expected_count_per_24h": 1,
-    "criticality": "expected",
-    "extras_keys": ["agentId", "runtimeId", "org"],
-    "note": "One per registered agent. Phase 2 ships >=1 (pr-triage). agentId is the canonical id (org is optional). 05b asserts >=1 occurrence, not a fixed count, since the registered-agent set grows in later phases."
-  },
-  {
-    "kind": "cron-fired",
-    "expected_count_per_24h": 1,
-    "criticality": "expected",
-    "extras_keys": ["agentId", "schedule", "taskFile", "runningCount"],
-    "note": "pr-triage 14:00 UTC daily cron. Required only on days the iago-os org has >=1 open PR; on a zero-PR day the daemon emits cron-skipped { reason: \"no-open-prs\" } instead. 05b treats this as expected (not required) for any single 24h window."
-  },
-  {
-    "kind": "cron-skipped",
-    "expected_count_per_24h": 1,
-    "criticality": "expected",
-    "extras_keys": ["agentId", "schedule", "reason", "exitCode"],
-    "note": "Mutually exclusive with cron-fired on a given tick. reason is one of wake-check-failed | wake-check-timeout | no-open-prs | pr-fetch-failed | prepare-skip. exitCode is null when the wake-check was timeout-killed. count_per_24h is 0 or 1 (0 when a real PR triggered cron-fired instead)."
-  },
-  {
-    "kind": "agent-spawned",
-    "expected_count_per_24h": 1,
-    "criticality": "expected",
-    "extras_keys": ["handleId", "agentId", "sessionId", "runtimeId", "generationToken"],
-    "note": "One per cron-fired dispatch. The original Plan 05 sketch listed [agentId, pid]; the real emitter carries handleId + sessionId + generationToken (no pid field). 05b asserts on agentId + handleId presence."
-  },
-  {
-    "kind": "task-claimed",
-    "expected_count_per_24h": 1,
-    "criticality": "expected",
-    "extras_keys": ["taskId", "ownerId", "attemptId"],
-    "note": "Emitted by file-bus.claimTask on O_EXCL win. One per cron-fired run that produced a task file. The companion close-out event is task-resolved (extras: [agentId, filename]) when claimTask moves pending -> resolved. 05b accepts EITHER task-claimed OR task-resolved as the per-run claim signal."
-  },
-  {
-    "kind": "task-resolved",
-    "expected_count_per_24h": 1,
-    "criticality": "expected",
-    "extras_keys": ["agentId", "filename"],
-    "note": "Close-out of a claimed task (pending -> resolved). Releases the cron runningCount slot. Pairs with task-claimed above; 05b counts the pair as one logical claim->resolve cycle per cron-fired run."
-  },
-  {
-    "kind": "telegram-message-sent",
-    "expected_count_per_24h": 1,
-    "criticality": "optional",
-    "extras_keys": [],
-    "note": "SYNTHETIC marker — the daemon has NO dedicated positive Telegram-send telemetry kind. A successful pr-triage send is inferred from the resolved envelope (tasks/resolved/pr-triage-send__*.json) plus the ABSENCE of pr-triage-telegram-send-failed for that run. 05b must NOT require a telemetry line of this kind; it verifies the send succeeded via the failure-event absence + resolved envelope."
-  },
-  {
-    "kind": "heartbeat",
-    "expected_count_per_24h": 1440,
-    "criticality": "optional",
-    "extras_keys": ["handleId", "alive", "rssBytes"],
-    "note": "The Phase 1 heartbeat loop ticks every 60s (1440/day) but does NOT write one telemetry line per tick by design (it would flood the NDJSON). The original Plan 05 sketch named this heartbeat-tick @ 1440 required; the real kind is \"heartbeat\" and it is emitted sparsely (state changes / liveness probes), not per tick. 05b must treat heartbeat as optional and NOT apply a 95%-of-1440 floor against the NDJSON — daemon liveness over a 24h window is proven by journalctl + pgrep, not by 1440 telemetry lines."
-  },
-  {
-    "kind": "agent-exited",
-    "expected_count_per_24h": 1,
-    "criticality": "expected",
-    "extras_keys": ["handleId", "reason", "exitCode"],
-    "note": "One per cron-fired completion. reason is graceful | crash | recycle; for a healthy pr-triage run it is \"graceful\" with exitCode 0. The original Plan 05 sketch listed [agentId, exitCode]; the real emitter keys on handleId (resolve agentId via the matching agent-spawned event)."
-  }
+	{
+		"kind": "daemon-start",
+		"expected_count_per_24h": 1,
+		"criticality": "required",
+		"extras_keys": ["pid", "nodeVersion", "runUnder"],
+		"note": "First start under systemd. Acceptance criterion #5: runUnder MUST be \"systemd\" on the VPS (not \"local\" or \"test\")."
+	},
+	{
+		"kind": "cred-bootstrap-loaded",
+		"expected_count_per_24h": 1,
+		"criticality": "required",
+		"extras_keys": ["credentialsLoaded"],
+		"note": "Emitted by startDaemon() right after loadSystemdCredentials(). credentialsLoaded carries credstore FILE NAMES (e.g. [\"iago-telegram-token\"]) that wrote to env on this boot — NEVER the values."
+	},
+	{
+		"kind": "agent-registered",
+		"expected_count_per_24h": 1,
+		"criticality": "expected",
+		"extras_keys": ["agentId", "runtimeId", "org"],
+		"note": "One per registered agent. Phase 2 ships >=1 (pr-triage). agentId is the canonical id (org is optional). 05b asserts >=1 occurrence, not a fixed count, since the registered-agent set grows in later phases."
+	},
+	{
+		"kind": "cron-fired",
+		"expected_count_per_24h": 1,
+		"criticality": "expected",
+		"extras_keys": ["agentId", "schedule", "taskFile", "runningCount"],
+		"note": "pr-triage 14:00 UTC daily cron. Required only on days the iago-os org has >=1 open PR; on a zero-PR day the daemon emits cron-skipped { reason: \"no-open-prs\" } instead. 05b treats this as expected (not required) for any single 24h window."
+	},
+	{
+		"kind": "cron-skipped",
+		"expected_count_per_24h": 1,
+		"criticality": "expected",
+		"extras_keys": ["agentId", "schedule", "reason", "exitCode"],
+		"note": "Mutually exclusive with cron-fired on a given tick. reason is one of wake-check-failed | wake-check-timeout | no-open-prs | pr-fetch-failed | prepare-skip. exitCode is null when the wake-check was timeout-killed. count_per_24h is 0 or 1 (0 when a real PR triggered cron-fired instead)."
+	},
+	{
+		"kind": "agent-spawned",
+		"expected_count_per_24h": 1,
+		"criticality": "expected",
+		"extras_keys": [
+			"handleId",
+			"agentId",
+			"sessionId",
+			"runtimeId",
+			"generationToken"
+		],
+		"note": "One per cron-fired dispatch. The original Plan 05 sketch listed [agentId, pid]; the real emitter carries handleId + sessionId + generationToken (no pid field). 05b asserts on agentId + handleId presence."
+	},
+	{
+		"kind": "task-claimed",
+		"expected_count_per_24h": 1,
+		"criticality": "expected",
+		"extras_keys": ["taskId", "ownerId", "attemptId"],
+		"note": "Emitted by file-bus.claimTask on O_EXCL win. One per cron-fired run that produced a task file. The companion close-out event is task-resolved (extras: [agentId, filename]) when claimTask moves pending -> resolved. 05b accepts EITHER task-claimed OR task-resolved as the per-run claim signal."
+	},
+	{
+		"kind": "task-resolved",
+		"expected_count_per_24h": 1,
+		"criticality": "expected",
+		"extras_keys": ["agentId", "filename"],
+		"note": "Close-out of a claimed task (pending -> resolved). Releases the cron runningCount slot. Pairs with task-claimed above; 05b counts the pair as one logical claim->resolve cycle per cron-fired run."
+	},
+	{
+		"kind": "telegram-message-sent",
+		"expected_count_per_24h": 1,
+		"criticality": "optional",
+		"extras_keys": [],
+		"note": "SYNTHETIC marker — the daemon has NO dedicated positive Telegram-send telemetry kind. A successful pr-triage send is inferred from the resolved envelope (tasks/resolved/pr-triage-send__*.json) plus the ABSENCE of pr-triage-telegram-send-failed for that run. 05b must NOT require a telemetry line of this kind; it verifies the send succeeded via the failure-event absence + resolved envelope."
+	},
+	{
+		"kind": "heartbeat",
+		"expected_count_per_24h": 0,
+		"floor_applies": false,
+		"criticality": "optional",
+		"extras_keys": ["handleId", "alive", "rssBytes"],
+		"note": "The Phase 1 heartbeat loop ticks every 60s (1440/day) but does NOT write one telemetry line per tick by design (it would flood the NDJSON). The original Plan 05 sketch named this heartbeat-tick @ 1440 required; the real kind is \"heartbeat\" and it is emitted sparsely (state changes / liveness probes), not per tick. expected_count_per_24h is set to 0 with floor_applies:false so a reader using the structured field alone does NOT assert an impossible 1440-line floor — 05b must treat heartbeat as optional and NOT apply a 95%-of-1440 floor against the NDJSON. Daemon liveness over a 24h window is proven by journalctl + pgrep, not by 1440 telemetry lines."
+	},
+	{
+		"kind": "agent-exited",
+		"expected_count_per_24h": 1,
+		"criticality": "expected",
+		"extras_keys": ["handleId", "reason", "exitCode"],
+		"note": "One per cron-fired completion. reason is graceful | crash | recycle; for a healthy pr-triage run it is \"graceful\" with exitCode 0. The original Plan 05 sketch listed [agentId, exitCode]; the real emitter keys on handleId (resolve agentId via the matching agent-spawned event)."
+	}
 ]

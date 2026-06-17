@@ -301,5 +301,6 @@ without re-running anything.
 Phase 2 extends this evidence pattern with VPS-side blocks (systemd-analyze
 security, journalctl, Telegram-screenshot-from-phone, cutover terminal log,
 SIGHUP reload verification). See [PHASE-2-EVIDENCE.md](./PHASE-2-EVIDENCE.md).
-The check-evidence.mjs script (Plan 05b) supports both phases via the
-`--phase` flag.
+Plan 05b will add a `--phase` flag to `check-evidence.mjs` so it can gate both
+phases; until 05b lands, the script supports only Phase 1 (hardcoded to this
+file, greps the `PASTE-` sentinel) and does NOT check PHASE-2-EVIDENCE.md.
