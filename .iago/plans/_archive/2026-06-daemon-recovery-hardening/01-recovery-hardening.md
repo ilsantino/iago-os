@@ -1,3 +1,11 @@
+> **ARCHIVED 2026-06-16 — SHIPPED, do not execute.** This plan was the **spec for PR #92**
+> "Harden daemon recovery, registration, and cron resilience" (commit `b3af16c`, merged to
+> main 2026-06-13). All 8 tasks below are implemented and merged; verified against main `4d8a448`
+> (#97) with zero regression since `b3af16c`. A 2026-06-16 `/iago-execute` STRESS stage correctly
+> BLOCKED this as STALE (no branch/commit/PR created). The "last open Critical" (DD-R1 / C2 / C1)
+> is CLOSED. Outcome recorded in `.iago/summaries/feature-daemon-recovery-hardening.md`. Re-derive
+> a fresh plan against current main if genuinely new daemon defects appear — never re-run this file.
+
 # Daemon Recovery Hardening — Plan 01
 
 _Created 2026-05-30. Spec source: the dual-adversarial gate (Opus 4.8 ∥ Codex GPT-5.5 + completeness/tests/code-quality lenses) run on PR #87 (orphan-coverage recovery). Every task below is a finding that gate raised, with provenance verified against `origin/main`. The findings are already adversarially validated — the pipeline STRESS stage may treat this as PROCEED._
