@@ -386,49 +386,47 @@ T+10:00  Telegram test — phone side
          allowed-user-IDs in unit env; if wrong, edit unit + reload.
          If still no reply, execute rollback.
 
-T+15:00  Canonical workflow end-to-end test (5-step IPC sequence —
-         mirrors cutover.sh:619-626 verbatim. Drives the daemon through
-         its real IPC interface, NOT a raw file-drop with unverified
-         JSON schema.)
+T+15:00  Telegram reachability + agent-surface check (Phase 2 producible
+         subset).
 
-         On phone, in the v2 bot chat, run these commands in order:
+         **SUSPENDED — Phase 3:** the original "canonical 5-step IPC
+         sequence" (`/start hello-world` dynamic spawn → `/sessions` →
+         free-form reply → `/stop <id>`) is NOT producible in Phase 2.
+         Dynamic `/start` spawn is a Phase 3 capability (`/start` is a
+         Phase-1 placeholder), and `/sessions` + `/stop` do not exist in
+         the bot command parser (`runtime/telegram/commands.ts` supports
+         only start/agents/approve/abort/inject/status). This sequence is
+         removed as a Phase 2 cutover gate pending the pr-triage-based
+         acceptance redesign — see
+         `.iago/research/2026-06-17-cutover-t15-phase2-redesign.md`.
+         `cutover.sh` §T+15 carries the same stale sequence and is
+         redesigned in that follow-up; do NOT run it as a Phase 2 gate.
+
+         On phone, in the v2 bot chat:
            1. /agents
-              Expected: agent list includes "hello-world".
-           2. /start hello-world
-              Expected: daemon spawns the adapter; bot acks with a
-              session id.
-           3. /sessions
-              Expected: the just-started session id appears in the list.
-           4. Send free-form text (e.g., "Test from cutover — please respond OK")
-              Expected: adapter receives the message and replies.
-           5. /stop <session-id>
-              Expected: daemon SIGTERMs the adapter; a daemon-stop
-              marker is written to
-              /var/lib/iago-os/daemon-state/markers/<session-id>.daemon-stop.
+              Expected: the bot replies and the list includes the
+              registered pr-triage handle. This proves the
+              systemd-managed bot is alive and reachable
+              Telegram → Tailscale → VPS.
+           2. (If a real approval surfaces during the window) tap the
+              /approve inline-keyboard callback and confirm the bot acks.
 
-         Verification (post-test, from terminal b):
+         Verification (post-check, from terminal b):
            tailscale ssh root@srv1456441 -- '
-             ls -la /var/lib/iago-os/daemon-state/markers/ | tail -5
-             ls -la /var/lib/iago-os/daemon-state/tasks/resolved/ | tail -5
+             systemctl is-active iago-os-v2-daemon.service
+             ls -la /var/lib/iago-os/daemon-state/agents/ | tail -5
            '
+           Expected: "active", and the agents dir lists the pr-triage
+           registration.
 
-         **Timer:** Set a mental 60-second timer from "send /start
-         hello-world" to "session ack arrives". If no ack within 60s,
-         this is a **ROLLBACK TRIGGER** (matches rollback runbook § 1 —
-         canonical workflow test failure).
+         **Rollback trigger (Phase 2):** if the bot does NOT reply to
+         `/agents` within 60s (bot unreachable) OR `systemctl is-active`
+         does not return "active", this is a **ROLLBACK TRIGGER** (rollback
+         runbook § 1). The real pr-triage cutover workflow (cron dispatch)
+         is NOT a synchronous T+15 gate — it fires at 14:00 UTC — and is
+         verified post-cutover (§ 6) at the next tick.
 
-         **If you get an approval prompt but don't tap "Allow" within
-         5 minutes** (phone screen times out, distraction, etc.): the
-         daemon's approval-timeout window will expire and mark the task
-         as denied. The test result is then **INCONCLUSIVE, not failed**
-         — re-run the 5-step sequence from /agents with a fresh
-         /start hello-world. Document the timeout in the post-cutover
-         digest.
-
-         **If you accidentally tap "Deny"**: same — re-run the 5-step
-         sequence from scratch. Note in the digest.
-
-T+25:00  Telegram + agent path proven working.
+T+25:00  Telegram + daemon reachability proven for Phase 2.
 
          *** STRUCTURAL BOUNDARY: STEPS T-15 through T+25 are covered
          by the ≤4-minute rollback budget — every action above can be
@@ -449,10 +447,14 @@ T+25:00  Telegram + agent path proven working.
          (Phase 6+ effort — re-run URL verification + re-subscribe
          WABA + recreate system user token).
 
-         ACCEPTANCE GATE before proceeding to T+30:
+         ACCEPTANCE GATE before proceeding to T+30 (Phase 2 — all items
+         must be PRODUCIBLE; the Phase-3 5-step IPC sequence is NOT a gate
+         here, it is suspended per the T+15 note + redesign follow-up):
          - [ ] T+10 bot-reply check passed (operator confirmed `/agents`
                reply on phone)
-         - [ ] T+15 canonical 5-step IPC sequence passed end-to-end
+         - [ ] T+15 reachability passed: bot replied to `/agents` AND
+               `systemctl is-active` = active AND exactly one `iago`-owned
+               daemon process
          - [ ] No journal ERROR lines in T+08 through T+25 window
          - [ ] Watchdog (rollback runbook § 2) reported `active` for the
                full T+08-T+20 sample window
@@ -474,7 +476,7 @@ T+30:00  WhatsApp deauth — IRREVERSIBLE one-way migration.
          independent post-T+30.)
 
 T+45:00  Smoke-check observability
-           tailscale ssh root@srv1456441 -- 'head -20 /var/lib/iago-os/daemon-state/telemetry/$(date +%Y-%m-%d).ndjson'
+           tailscale ssh root@srv1456441 -- 'head -20 /var/lib/iago-os/daemon-state/telemetry/$(date -u +%F).ndjson'
          Expected: NDJSON lines including kinds: daemon-start,
          agent-registered (if auto-start configured), agent-spawned,
          task-claimed, approval-requested, approval-resolved.
@@ -486,8 +488,10 @@ T+50:00  Verify retention timer is scheduled
 T+55:00  Smoke-check no orphaned processes
            tailscale ssh root@srv1456441 -- 'pgrep -fa openclaw'
          Expected: no output.
-           tailscale ssh root@srv1456441 -- 'pgrep -fa iago-os-v2-daemon'
-         Expected: exactly one Node process owned by uid of `iago` user.
+           tailscale ssh root@srv1456441 -- 'pgrep -u iago -fa dist/daemon/main.js'
+         Expected: exactly one Node process owned by `iago` (grep the
+         entry-point path — `iago-os-v2-daemon` is the systemd unit name and
+         is NOT in the process command line, so it would match nothing).
 
 T+60:00  CUTOVER COMPLETE.
 
@@ -511,9 +515,9 @@ tailscale ssh root@srv1456441 -- '
   echo "=== pending tasks ==="
   ls -la /var/lib/iago-os/daemon-state/tasks/pending/ 2>/dev/null
   echo "=== last 10 telemetry events ==="
-  tail -10 /var/lib/iago-os/daemon-state/telemetry/$(date +%Y-%m-%d).ndjson 2>/dev/null
-  echo "=== heartbeat status (last 60s) ==="
-  journalctl -u iago-os-v2-daemon.service --since "60 seconds ago" | grep -E "heartbeat|error|warn" | tail -10
+  tail -10 /var/lib/iago-os/daemon-state/telemetry/$(date -u +%F).ndjson 2>/dev/null
+  echo "=== journal errors/warnings (last 60s) ==="
+  journalctl -u iago-os-v2-daemon.service --since "60 seconds ago" | grep -iE "error|warn" | tail -10
 '
 ```
 

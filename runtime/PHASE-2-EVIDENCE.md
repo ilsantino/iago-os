@@ -239,15 +239,19 @@ kinds, not that it stayed healthy all window — ongoing liveness is proven by b
 
 ```bash
 tailscale ssh root@srv1456441 -- \
-  'ps -o user,pid,args -ww -C node | grep iago-os-v2-daemon'
+  'ps -o user,pid,args -ww -C node | grep -F dist/daemon/main.js'
 ```
 
 Expected: exactly one row, and its `USER` column reads `iago` — this proves
 both the single-process criterion AND the `User=iago` systemd isolation
-(decision recorded in `02-cutover-decisions.md`). A bare `pgrep -fa` prints
-pid + command line but NOT the owning user, so it cannot prove ownership; if the
-row shows `root` or any other user, the unit's `User=` directive is not taking
-effect.
+(decision recorded in `02-cutover-decisions.md`). Grep on the entry-point path
+`dist/daemon/main.js` (the unit's `ExecStart` is
+`node … /opt/iago-os/runtime/dist/daemon/main.js`): the string
+`iago-os-v2-daemon` is the systemd UNIT name and never appears in the process
+command line, so grepping it would match nothing on a healthy daemon. A bare
+`pgrep -fa` prints pid + command line but NOT the owning user, so it cannot
+prove ownership; if the row shows `root` or any other user, the unit's `User=`
+directive is not taking effect.
 
 **Evidence:**
 

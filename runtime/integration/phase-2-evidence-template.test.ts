@@ -147,11 +147,15 @@ describe("PHASE-2-EVIDENCE.md — block (a) shellcheck target", () => {
 	});
 });
 
-describe("PHASE-2-EVIDENCE.md — single-daemon-process evidence proves ownership", () => {
-	it("shows the owning user (a bare pgrep -fa cannot prove User=iago)", () => {
-		// `pgrep -fa iago-os-v2-daemon` prints pid + args but never the user, so
-		// it cannot prove the User=iago isolation the criterion claims.
+describe("PHASE-2-EVIDENCE.md — single-daemon-process evidence is producible", () => {
+	it("shows the owning user AND greps the producible entry-point path", () => {
+		// A bare `pgrep -fa` prints pid+args but not the user. AND the unit name
+		// `iago-os-v2-daemon` is absent from the process cmdline (ExecStart runs
+		// `…/dist/daemon/main.js`), so the grep target must be the entry-point
+		// path, not the unit name (which would match nothing on a healthy daemon).
 		expect(phase2).toContain("ps -o user");
+		expect(phase2).toContain("grep -F dist/daemon/main.js");
+		expect(phase2).not.toContain("grep iago-os-v2-daemon");
 	});
 });
 
@@ -302,5 +306,23 @@ describe("expected-events.json — conditional entries are never count-floored",
 			.map((e) => e.kind);
 		expect(required).toContain("daemon-start");
 		expect(required).toContain("cred-bootstrap-loaded");
+	});
+});
+
+describe("02-cutover-runbook.md — Phase 2 cutover evidence is producible", () => {
+	it("reads telemetry NDJSON by UTC date everywhere (no bare local date)", () => {
+		// telemetry files are UTC-dated; a local `date +%F` reads the wrong or
+		// empty file near the UTC day boundary during the cutover window.
+		expect(cutoverRunbook).not.toMatch(/telemetry\/\$\(date \+[^u]/);
+	});
+
+	it("does not gate the cutover on the Phase-3 /start-spawn IPC sequence", () => {
+		// Dynamic /start spawn is Phase 3; /sessions + /stop do not exist. The
+		// T+15 acceptance gate must not require them — it would false-trigger a
+		// rollback of a healthy cutover before the irreversible WhatsApp deauth.
+		expect(cutoverRunbook).not.toContain(
+			"canonical 5-step IPC sequence passed end-to-end",
+		);
+		expect(cutoverRunbook).not.toContain("grep iago-os-v2-daemon");
 	});
 });
