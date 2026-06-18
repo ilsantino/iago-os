@@ -43,15 +43,19 @@ token / credential byte** before pasting — only lengths and file names.
 ### (a) Build gate (criterion #1) — `[ ]`
 
 ```bash
-cd runtime && npx tsc --noEmit
-shellcheck runtime/deploy/*.sh
-echo "exit code: $?"
+cd runtime && npx tsc --noEmit && shellcheck deploy/*.sh
+echo "exit code: $?  (0 = tsc AND shellcheck both passed)"
 ```
 
-Expected: both exit 0, no diagnostics. `cred-bootstrap.ts` and
-`cron-scheduler.ts` compile inside the existing tsconfig include path.
-(`runtime/agents/pr-triage/` is wired entirely in TypeScript per Plan 04 — it
-ships no `.sh` files, so the only shell target is `runtime/deploy/*.sh`.)
+Expected: `exit code: 0` — `tsc` and `shellcheck` both pass with no diagnostics.
+`cred-bootstrap.ts` and `cron-scheduler.ts` compile inside the existing tsconfig
+include path. The `&&` chain means a `tsc` failure short-circuits and surfaces in
+the exit code (a bare two-line form would let the final `echo` mask a `tsc`
+error behind shellcheck's status). The shell target is `deploy/*.sh` —
+cwd-relative because the block already `cd`'d into `runtime/`
+(`runtime/deploy/*.sh` would resolve to `runtime/runtime/deploy/*.sh` and fail).
+`runtime/agents/pr-triage/` is TypeScript-only per Plan 04 — it ships no `.sh`
+files, so `deploy/*.sh` is the only shell target.
 
 **Evidence:**
 
@@ -222,10 +226,16 @@ UTC tick happened). The successful-Telegram-send signal is the resolved
 ### (k) Single daemon process (criterion #8) — `[ ]`
 
 ```bash
-tailscale ssh root@srv1456441 -- 'pgrep -fa iago-os-v2-daemon'
+tailscale ssh root@srv1456441 -- \
+  'ps -o user,pid,args -ww -C node | grep iago-os-v2-daemon'
 ```
 
-Expected: exactly one Node process, owned by the `iago` user.
+Expected: exactly one row, and its `USER` column reads `iago` — this proves
+both the single-process criterion AND the `User=iago` systemd isolation
+(decision recorded in `02-cutover-decisions.md`). A bare `pgrep -fa` prints
+pid + command line but NOT the owning user, so it cannot prove ownership; if the
+row shows `root` or any other user, the unit's `User=` directive is not taking
+effect.
 
 **Evidence:**
 
@@ -252,12 +262,22 @@ Expected: **empty output** — OpenClaw is fully decommissioned.
 ```bash
 tailscale ssh root@srv1456441 -- \
   'systemctl kill -s SIGHUP iago-os-v2-daemon.service'
+# cred-reload-fired is a TELEMETRY event — appended to the daily NDJSON, NOT the
+# journal (telemetry.ts emit() only appendFile's; nothing reaches journalctl).
+# Read it from the UTC-dated telemetry file (same path/date scheme as block (j)):
 tailscale ssh root@srv1456441 -- \
-  'journalctl -u iago-os-v2-daemon.service --since "1 minute ago" | grep cred-reload-fired'
+  'grep cred-reload-fired /var/lib/iago-os/daemon-state/telemetry/$(date -u +%F).ndjson | tail -1'
 ```
 
-Expected: one `cred-reload-fired` event with `credentialsReloaded` populated,
-proving credential rotation takes effect without a daemon restart.
+Expected: one `cred-reload-fired` line. For a **no-rotation SIGHUP** (the safe
+default — no credstore entry was changed first), the healthy result is
+`credentialsReloaded: []` with `unchanged` listing the re-read credential names —
+this alone proves the reload handler ran and re-read the credstore without a
+restart. To prove an actual **rotation** takes effect, re-encrypt a credstore
+`.cred` first, THEN send SIGHUP; `credentialsReloaded` will then list the changed
+name. (`cred-reload-fired` reaches `journalctl` only on the telemetry-emit
+*failure* path, so a journal grep is empty on a healthy reload — do not grep the
+journal for it.)
 
 **Evidence:**
 

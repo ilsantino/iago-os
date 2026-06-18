@@ -39,6 +39,22 @@
  *    not-yet-wired disclosure (no weak generic tokens); the directive dedupe is
  *    padding-insensitive.
  *
+ * Round 3 (third dual-adversarial gate on PR #98) added — UNPRODUCIBLE-EVIDENCE
+ * defect class across more blocks:
+ *
+ *  - BLOCK (a) SHELLCHECK PATH (Important): after `cd runtime`, the target is
+ *    `deploy/*.sh`, not `runtime/deploy/*.sh` (which resolves to
+ *    runtime/runtime/deploy/*.sh and fails the build gate the block documents).
+ *  - BLOCK (k) PROCESS OWNERSHIP (Important): the single-daemon evidence must
+ *    show the owning user (ps -o user), since a bare `pgrep -fa` cannot prove
+ *    the User=iago isolation the criterion claims.
+ *  - BLOCK (m) SIGHUP RELOAD (Important): cred-reload-fired is a telemetry kind
+ *    appended to the NDJSON, NOT the journal — the evidence must grep the NDJSON
+ *    file, not journalctl (which is empty on a healthy reload).
+ *  - BLOCK (c) CLASS GUARD + DANGEROUS band (Minor): the cutover-case-count
+ *    guard is now structural (/all \d+ cutover dry-run cases/), and the
+ *    score-line band allowlist includes systemd-analyze's DANGEROUS label.
+ *
  * Run from `runtime/`: npx vitest run integration/phase-2-evidence-template.test.ts
  */
 import { readFileSync } from "node:fs";
@@ -107,14 +123,43 @@ describe("PHASE-2-EVIDENCE.md — block (a) shellcheck target", () => {
 		expect(phase2).not.toContain("runtime/agents/pr-triage/*.sh");
 	});
 
-	it("still shellchecks the real deploy/*.sh target", () => {
-		expect(phase2).toContain("shellcheck runtime/deploy/*.sh");
+	it("shellchecks the cwd-relative deploy/*.sh target (block already cd'd into runtime/)", () => {
+		// After `cd runtime`, the path is `deploy/*.sh`; `runtime/deploy/*.sh`
+		// would resolve to runtime/runtime/deploy/*.sh and fail the build gate.
+		expect(phase2).toContain("shellcheck deploy/*.sh");
+		expect(phase2).not.toContain("shellcheck runtime/deploy/*.sh");
+	});
+});
+
+describe("PHASE-2-EVIDENCE.md — single-daemon-process evidence proves ownership", () => {
+	it("shows the owning user (a bare pgrep -fa cannot prove User=iago)", () => {
+		// `pgrep -fa iago-os-v2-daemon` prints pid + args but never the user, so
+		// it cannot prove the User=iago isolation the criterion claims.
+		expect(phase2).toContain("ps -o user");
+	});
+});
+
+describe("PHASE-2-EVIDENCE.md — SIGHUP reload evidence reads the telemetry NDJSON", () => {
+	it("reads cred-reload-fired from the NDJSON file, not journalctl", () => {
+		// telemetry kinds are appended to the daily NDJSON; the token reaches
+		// journalctl only on the emit-FAILURE path, so a journal grep is empty
+		// on a healthy reload.
+		expect(phase2).toContain(
+			"grep cred-reload-fired /var/lib/iago-os/daemon-state/telemetry",
+		);
+		expect(phase2).not.toMatch(/journalctl[^\n]*grep cred-reload-fired/);
 	});
 });
 
 describe("PHASE-2-EVIDENCE.md — block (c) cutover case count", () => {
 	it("does not assert the stale 'all 10 cutover dry-run cases' figure", () => {
 		expect(phase2).not.toContain("all 10 cutover dry-run cases");
+	});
+
+	it("does not hardcode any fixed cutover-case count (class guard)", () => {
+		// Structural guard: any "all <N> cutover dry-run cases" phrasing
+		// re-introduces the brittle fixed-count pattern, not just the old "10".
+		expect(phase2).not.toMatch(/all \d+ cutover dry-run cases/);
 	});
 });
 
@@ -163,7 +208,7 @@ describe("security-analyze-sample.txt — fixture realism", () => {
 
 	it("still exposes the score line the 05b --strict regex parses", () => {
 		const regex =
-			/Overall exposure level [^:]*:\s*(\d+\.\d+)\s+(UNSAFE|EXPOSED|MEDIUM|OK|SAFE)/m;
+			/Overall exposure level [^:]*:\s*(\d+\.\d+)\s+(UNSAFE|DANGEROUS|EXPOSED|MEDIUM|OK|SAFE)/m;
 		expect(regex.test(securitySample)).toBe(true);
 	});
 });

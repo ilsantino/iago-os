@@ -367,16 +367,21 @@ tailscale ssh root@srv1456441 -- 'systemctl kill -s SIGHUP iago-os-v2-daemon.ser
 ### Verification
 
 A successful reload emits a `cred-reload-fired` NDJSON record to the
-daemon's telemetry stream. Check the journal:
+daemon's telemetry stream. Read it from the daily telemetry file — NOT
+the journal: `emit()` only appends to the NDJSON, and (per the names-only
+posture below) nothing reaches stdout/stderr, so the event never lands in
+`journalctl` on a healthy reload (it appears there only on the emit-failure
+path):
 
 ```bash
 tailscale ssh root@srv1456441 -- \
-  'journalctl -u iago-os-v2-daemon.service --since "1 minute ago" --no-pager | grep cred-reload-fired'
+  'grep cred-reload-fired /var/lib/iago-os/daemon-state/telemetry/$(date -u +%F).ndjson | tail -1'
 ```
 
-Expected: one line with `credentialsReloaded: [<env-var names that
-changed>]`. The `unchanged` array carries env-var names that were
-re-read but kept the same value. NAMES only — credential values are
+Expected: one line. On a rotation, `credentialsReloaded: [<env-var names
+that changed>]`; on a no-rotation SIGHUP, `credentialsReloaded: []` with
+the `unchanged` array carrying env-var names that were re-read but kept
+the same value. NAMES only — credential values are
 NEVER written to telemetry, stdout, or stderr (matches the Plan 01
 Task 4 C2 posture enforced by `cred-bootstrap.test.ts` case 10).
 
