@@ -118,9 +118,19 @@ failed and you had to undo it.
 
 ### (f) TELEGRAM SCREENSHOT (criterion #8) — `[ ]`
 
-Phone screenshot of the v2 bot replying to `/agents` AND the canonical
-approval handshake from T+15 of the cutover (Telegram → Tailscale → VPS
-systemd-managed bot). Paste the uploaded image link below.
+Phone screenshot of the v2 bot replying to `/agents` (it lists the registered
+`pr-triage` handle) — and, if a real approval surfaced during the cutover
+window, the `/approve` inline-keyboard callback. This proves the
+systemd-managed bot is reachable Telegram → Tailscale → VPS. Paste the uploaded
+image link below.
+
+> **Phase 2 command surface:** the bot answers `/start <agent>`, `/agents`,
+> `/approve`, `/abort`, `/inject` (pty only), `/status`. `/start <agent>` is a
+> Phase-1 placeholder (it replies "must be pre-registered … Dynamic spawn lands
+> in Phase 3"), and `/sessions` / `/stop` do NOT exist yet — so the
+> `/start → session → approval` handshake from the cutover runbook's T+15 step
+> is NOT producible in Phase 2. Do not require it here; `/agents` (plus any real
+> `/approve` callback) is the producible Phase 2 Telegram evidence.
 
 **Evidence (image link):**
 
@@ -150,9 +160,10 @@ tailscale ssh root@srv1456441 -- \
   'systemd-analyze security iago-os-v2-daemon.service'
 ```
 
-Expected: **exposure score ≤2.0** (which `systemd-analyze security` labels
-`OK` — the next band up, `MEDIUM`, maps to a higher score ~2–4, so a `MEDIUM`
-result would be >2.0 and fail this threshold). The score range is
+Expected: **exposure score ≤2.0** — the numeric score, not the text label, is
+the gate (`systemd-analyze security` labels a `2.0` as `OK`; Plan 05b's
+`--strict` category check accepts `MEDIUM`/`OK`/`SAFE`, so judge pass/fail by
+the ≤2.0 number, not the band label). The score range is
 `0.0 ↔ 10.0` where LOWER is better — OpenClaw-style user units typically score
 9.6 ("UNSAFE"); the v2 daemon should land in the low 2s. The final line reads
 `→ Overall exposure level for iago-os-v2-daemon.service: 2.0 OK 😀`. Plan 05b's
@@ -186,8 +197,13 @@ length only.**
 
 ```bash
 tailscale ssh root@srv1456441 -- \
-  'tail -30 /var/lib/iago-os/daemon-state/telemetry/$(date +%F).ndjson'
+  'tail -30 /var/lib/iago-os/daemon-state/telemetry/$(date -u +%F).ndjson'
 ```
+
+(`date -u` — the daemon names telemetry files by **UTC** date (`telemetry.ts`
+`formatDate` uses `getUTC*`), matching the 14:00 UTC cron. A local-time
+`date +%F` can point at the wrong or non-existent file near the UTC day
+boundary and read empty on a live daemon.)
 
 Expected kinds (see `integration/phase-2-vps.fixtures/expected-events.json`):
 `daemon-start` (with `runUnder: "systemd"`), `cred-bootstrap-loaded` (with

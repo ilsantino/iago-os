@@ -16,6 +16,7 @@
 	{
 		"kind": "agent-registered",
 		"expected_count_per_24h": 1,
+		"floor_applies": false,
 		"criticality": "expected",
 		"extras_keys": ["agentId", "runtimeId", "org"],
 		"note": "One per registered agent. Phase 2 ships >=1 (pr-triage). agentId is the canonical id (org is optional). 05b asserts >=1 occurrence, not a fixed count, since the registered-agent set grows in later phases."
@@ -23,6 +24,7 @@
 	{
 		"kind": "cron-fired",
 		"expected_count_per_24h": 1,
+		"floor_applies": false,
 		"criticality": "expected",
 		"extras_keys": ["agentId", "schedule", "taskFile", "runningCount"],
 		"note": "pr-triage 14:00 UTC daily cron. Required only on days the iago-os org has >=1 open PR; on a zero-PR day the daemon emits cron-skipped { reason: \"no-open-prs\" } instead. 05b treats this as expected (not required) for any single 24h window."
@@ -30,6 +32,7 @@
 	{
 		"kind": "cron-skipped",
 		"expected_count_per_24h": 1,
+		"floor_applies": false,
 		"criticality": "expected",
 		"extras_keys": ["agentId", "schedule", "reason", "exitCode"],
 		"note": "Mutually exclusive with cron-fired on a given tick. reason is one of wake-check-failed | wake-check-timeout | no-open-prs | pr-fetch-failed | prepare-skip. exitCode is null when the wake-check was timeout-killed. count_per_24h is 0 or 1 (0 when a real PR triggered cron-fired instead)."
@@ -37,6 +40,7 @@
 	{
 		"kind": "agent-spawned",
 		"expected_count_per_24h": 1,
+		"floor_applies": false,
 		"criticality": "expected",
 		"extras_keys": [
 			"handleId",
@@ -50,6 +54,7 @@
 	{
 		"kind": "task-claimed",
 		"expected_count_per_24h": 1,
+		"floor_applies": false,
 		"criticality": "expected",
 		"extras_keys": ["taskId", "ownerId", "attemptId"],
 		"note": "Emitted by file-bus.claimTask on O_EXCL win. One per cron-fired run that produced a task file. The companion close-out event is task-resolved (extras: [agentId, filename]) when claimTask moves pending -> resolved. 05b accepts EITHER task-claimed OR task-resolved as the per-run claim signal."
@@ -57,13 +62,15 @@
 	{
 		"kind": "task-resolved",
 		"expected_count_per_24h": 1,
+		"floor_applies": false,
 		"criticality": "expected",
 		"extras_keys": ["agentId", "filename"],
 		"note": "Close-out of a claimed task (pending -> resolved). Releases the cron runningCount slot. Pairs with task-claimed above; 05b counts the pair as one logical claim->resolve cycle per cron-fired run."
 	},
 	{
 		"kind": "telegram-message-sent",
-		"expected_count_per_24h": 1,
+		"expected_count_per_24h": 0,
+		"floor_applies": false,
 		"criticality": "optional",
 		"extras_keys": [],
 		"note": "SYNTHETIC marker — the daemon has NO dedicated positive Telegram-send telemetry kind. A successful pr-triage send is inferred from the resolved envelope (tasks/resolved/pr-triage-send__*.json) plus the ABSENCE of pr-triage-telegram-send-failed for that run. 05b must NOT require a telemetry line of this kind; it verifies the send succeeded via the failure-event absence + resolved envelope."
@@ -79,6 +86,7 @@
 	{
 		"kind": "agent-exited",
 		"expected_count_per_24h": 1,
+		"floor_applies": false,
 		"criticality": "expected",
 		"extras_keys": ["handleId", "reason", "exitCode"],
 		"note": "One per cron-fired completion. reason is graceful | crash | recycle; for a healthy pr-triage run it is \"graceful\" with exitCode 0. The original Plan 05 sketch listed [agentId, exitCode]; the real emitter keys on handleId (resolve agentId via the matching agent-spawned event)."

@@ -24,6 +24,21 @@
  *    literal 1440 floor that contradicts its own note; the systemd-analyze
  *    sample must not duplicate a directive row.
  *
+ * Round 2 (second dual-adversarial gate on PR #98) added:
+ *
+ *  - PRESENCE-BASED TELEMETRY CONTRACT (Important): every non-`required` kind in
+ *    expected-events.json carries floor_applies:false, and telegram-message-sent
+ *    is count 0 (synthetic, no emitter) — so a 05b checker following the contract
+ *    never applies a per-24h count floor that would false-FAIL a quiet capture.
+ *  - PRODUCIBLE TELEGRAM EVIDENCE (Important): block (f) must not require the
+ *    non-existent /sessions or /stop commands or the Phase 3 /start spawn
+ *    handshake; it scopes to /agents and discloses the Phase 2 command surface.
+ *  - UTC TELEMETRY DATE (Important): block (j) uses `date -u +%F` to match the
+ *    daemon's UTC-dated telemetry files.
+ *  - GUARD STRENGTH (Minor): the --phase 2 caveat regex requires a substantive
+ *    not-yet-wired disclosure (no weak generic tokens); the directive dedupe is
+ *    padding-insensitive.
+ *
  * Run from `runtime/`: npx vitest run integration/phase-2-evidence-template.test.ts
  */
 import { readFileSync } from "node:fs";
@@ -65,10 +80,12 @@ describe("PHASE-2-EVIDENCE.md — false-green merge-gate guard", () => {
 	it("never presents `--phase 2` as an already-working gate without a not-yet-wired caveat", () => {
 		const blocks = paragraphsMentioning(phase2, "--phase 2");
 		expect(blocks.length).toBeGreaterThan(0);
-		// Every block that names the command must, in the same block, flag that
-		// the current checker does NOT support it yet (forward dependency on 05b).
+		// Every block that names the command must, in the same block, carry a
+		// SUBSTANTIVE not-yet-wired disclosure (forward dependency on 05b). Weak
+		// generic tokens ("will be", "does NOT") are deliberately excluded so an
+		// incidental future-tense phrase cannot satisfy the guard.
 		const caveat =
-			/(not yet wired|NOT YET WIRED|does NOT|do NOT rely|will be|will enforce|ships in Plan 05b)/;
+			/(NOT YET WIRED|ships in Plan 05b|Until (Plan )?05b (lands|ships))/;
 		for (const block of blocks) {
 			expect(
 				caveat.test(block),
@@ -136,7 +153,10 @@ describe("security-analyze-sample.txt — fixture realism", () => {
 			.split("\n")
 			.map((l) => l.trim())
 			.filter((l) => l.includes("=") && l.startsWith("✓"))
-			.map((l) => l.split("=")[0]);
+			// Trim the trailing alignment padding systemd-analyze right-pads onto
+			// each directive name so the dedupe is padding-insensitive (a duplicate
+			// with different padding must still collapse in the Set).
+			.map((l) => l.split("=")[0].trim());
 		const unique = new Set(directiveLines);
 		expect(unique.size).toBe(directiveLines.length);
 	});
@@ -145,5 +165,67 @@ describe("security-analyze-sample.txt — fixture realism", () => {
 		const regex =
 			/Overall exposure level [^:]*:\s*(\d+\.\d+)\s+(UNSAFE|EXPOSED|MEDIUM|OK|SAFE)/m;
 		expect(regex.test(securitySample)).toBe(true);
+	});
+});
+
+describe("PHASE-2-EVIDENCE.md — Telegram evidence is producible in Phase 2", () => {
+	it("does not require the unproducible T+15 approval-handshake screenshot", () => {
+		// The command parser (telegram/commands.ts) supports only
+		// start/agents/approve/abort/inject/status; /start is a Phase-1 placeholder
+		// and /sessions + /stop do not exist. Requiring the runbook's T+15
+		// /start→session→approval handshake screenshot asks for evidence the
+		// Phase 2 runtime cannot produce.
+		expect(phase2).not.toContain("approval handshake from T+15");
+	});
+
+	it("scopes the screenshot to /agents and discloses the Phase 2 command surface", () => {
+		expect(phase2).toContain("`/agents`");
+		// The block must disclose the actual Phase 2 command surface (and the
+		// Phase 3 deferral of dynamic spawn) so a reviewer does not demand the
+		// unproducible handshake screenshot.
+		expect(phase2).toContain("Phase 2 command surface");
+	});
+});
+
+describe("PHASE-2-EVIDENCE.md — telemetry excerpt uses UTC date", () => {
+	it("names the telemetry file with `date -u` (daemon writes UTC-dated files)", () => {
+		// telemetry.ts formatDate uses getUTC*; a local-time `date +%F` reads the
+		// wrong or non-existent file near the UTC day boundary on a non-UTC VPS.
+		expect(phase2).toContain("date -u +%F");
+		expect(phase2).not.toMatch(/telemetry\/\$\(date \+%F\)/);
+	});
+});
+
+describe("expected-events.json — conditional entries are never count-floored", () => {
+	type EventEntry = {
+		kind: string;
+		expected_count_per_24h: number;
+		floor_applies?: boolean;
+		criticality: string;
+	};
+	const events = expectedEvents as EventEntry[];
+
+	it("marks every non-required entry floor_applies:false", () => {
+		// Test 7 is presence-based; only `required` kinds may be presence-asserted.
+		// Any non-required kind without floor_applies:false invites a naive count
+		// floor that false-FAILs on a quiet/sparse 24h window.
+		const offenders = events
+			.filter((e) => e.criticality !== "required" && e.floor_applies !== false)
+			.map((e) => e.kind);
+		expect(offenders).toEqual([]);
+	});
+
+	it("treats telegram-message-sent as synthetic (count 0, no emitter)", () => {
+		const tg = events.find((e) => e.kind === "telegram-message-sent");
+		expect(tg?.expected_count_per_24h).toBe(0);
+		expect(tg?.floor_applies).toBe(false);
+	});
+
+	it("keeps both required startup kinds", () => {
+		const required = events
+			.filter((e) => e.criticality === "required")
+			.map((e) => e.kind);
+		expect(required).toContain("daemon-start");
+		expect(required).toContain("cred-bootstrap-loaded");
 	});
 });
