@@ -217,12 +217,17 @@ tailscale ssh root@srv1456441 -- \
 boundary and read empty on a live daemon.)
 
 Expected kinds (see `integration/phase-2-vps.fixtures/expected-events.json`):
-`daemon-start` (with `runUnder: "systemd"`), `cred-bootstrap-loaded` (with
-`credentialsLoaded` array), `agent-registered`, `agent-spawned`, `cron-fired`
-OR `cron-skipped` (pr-triage), `task-claimed`/`task-resolved` (if a real 14:00
-UTC tick happened). The successful-Telegram-send signal is the resolved
-`pr-triage-send__*.json` envelope + the absence of
-`pr-triage-telegram-send-failed` — not a dedicated telemetry kind.
+**always present** — `daemon-start` (with `runUnder: "systemd"`) and
+`cred-bootstrap-loaded` (with `credentialsLoaded` array), the two boot-coupled
+kinds. **Dispatch-coupled** (present only if a 14:00 UTC cron tick — and, for the
+cron-fired branch, an open PR — fell in the window) — `cron-fired` OR
+`cron-skipped`, then `agent-registered` + `agent-spawned` (both emitted in the
+spawn flow, NOT at boot) and `task-claimed`/`task-resolved`. The
+successful-Telegram-send signal is the resolved `pr-triage-send__*.json` envelope
++ the absence of `pr-triage-telegram-send-failed` — not a dedicated telemetry
+kind. **Presence ≠ liveness:** this excerpt proves the daemon *emitted* these
+kinds, not that it stayed healthy all window — ongoing liveness is proven by block
+(g) journalctl + block (k) pgrep, not by telemetry presence.
 
 **Evidence:**
 
@@ -276,7 +281,10 @@ tailscale ssh root@srv1456441 -- \
 tailscale ssh root@srv1456441 -- '
   f=/var/lib/iago-os/daemon-state/telemetry/$(date -u +%F).ndjson
   for i in $(seq 1 10); do
-    if grep -E "cred-reload-(fired|coalesced|failed)" "$f" | tail -3; then break; fi
+    if grep -qE "cred-reload-(fired|coalesced|failed)" "$f"; then
+      grep -E "cred-reload-(fired|coalesced|failed)" "$f" | tail -3
+      break
+    fi
     sleep 1
   done'
 ```

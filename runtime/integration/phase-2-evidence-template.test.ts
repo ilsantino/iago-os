@@ -55,6 +55,14 @@
  *    guard is now structural (/all \d+ cutover dry-run cases/), and the
  *    score-line band allowlist includes systemd-analyze's DANGEROUS label.
  *
+ * Rounds 4-5 added: the presence floor is reconciled to the fixture's
+ * `criticality: required` kinds only (agent-registered is SPAWN-coupled, not
+ * boot-coupled; heartbeat has NO emitter); block (m)'s poll loop is fixed to
+ * test `grep -qE` (the `grep … | tail` form takes tail's exit and never polls);
+ * the journalctl->NDJSON fix is completed across PHASE-2-EVIDENCE.md,
+ * 02-cutover-runbook.md and daemon/README.md (all three guarded here); block (h)
+ * score is a TARGET (the unit ships no SystemCallFilter, so it lands MEDIUM).
+ *
  * Run from `runtime/`: npx vitest run integration/phase-2-evidence-template.test.ts
  */
 import { readFileSync } from "node:fs";
@@ -84,6 +92,14 @@ const securitySample = readFileSync(
 		runtimeRoot,
 		"integration/phase-2-vps.fixtures/security-analyze-sample.txt",
 	),
+	"utf8",
+);
+const cutoverRunbook = readFileSync(
+	resolve(runtimeRoot, "migration/02-cutover-runbook.md"),
+	"utf8",
+);
+const daemonReadme = readFileSync(
+	resolve(runtimeRoot, "daemon/README.md"),
 	"utf8",
 );
 
@@ -139,17 +155,29 @@ describe("PHASE-2-EVIDENCE.md — single-daemon-process evidence proves ownershi
 	});
 });
 
-describe("PHASE-2-EVIDENCE.md — SIGHUP reload evidence reads the telemetry NDJSON", () => {
-	it("polls the NDJSON for any cred-reload-* kind, not journalctl", () => {
-		// telemetry kinds are appended to the daily NDJSON; the token reaches
-		// journalctl only on the emit-FAILURE path, so a journal grep is empty
-		// on a healthy reload. The SIGHUP handler is async, so the block must
-		// poll before concluding the reload failed, and must surface all three
-		// outcomes (fired / coalesced / failed).
+describe("SIGHUP reload evidence reads the telemetry NDJSON (not journalctl)", () => {
+	// emit() appends cred-reload-* events to the daily NDJSON only; the token
+	// reaches journalctl solely on the emit-FAILURE path, so a journal grep is
+	// EMPTY on a healthy reload. Guard every operator-facing cutover doc against
+	// the false-negative `journalctl … grep … cred-reload` instruction.
+	const badJournalGrep = /journalctl[^\n]*grep[^\n]*cred-reload/;
+
+	it("PHASE-2-EVIDENCE.md block (m) polls the NDJSON with a correct grep test", () => {
 		expect(phase2).toContain("/var/lib/iago-os/daemon-state/telemetry");
 		expect(phase2).toContain("cred-reload-(fired|coalesced|failed)");
+		// The poll's `if` MUST test `grep -qE` (exit status = grep). The broken
+		// `if grep … | tail` form takes tail's exit (always 0) and never polls.
+		expect(phase2).toContain("grep -qE");
 		expect(phase2).toMatch(/sleep \d/);
-		expect(phase2).not.toMatch(/journalctl[^\n]*cred-reload/);
+		expect(phase2).not.toMatch(badJournalGrep);
+	});
+
+	it("02-cutover-runbook.md reads cred-reload from the NDJSON, not journalctl", () => {
+		expect(cutoverRunbook).not.toMatch(badJournalGrep);
+	});
+
+	it("daemon/README.md never directs a journalctl grep for cred-reload", () => {
+		expect(daemonReadme).not.toMatch(badJournalGrep);
 	});
 });
 

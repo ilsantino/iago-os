@@ -422,9 +422,10 @@ Task 4 C2 posture enforced by `cred-bootstrap.test.ts` case 10).
   completion (bounded by `stageTimeoutMs`, default 10s) BEFORE emitting
   `daemon-stop` and exiting. Without this `drainInFlight()` wait, the
   process would exit while the in-flight reload's
-  `cred-reload-fired` `appendFile` is still pending — operators
-  inspecting the journal would see the SIGHUP arrived but not whether
-  it took effect (F2 dual-review fix). The drain runs AFTER the
+  `cred-reload-fired` `appendFile` to the telemetry NDJSON is still
+  pending — the reload's outcome would be lost (the event lands only in
+  the daily NDJSON, never the journal) even though the SIGHUP was
+  delivered (F2 dual-review fix). The drain runs AFTER the
   internal `shuttingDown` flag is set, so any SIGHUP arriving during
   the drain is ignored (no recursive re-arming of the drain promise).
 - **Linux-only signal.** SIGHUP is a POSIX signal; Windows local-dev
@@ -451,9 +452,10 @@ Task 4 C2 posture enforced by `cred-bootstrap.test.ts` case 10).
   flag. When the in-flight reload finishes, the handler runs exactly
   ONE trailing reload that picks up the latest credstore state.
   Operators do NOT need to re-send SIGHUP — the trailing reload
-  ensures the latest rotation is visible. `journalctl | grep
-  cred-reload-fired` will show TWO `cred-reload-fired` events for the
-  burst (the initial reload + the trailing reload).
+  ensures the latest rotation is visible. The daily telemetry NDJSON
+  will show TWO `cred-reload-fired` events for the burst (the initial
+  reload + the trailing reload) — grep the NDJSON, not the journal (see
+  Verification above).
 - **SIGHUP during daemon shutdown.** A SIGHUP arriving after the
   SIGTERM/SIGINT path has set the internal `shuttingDown` flag is
   ignored and logs `[daemon] SIGHUP ignored: daemon is shutting down`

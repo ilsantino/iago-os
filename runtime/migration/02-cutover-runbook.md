@@ -538,9 +538,14 @@ After T+60, before stepping away:
 - [ ] **Confirm SIGHUP reload path works.** Rotate a benign credential
       (or simulate by re-running `provision-credentials.sh`) +
       `tailscale ssh root@srv1456441 -- 'systemctl kill -s SIGHUP iago-os-v2-daemon.service'`
-      + `journalctl -u iago-os-v2-daemon.service --since "60 seconds ago" | grep cred-reload-fired`.
-      Expected: a `cred-reload-fired` NDJSON record appears in the
-      telemetry stream within 5 seconds. Documented in
+      + read the result from the daily telemetry NDJSON — NOT the journal
+      (`emit()` appends to the NDJSON only, so a `journalctl` grep is empty on a
+      healthy reload):
+      `tailscale ssh root@srv1456441 -- 'grep -E "cred-reload-(fired|coalesced|failed)" /var/lib/iago-os/daemon-state/telemetry/$(date -u +%F).ndjson | tail -3'`.
+      Expected: a `cred-reload-fired` record (with `credentialsReloaded`
+      listing the rotated credential) appears within a few seconds — the
+      handler is async, so re-run the grep if the first read is empty.
+      Documented in
       `runtime/daemon/README.md` § Reloading credentials without restart
       (SIGHUP). Plan 06 ships the handler; this is the post-cutover
       functional test confirming the path works in production.
