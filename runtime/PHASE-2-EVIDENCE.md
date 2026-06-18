@@ -164,16 +164,23 @@ tailscale ssh root@srv1456441 -- \
   'systemd-analyze security iago-os-v2-daemon.service'
 ```
 
-Expected: **exposure score ≤2.0** — the numeric score, not the text label, is
-the gate (`systemd-analyze security` labels a `2.0` as `OK`; Plan 05b's
-`--strict` category check accepts `MEDIUM`/`OK`/`SAFE`, so judge pass/fail by
-the ≤2.0 number, not the band label). The score range is
-`0.0 ↔ 10.0` where LOWER is better — OpenClaw-style user units typically score
-9.6 ("UNSAFE"); the v2 daemon should land in the low 2s. The final line reads
-`→ Overall exposure level for iago-os-v2-daemon.service: 2.0 OK 😀`. Plan 05b's
-`--strict` mode parses this line against
-`integration/phase-2-vps.fixtures/security-analyze-sample.txt`; replace that
-fixture with this live (anonymized) capture post-cutover.
+Expected: capture the **real** `Overall exposure level` score and treat **≤2.0**
+as the spec § 1 *target*, not a hard pass/fail line. Read the numeric score, not
+the text band label (`systemd-analyze security` scores `0.0 ↔ 10.0`, LOWER is
+better; OpenClaw-style user units typically score 9.6 / `UNSAFE`). **Reality
+check:** the shipped unit (`deploy/iago-os-v2-daemon.service`) sets
+`NoNewPrivileges`, `ProtectSystem=strict`, `ProtectHome`, `MemoryDenyWriteExecute`,
+an empty `CapabilityBoundingSet`, and `RestrictAddressFamilies`, but **no
+`SystemCallFilter=`** — the single highest-weighted item — so it realistically
+lands in the `MEDIUM`/`EXPOSED` band (~3–5), not 2.0. If the captured score
+exceeds the ≤2.0 target, the cutover PR must EITHER harden the unit (add
+`SystemCallFilter=@system-service` + `ProtectProc`/`RestrictNetworkInterfaces`/
+`RemoveIPC` as a follow-up hardening task) to reach it, OR document the achieved
+band as accepted-for-Phase-2 with rationale — do NOT fudge the fixture to claim
+2.0. The `2.0 OK` value in `integration/phase-2-vps.fixtures/security-analyze-sample.txt`
+is an **illustrative parser fixture** (it exercises Plan 05b's `--strict`
+score-line regex), NOT a measured score; replace it with the live (anonymized)
+capture post-cutover.
 
 **Evidence:**
 
@@ -262,22 +269,32 @@ Expected: **empty output** — OpenClaw is fully decommissioned.
 ```bash
 tailscale ssh root@srv1456441 -- \
   'systemctl kill -s SIGHUP iago-os-v2-daemon.service'
-# cred-reload-fired is a TELEMETRY event — appended to the daily NDJSON, NOT the
-# journal (telemetry.ts emit() only appendFile's; nothing reaches journalctl).
-# Read it from the UTC-dated telemetry file (same path/date scheme as block (j)):
-tailscale ssh root@srv1456441 -- \
-  'grep cred-reload-fired /var/lib/iago-os/daemon-state/telemetry/$(date -u +%F).ndjson | tail -1'
+# The reload events are TELEMETRY — appended to the daily NDJSON, NOT the journal
+# (telemetry.ts emit() only appendFile's; nothing reaches journalctl on success).
+# The handler is async (re-read credstore -> diff -> await emit -> appendFile), so
+# POLL the UTC-dated NDJSON until a cred-reload-* line lands (time out after ~10s):
+tailscale ssh root@srv1456441 -- '
+  f=/var/lib/iago-os/daemon-state/telemetry/$(date -u +%F).ndjson
+  for i in $(seq 1 10); do
+    if grep -E "cred-reload-(fired|coalesced|failed)" "$f" | tail -3; then break; fi
+    sleep 1
+  done'
 ```
 
-Expected: one `cred-reload-fired` line. For a **no-rotation SIGHUP** (the safe
+Expected: a `cred-reload-fired` line. For a **no-rotation SIGHUP** (the safe
 default — no credstore entry was changed first), the healthy result is
 `credentialsReloaded: []` with `unchanged` listing the re-read credential names —
 this alone proves the reload handler ran and re-read the credstore without a
 restart. To prove an actual **rotation** takes effect, re-encrypt a credstore
 `.cred` first, THEN send SIGHUP; `credentialsReloaded` will then list the changed
-name. (`cred-reload-fired` reaches `journalctl` only on the telemetry-emit
-*failure* path, so a journal grep is empty on a healthy reload — do not grep the
-journal for it.)
+name. Two other outcomes are healthy-but-different and the poll surfaces them:
+`cred-reload-coalesced` (a reload was already in flight, so this SIGHUP was merged
+into one trailing reload — re-send after it settles to capture the `fired` line)
+and `cred-reload-failed` (`errorCode` set — the credstore re-read threw; the
+daemon keeps the old creds in memory and stays up). An **empty** result after the
+10s poll means the handler never ran — that is the genuine failure. (These kinds
+reach `journalctl` only on the telemetry-emit *failure* path, so do not grep the
+journal for them.)
 
 **Evidence:**
 

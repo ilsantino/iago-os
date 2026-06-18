@@ -140,14 +140,16 @@ describe("PHASE-2-EVIDENCE.md — single-daemon-process evidence proves ownershi
 });
 
 describe("PHASE-2-EVIDENCE.md — SIGHUP reload evidence reads the telemetry NDJSON", () => {
-	it("reads cred-reload-fired from the NDJSON file, not journalctl", () => {
+	it("polls the NDJSON for any cred-reload-* kind, not journalctl", () => {
 		// telemetry kinds are appended to the daily NDJSON; the token reaches
 		// journalctl only on the emit-FAILURE path, so a journal grep is empty
-		// on a healthy reload.
-		expect(phase2).toContain(
-			"grep cred-reload-fired /var/lib/iago-os/daemon-state/telemetry",
-		);
-		expect(phase2).not.toMatch(/journalctl[^\n]*grep cred-reload-fired/);
+		// on a healthy reload. The SIGHUP handler is async, so the block must
+		// poll before concluding the reload failed, and must surface all three
+		// outcomes (fired / coalesced / failed).
+		expect(phase2).toContain("/var/lib/iago-os/daemon-state/telemetry");
+		expect(phase2).toContain("cred-reload-(fired|coalesced|failed)");
+		expect(phase2).toMatch(/sleep \d/);
+		expect(phase2).not.toMatch(/journalctl[^\n]*cred-reload/);
 	});
 });
 
