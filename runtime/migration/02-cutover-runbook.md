@@ -540,15 +540,15 @@ After T+60, before stepping away:
       and Telegram. If anything regresses, execute rollback per
       `runtime/migration/02-rollback-runbook.md`.
 - [ ] **Confirm SIGHUP reload path works.** Rotate a benign credential
-      (or simulate by re-running `provision-credentials.sh`) +
-      `tailscale ssh root@srv1456441 -- 'systemctl kill -s SIGHUP iago-os-v2-daemon.service'`
-      + read the result from the daily telemetry NDJSON — NOT the journal
-      (`emit()` appends to the NDJSON only, so a `journalctl` grep is empty on a
-      healthy reload):
-      `tailscale ssh root@srv1456441 -- 'grep -E "cred-reload-(fired|coalesced|failed)" /var/lib/iago-os/daemon-state/telemetry/$(date -u +%F).ndjson | tail -3'`.
-      Expected: a `cred-reload-fired` record (with `credentialsReloaded`
-      listing the rotated credential) appears within a few seconds — the
-      handler is async, so re-run the grep if the first read is empty.
+      (or simulate by re-running `provision-credentials.sh`), then run the
+      reload-and-verify in ONE remote shell so the pre-SIGHUP baseline is
+      captured — read from the daily telemetry NDJSON, NOT the journal
+      (`emit()` appends to the NDJSON only), and require the cred-reload count
+      to STRICTLY INCREASE so a stale same-day line cannot give a false OK:
+      `tailscale ssh root@srv1456441 -- 'f=/var/lib/iago-os/daemon-state/telemetry/$(date -u +%F).ndjson; before=$(grep -cE "cred-reload-(fired|coalesced|failed)" "$f" 2>/dev/null); before=${before:-0}; systemctl kill -s SIGHUP iago-os-v2-daemon.service; for i in $(seq 1 10); do now=$(grep -cE "cred-reload-(fired|coalesced|failed)" "$f" 2>/dev/null); now=${now:-0}; [ "$now" -gt "$before" ] && { grep -E "cred-reload-(fired|coalesced|failed)" "$f" | tail -$((now-before)); break; }; sleep 1; done'`.
+      Expected: a NEW `cred-reload-fired` record (with `credentialsReloaded`
+      listing the rotated credential) appears within a few seconds. An empty
+      result means no new line landed — the handler did not run.
       Documented in
       `runtime/daemon/README.md` § Reloading credentials without restart
       (SIGHUP). Plan 06 ships the handler; this is the post-cutover

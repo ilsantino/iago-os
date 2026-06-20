@@ -371,11 +371,19 @@ daemon's telemetry stream. Read it from the daily telemetry file — NOT
 the journal: `emit()` only appends to the NDJSON, and (per the names-only
 posture below) nothing reaches stdout/stderr, so the event never lands in
 `journalctl` on a healthy reload (it appears there only on the emit-failure
-path):
+path). To verify, send the SIGHUP and confirm a *new* line appears
+(baseline the count first so a stale same-day line cannot pass):
 
 ```bash
-tailscale ssh root@srv1456441 -- \
-  'grep cred-reload-fired /var/lib/iago-os/daemon-state/telemetry/$(date -u +%F).ndjson | tail -1'
+tailscale ssh root@srv1456441 -- '
+  f=/var/lib/iago-os/daemon-state/telemetry/$(date -u +%F).ndjson
+  before=$(grep -cE "cred-reload-(fired|coalesced|failed)" "$f" 2>/dev/null); before=${before:-0}
+  systemctl kill -s SIGHUP iago-os-v2-daemon.service
+  for i in $(seq 1 10); do
+    now=$(grep -cE "cred-reload-(fired|coalesced|failed)" "$f" 2>/dev/null); now=${now:-0}
+    [ "$now" -gt "$before" ] && { grep -E "cred-reload-(fired|coalesced|failed)" "$f" | tail -$((now-before)); break; }
+    sleep 1
+  done'
 ```
 
 Expected: one line. On a rotation, `credentialsReloaded: [<env-var names

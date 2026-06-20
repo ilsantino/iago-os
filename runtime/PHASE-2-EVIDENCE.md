@@ -275,18 +275,20 @@ Expected: **empty output** — OpenClaw is fully decommissioned.
 
 ### (m) SIGHUP credential reload (Plan 06 cross-ref) — `[ ]`
 
-```bash
-tailscale ssh root@srv1456441 -- \
-  'systemctl kill -s SIGHUP iago-os-v2-daemon.service'
 # The reload events are TELEMETRY — appended to the daily NDJSON, NOT the journal
 # (telemetry.ts emit() only appendFile's; nothing reaches journalctl on success).
-# The handler is async (re-read credstore -> diff -> await emit -> appendFile), so
-# POLL the UTC-dated NDJSON until a cred-reload-* line lands (time out after ~10s):
+# Baseline the cred-reload line count BEFORE the SIGHUP and require the count to
+# STRICTLY INCREASE, so a stale same-day line cannot give a false "reload OK".
+# The handler is async (re-read credstore -> diff -> await emit -> appendFile),
+# so poll the UTC-dated NDJSON until a NEW line lands (time out after ~10s):
 tailscale ssh root@srv1456441 -- '
   f=/var/lib/iago-os/daemon-state/telemetry/$(date -u +%F).ndjson
+  before=$(grep -cE "cred-reload-(fired|coalesced|failed)" "$f" 2>/dev/null); before=${before:-0}
+  systemctl kill -s SIGHUP iago-os-v2-daemon.service
   for i in $(seq 1 10); do
-    if grep -qE "cred-reload-(fired|coalesced|failed)" "$f"; then
-      grep -E "cred-reload-(fired|coalesced|failed)" "$f" | tail -3
+    now=$(grep -cE "cred-reload-(fired|coalesced|failed)" "$f" 2>/dev/null); now=${now:-0}
+    if [ "$now" -gt "$before" ]; then
+      grep -E "cred-reload-(fired|coalesced|failed)" "$f" | tail -$((now - before))
       break
     fi
     sleep 1
@@ -304,9 +306,10 @@ name. Two other outcomes are healthy-but-different and the poll surfaces them:
 into one trailing reload — re-send after it settles to capture the `fired` line)
 and `cred-reload-failed` (`errorCode` set — the credstore re-read threw; the
 daemon keeps the old creds in memory and stays up). An **empty** result after the
-10s poll means the handler never ran — that is the genuine failure. (These kinds
-reach `journalctl` only on the telemetry-emit *failure* path, so do not grep the
-journal for them.)
+10s poll means NO *new* cred-reload-* line appeared since the SIGHUP (the
+pre-SIGHUP baseline excludes any stale same-day line) — the handler never ran,
+the genuine failure. (These kinds reach `journalctl` only on the telemetry-emit
+*failure* path, so do not grep the journal for them.)
 
 **Evidence:**
 

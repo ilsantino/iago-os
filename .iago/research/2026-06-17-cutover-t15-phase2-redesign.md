@@ -38,8 +38,12 @@ To stop the runbook from mandating impossible evidence, PR #98:
   "bot unreachable OR daemon not active".
 - Updated the ACCEPTANCE GATE item accordingly.
 
-`runtime/deploy/cutover.sh` §T+15 was **NOT touched** (out of PR #98 scope) — it
-still carries the stale 5-step sequence and must be reconciled here.
+`runtime/deploy/cutover.sh` §T+15 was **safety-neutralized in PR #98 too**
+(round 7): the impossible 5-step `cat`/`read_or_skip` block was replaced with the
+producible `/agents` reachability check, matching the runbook (the runbook and
+the executable must agree — leaving one broken contradicts the other). The full
+pr-triage acceptance test (and any deeper `cutover.sh` changes) remain this
+follow-up's work.
 
 ## The redesign (this follow-up)
 
@@ -54,8 +58,10 @@ actual migrated workflow:
    → `agent-exited`, or `cron-skipped` on a zero-PR day) and the resolved
    `pr-triage-send__*.json` envelope. Because the cron is time-based, the
    workflow proof is **post-cutover** (next tick), not a synchronous T+15 gate.
-2. **`cutover.sh` §T+15:** replace the 5-step IPC block with the same producible
-   reachability checks the runbook now uses; remove the dynamic-spawn assumption.
+2. **`cutover.sh` §T+15:** the impossible 5-step block is already removed
+   (PR #98 safety fix → producible `/agents` reachability). The redesign adds the
+   real pr-triage end-to-end test here (and may re-introduce a producible
+   synchronous rollback trigger).
 3. **Rollback triggers:** re-scope the canonical-workflow rollback trigger to the
    producible signals (bot unreachable / daemon inactive / journal errors), and
    define how a **post-cutover** pr-triage failure (after the irreversible deauth)

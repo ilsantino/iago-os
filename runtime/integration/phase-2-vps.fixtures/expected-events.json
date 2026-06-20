@@ -19,7 +19,7 @@
 		"floor_applies": false,
 		"criticality": "expected",
 		"extras_keys": ["agentId", "runtimeId", "org"],
-		"note": "Emitted in the spawn flow (daemon/main.ts, right before agent-spawned) — SPAWN-coupled, NOT boot-coupled: present only after a dispatch (a cron-fired tick spawns pr-triage), so legitimately ABSENT on a no-dispatch / zero-PR window. One per spawn. agentId is the canonical id (org optional). 05b asserts >=1 occurrence as a dispatch signal, never as a boot-time presence floor; the registered-agent set grows in later phases."
+		"note": "Emitted once per boot in the autoStart loop (daemon/main.ts:3402-3442), ONLY for agents with autoStart:true. The cron pre-register path that wires pr-triage calls registerAgent but emits NEITHER agent-registered NOR agent-spawned, so a pr-triage-only Phase 2 capture has ZERO of these UNLESS an autoStart agent (e.g. hello-world) is configured. NOT per-dispatch and NOT a boot guarantee for cron agents. agentId is the canonical id (org optional). expected/floor_applies:false — presence is bonus, never a floor."
 	},
 	{
 		"kind": "cron-fired",
@@ -49,7 +49,7 @@
 			"runtimeId",
 			"generationToken"
 		],
-		"note": "One per cron-fired dispatch. The original Plan 05 sketch listed [agentId, pid]; the real emitter carries handleId + sessionId + generationToken (no pid field). 05b asserts on agentId + handleId presence."
+		"note": "Emitted once per boot in the autoStart loop (main.ts:3429), paired with agent-registered, ONLY for autoStart agents — NOT per cron-fired dispatch (the Shape-1 PTY is registered once at startup and stays alive across many dispatches). Absent for the cron pr-triage path. Real extras: handleId + agentId + sessionId + runtimeId + generationToken (the original Plan 05 [agentId, pid] sketch is wrong — no pid field). expected/floor_applies:false."
 	},
 	{
 		"kind": "task-claimed",
@@ -89,6 +89,6 @@
 		"floor_applies": false,
 		"criticality": "expected",
 		"extras_keys": ["handleId", "reason", "exitCode"],
-		"note": "One per cron-fired completion. reason is graceful | crash | recycle; for a healthy pr-triage run it is \"graceful\" with exitCode 0. The original Plan 05 sketch listed [agentId, exitCode]; the real emitter keys on handleId (resolve agentId via the matching agent-spawned event)."
+		"note": "Emitted at boot-recovery — reconciling PRIOR-run agents (cleanShutdowns->graceful, crashes->crash; daemon/main.ts:2906-2919) — and on autoStart-agent shutdown (main.ts:3333). NOT per cron-fired completion (the cron pr-triage PTY stays alive across dispatches). reason is graceful | crash | recycle; for a healthy pr-triage run it is \"graceful\" with exitCode 0. The original Plan 05 sketch listed [agentId, exitCode]; the real emitter keys on handleId (resolve agentId via the matching agent-spawned event)."
 	}
 ]

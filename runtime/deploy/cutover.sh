@@ -611,20 +611,24 @@ main() {
     ndjson_write cutover-step T+10 ok
   fi
 
-  # ----- T+15: canonical workflow test -----
-  # T+15 workflow test
+  # ----- T+15: Telegram reachability check (Phase 2 producible subset) -----
+  # SUSPENDED: the Phase-3 "5-step IPC sequence" (/start hello-world dynamic
+  # spawn -> /sessions -> /stop) is NOT producible in Phase 2 — dynamic /start
+  # spawn is a Phase 3 capability and /sessions + /stop do not exist in the bot
+  # parser (runtime/telegram/commands.ts). It must NOT gate the run-up to the
+  # irreversible T+30 deauth. See migration/02-cutover-runbook.md T+15 and
+  # .iago/research/2026-06-17-cutover-t15-phase2-redesign.md (pr-triage-based
+  # acceptance redesign). The producible bot-reachability rollback is at T+10;
+  # the real pr-triage workflow is verified post-cutover at the next 14:00 cron.
   if should_run "T+15"; then
     echo ""
-    echo "[T+15] Operator: run canonical workflow test from spec § 8 T+15 block."
+    echo "[T+15] Operator: confirm the v2 bot is still reachable (Phase 2 subset)."
     cat <<'TEST_BLOCK'
-   Canonical test (copy-paste):
-     1. /agents → list (should include hello-world)
-     2. /start hello-world → daemon spawns adapter
-     3. /sessions → confirm session id appears
-     4. Send free-form text → adapter receives, replies
-     5. /stop <session-id> → daemon SIGTERMs adapter, marker written
+   Phase 2 reachability check (copy-paste):
+     1. /agents -> bot replies; list includes the registered pr-triage handle.
+   (Dynamic /start spawn, /sessions, /stop are Phase 3 — do NOT run them.)
 TEST_BLOCK
-    read_or_skip "Press Enter once canonical workflow test passes: " _ack
+    read_or_skip "Press Enter once the bot replied to /agents (Phase 2 reachability): " _ack
     ndjson_write cutover-step T+15 ok
   fi
 

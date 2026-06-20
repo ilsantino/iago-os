@@ -102,6 +102,10 @@ const daemonReadme = readFileSync(
 	resolve(runtimeRoot, "daemon/README.md"),
 	"utf8",
 );
+const cutoverScript = readFileSync(
+	resolve(runtimeRoot, "deploy/cutover.sh"),
+	"utf8",
+);
 
 /** Split a markdown doc into paragraph-ish blocks for "claim + caveat in the same breath" checks. */
 function paragraphsMentioning(doc: string, needle: string): string[] {
@@ -166,12 +170,13 @@ describe("SIGHUP reload evidence reads the telemetry NDJSON (not journalctl)", (
 	// the false-negative `journalctl … grep … cred-reload` instruction.
 	const badJournalGrep = /journalctl[^\n]*grep[^\n]*cred-reload/;
 
-	it("PHASE-2-EVIDENCE.md block (m) polls the NDJSON with a correct grep test", () => {
+	it("PHASE-2-EVIDENCE.md block (m) baselines the count then polls for a NEW line", () => {
 		expect(phase2).toContain("/var/lib/iago-os/daemon-state/telemetry");
 		expect(phase2).toContain("cred-reload-(fired|coalesced|failed)");
-		// The poll's `if` MUST test `grep -qE` (exit status = grep). The broken
-		// `if grep … | tail` form takes tail's exit (always 0) and never polls.
-		expect(phase2).toContain("grep -qE");
+		// Must capture a pre-SIGHUP baseline and require the count to STRICTLY
+		// INCREASE — a bare grep would pass on a stale same-day cred-reload line.
+		expect(phase2).toContain("before=");
+		expect(phase2).toContain('-gt "$before"');
 		expect(phase2).toMatch(/sleep \d/);
 		expect(phase2).not.toMatch(badJournalGrep);
 	});
@@ -324,5 +329,12 @@ describe("02-cutover-runbook.md — Phase 2 cutover evidence is producible", () 
 			"canonical 5-step IPC sequence passed end-to-end",
 		);
 		expect(cutoverRunbook).not.toContain("grep iago-os-v2-daemon");
+	});
+
+	it("cutover.sh T+15 does not block on the impossible Phase-3 5-step sequence", () => {
+		// The EXECUTABLE (not just the runbook prose) must not gate the run-up to
+		// the irreversible T+30 deauth on a flow Phase 2 cannot produce.
+		expect(cutoverScript).not.toContain("canonical workflow test passes");
+		expect(cutoverScript).not.toMatch(/\/start hello-world\s*->\s*daemon spawns/);
 	});
 });
