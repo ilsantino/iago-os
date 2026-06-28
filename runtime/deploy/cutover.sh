@@ -49,7 +49,7 @@ set -euo pipefail
 # T+07  install systemd unit + enable+start daemon
 # T+08  verify journalctl daemon-start + IPC socket
 # T+10  bot-reply confirmation (rollback if no)
-# T+15  canonical workflow test (manual)
+# T+15  Phase-2 reachability + daemon-health acceptance gate
 # T+30  revoke-whatsapp.sh (manual)
 # T+45  sanity checkpoint — daemon active + heartbeat
 # T+50  sanity checkpoint — journalctl error count
@@ -611,7 +611,8 @@ main() {
     ndjson_write cutover-step T+10 ok
   fi
 
-  # ----- T+15: Telegram reachability check (Phase 2 producible subset) -----
+  # ----- T+15: Telegram reachability + daemon-health acceptance gate ----------
+  # (Phase 2 producible subset; fail-closed BEFORE the irreversible T+30 deauth)
   # SUSPENDED: the Phase-3 "5-step IPC sequence" (/start hello-world dynamic
   # spawn -> /sessions -> /stop) is NOT producible in Phase 2 — dynamic /start
   # spawn is a Phase 3 capability and /sessions + /stop do not exist in the bot
@@ -629,6 +630,35 @@ main() {
    (Dynamic /start spawn, /sessions, /stop are Phase 3 — do NOT run them.)
 TEST_BLOCK
     read_or_skip "Press Enter once the bot replied to /agents (Phase 2 reachability): " _ack
+    verify_lock_still_ours
+
+    # Acceptance gate (machine half) — both checks fail closed via
+    # trigger_rollback so the IRREVERSIBLE T+30 WhatsApp deauth never runs
+    # against a missing/unhealthy or duplicated daemon. The /agents reply above
+    # is the operator-confirmed reachability half. (The suspended Phase-3 5-step
+    # IPC sequence is NOT reintroduced here; the pr-triage workflow proof stays
+    # post-cutover at the next 14:00 cron — see the redesign research doc.)
+
+    # (1) Daemon active under systemd (runbook T+15 rollback trigger:
+    #     "systemctl is-active != active").
+    vssh "systemctl is-active iago-os-v2-daemon.service" \
+      || trigger_rollback "daemon not active at T+15 (pre-deauth acceptance gate)"
+    echo "  OK iago-os-v2-daemon.service is active"
+
+    # (2) Exactly one iago-owned daemon process — SAME matcher as
+    #     PHASE-2-EVIDENCE.md block (k) / runbook T+55 (entry-point path
+    #     dist/daemon/main.js, owner column iago). set -o pipefail so a ps/grep
+    #     failure propagates instead of masking as grep -c reading empty stdin;
+    #     zero, more-than-one, or a query error all fail closed → rollback.
+    local daemon_procs
+    if ! daemon_procs=$(vssh "bash -c 'set -o pipefail; ps -o user,pid,args -ww -C node | grep -F dist/daemon/main.js | grep -c \"^iago \"'"); then
+      daemon_procs=""
+    fi
+    daemon_procs="${daemon_procs//[[:space:]]/}"
+    if [[ "$daemon_procs" != "1" ]]; then
+      trigger_rollback "T+15: expected exactly one iago-owned daemon process (pre-deauth acceptance gate), found '${daemon_procs}'"
+    fi
+    echo "  OK exactly one iago-owned daemon process"
     ndjson_write cutover-step T+15 ok
   fi
 

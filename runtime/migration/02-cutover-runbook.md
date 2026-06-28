@@ -68,7 +68,7 @@ previous attempt was interrupted.
 - [ ] **(ii) Create state + log directories on VPS.**
 
   Create the state-root, the log dir, AND every daemon-state subdir
-  the T+15 canonical workflow and telemetry writes touch. Without the
+  the daemon's task-claim / telemetry / marker writes touch. Without the
   subdirs, the daemon's first `task-claimed` / `telemetry-write` /
   `marker-write` fails with `ENOENT` and the cutover trips the T+08
   failure-pattern grep (Opus H2 fix).
@@ -399,8 +399,11 @@ T+15:00  Telegram reachability + agent-surface check (Phase 2 producible
          removed as a Phase 2 cutover gate pending the pr-triage-based
          acceptance redesign — see
          `.iago/research/2026-06-17-cutover-t15-phase2-redesign.md`.
-         `cutover.sh` §T+15 carries the same stale sequence and is
-         redesigned in that follow-up; do NOT run it as a Phase 2 gate.
+         `cutover.sh` §T+15 was updated to the Phase-2 reachability +
+         daemon-health acceptance gate (bot replies to `/agents` +
+         `systemctl is-active` + exactly one `iago`-owned daemon process,
+         all fail-closed via `trigger_rollback` BEFORE the irreversible T+30
+         deauth); it no longer drives the suspended 5-step sequence.
 
          On phone, in the v2 bot chat:
            1. /agents
@@ -452,9 +455,13 @@ T+25:00  Telegram + daemon reachability proven for Phase 2.
          here, it is suspended per the T+15 note + redesign follow-up):
          - [ ] T+10 bot-reply check passed (operator confirmed `/agents`
                reply on phone)
-         - [ ] T+15 reachability passed: bot replied to `/agents` AND
-               `systemctl is-active` = active AND exactly one `iago`-owned
-               daemon process
+         - [ ] T+15 acceptance gate passed: bot replied to `/agents` AND
+               `cutover.sh` §T+15 confirmed `systemctl is-active` = active
+               AND exactly one `iago`-owned daemon process (the
+               `ps -o user … | grep -F dist/daemon/main.js` matcher from
+               block (k)). All three fail closed → rollback, so the
+               irreversible T+30 deauth never runs against an unhealthy or
+               duplicated daemon.
          - [ ] No journal ERROR lines in T+08 through T+25 window
          - [ ] Watchdog (rollback runbook § 2) reported `active` for the
                full T+08-T+20 sample window
@@ -477,9 +484,16 @@ T+30:00  WhatsApp deauth — IRREVERSIBLE one-way migration.
 
 T+45:00  Smoke-check observability
            tailscale ssh root@srv1456441 -- 'head -20 /var/lib/iago-os/daemon-state/telemetry/$(date -u +%F).ndjson'
-         Expected: NDJSON lines including kinds: daemon-start,
-         agent-registered (if auto-start configured), agent-spawned,
-         task-claimed, approval-requested, approval-resolved.
+         Expected (align with PHASE-2-EVIDENCE.md block (j)): always-present
+         boot kinds daemon-start (runUnder "systemd") and
+         cred-bootstrap-loaded. Dispatch-coupled kinds appear ONLY if a
+         14:00 UTC cron tick (and, for the fired branch, an open PR) fell in
+         the window: cron-fired OR cron-skipped, and — ONLY when an autoStart
+         agent is configured (NOT the cron pr-triage path) — agent-registered
+         + agent-spawned, plus task-claimed/task-resolved. There are no
+         approval-requested/approval-resolved telemetry kinds; a successful
+         pr-triage send is the resolved pr-triage-send__*.json envelope plus
+         the absence of pr-triage-telegram-send-failed.
 
 T+50:00  Verify retention timer is scheduled
            tailscale ssh root@srv1456441 -- 'systemctl list-timers iago-archive-prune.timer'
@@ -604,7 +618,9 @@ with `MANUAL:` prompts. They are:
 
 - T+02 BotFather UI revocation + 1Password paste.
 - T+10 Telegram phone testing (send `/agents`, observe reply).
-- T+15 phone-side approval tap on the canonical workflow test.
+- T+15 phone-side `/agents` reachability confirmation (the daemon-health
+  checks — `systemctl is-active` + single-daemon-process — run
+  automatically and fail closed to rollback).
 - T+30 WhatsApp deauth click-path in Meta Business Suite.
 
 The script never proceeds past a `MANUAL:` prompt without operator

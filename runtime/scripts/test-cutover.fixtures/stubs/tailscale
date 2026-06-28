@@ -148,6 +148,16 @@ case "$ARGS" in
       exit 3
     fi
     ;;
+  *"dist/daemon/main.js"*)
+    # T+15 single-daemon-process acceptance check (cutover.sh §T+15). Production
+    # code: bash -c 'set -o pipefail; ps -o user,pid,args -ww -C node \
+    #   | grep -F dist/daemon/main.js | grep -c "^iago "' — SAME matcher as
+    # PHASE-2-EVIDENCE.md block (k). Default: report exactly one iago-owned
+    # daemon process (healthy). STUB_INJECT_T15_PROC_COUNT=N overrides to
+    # exercise the fail-closed (rollback) path.
+    echo "${STUB_INJECT_T15_PROC_COUNT:-1}"
+    exit 0
+    ;;
   *"systemctl stop iago-os-v2-daemon"*)
     if [[ "${STUB_FAIL_STOP_V2:-0}" == "1" ]]; then
       # Simulate `systemctl stop` timing out / failing without taking the

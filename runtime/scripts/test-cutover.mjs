@@ -868,6 +868,81 @@ test("23. cutover.sh T+50 tolerates non-zero error count when IAGO_CUTOVER_T50_T
 	}
 });
 
+test("24. cutover.sh T+15 triggers rollback when not exactly one iago-owned daemon process (pre-deauth acceptance gate)", () => {
+	const env = newTestEnv();
+	try {
+		// Critical dual-adversarial regression: the T+15 gate was fail-OPEN —
+		// it printed the /agents instruction, took a bare ack, and advanced
+		// straight into the IRREVERSIBLE T+30 WhatsApp deauth with no
+		// daemon-health verification. Post-fix the single-daemon-process check
+		// fails closed; inject a zero-process count and assert it rolls back
+		// BEFORE T+30. RESUME_FROM=T+15 keeps the run fast (skips T-15..T+10).
+		const r = runCutover(env, {
+			env: {
+				IAGO_CUTOVER_DRY_RUN: "1",
+				IAGO_TELEGRAM_USER_ID: "12345",
+				IAGO_CUTOVER_RESUME_FROM: "T+15",
+				STUB_INJECT_T15_PROC_COUNT: "0",
+			},
+			timeout: 120_000,
+		});
+		assert.strictEqual(
+			r.status,
+			2,
+			`expected exit 2 (rollback triggered), got ${r.status}; tail: ${`${r.stdout}\n${r.stderr}`.slice(-800)}`,
+		);
+		const text = `${r.stdout}\n${r.stderr}`;
+		assert.match(text, /ROLLBACK TRIGGERED/);
+		assert.match(
+			text,
+			/T\+15: expected exactly one iago-owned daemon process/,
+		);
+		// WhatsApp deauth (T+30) must NOT have been reached.
+		assert.doesNotMatch(text, /\[T\+30\]/);
+	} finally {
+		destroyTestEnv(env);
+	}
+});
+
+test("25. cutover.sh T+15 is a fail-closed acceptance gate, not the suspended 5-step sequence (Critical regression — static)", () => {
+	// Static guard on the production code: the T+15 block must enforce the
+	// daemon-health acceptance gate (systemctl is-active + single-daemon-process
+	// matcher, both fail-closed via trigger_rollback) before the irreversible
+	// T+30 deauth, and must NOT run the suspended Phase-3 5-step IPC sequence.
+	const body = readFileSync(cutoverScript, "utf8");
+	const t15Start = body.indexOf("# ----- T+15:");
+	const t30Start = body.indexOf("# ----- T+30:");
+	assert.ok(t15Start > 0, "T+15 block marker should be present");
+	assert.ok(t30Start > t15Start, "T+30 block marker should follow T+15");
+	const t15Block = body.slice(t15Start, t30Start);
+	assert.match(
+		t15Block,
+		/systemctl is-active iago-os-v2-daemon\.service/,
+		"T+15 must check systemctl is-active before the T+30 deauth",
+	);
+	assert.match(
+		t15Block,
+		/grep -F dist\/daemon\/main\.js/,
+		"T+15 must run the single-daemon-process matcher (PHASE-2-EVIDENCE block (k) parity)",
+	);
+	assert.match(
+		t15Block,
+		/trigger_rollback/,
+		"T+15 health checks must fail closed via trigger_rollback",
+	);
+	// The suspended Phase-3 5-step sequence must NOT be run as a gate here.
+	assert.doesNotMatch(
+		t15Block,
+		/read_or_skip[^\n]*\/start hello-world/,
+		"T+15 must not prompt the operator to run the suspended /start spawn",
+	);
+	assert.doesNotMatch(
+		t15Block,
+		/\d\.\s*\/sessions\b/,
+		"T+15 must not run /sessions (Phase 3 — absent from the command parser)",
+	);
+});
+
 test("16. jq patch expression unit test — shell jq command produces expected JSON byte-for-byte", () => {
 	// This test exercises the actual shell jq invocation from rollback.sh's
 	// patch script — the expression `.channels.telegram.botToken = $t` — using

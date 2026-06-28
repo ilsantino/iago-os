@@ -83,7 +83,10 @@ const phase1 = readFileSync(
 );
 const expectedEvents = JSON.parse(
 	readFileSync(
-		resolve(runtimeRoot, "integration/phase-2-vps.fixtures/expected-events.json"),
+		resolve(
+			runtimeRoot,
+			"integration/phase-2-vps.fixtures/expected-events.json",
+		),
 		"utf8",
 	),
 );
@@ -96,6 +99,10 @@ const securitySample = readFileSync(
 );
 const cutoverRunbook = readFileSync(
 	resolve(runtimeRoot, "migration/02-cutover-runbook.md"),
+	"utf8",
+);
+const rollbackRunbook = readFileSync(
+	resolve(runtimeRoot, "migration/02-rollback-runbook.md"),
 	"utf8",
 );
 const daemonReadme = readFileSync(
@@ -335,6 +342,47 @@ describe("02-cutover-runbook.md — Phase 2 cutover evidence is producible", () 
 		// The EXECUTABLE (not just the runbook prose) must not gate the run-up to
 		// the irreversible T+30 deauth on a flow Phase 2 cannot produce.
 		expect(cutoverScript).not.toContain("canonical workflow test passes");
-		expect(cutoverScript).not.toMatch(/\/start hello-world\s*->\s*daemon spawns/);
+		expect(cutoverScript).not.toMatch(
+			/\/start hello-world\s*->\s*daemon spawns/,
+		);
+	});
+});
+
+describe("PHASE-2-EVIDENCE.md — code fences are balanced (block (m) regression)", () => {
+	it("has an even number of ``` fence markers", () => {
+		// Block (m) was missing its opening ```bash, leaving an ODD fence count
+		// that inverted open/close for every subsequent fence to EOF and garbled
+		// the template tail on GitHub render. The fence-agnostic .toContain()
+		// asserts elsewhere never caught it.
+		const fences = phase2.match(/^```/gm) ?? [];
+		expect(fences.length % 2).toBe(0);
+	});
+
+	it("keeps block (m)'s SIGHUP command inside a fenced code block", () => {
+		const mStart = phase2.indexOf("### (m)");
+		const mEnd = phase2.indexOf("## 3.", mStart);
+		expect(mStart).toBeGreaterThan(-1);
+		expect(mEnd).toBeGreaterThan(mStart);
+		const blockM = phase2.slice(mStart, mEnd);
+		const openFence = blockM.indexOf("```bash");
+		const sighup = blockM.indexOf("systemctl kill -s SIGHUP");
+		const closeFence = blockM.indexOf("\n```", sighup);
+		expect(openFence).toBeGreaterThan(-1);
+		expect(sighup).toBeGreaterThan(openFence);
+		expect(closeFence).toBeGreaterThan(sighup);
+	});
+});
+
+describe("runbooks — no stale T+15 'canonical workflow test' / 'approval tap' prose", () => {
+	it("02-cutover-runbook.md drops the stale T+15 approval-tap / canonical-workflow-test references", () => {
+		// This PR redesigned cutover.sh §T+15 to the producible reachability +
+		// daemon-health gate; the operator-facing runbook must agree (no
+		// references to the suspended canonical workflow test or an approval tap).
+		expect(cutoverRunbook).not.toContain("canonical workflow test");
+		expect(cutoverRunbook).not.toContain("approval tap");
+	});
+
+	it("02-rollback-runbook.md T+15 trigger is reachability/daemon-health, not the canonical workflow test", () => {
+		expect(rollbackRunbook).not.toContain("canonical workflow test");
 	});
 });

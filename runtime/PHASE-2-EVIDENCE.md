@@ -275,6 +275,7 @@ Expected: **empty output** — OpenClaw is fully decommissioned.
 
 ### (m) SIGHUP credential reload (Plan 06 cross-ref) — `[ ]`
 
+```bash
 # The reload events are TELEMETRY — appended to the daily NDJSON, NOT the journal
 # (telemetry.ts emit() only appendFile's; nothing reaches journalctl on success).
 # Baseline the cred-reload line count BEFORE the SIGHUP and require the count to
