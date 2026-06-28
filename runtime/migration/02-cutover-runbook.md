@@ -407,8 +407,11 @@ T+15:00  Telegram reachability + agent-surface check (Phase 2 producible
 
          On phone, in the v2 bot chat:
            1. /agents
-              Expected: the bot replies and the list includes the
-              registered pr-triage handle. This proves the
+              Expected: the bot replies. pr-triage is autoStart:false (it
+              registers transiently only during the 14:00 UTC cron tick),
+              so "No agents registered." — or a list of only configured
+              autoStart agents — is the HEALTHY Phase-2 reply; do NOT roll
+              back on an empty agent list. ANY reply proves the
               systemd-managed bot is alive and reachable
               Telegram → Tailscale → VPS.
            2. (If a real approval surfaces during the window) tap the
@@ -419,8 +422,9 @@ T+15:00  Telegram reachability + agent-surface check (Phase 2 producible
              systemctl is-active iago-os-v2-daemon.service
              ls -la /var/lib/iago-os/daemon-state/agents/ | tail -5
            '
-           Expected: "active", and the agents dir lists the pr-triage
-           registration.
+           Expected: "active". The agents dir is empty between cron ticks
+           (pr-triage registers only during the 14:00 UTC dispatch), so an
+           empty listing here is the healthy Phase-2 state, not a fault.
 
          **Rollback trigger (Phase 2):** if the bot does NOT reply to
          `/agents` within 60s (bot unreachable) OR `systemctl is-active`

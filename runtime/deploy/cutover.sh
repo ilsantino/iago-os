@@ -106,6 +106,11 @@ fi
 # drive the rollback-trigger test case without aborting at T-15.
 T10_DRY_RUN_REPLY="${IAGO_CUTOVER_DRY_RUN_REPLY:-y}"
 
+# T+15 (and the T+30 resume re-check) bot-reachability prompt gets its own
+# dry-run reply knob so a test can drive the reachability rollback path
+# independently of the T+10 reply. Default "y" = bot replied (reachable).
+T15_DRY_RUN_REPLY="${IAGO_CUTOVER_T15_DRY_RUN_REPLY:-y}"
+
 # ============================================================================
 # Helpers
 # ============================================================================
@@ -354,11 +359,62 @@ trigger_rollback() {
   exit 2
 }
 
+# assert_bot_reachable_or_rollback: operator-confirmed reachability gate. The
+# operator sends /agents on their phone; ANY reply — including the healthy
+# Phase-2 "No agents registered." (pr-triage is autoStart:false / cron-
+# transient) — proves the bot is alive Telegram -> Tailscale -> VPS. Fails
+# closed (rollback) if the operator reports no reply. Mirrors the T+10 y/n
+# contract so the immediately-pre-deauth reachability check is enforcing, not a
+# bare ack.
+assert_bot_reachable_or_rollback() {
+  local label="$1" reply
+  read_or_skip "[${label}] Press y if the bot REPLIED to /agents (any reply, incl. \"No agents registered.\"), n if no reply / unreachable: " reply "$T15_DRY_RUN_REPLY"
+  if [[ "$reply" != "y" ]]; then
+    trigger_rollback "operator replied '${reply}' at ${label} bot-reachability check"
+  fi
+  echo "  OK operator confirmed bot reachable at ${label}"
+}
+
+# assert_daemon_health_or_rollback: machine half of the pre-deauth acceptance
+# gate. Both checks fail closed via trigger_rollback so the IRREVERSIBLE T+30
+# WhatsApp deauth never runs against a missing/unhealthy or duplicated daemon.
+# Called at T+15 AND at the top of T+30 — a RESUME_FROM=T+30 run skips the T+15
+# block entirely, and the daemon could crash between T+15 and T+30, so the gate
+# must re-assert here too.
+assert_daemon_health_or_rollback() {
+  local label="$1"
+  verify_lock_still_ours
+
+  # (1) Daemon active under systemd (runbook rollback trigger:
+  #     "systemctl is-active != active").
+  vssh "systemctl is-active iago-os-v2-daemon.service" \
+    || trigger_rollback "daemon not active at ${label} (pre-deauth acceptance gate)"
+  echo "  OK iago-os-v2-daemon.service is active"
+
+  # (2) Exactly one iago-owned daemon process. Counts iago-owned
+  #     dist/daemon/main.js node rows (entry-point-path matcher from
+  #     PHASE-2-EVIDENCE.md block (k); block (k) additionally validates the
+  #     owner column, which systemd User=iago should already guarantee). set -o
+  #     pipefail so a ps/grep failure — or a zero count, where grep -c exits 1 —
+  #     propagates instead of masking as an empty read; zero, more-than-one, or
+  #     a query error all fail closed -> rollback.
+  local daemon_procs
+  if ! daemon_procs=$(vssh "bash -c 'set -o pipefail; ps -o user,pid,args -ww -C node | grep -F dist/daemon/main.js | grep -c \"^iago \"'"); then
+    daemon_procs=""
+  fi
+  daemon_procs="${daemon_procs//[[:space:]]/}"
+  if [[ "$daemon_procs" != "1" ]]; then
+    trigger_rollback "${label}: expected exactly one iago-owned daemon process (pre-deauth acceptance gate), found '${daemon_procs}'"
+  fi
+  echo "  OK exactly one iago-owned daemon process"
+}
+
 # ============================================================================
 # Main T-15 → T+60 sequence
 # ============================================================================
 
 main() {
+  local t15_gate_ran=0
   echo "iaGO-OS v2 cutover — wall-clock target 60 min"
   echo "VPS: ${VPS_USER}@${VPS_HOST}"
   echo "SCRIPT_DIR: ${SCRIPT_DIR}"
@@ -619,46 +675,28 @@ main() {
   # parser (runtime/telegram/commands.ts). It must NOT gate the run-up to the
   # irreversible T+30 deauth. See migration/02-cutover-runbook.md T+15 and
   # .iago/research/2026-06-17-cutover-t15-phase2-redesign.md (pr-triage-based
-  # acceptance redesign). The producible bot-reachability rollback is at T+10;
-  # the real pr-triage workflow is verified post-cutover at the next 14:00 cron.
+  # acceptance redesign). Bot-reachability fails closed at BOTH T+10 and T+15;
+  # only the real pr-triage workflow proof is deferred post-cutover to the next
+  # 14:00 cron tick.
   if should_run "T+15"; then
+    t15_gate_ran=1
     echo ""
     echo "[T+15] Operator: confirm the v2 bot is still reachable (Phase 2 subset)."
     cat <<'TEST_BLOCK'
    Phase 2 reachability check (copy-paste):
-     1. /agents -> bot replies; list includes the registered pr-triage handle.
+     1. /agents -> the bot replies. pr-triage is autoStart:false (it registers
+        transiently only during the 14:00 UTC cron tick), so at a typical
+        cutover time "No agents registered." — or a list of only configured
+        autoStart agents — is the HEALTHY Phase-2 reply; do NOT roll back on an
+        empty agent list. ANY reply proves the bot is alive Telegram ->
+        Tailscale -> VPS.
    (Dynamic /start spawn, /sessions, /stop are Phase 3 — do NOT run them.)
 TEST_BLOCK
-    read_or_skip "Press Enter once the bot replied to /agents (Phase 2 reachability): " _ack
-    verify_lock_still_ours
-
-    # Acceptance gate (machine half) — both checks fail closed via
-    # trigger_rollback so the IRREVERSIBLE T+30 WhatsApp deauth never runs
-    # against a missing/unhealthy or duplicated daemon. The /agents reply above
-    # is the operator-confirmed reachability half. (The suspended Phase-3 5-step
-    # IPC sequence is NOT reintroduced here; the pr-triage workflow proof stays
-    # post-cutover at the next 14:00 cron — see the redesign research doc.)
-
-    # (1) Daemon active under systemd (runbook T+15 rollback trigger:
-    #     "systemctl is-active != active").
-    vssh "systemctl is-active iago-os-v2-daemon.service" \
-      || trigger_rollback "daemon not active at T+15 (pre-deauth acceptance gate)"
-    echo "  OK iago-os-v2-daemon.service is active"
-
-    # (2) Exactly one iago-owned daemon process — SAME matcher as
-    #     PHASE-2-EVIDENCE.md block (k) / runbook T+55 (entry-point path
-    #     dist/daemon/main.js, owner column iago). set -o pipefail so a ps/grep
-    #     failure propagates instead of masking as grep -c reading empty stdin;
-    #     zero, more-than-one, or a query error all fail closed → rollback.
-    local daemon_procs
-    if ! daemon_procs=$(vssh "bash -c 'set -o pipefail; ps -o user,pid,args -ww -C node | grep -F dist/daemon/main.js | grep -c \"^iago \"'"); then
-      daemon_procs=""
-    fi
-    daemon_procs="${daemon_procs//[[:space:]]/}"
-    if [[ "$daemon_procs" != "1" ]]; then
-      trigger_rollback "T+15: expected exactly one iago-owned daemon process (pre-deauth acceptance gate), found '${daemon_procs}'"
-    fi
-    echo "  OK exactly one iago-owned daemon process"
+    # Reachability (operator y/n) + daemon-health (machine) acceptance gate,
+    # both fail-closed before the irreversible T+30 deauth. The suspended
+    # Phase-3 5-step IPC sequence is NOT reintroduced here.
+    assert_bot_reachable_or_rollback "T+15"
+    assert_daemon_health_or_rollback "T+15"
     ndjson_write cutover-step T+15 ok
   fi
 
@@ -666,6 +704,15 @@ TEST_BLOCK
   # T+30 revoke whatsapp
   if should_run "T+30"; then
     echo ""
+    # Resume-safety: a RESUME_FROM=T+30 run skips the T+15 block, and the daemon
+    # could crash between T+15 and T+30, so re-assert the acceptance gate HERE —
+    # the irreversible WhatsApp deauth must never run against a missing/unhealthy
+    # or duplicated daemon, even on a resumed invocation. If T+15 did not run
+    # this invocation, also re-confirm bot reachability first.
+    if [[ "$t15_gate_ran" != "1" ]]; then
+      assert_bot_reachable_or_rollback "T+30 (resume re-check)"
+    fi
+    assert_daemon_health_or_rollback "T+30 (pre-deauth re-check)"
     echo "[T+30] MANUAL: run revoke-whatsapp.sh per ${MIGRATION_DIR}/02-whatsapp-deauth.md (Plan 02b artifact)"
     echo "         Required env: WABA_ID, APP_ID, APP_SECRET, SYSTEM_USER_TOKEN."
     read_or_skip "Press Enter once revoke-whatsapp.sh succeeds: " _ack

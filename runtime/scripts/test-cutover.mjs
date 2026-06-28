@@ -915,21 +915,55 @@ test("25. cutover.sh T+15 is a fail-closed acceptance gate, not the suspended 5-
 	assert.ok(t15Start > 0, "T+15 block marker should be present");
 	assert.ok(t30Start > t15Start, "T+30 block marker should follow T+15");
 	const t15Block = body.slice(t15Start, t30Start);
+	const t45Start = body.indexOf("# ----- T+45");
+	assert.ok(t45Start > t30Start, "T+45 block marker should follow T+30");
+	const t30Block = body.slice(t30Start, t45Start);
+
+	// The machine health gate (systemctl is-active + single-daemon-process
+	// matcher, both fail-closed via trigger_rollback) lives in the shared
+	// assert_daemon_health_or_rollback helper (called at T+15 AND T+30).
+	const healthFn = body.slice(
+		body.indexOf("assert_daemon_health_or_rollback() {"),
+		body.indexOf("\nmain() {"),
+	);
+	assert.ok(
+		healthFn.includes("assert_daemon_health_or_rollback() {"),
+		"assert_daemon_health_or_rollback helper should be defined before main()",
+	);
 	assert.match(
-		t15Block,
+		healthFn,
 		/systemctl is-active iago-os-v2-daemon\.service/,
-		"T+15 must check systemctl is-active before the T+30 deauth",
+		"health gate must check systemctl is-active",
 	);
 	assert.match(
-		t15Block,
+		healthFn,
 		/grep -F dist\/daemon\/main\.js/,
-		"T+15 must run the single-daemon-process matcher (PHASE-2-EVIDENCE block (k) parity)",
+		"health gate must run the single-daemon-process matcher (block (k) parity)",
+	);
+	assert.match(
+		healthFn,
+		/trigger_rollback/,
+		"health gate must fail closed via trigger_rollback",
+	);
+
+	// Both T+15 and T+30 (resume-safety) must invoke the gate before the
+	// irreversible deauth.
+	assert.match(
+		t15Block,
+		/assert_bot_reachable_or_rollback "T\+15"/,
+		"T+15 must invoke the fail-closed bot-reachability gate (not a bare ack)",
 	);
 	assert.match(
 		t15Block,
-		/trigger_rollback/,
-		"T+15 health checks must fail closed via trigger_rollback",
+		/assert_daemon_health_or_rollback "T\+15"/,
+		"T+15 must invoke the daemon-health gate",
 	);
+	assert.match(
+		t30Block,
+		/assert_daemon_health_or_rollback "T\+30/,
+		"T+30 must re-assert the daemon-health gate so RESUME_FROM=T+30 cannot bypass it",
+	);
+
 	// The suspended Phase-3 5-step sequence must NOT be run as a gate here.
 	assert.doesNotMatch(
 		t15Block,
@@ -941,6 +975,160 @@ test("25. cutover.sh T+15 is a fail-closed acceptance gate, not the suspended 5-
 		/\d\.\s*\/sessions\b/,
 		"T+15 must not run /sessions (Phase 3 — absent from the command parser)",
 	);
+});
+
+test("26. cutover.sh T+15 bot-reachability is fail-closed (no /agents reply -> rollback)", () => {
+	const env = newTestEnv();
+	try {
+		// #2 regression: the T+15 reachability check was a bare Enter ack — an
+		// operator who got NO /agents reply could still advance into the
+		// irreversible deauth. Post-fix it is a y/n prompt that rolls back on
+		// non-y, matching the documented T+15 reachability rollback trigger.
+		const r = runCutover(env, {
+			env: {
+				IAGO_CUTOVER_DRY_RUN: "1",
+				IAGO_TELEGRAM_USER_ID: "12345",
+				IAGO_CUTOVER_RESUME_FROM: "T+15",
+				IAGO_CUTOVER_T15_DRY_RUN_REPLY: "n",
+			},
+			timeout: 120_000,
+		});
+		const text = `${r.stdout}\n${r.stderr}`;
+		assert.strictEqual(
+			r.status,
+			2,
+			`expected exit 2 (rollback), got ${r.status}; tail: ${text.slice(-800)}`,
+		);
+		assert.match(text, /ROLLBACK TRIGGERED/);
+		assert.match(text, /operator replied 'n' at T\+15 bot-reachability check/);
+		assert.doesNotMatch(text, /\[T\+30\]/);
+	} finally {
+		destroyTestEnv(env);
+	}
+});
+
+test("27. cutover.sh T+15 rolls back on a duplicated daemon (split-brain, >1 iago process)", () => {
+	const env = newTestEnv();
+	try {
+		const r = runCutover(env, {
+			env: {
+				IAGO_CUTOVER_DRY_RUN: "1",
+				IAGO_TELEGRAM_USER_ID: "12345",
+				IAGO_CUTOVER_RESUME_FROM: "T+15",
+				STUB_INJECT_T15_PROC_COUNT: "2",
+			},
+			timeout: 120_000,
+		});
+		const text = `${r.stdout}\n${r.stderr}`;
+		assert.strictEqual(
+			r.status,
+			2,
+			`expected exit 2 (rollback), got ${r.status}; tail: ${text.slice(-800)}`,
+		);
+		assert.match(text, /ROLLBACK TRIGGERED/);
+		assert.match(
+			text,
+			/T\+15: expected exactly one iago-owned daemon process.*found '2'/,
+		);
+		assert.doesNotMatch(text, /\[T\+30\]/);
+	} finally {
+		destroyTestEnv(env);
+	}
+});
+
+test("28. cutover.sh T+15 fails closed when the daemon-process query errors (pipefail propagation)", () => {
+	const env = newTestEnv();
+	try {
+		// Load-bearing branch: a ps/ssh failure (or zero rows, where grep -c
+		// exits 1 under pipefail) makes vssh non-zero -> production's
+		// `if ! daemon_procs=$(...)` sets it to "" -> rollback.
+		const r = runCutover(env, {
+			env: {
+				IAGO_CUTOVER_DRY_RUN: "1",
+				IAGO_TELEGRAM_USER_ID: "12345",
+				IAGO_CUTOVER_RESUME_FROM: "T+15",
+				STUB_FAIL_T15_PROC_QUERY: "1",
+			},
+			timeout: 120_000,
+		});
+		const text = `${r.stdout}\n${r.stderr}`;
+		assert.strictEqual(
+			r.status,
+			2,
+			`expected exit 2 (rollback), got ${r.status}; tail: ${text.slice(-800)}`,
+		);
+		assert.match(text, /ROLLBACK TRIGGERED/);
+		assert.match(
+			text,
+			/T\+15: expected exactly one iago-owned daemon process.*found ''/,
+		);
+		assert.doesNotMatch(text, /\[T\+30\]/);
+	} finally {
+		destroyTestEnv(env);
+	}
+});
+
+test("29. cutover.sh T+15 rolls back when systemd reports the daemon inactive", () => {
+	const env = newTestEnv();
+	try {
+		// Reachability passes (default y); the machine is-active leg must fail
+		// closed when `systemctl is-active` != active.
+		const r = runCutover(env, {
+			env: {
+				IAGO_CUTOVER_DRY_RUN: "1",
+				IAGO_TELEGRAM_USER_ID: "12345",
+				IAGO_CUTOVER_RESUME_FROM: "T+15",
+				STUB_FAIL_TAILSCALE_PATTERN:
+					"systemctl is-active iago-os-v2-daemon.service",
+			},
+			timeout: 120_000,
+		});
+		const text = `${r.stdout}\n${r.stderr}`;
+		assert.strictEqual(
+			r.status,
+			2,
+			`expected exit 2 (rollback), got ${r.status}; tail: ${text.slice(-800)}`,
+		);
+		assert.match(text, /ROLLBACK TRIGGERED/);
+		assert.match(text, /daemon not active at T\+15/);
+		assert.doesNotMatch(text, /\[T\+30\]/);
+	} finally {
+		destroyTestEnv(env);
+	}
+});
+
+test("30. cutover.sh RESUME_FROM=T+30 still enforces the daemon-health gate (resume cannot bypass it)", () => {
+	const env = newTestEnv();
+	try {
+		// #5 regression: the T+15 gate is wrapped in `if should_run "T+15"`, so a
+		// RESUME_FROM=T+30 run skipped it and reached the irreversible deauth with
+		// zero health checks. Post-fix the gate is re-asserted at the top of T+30.
+		const r = runCutover(env, {
+			env: {
+				IAGO_CUTOVER_DRY_RUN: "1",
+				IAGO_TELEGRAM_USER_ID: "12345",
+				IAGO_CUTOVER_RESUME_FROM: "T+30",
+				IAGO_CUTOVER_T15_DRY_RUN_REPLY: "y",
+				STUB_INJECT_T15_PROC_COUNT: "0",
+			},
+			timeout: 120_000,
+		});
+		const text = `${r.stdout}\n${r.stderr}`;
+		assert.strictEqual(
+			r.status,
+			2,
+			`expected exit 2 (rollback), got ${r.status}; tail: ${text.slice(-800)}`,
+		);
+		assert.match(text, /ROLLBACK TRIGGERED/);
+		assert.match(
+			text,
+			/T\+30 \(pre-deauth re-check\): expected exactly one iago-owned daemon process/,
+		);
+		// The irreversible deauth prompt must NOT have been reached.
+		assert.doesNotMatch(text, /\[T\+30\] MANUAL: run revoke-whatsapp/);
+	} finally {
+		destroyTestEnv(env);
+	}
 });
 
 test("16. jq patch expression unit test — shell jq command produces expected JSON byte-for-byte", () => {
