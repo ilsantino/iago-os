@@ -88,7 +88,7 @@
 		"expected_count_per_24h": 1,
 		"floor_applies": false,
 		"criticality": "expected",
-		"extras_keys": ["handleId", "reason", "exitCode"],
-		"note": "Emitted at boot-recovery — reconciling PRIOR-run agents (cleanShutdowns->graceful, crashes->crash; daemon/main.ts:2906-2919) — and on autoStart-agent shutdown (main.ts:3333). NOT per cron-fired completion (the cron pr-triage PTY stays alive across dispatches). reason is graceful | crash | recycle; for a healthy pr-triage run it is \"graceful\" with exitCode 0. The original Plan 05 sketch listed [agentId, exitCode]; the real emitter keys on handleId (resolve agentId via the matching agent-spawned event)."
+		"extras_keys": ["handleId", "reason"],
+		"note": "Emitted at boot-recovery — reconciling PRIOR-run agents (cleanShutdowns->graceful, crashes->crash; daemon/main.ts:2906-2919) — and on autoStart-agent shutdown (main.ts:3333). NOT per cron-fired completion (the cron pr-triage PTY stays alive across dispatches), so a healthy pr-triage-only capture has NONE of this kind. The emitter writes only {handleId, reason} (reason is graceful | crash | recycle); the telemetry union has an optional exitCode?: number but NO emit site ever populates it, so it is omitted from extras_keys. The original Plan 05 sketch listed [agentId, exitCode]; the real emitter keys on handleId (resolve agentId via the matching agent-spawned event)."
 	}
 ]

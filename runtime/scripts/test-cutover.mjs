@@ -963,6 +963,19 @@ test("25. cutover.sh T+15 is a fail-closed acceptance gate, not the suspended 5-
 		/assert_daemon_health_or_rollback "T\+30/,
 		"T+30 must re-assert the daemon-health gate so RESUME_FROM=T+30 cannot bypass it",
 	);
+	assert.match(
+		t30Block,
+		/assert_bot_reachable_or_rollback "T\+30/,
+		"T+30 must re-confirm bot reachability immediately before the irreversible deauth",
+	);
+	// Reachability at T+30 must be UNCONDITIONAL — not guarded by the removed
+	// t15_gate_ran flag — so a normal run re-proves reachability at the moment of
+	// the cut, not ~15 min earlier at T+15.
+	assert.doesNotMatch(
+		body,
+		/t15_gate_ran/,
+		"the t15_gate_ran guard must be fully removed (T+30 gate is unconditional)",
+	);
 
 	// The suspended Phase-3 5-step sequence must NOT be run as a gate here.
 	assert.doesNotMatch(
@@ -1123,6 +1136,47 @@ test("30. cutover.sh RESUME_FROM=T+30 still enforces the daemon-health gate (res
 		assert.match(
 			text,
 			/T\+30 \(pre-deauth re-check\): expected exactly one iago-owned daemon process/,
+		);
+		// The irreversible deauth prompt must NOT have been reached.
+		assert.doesNotMatch(text, /\[T\+30\] MANUAL: run revoke-whatsapp/);
+	} finally {
+		destroyTestEnv(env);
+	}
+});
+
+test("31. cutover.sh re-confirms bot reachability at T+30 even when T+15 passed (normal-run pre-deauth re-check)", () => {
+	const env = newTestEnv();
+	try {
+		// Important regression: the T+30 reachability re-check was guarded by
+		// t15_gate_ran, so on a normal run the last reachability proof was at T+15
+		// (~15 min before the irreversible deauth) — a Telegram-path break in that
+		// gap could strand Santiago with no comms after deauth. Now reachability is
+		// re-confirmed UNCONDITIONALLY at T+30. Pass it at T+15 (T15 reply y) but
+		// fail it at T+30 (T30 reply n) and assert rollback fires before the deauth
+		// prompt. RESUME_FROM=T+15 keeps the run fast and exercises both gates.
+		const r = runCutover(env, {
+			env: {
+				IAGO_CUTOVER_DRY_RUN: "1",
+				IAGO_TELEGRAM_USER_ID: "12345",
+				IAGO_CUTOVER_RESUME_FROM: "T+15",
+				IAGO_CUTOVER_T15_DRY_RUN_REPLY: "y",
+				IAGO_CUTOVER_T30_DRY_RUN_REPLY: "n",
+			},
+			timeout: 120_000,
+		});
+		const text = `${r.stdout}\n${r.stderr}`;
+		assert.strictEqual(
+			r.status,
+			2,
+			`expected exit 2 (rollback), got ${r.status}; tail: ${text.slice(-800)}`,
+		);
+		assert.match(text, /ROLLBACK TRIGGERED/);
+		// T+15 reachability passed first...
+		assert.match(text, /OK operator confirmed bot reachable at T\+15/);
+		// ...then T+30 reachability failed and rolled back.
+		assert.match(
+			text,
+			/operator replied 'n' at T\+30 \(pre-deauth re-check\) bot-reachability check/,
 		);
 		// The irreversible deauth prompt must NOT have been reached.
 		assert.doesNotMatch(text, /\[T\+30\] MANUAL: run revoke-whatsapp/);

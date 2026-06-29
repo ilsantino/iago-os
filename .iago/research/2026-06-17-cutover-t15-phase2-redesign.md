@@ -4,7 +4,8 @@
 definition below is approved. Daemon liveness (`systemctl is-active` + exactly
 one `iago`-owned daemon process) and bot reachability (`/agents` reply) now fail
 closed BEFORE the irreversible T+30 WhatsApp deauth (enforced in
-`runtime/deploy/cutover.sh` §T+15, re-asserted at §T+30 for resumed runs). The
+`runtime/deploy/cutover.sh` §T+15, re-asserted at §T+30 immediately before the
+deauth on every run). The
 pr-triage **workflow-execution** proof is deliberately deferred to the first
 post-cutover 14:00 UTC cron tick — a forward-fix path, NOT rollback-covered.
 This residual is physically unavoidable: pr-triage is a cron-driven,

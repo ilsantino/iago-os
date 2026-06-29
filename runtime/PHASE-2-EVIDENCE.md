@@ -122,9 +122,14 @@ failed and you had to undo it.
 
 ### (f) TELEGRAM SCREENSHOT (criterion #8) — `[ ]`
 
-Phone screenshot of the v2 bot replying to `/agents` (it lists the registered
-`pr-triage` handle) — and, if a real approval surfaced during the cutover
-window, the `/approve` inline-keyboard callback. This proves the
+Phone screenshot of the v2 bot replying to `/agents` — **any reply proves
+reachability**, including the healthy Phase-2 `No agents registered.`
+(`pr-triage` is `autoStart: false` and registers only transiently during the
+14:00 UTC cron tick, so an empty agent list is the expected state at a typical
+cutover time; do NOT treat it as a failure). The `pr-triage` handle appears in
+the list only if the screenshot is captured during an active cron dispatch —
+optional, not required. If a real approval surfaced during the cutover window,
+also capture the `/approve` inline-keyboard callback. This proves the
 systemd-managed bot is reachable Telegram → Tailscale → VPS. Paste the uploaded
 image link below.
 
@@ -219,15 +224,18 @@ boundary and read empty on a live daemon.)
 Expected kinds (see `integration/phase-2-vps.fixtures/expected-events.json`):
 **always present** — `daemon-start` (with `runUnder: "systemd"`) and
 `cred-bootstrap-loaded` (with `credentialsLoaded` array), the two boot-coupled
-kinds. **Dispatch-coupled** (present only if a 14:00 UTC cron tick — and, for the
-cron-fired branch, an open PR — fell in the window) — `cron-fired` OR
-`cron-skipped`, then `agent-registered` + `agent-spawned` (both emitted in the
-spawn flow, NOT at boot) and `task-claimed`/`task-resolved`. The
-successful-Telegram-send signal is the resolved `pr-triage-send__*.json` envelope
-+ the absence of `pr-triage-telegram-send-failed` — not a dedicated telemetry
-kind. **Presence ≠ liveness:** this excerpt proves the daemon *emitted* these
-kinds, not that it stayed healthy all window — ongoing liveness is proven by block
-(g) journalctl + block (k) pgrep, not by telemetry presence.
+kinds. **Cron-conditional** (present only if a 14:00 UTC cron tick fell in the
+window) — `cron-fired` OR `cron-skipped`; and, **only on a `cron-fired` tick that
+produced a task** (an open PR), `task-claimed`/`task-resolved`. **autoStart-only**
+(emitted once per boot in the autoStart loop, ONLY for an `autoStart: true`
+agent) — `agent-registered` + `agent-spawned`; these are **absent for the cron
+`pr-triage` path** (`pr-triage` is `autoStart: false`), so a pr-triage-only
+capture has none of them. The successful-Telegram-send signal is the resolved
+`pr-triage-send__*.json` envelope + the absence of `pr-triage-telegram-send-failed`
+— not a dedicated telemetry kind. **Presence ≠ liveness:** this excerpt proves
+the daemon *emitted* these kinds, not that it stayed healthy all window — ongoing
+liveness is proven by block (g) journalctl + block (k) pgrep, not by telemetry
+presence.
 
 **Evidence:**
 

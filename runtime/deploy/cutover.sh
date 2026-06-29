@@ -106,10 +106,13 @@ fi
 # drive the rollback-trigger test case without aborting at T-15.
 T10_DRY_RUN_REPLY="${IAGO_CUTOVER_DRY_RUN_REPLY:-y}"
 
-# T+15 (and the T+30 resume re-check) bot-reachability prompt gets its own
-# dry-run reply knob so a test can drive the reachability rollback path
-# independently of the T+10 reply. Default "y" = bot replied (reachable).
+# The T+15 and T+30 bot-reachability prompts each get their own dry-run reply
+# knob so a test can drive either reachability rollback path independently of the
+# T+10 reply (and of each other — T+30 re-confirms reachability immediately
+# before the irreversible deauth). Default "y" = bot replied (reachable); the
+# T+30 knob defaults to the T+15 reply.
 T15_DRY_RUN_REPLY="${IAGO_CUTOVER_T15_DRY_RUN_REPLY:-y}"
+T30_DRY_RUN_REPLY="${IAGO_CUTOVER_T30_DRY_RUN_REPLY:-$T15_DRY_RUN_REPLY}"
 
 # ============================================================================
 # Helpers
@@ -367,8 +370,8 @@ trigger_rollback() {
 # contract so the immediately-pre-deauth reachability check is enforcing, not a
 # bare ack.
 assert_bot_reachable_or_rollback() {
-  local label="$1" reply
-  read_or_skip "[${label}] Press y if the bot REPLIED to /agents (any reply, incl. \"No agents registered.\"), n if no reply / unreachable: " reply "$T15_DRY_RUN_REPLY"
+  local label="$1" dry_default="${2:-$T15_DRY_RUN_REPLY}" reply
+  read_or_skip "[${label}] Press y if the bot REPLIED to /agents (any reply, incl. \"No agents registered.\"), n if no reply / unreachable: " reply "$dry_default"
   if [[ "$reply" != "y" ]]; then
     trigger_rollback "operator replied '${reply}' at ${label} bot-reachability check"
   fi
@@ -414,7 +417,6 @@ assert_daemon_health_or_rollback() {
 # ============================================================================
 
 main() {
-  local t15_gate_ran=0
   echo "iaGO-OS v2 cutover — wall-clock target 60 min"
   echo "VPS: ${VPS_USER}@${VPS_HOST}"
   echo "SCRIPT_DIR: ${SCRIPT_DIR}"
@@ -675,12 +677,12 @@ main() {
   # parser (runtime/telegram/commands.ts). It must NOT gate the run-up to the
   # irreversible T+30 deauth. See migration/02-cutover-runbook.md T+15 and
   # .iago/research/2026-06-17-cutover-t15-phase2-redesign.md (pr-triage-based
-  # acceptance redesign). Bot-reachability fails closed at BOTH T+10 and T+15;
-  # only the real pr-triage workflow proof is deferred post-cutover to the next
-  # 14:00 cron tick. That deferral is ACCEPTED for Phase 2 (2026-06-29,
-  # Santiago) — see the redesign research doc Status block.
+  # acceptance redesign). Bot-reachability fails closed at T+10, T+15, AND again
+  # at T+30 (immediately before the irreversible deauth); only the real pr-triage
+  # workflow proof is deferred post-cutover to the next 14:00 cron tick. That
+  # deferral is ACCEPTED for Phase 2 (2026-06-29, Santiago) — see the redesign
+  # research doc Status block.
   if should_run "T+15"; then
-    t15_gate_ran=1
     echo ""
     echo "[T+15] Operator: confirm the v2 bot is still reachable (Phase 2 subset)."
     cat <<'TEST_BLOCK'
@@ -705,15 +707,18 @@ TEST_BLOCK
   # T+30 revoke whatsapp
   if should_run "T+30"; then
     echo ""
-    # Resume-safety: a RESUME_FROM=T+30 run skips the T+15 block, and the daemon
-    # could crash between T+15 and T+30, so re-assert the acceptance gate HERE —
-    # the irreversible WhatsApp deauth must never run against a missing/unhealthy
-    # or duplicated daemon, even on a resumed invocation. If T+15 did not run
-    # this invocation, also re-confirm bot reachability first.
-    if [[ "$t15_gate_ran" != "1" ]]; then
-      assert_bot_reachable_or_rollback "T+30 (resume re-check)"
-    fi
+    # Pre-deauth acceptance gate, re-asserted UNCONDITIONALLY at the moment of the
+    # irreversible step (every run, not just resumed ones). Reachability is
+    # re-confirmed HERE — not only at T+15, ~15 wall-clock minutes earlier —
+    # because the Telegram -> Tailscale -> VPS path can break in the T+15 -> T+30
+    # gap (token/long-poll/egress) while the daemon process stays active;
+    # deauthing WhatsApp against an unreachable bot strands Santiago with no
+    # working comms and is NOT rollback-recoverable. Daemon-health is re-checked
+    # too (a RESUME_FROM=T+30 run skips T+15, and the daemon could crash in the
+    # gap). A distinct NDJSON marker records that this gate ran before the cut.
+    assert_bot_reachable_or_rollback "T+30 (pre-deauth re-check)" "$T30_DRY_RUN_REPLY"
     assert_daemon_health_or_rollback "T+30 (pre-deauth re-check)"
+    ndjson_write cutover-step T+30-pre-deauth-gate ok
     echo "[T+30] MANUAL: run revoke-whatsapp.sh per ${MIGRATION_DIR}/02-whatsapp-deauth.md (Plan 02b artifact)"
     echo "         Required env: WABA_ID, APP_ID, APP_SECRET, SYSTEM_USER_TOKEN."
     read_or_skip "Press Enter once revoke-whatsapp.sh succeeds: " _ack
