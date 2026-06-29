@@ -85,9 +85,8 @@ surface).
 cd runtime && node --test scripts/test-cutover.mjs 2>&1 | tail -40
 ```
 
-Expected: all cutover dry-run cases pass (23 numbered cases as of this
-writing — the count grows as regression cases are added; the gate is "all
-pass", not a fixed count). This is the staging-VPS substitute (see § 8 footer
+Expected: all cutover dry-run cases pass (the full numbered regression suite —
+the count grows as cases are added; the gate is "all pass", not a fixed count). This is the staging-VPS substitute (see § 8 footer
 — no staging VPS per Santiago override).
 
 **Evidence:**

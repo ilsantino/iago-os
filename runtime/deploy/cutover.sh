@@ -388,9 +388,27 @@ assert_daemon_health_or_rollback() {
   local label="$1"
   verify_lock_still_ours
 
+  # Both machine checks retry once on a transient ssh/tailscale blip before
+  # failing closed (shell-deploy.md "Retry-once on transient ... checks"; same
+  # pattern as T+05). A single hiccup immediately before the IRREVERSIBLE deauth
+  # must not needlessly tear down a healthy daemon and force a bot-token
+  # re-rotation; a genuine failure still rolls back after the retry.
+  local attempt
+
   # (1) Daemon active under systemd (runbook rollback trigger:
   #     "systemctl is-active != active").
-  vssh "systemctl is-active iago-os-v2-daemon.service" \
+  local active=false
+  for attempt in 1 2; do
+    if vssh "systemctl is-active iago-os-v2-daemon.service"; then
+      active=true
+      break
+    fi
+    if (( attempt == 1 )); then
+      echo "  RETRY systemctl is-active not active at ${label} — sleeping 2s before retry"
+      sleep 2
+    fi
+  done
+  [[ "$active" == "true" ]] \
     || trigger_rollback "daemon not active at ${label} (pre-deauth acceptance gate)"
   echo "  OK iago-os-v2-daemon.service is active"
 
@@ -401,10 +419,17 @@ assert_daemon_health_or_rollback() {
   #     pipefail so a ps/grep failure — or a zero count, where grep -c exits 1 —
   #     propagates instead of masking as an empty read; zero, more-than-one, or
   #     a query error all fail closed -> rollback.
-  local daemon_procs
-  if ! daemon_procs=$(vssh "bash -c 'set -o pipefail; ps -o user,pid,args -ww -C node | grep -F dist/daemon/main.js | grep -c \"^iago \"'"); then
+  local daemon_procs=""
+  for attempt in 1 2; do
+    if daemon_procs=$(vssh "bash -c 'set -o pipefail; ps -o user,pid,args -ww -C node | grep -F dist/daemon/main.js | grep -c \"^iago \"'"); then
+      break
+    fi
     daemon_procs=""
-  fi
+    if (( attempt == 1 )); then
+      echo "  RETRY daemon-process query failed at ${label} — sleeping 2s before retry"
+      sleep 2
+    fi
+  done
   daemon_procs="${daemon_procs//[[:space:]]/}"
   if [[ "$daemon_procs" != "1" ]]; then
     trigger_rollback "${label}: expected exactly one iago-owned daemon process (pre-deauth acceptance gate), found '${daemon_procs}'"
@@ -643,7 +668,18 @@ main() {
     # `level":50`, `level":"error"`, `level":"fatal"`, `UnhandledPromise...`,
     # `"err":`). The v2 daemon is Node 20; the prior pattern only caught
     # Go/Python/systemd-style errors.
-    if vssh "bash -c 'set -o pipefail; journalctl -u iago-os-v2-daemon.service --since \"5 minutes ago\" --no-pager | grep -qE \"panic|Error: |Traceback|FATAL|terminated abnormally|level\\\":50|level\\\":\\\"error\\\"|level\\\":\\\"fatal\\\"|UnhandledPromiseRejection|\\\"err\\\":\"'"; then
+    # Round-5 fix: the prior `if vssh "...journalctl | grep -qE panic"; then
+    # trigger_rollback` construct failed OPEN on a journalctl QUERY failure — a
+    # failed query yields no output, grep finds no match, the pipe exits
+    # non-zero, the `if` is false, and the script treated a broken query as
+    # "clean" and advanced toward the irreversible deauth. pipefail cannot fix a
+    # match-triggers-rollback construct. Capture the journal separately (fail
+    # closed if the query itself errors), then grep the captured output locally.
+    local journal_out
+    if ! journal_out=$(vssh "journalctl -u iago-os-v2-daemon.service --since '5 minutes ago' --no-pager"); then
+      trigger_rollback "T+08: journalctl query failed — cannot confirm the daemon journal is clean"
+    fi
+    if printf '%s\n' "$journal_out" | grep -qE "panic|Error: |Traceback|FATAL|terminated abnormally|level\":50|level\":\"error\"|level\":\"fatal\"|UnhandledPromiseRejection|\"err\":"; then
       trigger_rollback "T+08: failure/stack-trace pattern observed in daemon journal"
     fi
     echo "  OK no failure/stack-trace pattern in daemon journal"
@@ -660,12 +696,12 @@ main() {
   if should_run "T+10"; then
     echo ""
     echo "[T+10] MANUAL: send /agents to v2 bot from phone."
-    local reply
-    read_or_skip "Press y if bot replies with agent list, n to roll back: " reply "$T10_DRY_RUN_REPLY"
-    if [[ "$reply" != "y" ]]; then
-      trigger_rollback "operator replied '${reply}' at T+10 bot-reply check"
-    fi
-    echo "  OK operator confirmed bot reply"
+    # First reachability gate (right after the T+02 token rotation). Uses the
+    # shared helper so the wording matches T+15/T+30: pr-triage is
+    # autoStart:false, so an EMPTY agent list ("No agents registered.") is the
+    # healthy Phase-2 reply — ANY reply proves reachability; only a no-reply /
+    # unreachable bot rolls back.
+    assert_bot_reachable_or_rollback "T+10" "$T10_DRY_RUN_REPLY"
     ndjson_write cutover-step T+10 ok
   fi
 

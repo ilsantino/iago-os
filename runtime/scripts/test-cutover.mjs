@@ -10,11 +10,14 @@
  * expects. Tests assert against (a) the script's exit status and (b)
  * the stub log contents.
  *
- * 15 test cases: 1–10 core flow (happy-path, refusal, resume, rollback,
- * flag matrix) + 11–15 regression (M1 skip, octal bug, Codex P0×2, lock
- * hijack). Test 16 is a standalone unit test of the jq patch expression
- * against fixture files (exercises the shell command itself, independent of
- * the VPS harness).
+ * 30+ numbered test cases (the count grows as regressions are added; the gate
+ * is "all pass", not a fixed total): core flow (happy-path, refusal, resume,
+ * rollback, flag matrix), regression cases (M1 skip, octal bug, Codex P0×2, lock
+ * hijack, T+08/T+50 journal triggers), and the T+15/T+30 pre-deauth
+ * acceptance-gate suite (daemon health, bot reachability, resume-safety, the
+ * T+08 query-failure fail-closed path). Test 16 is a standalone unit test of the
+ * jq patch expression against fixture files (exercises the shell command itself,
+ * independent of the VPS harness).
  *
  * Run under Node's built-in test runner:
  *   node --test runtime/scripts/test-cutover.mjs
@@ -1180,6 +1183,37 @@ test("31. cutover.sh re-confirms bot reachability at T+30 even when T+15 passed 
 		);
 		// The irreversible deauth prompt must NOT have been reached.
 		assert.doesNotMatch(text, /\[T\+30\] MANUAL: run revoke-whatsapp/);
+	} finally {
+		destroyTestEnv(env);
+	}
+});
+
+test("32. cutover.sh T+08 fails closed when the journalctl failure-pattern query errors", () => {
+	const env = newTestEnv();
+	try {
+		// Round-4 finding: the old `if vssh "...journalctl | grep -qE panic"; then
+		// rollback` construct failed OPEN on a journalctl QUERY failure (a failed
+		// query yields no match -> if-false -> proceed). Post-fix the journal is
+		// captured separately and a query error rolls back. Inject a T+08
+		// journalctl query failure and assert rollback (the daemon-start presence
+		// check at line ~625 passes first; the failure-pattern capture errors).
+		const r = runCutover(env, {
+			env: {
+				IAGO_CUTOVER_DRY_RUN: "1",
+				IAGO_TELEGRAM_USER_ID: "12345",
+				IAGO_CUTOVER_RESUME_FROM: "T+08",
+				STUB_FAIL_T08_JOURNAL: "1",
+			},
+			timeout: 120_000,
+		});
+		const text = `${r.stdout}\n${r.stderr}`;
+		assert.strictEqual(
+			r.status,
+			2,
+			`expected exit 2 (rollback), got ${r.status}; tail: ${text.slice(-800)}`,
+		);
+		assert.match(text, /ROLLBACK TRIGGERED/);
+		assert.match(text, /T\+08: journalctl query failed/);
 	} finally {
 		destroyTestEnv(env);
 	}

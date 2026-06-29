@@ -204,24 +204,26 @@ case "$ARGS" in
     echo "daemon-start observed"
     exit 0
     ;;
-  *"journalctl"*"panic"*)
-    # T+08 failure-pattern grep: production code is
-    #   bash -c 'set -o pipefail; journalctl ... | grep -qE "panic|..."'
-    # (C-1 round-3 fix wraps the remote pipe in bash -c + pipefail.)
-    # Default behavior: pretend grep found nothing (exit 1 = no match).
-    # When STUB_INJECT_DAEMON_FAILURE=1, pretend grep matched (exit 0)
-    # so trigger_rollback fires — regression test for journal trigger gap.
-    # C-1 round-3 regression: when STUB_FAIL_JOURNALCTL_PATTERN is set, exit
-    # non-zero to simulate journalctl failing on the remote side. With
-    # pipefail on, the whole pipe inherits the failure; without pipefail
-    # (pre-fix) the failure would be masked by grep exiting 1 on empty stdin.
-    if [[ -n "${STUB_FAIL_JOURNALCTL_PATTERN:-}" ]]; then
+  *"journalctl"*"--no-pager"*)
+    # T+08 failure-pattern capture (cutover.sh §T+08, round-5 fix). Production now
+    # captures the journal via vssh and greps it LOCALLY (closing the fail-OPEN
+    # match-triggers-rollback construct), so the remote command is a bare
+    # `journalctl ... --no-pager` with no grep. Model both fail paths:
+    #   STUB_FAIL_T08_JOURNAL=1      -> exit non-zero: journalctl QUERY failure,
+    #                                   so the script fails closed and rolls back.
+    #   STUB_INJECT_DAEMON_FAILURE=1 -> emit a line containing a failure pattern
+    #                                   so the LOCAL grep matches -> rollback.
+    # (T+50 uses `-o cat | wc -l`, not --no-pager, so it never reaches here; the
+    # T+08 daemon-start presence check uses `-o cat` + grep daemon-start.)
+    if [[ -n "${STUB_FAIL_T08_JOURNAL:-}" ]]; then
       exit 1
     fi
     if [[ "${STUB_INJECT_DAEMON_FAILURE:-0}" == "1" ]]; then
+      echo "Jun 29 14:00:00 srv node[1234]: panic: simulated daemon failure"
       exit 0
     fi
-    exit 1
+    echo "Jun 29 14:00:00 srv node[1234]: server listening; no errors"
+    exit 0
     ;;
   *"journalctl"*"wc -l"*)
     # T+50 error-count: production code is
