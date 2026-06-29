@@ -677,7 +677,8 @@ main() {
   # .iago/research/2026-06-17-cutover-t15-phase2-redesign.md (pr-triage-based
   # acceptance redesign). Bot-reachability fails closed at BOTH T+10 and T+15;
   # only the real pr-triage workflow proof is deferred post-cutover to the next
-  # 14:00 cron tick.
+  # 14:00 cron tick. That deferral is ACCEPTED for Phase 2 (2026-06-29,
+  # Santiago) — see the redesign research doc Status block.
   if should_run "T+15"; then
     t15_gate_ran=1
     echo ""

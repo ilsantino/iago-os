@@ -1,9 +1,18 @@
 # Cutover T+15 acceptance — Phase 2 redesign (follow-up)
 
-**Status:** OPEN — needs Santiago sign-off on the Phase 2 cutover-acceptance
-definition before implementation.
+**Status:** ACCEPTED (2026-06-29, Santiago) — the Phase-2 cutover-acceptance
+definition below is approved. Daemon liveness (`systemctl is-active` + exactly
+one `iago`-owned daemon process) and bot reachability (`/agents` reply) now fail
+closed BEFORE the irreversible T+30 WhatsApp deauth (enforced in
+`runtime/deploy/cutover.sh` §T+15, re-asserted at §T+30 for resumed runs). The
+pr-triage **workflow-execution** proof is deliberately deferred to the first
+post-cutover 14:00 UTC cron tick — a forward-fix path, NOT rollback-covered.
+This residual is physically unavoidable: pr-triage is a cron-driven,
+`autoStart:false` agent, so there is no live registration to verify
+synchronously at cutover time. PR #98's dual-adversarial gate will keep flagging
+the residual as Critical; that is the accepted tradeoff, not an open defect.
 **Raised by:** PR #98 (plan 05a evidence template) dual-adversarial gate, round 6
-(Critical). **Owner:** TBD. **Created:** 2026-06-17.
+(Critical). **Owner:** Santiago. **Created:** 2026-06-17. **Decided:** 2026-06-29.
 
 ## Problem
 
