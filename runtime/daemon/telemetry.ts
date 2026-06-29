@@ -170,9 +170,14 @@ export type DaemonEvent =
 			 * env-var NAMES that were re-read but kept the same value;
 			 * `errors` carries env-var NAMES that failed to read.
 			 * NEVER carries credential values (matches Plan 01 Task 4 C2
-			 * posture). Operators consume via `journalctl ... | grep
-			 * cred-reload-fired` to confirm a credential rotation took
-			 * effect without a daemon restart.
+			 * posture). Operators consume this from the daily telemetry NDJSON
+			 * (e.g. `grep cred-reload-fired
+			 * /var/lib/iago-os/daemon-state/telemetry/$(date -u +%F).ndjson`)
+			 * to confirm a credential rotation took effect without a daemon
+			 * restart. emit() appendFiles to the NDJSON only and reaches the
+			 * journal solely on the write-FAILURE path, so a `journalctl`
+			 * grep is empty on a healthy reload — read the NDJSON, not the
+			 * journal.
 			 *
 			 * SCHEMA NOTE (F16): the three string arrays here carry
 			 * ENV-VAR NAMES (e.g., `IAGO_TELEGRAM_BOT_TOKEN`). The

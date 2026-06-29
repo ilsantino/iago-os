@@ -24,6 +24,13 @@
 #     the bash -c 'set -o pipefail; journalctl | wc -l' or
 #     bash -c 'set -o pipefail; journalctl | grep' shape propagates the
 #     journalctl failure through wc/grep and back to the script)
+#   * honoring STUB_INJECT_T15_PROC_COUNT to control the daemon process
+#     count returned by the T+15/T+30 proc-ownership check (tests 24, 27,
+#     28, 29, 30, 31)
+#   * honoring STUB_FAIL_T15_PROC_QUERY to simulate a ps/ssh query error
+#     in the same T+15/T+30 proc-ownership case (test 30)
+#   * honoring STUB_FAIL_T08_JOURNAL to fail the T+08 journalctl --no-pager
+#     capture and trigger fail-closed rollback (test 32)
 
 set +e
 
@@ -148,6 +155,28 @@ case "$ARGS" in
       exit 3
     fi
     ;;
+  *"dist/daemon/main.js"*)
+    # T+15 / T+30 single-iago-daemon-process acceptance check. Production:
+    #   bash -c 'set -o pipefail; ps -o user,pid,args -ww -C node \
+    #     | grep -F dist/daemon/main.js | grep -c "^iago "'
+    # Under pipefail, a ZERO count makes the final `grep -c` exit 1, so the
+    # whole pipe (and vssh) exits non-zero and production's
+    # `if ! daemon_procs=$(...)` fallback sets daemon_procs="" -> rollback.
+    # Model that faithfully so the fail-closed branch is actually exercised:
+    #   STUB_INJECT_T15_PROC_COUNT=N  -> N iago-owned procs (default 1)
+    #   STUB_FAIL_T15_PROC_QUERY=1    -> simulate ps/ssh query error (exit 3)
+    if [[ "${STUB_FAIL_T15_PROC_QUERY:-0}" == "1" ]]; then
+      exit 3
+    fi
+    _t15_count="${STUB_INJECT_T15_PROC_COUNT:-1}"
+    if [[ "$_t15_count" -le 0 ]]; then
+      # grep -c prints 0 and exits 1; pipefail propagates the non-zero exit.
+      echo "0"
+      exit 1
+    fi
+    echo "$_t15_count"
+    exit 0
+    ;;
   *"systemctl stop iago-os-v2-daemon"*)
     if [[ "${STUB_FAIL_STOP_V2:-0}" == "1" ]]; then
       # Simulate `systemctl stop` timing out / failing without taking the
@@ -182,24 +211,26 @@ case "$ARGS" in
     echo "daemon-start observed"
     exit 0
     ;;
-  *"journalctl"*"panic"*)
-    # T+08 failure-pattern grep: production code is
-    #   bash -c 'set -o pipefail; journalctl ... | grep -qE "panic|..."'
-    # (C-1 round-3 fix wraps the remote pipe in bash -c + pipefail.)
-    # Default behavior: pretend grep found nothing (exit 1 = no match).
-    # When STUB_INJECT_DAEMON_FAILURE=1, pretend grep matched (exit 0)
-    # so trigger_rollback fires — regression test for journal trigger gap.
-    # C-1 round-3 regression: when STUB_FAIL_JOURNALCTL_PATTERN is set, exit
-    # non-zero to simulate journalctl failing on the remote side. With
-    # pipefail on, the whole pipe inherits the failure; without pipefail
-    # (pre-fix) the failure would be masked by grep exiting 1 on empty stdin.
-    if [[ -n "${STUB_FAIL_JOURNALCTL_PATTERN:-}" ]]; then
+  *"journalctl"*"--no-pager"*)
+    # T+08 failure-pattern capture (cutover.sh §T+08, round-5 fix). Production now
+    # captures the journal via vssh and greps it LOCALLY (closing the fail-OPEN
+    # match-triggers-rollback construct), so the remote command is a bare
+    # `journalctl ... --no-pager` with no grep. Model both fail paths:
+    #   STUB_FAIL_T08_JOURNAL=1      -> exit non-zero: journalctl QUERY failure,
+    #                                   so the script fails closed and rolls back.
+    #   STUB_INJECT_DAEMON_FAILURE=1 -> emit a line containing a failure pattern
+    #                                   so the LOCAL grep matches -> rollback.
+    # (T+50 uses `-o cat | wc -l`, not --no-pager, so it never reaches here; the
+    # T+08 daemon-start presence check uses `-o cat` + grep daemon-start.)
+    if [[ -n "${STUB_FAIL_T08_JOURNAL:-}" ]]; then
       exit 1
     fi
     if [[ "${STUB_INJECT_DAEMON_FAILURE:-0}" == "1" ]]; then
+      echo "Jun 29 14:00:00 srv node[1234]: panic: simulated daemon failure"
       exit 0
     fi
-    exit 1
+    echo "Jun 29 14:00:00 srv node[1234]: server listening; no errors"
+    exit 0
     ;;
   *"journalctl"*"wc -l"*)
     # T+50 error-count: production code is

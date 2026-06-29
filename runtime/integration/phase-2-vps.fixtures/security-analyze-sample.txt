@@ -1,0 +1,11 @@
+  ✓ ProtectKernelTunables=             yes
+  ✓ ProtectKernelModules=              yes
+  ✓ ProtectControlGroups=              yes
+  ✓ RestrictNamespaces=                yes
+  ✓ RestrictSUIDSGID=                  yes
+  ✓ MemoryDenyWriteExecute=            yes
+  ✓ RestrictRealtime=                  yes
+  ✓ SystemCallArchitectures=           native
+  ✓ LockPersonality=                   yes
+
+→ Overall exposure level for iago-os-v2-daemon.service: 2.0 OK 😀

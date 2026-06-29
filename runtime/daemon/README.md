@@ -367,16 +367,29 @@ tailscale ssh root@srv1456441 -- 'systemctl kill -s SIGHUP iago-os-v2-daemon.ser
 ### Verification
 
 A successful reload emits a `cred-reload-fired` NDJSON record to the
-daemon's telemetry stream. Check the journal:
+daemon's telemetry stream. Read it from the daily telemetry file — NOT
+the journal: `emit()` only appends to the NDJSON, and (per the names-only
+posture below) nothing reaches stdout/stderr, so the event never lands in
+`journalctl` on a healthy reload (it appears there only on the emit-failure
+path). To verify, send the SIGHUP and confirm a *new* line appears
+(baseline the count first so a stale same-day line cannot pass):
 
 ```bash
-tailscale ssh root@srv1456441 -- \
-  'journalctl -u iago-os-v2-daemon.service --since "1 minute ago" --no-pager | grep cred-reload-fired'
+tailscale ssh root@srv1456441 -- '
+  f=/var/lib/iago-os/daemon-state/telemetry/$(date -u +%F).ndjson
+  before=$(grep -cE "cred-reload-(fired|coalesced|failed)" "$f" 2>/dev/null); before=${before:-0}
+  systemctl kill -s SIGHUP iago-os-v2-daemon.service
+  for i in $(seq 1 10); do
+    now=$(grep -cE "cred-reload-(fired|coalesced|failed)" "$f" 2>/dev/null); now=${now:-0}
+    [ "$now" -gt "$before" ] && { grep -E "cred-reload-(fired|coalesced|failed)" "$f" | tail -$((now-before)); break; }
+    sleep 1
+  done'
 ```
 
-Expected: one line with `credentialsReloaded: [<env-var names that
-changed>]`. The `unchanged` array carries env-var names that were
-re-read but kept the same value. NAMES only — credential values are
+Expected: one line. On a rotation, `credentialsReloaded: [<env-var names
+that changed>]`; on a no-rotation SIGHUP, `credentialsReloaded: []` with
+the `unchanged` array carrying env-var names that were re-read but kept
+the same value. NAMES only — credential values are
 NEVER written to telemetry, stdout, or stderr (matches the Plan 01
 Task 4 C2 posture enforced by `cred-bootstrap.test.ts` case 10).
 
@@ -417,9 +430,10 @@ Task 4 C2 posture enforced by `cred-bootstrap.test.ts` case 10).
   completion (bounded by `stageTimeoutMs`, default 10s) BEFORE emitting
   `daemon-stop` and exiting. Without this `drainInFlight()` wait, the
   process would exit while the in-flight reload's
-  `cred-reload-fired` `appendFile` is still pending — operators
-  inspecting the journal would see the SIGHUP arrived but not whether
-  it took effect (F2 dual-review fix). The drain runs AFTER the
+  `cred-reload-fired` `appendFile` to the telemetry NDJSON is still
+  pending — the reload's outcome would be lost (the event lands only in
+  the daily NDJSON, never the journal) even though the SIGHUP was
+  delivered (F2 dual-review fix). The drain runs AFTER the
   internal `shuttingDown` flag is set, so any SIGHUP arriving during
   the drain is ignored (no recursive re-arming of the drain promise).
 - **Linux-only signal.** SIGHUP is a POSIX signal; Windows local-dev
@@ -446,9 +460,10 @@ Task 4 C2 posture enforced by `cred-bootstrap.test.ts` case 10).
   flag. When the in-flight reload finishes, the handler runs exactly
   ONE trailing reload that picks up the latest credstore state.
   Operators do NOT need to re-send SIGHUP — the trailing reload
-  ensures the latest rotation is visible. `journalctl | grep
-  cred-reload-fired` will show TWO `cred-reload-fired` events for the
-  burst (the initial reload + the trailing reload).
+  ensures the latest rotation is visible. The daily telemetry NDJSON
+  will show TWO `cred-reload-fired` events for the burst (the initial
+  reload + the trailing reload) — grep the NDJSON, not the journal (see
+  Verification above).
 - **SIGHUP during daemon shutdown.** A SIGHUP arriving after the
   SIGTERM/SIGINT path has set the internal `shuttingDown` flag is
   ignored and logs `[daemon] SIGHUP ignored: daemon is shutting down`

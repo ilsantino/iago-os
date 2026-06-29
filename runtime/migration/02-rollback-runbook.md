@@ -24,7 +24,7 @@ Detection triggers (any of these → execute rollback):
 | Daemon refuses to start | `systemctl status iago-os-v2-daemon.service` | "failed" state OR start-limit-hit |
 | Telegram /agents no reply | Santiago's phone | No response within 60s of sending |
 | IPC socket missing | `ls /var/lib/iago-os/daemon-state/ipc.sock` | File absent >30s after start |
-| Approval handshake breaks | T+15 canonical workflow test | No approval message arrives within 60s |
+| T+15 acceptance gate fails | `cutover.sh` §T+15 (`/agents` + `systemctl is-active` + single daemon process) | Bot does not reply to `/agents` within 60s OR `systemctl is-active` != active OR not exactly one `iago`-owned daemon process |
 | Santiago command | `"rollback"` typed in any terminal | Immediate, no question |
 
 The Santiago-command trigger is intentional: any gut-level "this is

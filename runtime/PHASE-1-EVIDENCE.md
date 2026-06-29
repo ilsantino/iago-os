@@ -295,3 +295,12 @@ Before merge approval, this template is filled out completely. No
 `PASTE-…` placeholders remain. The `npm run check:evidence` gate
 passes. The reviewer can sanity-check the evidence against the codebase
 without re-running anything.
+
+## Phase 2 forward link
+
+Phase 2 extends this evidence pattern with VPS-side blocks (systemd-analyze
+security, journalctl, Telegram-screenshot-from-phone, cutover terminal log,
+SIGHUP reload verification). See [PHASE-2-EVIDENCE.md](./PHASE-2-EVIDENCE.md).
+Plan 05b will add a `--phase` flag to `check-evidence.mjs` so it can gate both
+phases; until 05b lands, the script supports only Phase 1 (hardcoded to this
+file, greps the `PASTE-` sentinel) and does NOT check PHASE-2-EVIDENCE.md.
