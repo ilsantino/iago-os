@@ -24,6 +24,13 @@
 #     the bash -c 'set -o pipefail; journalctl | wc -l' or
 #     bash -c 'set -o pipefail; journalctl | grep' shape propagates the
 #     journalctl failure through wc/grep and back to the script)
+#   * honoring STUB_INJECT_T15_PROC_COUNT to control the daemon process
+#     count returned by the T+15/T+30 proc-ownership check (tests 24, 27,
+#     28, 29, 30, 31)
+#   * honoring STUB_FAIL_T15_PROC_QUERY to simulate a ps/ssh query error
+#     in the same T+15/T+30 proc-ownership case (test 30)
+#   * honoring STUB_FAIL_T08_JOURNAL to fail the T+08 journalctl --no-pager
+#     capture and trigger fail-closed rollback (test 32)
 
 set +e
 

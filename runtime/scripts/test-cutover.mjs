@@ -620,6 +620,42 @@ test("15. cutover.sh release_remote_lock leaves a hijacked marker intact (Codex 
 	}
 });
 
+test("16. jq patch expression unit test — shell jq command produces expected JSON byte-for-byte", () => {
+	// This test exercises the actual shell jq invocation from rollback.sh's
+	// patch script — the expression `.channels.telegram.botToken = $t` — using
+	// the host's real jq binary. The harness (tests 1–15) stubs jq out as a
+	// noop because the patch runs inside a `tailscale ssh bash -s` heredoc on
+	// the VPS; this test is the only path that validates the jq expression
+	// itself runs correctly against the fixture files.
+	const jqResult = spawnSync(
+		"jq",
+		["--arg", "t", "DRYRUN_TOKEN_AAA", ".channels.telegram.botToken = $t"],
+		{
+			input: readFileSync(fixtureOpenclawIn, "utf8"),
+			encoding: "utf8",
+			timeout: 10_000,
+		},
+	);
+	if (jqResult.status === null || jqResult.error) {
+		// jq not on host PATH — skip rather than fail so the test suite can run
+		// on hosts without jq installed (Windows CI without chocolatey, etc.).
+		// The shell jq is always present on the VPS and on Linux CI.
+		return;
+	}
+	assert.strictEqual(
+		jqResult.status,
+		0,
+		`jq exited non-zero: ${jqResult.stderr}`,
+	);
+	const got = JSON.parse(jqResult.stdout);
+	const want = JSON.parse(readFileSync(fixtureOpenclawExpected, "utf8"));
+	assert.deepStrictEqual(
+		got,
+		want,
+		"jq patch expression must produce output matching openclaw.expected.json byte-for-byte",
+	);
+});
+
 test("17. cutover.sh T+05 systemd-creds round-trip fails closed on empty/short decrypt (I-1 + I-1A + I-3 regression)", () => {
 	const env = newTestEnv();
 	try {
@@ -1219,38 +1255,3 @@ test("32. cutover.sh T+08 fails closed when the journalctl failure-pattern query
 	}
 });
 
-test("16. jq patch expression unit test — shell jq command produces expected JSON byte-for-byte", () => {
-	// This test exercises the actual shell jq invocation from rollback.sh's
-	// patch script — the expression `.channels.telegram.botToken = $t` — using
-	// the host's real jq binary. The harness (tests 1–15) stubs jq out as a
-	// noop because the patch runs inside a `tailscale ssh bash -s` heredoc on
-	// the VPS; this test is the only path that validates the jq expression
-	// itself runs correctly against the fixture files.
-	const jqResult = spawnSync(
-		"jq",
-		["--arg", "t", "DRYRUN_TOKEN_AAA", ".channels.telegram.botToken = $t"],
-		{
-			input: readFileSync(fixtureOpenclawIn, "utf8"),
-			encoding: "utf8",
-			timeout: 10_000,
-		},
-	);
-	if (jqResult.status === null || jqResult.error) {
-		// jq not on host PATH — skip rather than fail so the test suite can run
-		// on hosts without jq installed (Windows CI without chocolatey, etc.).
-		// The shell jq is always present on the VPS and on Linux CI.
-		return;
-	}
-	assert.strictEqual(
-		jqResult.status,
-		0,
-		`jq exited non-zero: ${jqResult.stderr}`,
-	);
-	const got = JSON.parse(jqResult.stdout);
-	const want = JSON.parse(readFileSync(fixtureOpenclawExpected, "utf8"));
-	assert.deepStrictEqual(
-		got,
-		want,
-		"jq patch expression must produce output matching openclaw.expected.json byte-for-byte",
-	);
-});
