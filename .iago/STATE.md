@@ -1,12 +1,13 @@
 # State — iaGO-OS
 
 > **Phase:** v2 Phase 2 (VPS bootstrap) ~80% + a review-infra / daemon-hardening wave landed on main (#83–#94). Cutover off OpenClaw NOT yet executed (human-triggered; tentative 2026-05-25 target slipped). Deferred surface fully mapped — `.iago/research/2026-06-13-deferred-backlog-index.md`: ~38 OPEN items (+4 adjacent) across 3 workstreams (A gate-hardening / B daemon-durability / C cutover-gate) + 1 tracked Critical (GH-15 probe-transcription-trust, mitigated to Minor by #96); DD-R1 registration-orphan CLOSED 2026-06-13 by #92; zero untracked Criticals. Workstream A (gate-hardening) landed via #96 + #97 (production Tier 2/3 onto the dual-adversarial AUTO lens path); Workstream B daemon-recovery-hardening shipped via #92 (DD-R1 closed; plan archived 2026-06-17) — residual B/cutover items are Santiago's go/no-go.
-> **Tag:** v0.1.0 | **Updated:** 2026-06-17
+> **Tag:** v0.1.0 | **Updated:** 2026-06-29
 
 ## Active
 
 | Date | Mode | Description | Commit |
 |------|------|-------------|--------|
+| 2026-06-29 | merge | PR #98 — Phase 2 acceptance evidence template + VPS fixtures (Plan 05a) + cutover-gate hardening (T+08 fail-closed, T+10/T+30 reachability unification, retry-once). Next: Plan 05b (evidence-checker + E2E). | [#98](https://github.com/ilsantino/iago-os/pull/98) → `8aa377c` |
 | 2026-06-17 | docs | Archived daemon-recovery-hardening plan — its 8 tasks all shipped in #92; the `/iago-execute` STRESS stage correctly blocked re-execution as stale. DD-R1 (Phase 2's last code Critical) closed. Summary: `.iago/summaries/feature-daemon-recovery-hardening.md`. | `0f0d03c` |
 | 2026-06-16 | merge | PR #97 — wire production Tier 2/3 review onto the dual-adversarial AUTO lens path (Workstream A follow-up to #96). | [#97](https://github.com/ilsantino/iago-os/pull/97) → `4d8a448` |
 | 2026-06-16 | merge | PR #96 — harden the review pipeline's own gate scripts (risk-tiering keywords + tier_override clamp, reviewer-input integrity, compliance read-only guard, classifyTier drift-guard + CI wiring). Workstream A. | [#96](https://github.com/ilsantino/iago-os/pull/96) → `3bb7f68` |
