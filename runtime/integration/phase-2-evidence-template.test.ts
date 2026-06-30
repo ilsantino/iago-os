@@ -83,10 +83,7 @@ const phase1 = readFileSync(
 );
 const expectedEvents = JSON.parse(
 	readFileSync(
-		resolve(
-			runtimeRoot,
-			"integration/phase-2-vps.fixtures/expected-events.json",
-		),
+		resolve(runtimeRoot, "integration/phase-2-vps.fixtures/expected-events.json"),
 		"utf8",
 	),
 );
@@ -345,9 +342,7 @@ describe("02-cutover-runbook.md — Phase 2 cutover evidence is producible", () 
 		// The EXECUTABLE (not just the runbook prose) must not gate the run-up to
 		// the irreversible T+30 deauth on a flow Phase 2 cannot produce.
 		expect(cutoverScript).not.toContain("canonical workflow test passes");
-		expect(cutoverScript).not.toMatch(
-			/\/start hello-world\s*->\s*daemon spawns/,
-		);
+		expect(cutoverScript).not.toMatch(/\/start hello-world\s*->\s*daemon spawns/);
 	});
 });
 

@@ -10,10 +10,11 @@
 > **Verification gate (LIVE — shipped in Plan 05b):** run
 > `npm run check:evidence -- --phase 2` from `runtime/`. It selects THIS file,
 > greps for the `<!-- TODO: paste evidence -->` sentinel, verifies every cited
-> `runtime/…` artifact exists, requires every task checkbox to be `[x]`, and
-> exits non-zero if any sentinel or unticked box remains. `--phase 2` is the
+> `runtime/…` artifact exists, requires every `- [ ]` task checkbox ticked, and
+> exits non-zero if any sentinel or unticked task box remains. `--phase 2` is the
 > DEFAULT, so a bare `npm run check:evidence` (from `runtime/`) checks this file
-> too. The sentinel is an HTML comment no tool output ever produces, so a real
+> too. (The per-block `### (x) — `[ ]`` status headers are visual progress
+> markers you tick by hand; the gate enforces the `- [ ]` task boxes.) The sentinel is an HTML comment no tool output ever produces, so a real
 > log mentioning the word "paste" cannot falsely satisfy the gate (Plan 05a
 > stress-test C1). Judging whether the pasted content is *meaningful* remains the
 > human reviewer's job.

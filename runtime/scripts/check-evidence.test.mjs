@@ -22,9 +22,9 @@ import path from "node:path";
 import { after, test } from "node:test";
 import { fileURLToPath } from "node:url";
 import {
+	SECURITY_LIVE_ACCEPTED_MAX,
 	isAcceptedLiveScore,
 	parseSecurityScore,
-	SECURITY_LIVE_ACCEPTED_MAX,
 } from "./check-evidence.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url)); // runtime/scripts
@@ -88,7 +88,7 @@ function tickGarry(content, n) {
 	return before + section + after_;
 }
 
-/** Tick EVERY markdown task checkbox (Garry §5 + §3 failure-path + §6 sign-off). */
+/** Tick EVERY `- [ ]` markdown task checkbox (Garry §5 + §3 failure-path + §6 sign-off). */
 function tickAllBoxes(content) {
 	return content.replace(/^(\s*-\s+)\[ \]/gm, "$1[x]");
 }
@@ -388,4 +388,20 @@ test("17. --strict enforces the <=2.0 cap even for an OK-band score above the ca
 	const { code, out } = runChecker([file, "--phase", "2", "--strict"]);
 	assert.equal(code, 1);
 	assert.match(out, /exceeds target 2/);
+});
+
+test("18. --strict scans ALL block (h) score lines; an UNSAFE behind an OK still FAILs", () => {
+	// A before/after paste in block (h): the gate must fail on the UNSAFE line
+	// regardless of order — a first-match-only parse would green-pass it.
+	let content = fillBlock(
+		phase2Template,
+		"### (h)",
+		"→ Overall exposure level for iago-os-v2-daemon.service: 1.8 OK\n" +
+			"→ Overall exposure level for iago-os-v2-daemon.service: 9.6 UNSAFE",
+	);
+	content = tickAllBoxes(fillAllSentinels(content));
+	const file = writeFixture(content, "strict-blockh-mixed");
+	const { code, out } = runChecker([file, "--phase", "2", "--strict"]);
+	assert.equal(code, 1);
+	assert.match(out, /9\.6|UNSAFE/);
 });

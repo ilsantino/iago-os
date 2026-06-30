@@ -95,10 +95,16 @@ function vps(
 	const { timeoutMs = 10_000, retries = 3, backoffMs = 5_000 } = opts;
 	let lastErr: unknown;
 	for (let attempt = 1; attempt <= retries; attempt++) {
-		const r = spawnSync("tailscale", ["ssh", VPS_HOST, "--", remoteCmd], {
-			encoding: "utf8",
-			timeout: timeoutMs,
-		});
+		// Run every remote command under `bash -o pipefail -c` so a failure in the
+		// FIRST stage of a remote pipe (e.g. journalctl|grep, cat|head) propagates
+		// to the exit code instead of being masked by the last stage's success
+		// (shell-deploy pipefail rule). spawnSync passes remoteCmd as a single argv
+		// to `bash -c` — no shell re-quoting, so embedded quotes survive intact.
+		const r = spawnSync(
+			"tailscale",
+			["ssh", VPS_HOST, "--", "bash", "-o", "pipefail", "-c", remoteCmd],
+			{ encoding: "utf8", timeout: timeoutMs },
+		);
 		if (r.error || r.signal) {
 			lastErr =
 				r.error ??
@@ -126,22 +132,19 @@ describe("Phase 2 VPS cutover e2e (opt-in: IAGO_VPS_E2E=1)", () => {
 	// Test 0 — telemetry sentinel marker. Makes it trivial to grep "where did
 	// the e2e poke start?" in post-test review. Skipped in nondisruptive mode
 	// (it WRITES to the cutover log).
-	it.skipIf(skipDisruptive)(
-		"0. emits an e2e-test-start sentinel marker",
-		() => {
-			const sentinel = Date.now();
-			// retries: 1 — this is the ONLY write. A 10s timeout-kill does NOT prove
-			// the remote append did not run server-side, so retrying could append a
-			// SECOND identical line (the sentinel is fixed before the call). One
-			// attempt keeps the diagnostic marker idempotent; a transport failure
-			// surfaces as a throw.
-			const r = vps(
-				`echo '{"kind":"e2e-test-start","sentinel":"${sentinel}"}' >> /var/log/iago-os/cutover.ndjson`,
-				{ retries: 1 },
-			);
-			expect(r.code).toBe(0);
-		},
-	);
+	it.skipIf(skipDisruptive)("0. emits an e2e-test-start sentinel marker", () => {
+		const sentinel = Date.now();
+		// retries: 1 — this is the ONLY write. A 10s timeout-kill does NOT prove
+		// the remote append did not run server-side, so retrying could append a
+		// SECOND identical line (the sentinel is fixed before the call). One
+		// attempt keeps the diagnostic marker idempotent; a transport failure
+		// surfaces as a throw.
+		const r = vps(
+			`echo '{"kind":"e2e-test-start","sentinel":"${sentinel}"}' >> /var/log/iago-os/cutover.ndjson`,
+			{ retries: 1 },
+		);
+		expect(r.code).toBe(0);
+	});
 
 	// --- Nondisruptive subset (pure read-only) ------------------------------
 
@@ -230,9 +233,7 @@ describe("Phase 2 VPS cutover e2e (opt-in: IAGO_VPS_E2E=1)", () => {
 			// actually runs.
 			expect(
 				isAcceptedLiveScore(parsed),
-				`live exposure score ${parsed.score} ${parsed.band} exceeds the ` +
-					`accepted-for-Phase-2 band (≤ ${SECURITY_LIVE_ACCEPTED_MAX}, ` +
-					`EXPOSED/UNSAFE/DANGEROUS rejected)`,
+				`live exposure score ${parsed.score} ${parsed.band} exceeds the accepted-for-Phase-2 band (≤ ${SECURITY_LIVE_ACCEPTED_MAX}, EXPOSED/UNSAFE/DANGEROUS rejected)`,
 			).toBe(true);
 		},
 	);
@@ -251,6 +252,9 @@ describe("Phase 2 VPS cutover e2e (opt-in: IAGO_VPS_E2E=1)", () => {
 			// PRESENCE-based, NO count floor. Only `criticality: required` kinds are
 			// asserted (daemon-start + cred-bootstrap-loaded). agent-*/cron-*/task-*
 			// are legitimately absent on a quiet / zero-PR window (I2).
+			// Load the fixture HERE (the lazy loader exists so the file's import
+			// does not couple vitest collection to the fixture's presence).
+			const expectedEvents = loadExpectedEvents();
 			const required = expectedEvents
 				.filter((e) => e.criticality === "required")
 				.map((e) => e.kind);
@@ -262,10 +266,9 @@ describe("Phase 2 VPS cutover e2e (opt-in: IAGO_VPS_E2E=1)", () => {
 				nonEmptyLines(r.stdout).map((line) => JSON.parse(line).kind),
 			);
 			for (const kind of required) {
-				expect(
-					kinds.has(kind),
-					`required telemetry kind missing: ${kind}`,
-				).toBe(true);
+				expect(kinds.has(kind), `required telemetry kind missing: ${kind}`).toBe(
+					true,
+				);
 			}
 		},
 	);
@@ -273,9 +276,7 @@ describe("Phase 2 VPS cutover e2e (opt-in: IAGO_VPS_E2E=1)", () => {
 	it.skipIf(skipDisruptive)(
 		"12. archive-prune timer is scheduled within 24h",
 		() => {
-			const r = vps(
-				"systemctl list-timers iago-archive-prune.timer --no-pager",
-			);
+			const r = vps("systemctl list-timers iago-archive-prune.timer --no-pager");
 			expect(r.code).toBe(0);
 			expect(r.stdout).toContain("iago-archive-prune.timer");
 			// A scheduled next run shows hours/min/sec "left", never n/a or >=2 days.
@@ -295,14 +296,15 @@ describe("Phase 2 VPS cutover e2e (opt-in: IAGO_VPS_E2E=1)", () => {
 		"14. telegram-token decrypts to a positive byte count",
 		() => {
 			// Length-only — NEVER assert the decrypted value. A Telegram bot token is
-			// `<digits>:<35+ chars>` ≈ 46 bytes, so assert ≥ 46: a `> 0` threshold
-			// green-lights a corrupted/partial decrypt (a few garbage bytes pass) —
-			// the `len > 0` anti-pattern the shell-deploy severity floor flags as
-			// ALWAYS Important. Length-only still keeps the secret value hidden.
+			// `<8-10 digit id>:<35-char secret>` ≈ 44–46 bytes; assert ≥ 40 (a
+			// shape-based floor): it still rejects a corrupted/partial decrypt (a few
+			// garbage bytes — the `len > 0` anti-pattern the shell-deploy floor flags)
+			// without false-FAILing a legitimate 44–45-byte token (short bot id, no
+			// trailing newline). Length-only still keeps the secret value hidden.
 			const r = vps(
 				"systemd-creds decrypt /etc/credstore.encrypted/iago-telegram-token.cred - | wc -c",
 			);
-			expect(Number.parseInt(r.stdout, 10)).toBeGreaterThanOrEqual(46);
+			expect(Number.parseInt(r.stdout, 10)).toBeGreaterThanOrEqual(40);
 		},
 	);
 });

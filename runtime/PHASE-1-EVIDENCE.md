@@ -6,8 +6,10 @@
 > below is replaced with real terminal output (or screenshot for the
 > Telegram screen) from Santiago's box, this PR is NOT mergeable.
 >
-> Verification gate: `npm run check:evidence` (from `runtime/`) greps for
-> the `PASTE-` sentinel in this file and exits non-zero if any remain.
+> Verification gate: `npm run check:evidence -- --phase 1` (from `runtime/`)
+> greps for the `PASTE-` sentinel in this file and exits non-zero if any
+> remain. (Plan 05b made `--phase 2` the default, so the bare command now
+> checks the Phase 2 file — pass `--phase 1` for this one.)
 > Wire this script into the merge gate (CI required check) once Phase 2
 > stands up the runtime-checks workflow.
 
@@ -292,8 +294,8 @@ end-to-end vs. manually-resumed, AND the build gate / test count for each.
 ## What the merge reviewer should see
 
 Before merge approval, this template is filled out completely. No
-`PASTE-…` placeholders remain. The `npm run check:evidence` gate
-passes. The reviewer can sanity-check the evidence against the codebase
+`PASTE-…` placeholders remain. The `npm run check:evidence -- --phase 1`
+gate passes. The reviewer can sanity-check the evidence against the codebase
 without re-running anything.
 
 ## Phase 2 forward link

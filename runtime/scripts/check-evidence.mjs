@@ -244,16 +244,24 @@ function checkGarry(lines, expected) {
 }
 
 /**
- * EVERY markdown task checkbox in the rendered file must be ticked. The Garry
- * checklist is counted separately (checkGarry, exact 9/9); this catches the §3
- * failure-path (5) and §6 sign-off (2) boxes that share the `- [ ]` syntax.
- * Leaving them unticked while the Garry section was full was a false-green — the
- * template's own rule is "every checkbox is [x]", so a filled evidence file must
- * have NO `- [ ]` task item remaining anywhere.
+ * EVERY `- [ ]` markdown task checkbox in the rendered file must be ticked. The
+ * Garry checklist is counted separately (checkGarry, exact 9/9); this catches the
+ * §3 failure-path (5) and §6 sign-off (2) `- [ ]` boxes that share the syntax.
+ * Fenced code blocks are skipped (mirroring extractCitedPaths) so a literal
+ * `- [ ]` inside pasted terminal/markdown output never false-FAILs the gate.
+ * (The `### (x) — `[ ]`` per-block status headers are operator-facing visual
+ * progress markers, ticked by hand but not gate-enforced — both Phase 1 and
+ * Phase 2 use them and the gate treats neither phase's headers as a hard gate.)
  */
 function checkAllCheckboxes(content) {
 	const unticked = [];
+	let inFence = false;
 	for (const line of content.split("\n")) {
+		if (/^```/.test(line)) {
+			inFence = !inFence;
+			continue;
+		}
+		if (inFence) continue;
 		if (/^\s*-\s+\[ \]/.test(line)) unticked.push(line.trim());
 	}
 	return { ok: unticked.length === 0, unticked };
@@ -325,8 +333,16 @@ function runStrict({ content, securitySample }) {
 		}
 		text = region.text;
 	}
-	const parsed = parseSecurityScore(text);
-	if (!parsed) {
+	// Scan EVERY `Overall exposure level …` line in the source, not just the
+	// first. block (h) may hold a before/after pair pasted side-by-side; the gate
+	// must fail if ANY line is over-exposed, regardless of paste ORDER — a
+	// single-match parse would green-pass an UNSAFE line sitting behind an OK one.
+	const scoreRe = new RegExp(SECURITY_SCORE_REGEX.source, "gm");
+	const parsedAll = [...text.matchAll(scoreRe)].map((m) => ({
+		score: Number.parseFloat(m[1]),
+		band: m[2],
+	}));
+	if (parsedAll.length === 0) {
 		return {
 			ok: false,
 			detail:
@@ -339,20 +355,27 @@ function runStrict({ content, securitySample }) {
 					.join("\n")}`,
 		};
 	}
-	const { score, band } = parsed;
 	const problems = [];
-	if (!(score <= SECURITY_SCORE_MAX)) {
-		problems.push(`score ${score} exceeds target ${SECURITY_SCORE_MAX}`);
-	}
-	if (!SECURITY_SAFE_BANDS.has(band)) {
-		problems.push(`band ${band} not in {OK, SAFE}`);
+	for (const { score, band } of parsedAll) {
+		if (!(score <= SECURITY_SCORE_MAX)) {
+			problems.push(`score ${score} exceeds target ${SECURITY_SCORE_MAX}`);
+		}
+		if (!SECURITY_SAFE_BANDS.has(band)) {
+			problems.push(`band ${band} not in {OK, SAFE}`);
+		}
 	}
 	if (problems.length) {
-		return { ok: false, detail: `--strict: ${problems.join("; ")} (${source})` };
+		return {
+			ok: false,
+			detail: `--strict: ${[...new Set(problems)].join("; ")} (${source})`,
+		};
 	}
+	// Report the worst (highest) score for transparency.
+	const worst = parsedAll.reduce((a, b) => (b.score > a.score ? b : a));
+	const note = parsedAll.length > 1 ? ` (${parsedAll.length} score lines)` : "";
 	return {
 		ok: true,
-		detail: `--strict: security score ${score} ${band} (≤ ${SECURITY_SCORE_MAX}) from ${source}`,
+		detail: `--strict: security score ${worst.score} ${worst.band} (≤ ${SECURITY_SCORE_MAX}) from ${source}${note}`,
 	};
 }
 
@@ -410,8 +433,9 @@ export function checkEvidence(
 		passes.push("all task checkboxes ticked");
 	} else {
 		failures.push(
-			`unticked task checkbox(es) remain: ${boxes.unticked.length}` +
-				(boxes.unticked[0] ? ` — e.g. "${boxes.unticked[0]}"` : ""),
+			`unticked task checkbox(es) remain: ${boxes.unticked.length}${
+				boxes.unticked[0] ? ` — e.g. "${boxes.unticked[0]}"` : ""
+			}`,
 		);
 	}
 
