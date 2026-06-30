@@ -81,13 +81,16 @@ const PHASE1_SENTINEL_RE = /PASTE-[A-Za-z0-9-]+/;
  * systemd-analyze band word.
  */
 export const SECURITY_SCORE_REGEX =
-	/Overall exposure level [^:]*:\s*(\d+\.\d+)\s+(UNSAFE|DANGEROUS|EXPOSED|MEDIUM|OK|SAFE)/m;
+	/Overall exposure level [^:]*:\s*(\d+\.\d+)\s+(UNSAFE|DANGEROUS|EXPOSED|MEDIUM|OK|SAFE|PERFECT)/m;
 export const SECURITY_SCORE_MAX = 2.0;
-// Bands consistent with the ≤2.0 strict TARGET. systemd-analyze maps score
-// 1.0–5.0 to "OK" and <1.0 to "SAFE", so a ≤2.0 score is ALWAYS OK/SAFE; "MEDIUM"
-// (5.0–7.5) can never co-occur with the ≤2.0 cap, so it is NOT a safe band here
-// (keeping it would be a dead, unreachable allowance in runStrict).
-export const SECURITY_SAFE_BANDS = new Set(["OK", "SAFE"]);
+// systemd-analyze prints the band from the numeric score: 0.0 PERFECT, <1.0 SAFE,
+// 1.0–4.9 OK, 5.0–7.4 MEDIUM, 7.5–8.9 EXPOSED, 9.0–9.9 UNSAFE, 10.0 DANGEROUS.
+// A ≤2.0 score is therefore always PERFECT/SAFE/OK; MEDIUM and worse can never
+// co-occur with the ≤2.0 cap, so they are NOT safe bands here (keeping them would
+// be a dead, unreachable allowance in runStrict). PERFECT (0.0 — a perfectly
+// hardened unit, the ideal target) MUST be accepted; omitting it false-FAILed the
+// best possible capture.
+export const SECURITY_SAFE_BANDS = new Set(["PERFECT", "SAFE", "OK"]);
 
 // Live post-cutover acceptance (opt-in e2e test 2). LOOSER than the strict TARGET:
 // the shipped unit ships no SystemCallFilter, so a real capture realistically lands
@@ -279,10 +282,12 @@ const FENCE_CLOSE_RE = /^(\s*)(`{3,}|~{3,})\s*$/;
  * NON-fenced from the opener onward, so genuinely-unticked `- [ ]` boxes after it
  * are still COUNTED. The gate must never false-PASS incomplete evidence.
  *
- * Returns one classification per line:
+ * Returns { cls, unbalanced }: `cls` holds one classification per line
  *   "marker" — a fence opener or closer line (skipped by BOTH consumers)
  *   "fenced" — content strictly inside a properly-closed fence
  *   "text"   — prose, AND any unclosed-fence tail
+ * and `unbalanced` is true when any opener had no matching closer (checkEvidence
+ * rejects such a document outright).
  */
 function classifyFenceLines(rawLines) {
 	// CRLF normalization: the evidence files ship with \r\n endings, so a line
@@ -295,6 +300,7 @@ function classifyFenceLines(rawLines) {
 	// lines unchanged.
 	const lines = rawLines.map((l) => (l.endsWith("\r") ? l.slice(0, -1) : l));
 	const cls = new Array(lines.length).fill("text");
+	let unbalanced = false;
 	let i = 0;
 	while (i < lines.length) {
 		const open = FENCE_OPEN_RE.exec(lines[i]);
@@ -324,7 +330,14 @@ function classifyFenceLines(rawLines) {
 			}
 		}
 		if (close === -1) {
-			// Unclosed/stray opener → fail-safe: leave it (and the rest) as "text".
+			// Unclosed/stray opener (a malformed paste). Fail-safe for the checkbox
+			// consumer: leave it (and the rest) "text" so trailing boxes are still
+			// counted. ALSO flag the document unbalanced — checkEvidence rejects it
+			// outright, because the path consumer would otherwise drop cited artifacts
+			// in the unclosed tail (a missing artifact would escape the existence
+			// check) and the orphaned closer can re-pair downstream structural fences,
+			// hiding real checklist boxes.
+			unbalanced = true;
 			i++;
 			continue;
 		}
@@ -333,7 +346,7 @@ function classifyFenceLines(rawLines) {
 		for (let k = i + 1; k < close; k++) cls[k] = "fenced";
 		i = close + 1;
 	}
-	return cls;
+	return { cls, unbalanced };
 }
 
 /**
@@ -351,7 +364,7 @@ function classifyFenceLines(rawLines) {
  */
 function checkAllCheckboxes(content) {
 	const lines = content.split("\n");
-	const cls = classifyFenceLines(lines);
+	const { cls } = classifyFenceLines(lines);
 	const unticked = [];
 	for (let i = 0; i < lines.length; i++) {
 		if (cls[i] !== "text") continue;
@@ -361,11 +374,17 @@ function checkAllCheckboxes(content) {
 }
 
 /**
- * Required-checkbox-section guard. checkAllCheckboxes only flags UNTICKED boxes,
- * so a deleted (or fully gutted) §3 failure-path / §6 sign-off section leaves
- * ZERO unticked boxes and would silently PASS the gate. Assert each configured
- * section's HEADER is present AND it carries at least `minBoxes` task checkboxes
- * (ticked or not), so removing or emptying the section is a HARD FAIL.
+ * Structural-checklist-section guard for §3 failure-path and §6 sign-off. These
+ * hold ONLY the literal acceptance boxes — never pasted evidence — so each is
+ * checked RAW (fence-blind) and STRICTLY: (a) its header must be present; (b) it
+ * must contain NO code fence (a fence here is malformed AND is the gutting vector:
+ * an attacker could delete the real boxes and backfill fenced fake `- [ ]`
+ * placeholders the count would otherwise accept); (c) it must carry ≥ `minBoxes`
+ * task checkboxes; and (d) ZERO of them may be unticked. Counting RAW (not via
+ * classifyFenceLines) makes tick-completeness IMMUNE to a stray fence ELSEWHERE
+ * re-classifying these lines as "fenced" — the false-PASS where the fence-aware
+ * checkAllCheckboxes silently skipped hidden §3 boxes. Mirrors checkGarry, which
+ * already counts the §5 Garry boxes raw.
  */
 function checkRequiredCheckboxSections(lines, sections) {
 	const passes = [];
@@ -378,18 +397,34 @@ function checkRequiredCheckboxSections(lines, sections) {
 			);
 			continue;
 		}
-		let count = 0;
-		for (const line of region.text.split("\n")) {
-			if (/^\s*-\s+\[[ xX]\]/.test(line)) count++;
-		}
-		if (count < sec.minBoxes) {
+		const regionLines = region.text
+			.split("\n")
+			.map((l) => (l.endsWith("\r") ? l.slice(0, -1) : l));
+		if (regionLines.some((l) => FENCE_OPEN_RE.test(l))) {
 			failures.push(
-				`required section gutted: ${sec.id} has ${count} checkbox(es), expected ≥ ${sec.minBoxes}`,
+				`required section must not contain a code fence (structural checklist only): ${sec.id}`,
+			);
+			continue;
+		}
+		let total = 0;
+		let unticked = 0;
+		for (const line of regionLines) {
+			if (/^\s*-\s+\[[xX]\]/.test(line)) total++;
+			else if (/^\s*-\s+\[ \]/.test(line)) {
+				total++;
+				unticked++;
+			}
+		}
+		if (total < sec.minBoxes) {
+			failures.push(
+				`required section gutted: ${sec.id} has ${total} checkbox(es), expected ≥ ${sec.minBoxes}`,
+			);
+		} else if (unticked > 0) {
+			failures.push(
+				`required section has ${unticked} unticked checkbox(es): ${sec.id}`,
 			);
 		} else {
-			passes.push(
-				`required section present: ${sec.id} (${count} checkbox(es))`,
-			);
+			passes.push(`required section complete: ${sec.id} (${total} ticked)`);
 		}
 	}
 	return { passes, failures };
@@ -410,7 +445,7 @@ const ARTIFACT_PATH_RE =
 function extractCitedPaths(content) {
 	const found = new Set();
 	const lines = content.split("\n");
-	const cls = classifyFenceLines(lines);
+	const { cls } = classifyFenceLines(lines);
 	for (let i = 0; i < lines.length; i++) {
 		if (cls[i] !== "fenced") continue;
 		for (const m of lines[i].matchAll(ARTIFACT_PATH_RE)) found.add(m[0]);
@@ -539,6 +574,19 @@ export function checkEvidence(
 	const passes = [];
 	const failures = [];
 
+	// (0) Malformed-evidence guard. An unbalanced/unclosed code fence (a stray ```
+	// in pasted terminal output) is rejected OUTRIGHT — it is the root of two
+	// false-green vectors: the orphaned opener can re-pair downstream structural
+	// fences, hiding unticked checklist boxes from the fence-aware
+	// checkAllCheckboxes; and extractCitedPaths would skip cited artifact paths in
+	// the unclosed tail, so a missing artifact escapes the existence check. Fail
+	// closed; the operator escapes or removes the stray fence and re-runs.
+	if (classifyFenceLines(lines).unbalanced) {
+		failures.push(
+			"malformed evidence: unbalanced/unclosed code fence — a pasted block has a stray ``` that the gate cannot reliably parse past (escape or remove it)",
+		);
+	}
+
 	// (1) Required blocks present + filled.
 	for (const block of config.requiredBlocks) {
 		const region = findRegion(lines, (line) => line.startsWith(block.header));
@@ -578,10 +626,10 @@ export function checkEvidence(
 		);
 	}
 
-	// (2c) Required checkbox-sections present + not gutted. checkAllCheckboxes only
-	// flags UNTICKED boxes, so DELETING §3 (failure-path) or §6 (sign-off) leaves
-	// zero unticked boxes and would silently PASS — assert each required section's
-	// header is present AND carries at least its minimum checkbox count.
+	// (2c) Required structural checklist sections (§3 failure-path, §6 sign-off)
+	// checked RAW + strictly: header present, NO embedded code fence, ≥ minBoxes,
+	// and ZERO unticked. Counting raw (not fence-aware) closes the false-PASS where
+	// a stray fence elsewhere reclassified §3 as "fenced" and hid its unticked boxes.
 	if (config.requiredCheckboxSections) {
 		const sections = checkRequiredCheckboxSections(
 			lines,

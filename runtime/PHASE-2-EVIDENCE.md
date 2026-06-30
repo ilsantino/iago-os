@@ -174,7 +174,8 @@ check:** the shipped unit (`deploy/iago-os-v2-daemon.service`) sets
 `NoNewPrivileges`, `ProtectSystem=strict`, `ProtectHome`, `MemoryDenyWriteExecute`,
 an empty `CapabilityBoundingSet`, and `RestrictAddressFamilies`, but **no
 `SystemCallFilter=`** — the single highest-weighted item — so it realistically
-lands in the `MEDIUM`/`EXPOSED` band (~3–5), not 2.0. If the captured score
+lands in the `OK` band (~3–5; systemd reserves `MEDIUM` for ≥5.0 and `EXPOSED`
+for ≥7.5), not 2.0. If the captured score
 exceeds the ≤2.0 target, the cutover PR must EITHER harden the unit (add
 `SystemCallFilter=@system-service` + `ProtectProc`/`RestrictNetworkInterfaces`/
 `RemoveIPC` as a follow-up hardening task) to reach it, OR document the achieved

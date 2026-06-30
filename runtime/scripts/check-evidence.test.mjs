@@ -406,25 +406,31 @@ test("18. --strict scans ALL block (h) score lines; an UNSAFE behind an OK still
 	assert.match(out, /9\.6|UNSAFE/);
 });
 
-test("19. a stray fence in pasted evidence does NOT hide later unticked boxes", () => {
-	// The pre-fix naive `inFence = !inFence` toggle let ONE stray ``` inside a
-	// pasted block flip fence parity for the whole rest of the document, hiding
-	// every later unticked `- [ ]` (a false-PASS on INCOMPLETE cutover evidence —
-	// the gate's worst failure mode). The robust classifier treats an
-	// unbalanced/stray fence as text (fail-safe to BLOCK), so the §3 + §6 boxes
-	// after it are still counted. block (m) is the last evidence block; §3/§6
-	// follow it, exactly the demonstrated bypass.
+test("19. a stray fence cannot hide an unticked §3 section (the false-PASS bug)", () => {
+	// Reviewer-reproduced false-PASS: a stray ``` in block (m) re-pairs the
+	// template's structural fences so the §3 region is reclassified 'fenced'; the
+	// fence-aware checkAllCheckboxes then SKIPS §3's unticked boxes while §5 Garry
+	// and §6 are fully ticked. §3 is now counted RAW (and a stray fence is rejected
+	// outright), so an unticked §3 STILL fails. Pre-fix this exact case returned
+	// EXIT 0 / "all task checkboxes ticked".
 	let content = fillBlock(
 		phase2Template,
 		"### (m)",
 		"SIGHUP reload OK\n```\norphaned fence above; evidence continues",
 	);
-	content = fillAllSentinels(content);
-	content = tickGarry(content, 9); // Garry 9/9 ticked; §3 + §6 left UNticked
-	const file = writeFixture(content, "stray-fence");
+	content = tickAllBoxes(fillAllSentinels(content)); // tick EVERY box first…
+	// …then UN-tick ONLY the §3 failure-path boxes.
+	const lines = content.split("\n");
+	const s3 = lines.findIndex((l) => l.startsWith("## 3."));
+	const s4 = lines.findIndex((l) => l.startsWith("## 4."));
+	assert.ok(s3 !== -1 && s4 !== -1, "§3/§4 headers not found");
+	for (let i = s3; i < s4; i++) {
+		lines[i] = lines[i].replace(/^(\s*-\s+)\[[xX]\]/, "$1[ ]");
+	}
+	const file = writeFixture(lines.join("\n"), "stray-fence-hidden-s3");
 	const { code, out } = runChecker([file, "--phase", "2"]);
 	assert.equal(code, 1, out);
-	assert.match(out, /unticked task checkbox/);
+	assert.match(out, /unticked checkbox|malformed evidence/);
 });
 
 test("20. deleting the §3 failure-path section is a HARD FAIL, not a silent pass", () => {
@@ -474,4 +480,59 @@ test("22. a real path followed by an ellipsis still resolves (no false missing-a
 	assert.equal(code, 0, out);
 	assert.match(out, /cited artifact exists: runtime\/scripts\/check-evidence\.mjs/);
 	assert.doesNotMatch(out, /missing cited artifact/);
+});
+
+test("23. an unclosed fence citing a bogus path is REJECTED (no artifact escape)", () => {
+	// extractCitedPaths only scans 'fenced' lines, so a bogus runtime/ path in an
+	// UNCLOSED-fence tail (classified 'text') would otherwise escape the existence
+	// check entirely — a false-green missing artifact. The unbalanced-fence guard
+	// rejects the whole document before any path can slip through.
+	let content = fillBlock(
+		phase2Template,
+		"### (m)",
+		"deploying\n```\ncat runtime/deploy/bogus-does-not-exist.sh",
+	);
+	content = tickAllBoxes(fillAllSentinels(content));
+	const file = writeFixture(content, "unclosed-fence-bogus-path");
+	const { code, out } = runChecker([file, "--phase", "2"]);
+	assert.equal(code, 1, out);
+	assert.match(out, /malformed evidence|unbalanced/);
+});
+
+test("24. §3 backfilled with FENCED fake checkboxes is REJECTED (gutting guard)", () => {
+	// Delete §3's real boxes and backfill a CLOSED ```-fenced block of fake ticked
+	// boxes. A raw presence count alone would be satisfied (5 boxes present); the
+	// no-fence-in-a-structural-section rule rejects it.
+	const lines = fullyFilled().split("\n");
+	const s3 = lines.findIndex((l) => l.startsWith("## 3."));
+	const s4 = lines.findIndex((l) => l.startsWith("## 4."));
+	assert.ok(s3 !== -1 && s4 !== -1, "§3/§4 headers not found");
+	const fake = [
+		lines[s3],
+		"",
+		"```",
+		"- [x] fake failure-path box 1",
+		"- [x] fake failure-path box 2",
+		"- [x] fake failure-path box 3",
+		"- [x] fake failure-path box 4",
+		"- [x] fake failure-path box 5",
+		"```",
+		"",
+	];
+	const gutted = [...lines.slice(0, s3), ...fake, ...lines.slice(s4)].join("\n");
+	const file = writeFixture(gutted, "fenced-fake-s3");
+	const { code, out } = runChecker([file, "--phase", "2"]);
+	assert.equal(code, 1, out);
+	assert.match(out, /must not contain a code fence/);
+});
+
+test("25. parseSecurityScore accepts the PERFECT band (0.0 — perfectly hardened)", () => {
+	// systemd-analyze prints 0.0 as PERFECT; omitting it from the band alternation
+	// false-FAILed the ideal target under --strict and e2e test 2.
+	const parsed = parseSecurityScore(
+		"→ Overall exposure level for iago-os-v2-daemon.service: 0.0 PERFECT",
+	);
+	assert.ok(parsed, "regex did not match a PERFECT-band score");
+	assert.equal(parsed.score, 0);
+	assert.equal(parsed.band, "PERFECT");
 });
