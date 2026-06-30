@@ -18,12 +18,18 @@
  *                         sentinel.
  *   --phase 1             Check PHASE-1-EVIDENCE.md against the Phase 1 block
  *                         list + the legacy `PASTE-…` sentinel.
- *   --strict              ALSO parse a `systemd-analyze security` capture and
- *                         assert the exposure score is ≤ 2.0 and the band word
- *                         is one of {MEDIUM, OK, SAFE}. Defaults to the 05a
- *                         fixture `integration/phase-2-vps.fixtures/
- *                         security-analyze-sample.txt`; override via
- *                         --security-sample.
+ *   --strict              ALSO assert the `systemd-analyze security` exposure
+ *                         score is ≤ 2.0 and the band word is OK/SAFE. The score
+ *                         is read from block (h) of the RENDERED evidence file by
+ *                         DEFAULT — NOT a bundled fixture. (Defaulting to a known-
+ *                         good fixture would green-pass --strict regardless of the
+ *                         live score actually pasted into block (h).) Pass an
+ *                         explicit anonymized live capture via
+ *                         --security-sample <path> to parse that file instead.
+ *                         --strict is OPT-IN: the default acceptance run only
+ *                         checks block (h)'s sentinel was replaced, because a
+ *                         legitimately-accepted higher band (documented in block
+ *                         (h)) must not hard-fail the default gate.
  *
  * Exit code: 0 = PASS, 1 = FAIL (any check failed), 2 = could not read the file.
  *
@@ -46,9 +52,12 @@
  *    the six sections actually present in PHASE-1-EVIDENCE.md; covered by
  *    check-evidence.test.mjs case 5.
  *
- * Cited-artifact path patterns: runtime/deploy/…, runtime/migration/…,
- * runtime/agents/… — resolved against the repo root (derived from THIS script's
- * location, so the check is cwd-independent), then `fs.existsSync`.
+ * Cited-artifact path patterns: runtime/{deploy,migration,agents,scripts,daemon}/…
+ * — resolved against the repo root (derived from THIS script's location, so the
+ * check is cwd-independent), then `fs.existsSync`. (Only repo-root `runtime/…`
+ * citations are existence-checked; cwd-relative forms like `scripts/foo.mjs`
+ * after a `cd runtime` and glob forms like `deploy/*.sh` are a documented C3
+ * limitation — not existsSync-resolvable.)
  */
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
@@ -74,7 +83,22 @@ const PHASE1_SENTINEL_RE = /PASTE-[A-Za-z0-9-]+/;
 export const SECURITY_SCORE_REGEX =
 	/Overall exposure level [^:]*:\s*(\d+\.\d+)\s+(UNSAFE|DANGEROUS|EXPOSED|MEDIUM|OK|SAFE)/m;
 export const SECURITY_SCORE_MAX = 2.0;
-export const SECURITY_SAFE_BANDS = new Set(["MEDIUM", "OK", "SAFE"]);
+// Bands consistent with the ≤2.0 strict TARGET. systemd-analyze maps score
+// 1.0–5.0 to "OK" and <1.0 to "SAFE", so a ≤2.0 score is ALWAYS OK/SAFE; "MEDIUM"
+// (5.0–7.5) can never co-occur with the ≤2.0 cap, so it is NOT a safe band here
+// (keeping it would be a dead, unreachable allowance in runStrict).
+export const SECURITY_SAFE_BANDS = new Set(["OK", "SAFE"]);
+
+// Live post-cutover acceptance (opt-in e2e test 2). LOOSER than the strict TARGET:
+// the shipped unit ships no SystemCallFilter, so a real capture realistically lands
+// in the OK band (~3–5), documented in block (h) as accepted-for-Phase-2. Reject
+// only the EXPOSED/UNSAFE/DANGEROUS bands (score ≳ 7.5 — the OpenClaw 9.6 class).
+export const SECURITY_LIVE_ACCEPTED_MAX = 5.0;
+export const SECURITY_REJECT_BANDS = new Set([
+	"EXPOSED",
+	"UNSAFE",
+	"DANGEROUS",
+]);
 
 /**
  * Parse a `systemd-analyze security` capture. Returns
@@ -84,6 +108,20 @@ export function parseSecurityScore(text) {
 	const match = SECURITY_SCORE_REGEX.exec(text);
 	if (!match) return null;
 	return { score: Number.parseFloat(match[1]), band: match[2] };
+}
+
+/**
+ * Live-capture acceptance used by the opt-in VPS e2e (test 2). The `--strict`
+ * gate enforces the hard ≤2.0 TARGET; THIS is the looser accepted-for-Phase-2
+ * posture for the real, un-hardened unit (block (h)). A hard ≤2.0 assertion in
+ * the e2e would be strictly stronger than the documented acceptance criterion
+ * and would false-FAIL on the legitimately-accepted band.
+ */
+export function isAcceptedLiveScore(
+	{ score, band },
+	max = SECURITY_LIVE_ACCEPTED_MAX,
+) {
+	return score <= max && !SECURITY_REJECT_BANDS.has(band);
 }
 
 // --- Per-phase configuration ----------------------------------------------
@@ -205,10 +243,26 @@ function checkGarry(lines, expected) {
 	return { ok, ticked, total, expected, detail };
 }
 
+/**
+ * EVERY markdown task checkbox in the rendered file must be ticked. The Garry
+ * checklist is counted separately (checkGarry, exact 9/9); this catches the §3
+ * failure-path (5) and §6 sign-off (2) boxes that share the `- [ ]` syntax.
+ * Leaving them unticked while the Garry section was full was a false-green — the
+ * template's own rule is "every checkbox is [x]", so a filled evidence file must
+ * have NO `- [ ]` task item remaining anywhere.
+ */
+function checkAllCheckboxes(content) {
+	const unticked = [];
+	for (const line of content.split("\n")) {
+		if (/^\s*-\s+\[ \]/.test(line)) unticked.push(line.trim());
+	}
+	return { ok: unticked.length === 0, unticked };
+}
+
 // --- Cited-artifact path extraction (C3) -----------------------------------
 
 const ARTIFACT_PATH_RE =
-	/runtime\/(?:deploy|migration|agents)\/[A-Za-z0-9._/-]+/g;
+	/runtime\/(?:deploy|migration|agents|scripts|daemon)\/[A-Za-z0-9._/-]+/g;
 
 /**
  * Extract cited artifact paths from ONLY fenced code blocks and `[text](path)`
@@ -239,23 +293,44 @@ function cleanPath(p) {
 
 // --- Strict mode (security score) ------------------------------------------
 
-function runStrict(samplePath) {
+function runStrict({ content, securitySample }) {
 	let text;
-	try {
-		text = readFileSync(samplePath, "utf8");
-	} catch (err) {
-		const message = err instanceof Error ? err.message : String(err);
-		return {
-			ok: false,
-			detail: `--strict: cannot read security sample ${samplePath}: ${message}`,
-		};
+	let source;
+	if (securitySample) {
+		// Explicit live/anonymized capture supplied by the operator.
+		source = securitySample;
+		try {
+			text = readFileSync(securitySample, "utf8");
+		} catch (err) {
+			const message = err instanceof Error ? err.message : String(err);
+			return {
+				ok: false,
+				detail: `--strict: cannot read security sample ${securitySample}: ${message}`,
+			};
+		}
+	} else {
+		// DEFAULT: parse the score straight out of block (h) of the RENDERED
+		// evidence file — never a bundled known-good fixture (which would
+		// green-pass --strict regardless of the live score in block (h)).
+		source = "block (h) of the evidence file";
+		const region = findRegion(content.split("\n"), (line) =>
+			line.startsWith("### (h)"),
+		);
+		if (!region) {
+			return {
+				ok: false,
+				detail:
+					"--strict: block (h) (systemd-analyze security score) not found in the evidence file",
+			};
+		}
+		text = region.text;
 	}
 	const parsed = parseSecurityScore(text);
 	if (!parsed) {
 		return {
 			ok: false,
 			detail:
-				`--strict: security-score regex did not match ${samplePath}.\n` +
+				`--strict: security-score regex did not match ${source}.\n` +
 				`    expected: ${SECURITY_SCORE_REGEX}\n` +
 				`    saw:\n${text
 					.trim()
@@ -270,14 +345,14 @@ function runStrict(samplePath) {
 		problems.push(`score ${score} exceeds target ${SECURITY_SCORE_MAX}`);
 	}
 	if (!SECURITY_SAFE_BANDS.has(band)) {
-		problems.push(`band ${band} not in {MEDIUM, OK, SAFE}`);
+		problems.push(`band ${band} not in {OK, SAFE}`);
 	}
 	if (problems.length) {
-		return { ok: false, detail: `--strict: ${problems.join("; ")}` };
+		return { ok: false, detail: `--strict: ${problems.join("; ")} (${source})` };
 	}
 	return {
 		ok: true,
-		detail: `--strict: security score ${score} ${band} (≤ ${SECURITY_SCORE_MAX})`,
+		detail: `--strict: security score ${score} ${band} (≤ ${SECURITY_SCORE_MAX}) from ${source}`,
 	};
 }
 
@@ -328,6 +403,18 @@ export function checkEvidence(
 		failures.push(`Garry checklist incomplete: ${garry.detail}`);
 	}
 
+	// (2b) Every OTHER task checkbox (§3 failure-path, §6 sign-off) ticked too —
+	// a full Garry section alone is not "every checkbox is [x]".
+	const boxes = checkAllCheckboxes(content);
+	if (boxes.ok) {
+		passes.push("all task checkboxes ticked");
+	} else {
+		failures.push(
+			`unticked task checkbox(es) remain: ${boxes.unticked.length}` +
+				(boxes.unticked[0] ? ` — e.g. "${boxes.unticked[0]}"` : ""),
+		);
+	}
+
 	// (3) Cited artifacts exist (fenced blocks + link targets only — C3).
 	for (const cited of extractCitedPaths(content)) {
 		const abs = resolve(repoRoot, cleanPath(cited));
@@ -338,15 +425,10 @@ export function checkEvidence(
 		}
 	}
 
-	// (4) Strict security-score parse.
+	// (4) Strict security-score parse — from block (h) of THIS rendered file by
+	// default, or an explicit --security-sample capture if supplied.
 	if (strict) {
-		const samplePath =
-			securitySample ??
-			resolve(
-				runtimeRoot,
-				"integration/phase-2-vps.fixtures/security-analyze-sample.txt",
-			);
-		const strictResult = runStrict(samplePath);
+		const strictResult = runStrict({ content, securitySample });
 		if (strictResult.ok) passes.push(strictResult.detail);
 		else failures.push(strictResult.detail);
 	}
@@ -358,16 +440,29 @@ export function checkEvidence(
 
 function parseArgs(argv) {
 	const opts = { phase: "2", strict: false, file: null, securitySample: null };
+	// A value-taking flag must be FOLLOWED by a value, never another flag and
+	// never end-of-argv — otherwise `argv[++i]` is `undefined` and the flag fails
+	// OPEN (e.g. a dangling `--security-sample` silently dropped its path). Fail
+	// CLOSED instead so a typo'd/incomplete flag is surfaced, not swallowed.
+	const requireValue = (i, flag) => {
+		const value = argv[i + 1];
+		if (value === undefined || value.startsWith("--")) {
+			throw new Error(`${flag} requires a value`);
+		}
+		return value;
+	};
 	for (let i = 0; i < argv.length; i++) {
 		const arg = argv[i];
 		if (arg === "--strict") {
 			opts.strict = true;
 		} else if (arg === "--phase") {
-			opts.phase = argv[++i];
+			opts.phase = requireValue(i, "--phase");
+			i++;
 		} else if (arg.startsWith("--phase=")) {
 			opts.phase = arg.slice("--phase=".length);
 		} else if (arg === "--security-sample") {
-			opts.securitySample = argv[++i];
+			opts.securitySample = requireValue(i, "--security-sample");
+			i++;
 		} else if (arg.startsWith("--security-sample=")) {
 			opts.securitySample = arg.slice("--security-sample=".length);
 		} else if (arg.startsWith("--")) {

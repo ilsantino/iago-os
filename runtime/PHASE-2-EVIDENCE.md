@@ -7,19 +7,16 @@
 > the VPS (and from Santiago's phone for the Telegram screenshot), this PR is
 > NOT mergeable.
 >
-> **Verification gate (NOT YET WIRED — ships in Plan 05b):** the Phase 2 gate
-> will be `npm run check:evidence -- --phase 2` (run from `runtime/`), which
-> will select this file and grep for the `<!-- TODO: paste evidence -->`
-> sentinel, exiting non-zero if any remain. **The current
-> `runtime/scripts/check-evidence.mjs` does NOT yet support `--phase 2`** — it
-> is hardcoded to `PHASE-1-EVIDENCE.md` and greps the old `PASTE-` sentinel, so
-> running it today silently checks the (already-filled) Phase 1 file and
-> green-passes regardless of this file's state. **Until Plan 05b lands, do NOT
-> rely on `check:evidence` for Phase 2** — verify by eye that no
-> `<!-- TODO: paste evidence -->` sentinels remain. Once 05b ships the
-> `--phase` flag, the sentinel is an HTML comment no tool output ever produces,
-> so a real log mentioning the word "paste" cannot falsely satisfy the gate
-> (Plan 05a stress-test C1).
+> **Verification gate (LIVE — shipped in Plan 05b):** run
+> `npm run check:evidence -- --phase 2` from `runtime/`. It selects THIS file,
+> greps for the `<!-- TODO: paste evidence -->` sentinel, verifies every cited
+> `runtime/…` artifact exists, requires every task checkbox to be `[x]`, and
+> exits non-zero if any sentinel or unticked box remains. `--phase 2` is the
+> DEFAULT, so a bare `npm run check:evidence` (from `runtime/`) checks this file
+> too. The sentinel is an HTML comment no tool output ever produces, so a real
+> log mentioning the word "paste" cannot falsely satisfy the gate (Plan 05a
+> stress-test C1). Judging whether the pasted content is *meaningful* remains the
+> human reviewer's job.
 
 ## 1. Purpose
 
@@ -386,9 +383,7 @@ staging VPS — Santiago override"). Read it before questioning the test path.
 
 Before merge approval, this template is filled out completely — **no
 `<!-- TODO: paste evidence -->` sentinels remain** and every checkbox is
-`[x]`. Once Plan 05b lands the `--phase` flag, the
-`npm run check:evidence -- --phase 2` gate will enforce this (it confirms every
-sentinel is replaced); judging whether the pasted content is meaningful is the
-human reviewer's job. **Until 05b ships, that command does NOT check this file**
-— see the DO-NOT-MERGE header — so the no-sentinels-remain check is by-eye for
-any Phase 2 PR that merges before 05b.
+`[x]`. The `npm run check:evidence -- --phase 2` gate enforces this — it confirms
+every sentinel is replaced, every cited `runtime/…` artifact exists, and every
+task checkbox is ticked; judging whether the pasted content is meaningful is the
+human reviewer's job.

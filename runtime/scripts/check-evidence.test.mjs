@@ -21,7 +21,11 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { after, test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { parseSecurityScore } from "./check-evidence.mjs";
+import {
+	isAcceptedLiveScore,
+	parseSecurityScore,
+	SECURITY_LIVE_ACCEPTED_MAX,
+} from "./check-evidence.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url)); // runtime/scripts
 const runtimeRoot = path.resolve(here, "..");
@@ -84,9 +88,14 @@ function tickGarry(content, n) {
 	return before + section + after_;
 }
 
-/** A fully-filled, Garry-9/9, all-blocks-present Phase 2 evidence doc. */
+/** Tick EVERY markdown task checkbox (Garry §5 + §3 failure-path + §6 sign-off). */
+function tickAllBoxes(content) {
+	return content.replace(/^(\s*-\s+)\[ \]/gm, "$1[x]");
+}
+
+/** A fully-filled, all-boxes-ticked, all-blocks-present Phase 2 evidence doc. */
 function fullyFilled() {
-	return tickGarry(fillAllSentinels(phase2Template), 9);
+	return tickAllBoxes(fillAllSentinels(phase2Template));
 }
 
 let fixtureSeq = 0;
@@ -128,7 +137,7 @@ test("2. fully-filled PASSes with count >=10", () => {
 		"### (c)",
 		"node --test ran; see runtime/deploy/cutover.sh",
 	);
-	content = tickGarry(fillAllSentinels(content), 9);
+	content = tickAllBoxes(fillAllSentinels(content));
 	const file = writeFixture(content, "filled");
 	const { code, out } = runChecker([file, "--phase", "2"]);
 	assert.equal(code, 0, out);
@@ -259,4 +268,124 @@ test("10. a prose-only path is NOT flagged as a missing artifact (C3)", () => {
 	const { code, out } = runChecker([file, "--phase", "2"]);
 	assert.equal(code, 0, out);
 	assert.doesNotMatch(out, /outdated_path/);
+});
+
+test("11. an unticked §3/§6 box FAILs even with Garry 9/9 (every checkbox enforced)", () => {
+	// Garry fully ticked + sentinels filled, but the §3 failure-path and §6
+	// sign-off boxes left unticked must STILL fail — a full Garry section alone is
+	// not "every checkbox is [x]". (This is exactly the pre-fix false-green.)
+	const content = tickGarry(fillAllSentinels(phase2Template), 9);
+	const file = writeFixture(content, "non-garry-unticked");
+	const { code, out } = runChecker([file, "--phase", "2"]);
+	assert.equal(code, 1);
+	assert.match(out, /unticked task checkbox/);
+});
+
+test("12. --strict (no --security-sample) reads block (h) of the evidence file and FAILs a bad score", () => {
+	// The score must come from the RENDERED file's block (h), NOT a bundled
+	// known-good fixture — a real UNSAFE capture pasted into block (h) must fail.
+	let content = fillBlock(
+		phase2Template,
+		"### (h)",
+		"→ Overall exposure level for iago-os-v2-daemon.service: 9.6 UNSAFE",
+	);
+	content = tickAllBoxes(fillAllSentinels(content));
+	const file = writeFixture(content, "strict-blockh-bad");
+	const { code, out } = runChecker([file, "--phase", "2", "--strict"]);
+	assert.equal(code, 1);
+	assert.match(out, /--strict:.*9\.6/);
+	assert.match(out, /block \(h\) of the evidence file/);
+});
+
+test("13. --strict (no --security-sample) PASSes when block (h) holds a <=2.0 score", () => {
+	let content = fillBlock(
+		phase2Template,
+		"### (h)",
+		"→ Overall exposure level for iago-os-v2-daemon.service: 1.8 OK",
+	);
+	content = tickAllBoxes(fillAllSentinels(content));
+	const file = writeFixture(content, "strict-blockh-ok");
+	const { code, out } = runChecker([file, "--phase", "2", "--strict"]);
+	assert.equal(code, 0, out);
+	assert.match(out, /--strict: security score 1\.8 OK/);
+});
+
+test("14. cited runtime/scripts/** + runtime/daemon/** artifacts are existence-checked", () => {
+	// Bogus runtime/scripts path in a fence FAILs (the artifact regex now covers
+	// scripts/ + daemon/, not just deploy/migration/agents).
+	let bad = fillBlock(
+		phase2Template,
+		"### (c)",
+		"node --test runtime/scripts/does-not-exist.mjs",
+	);
+	bad = tickAllBoxes(fillAllSentinels(bad));
+	const badFile = writeFixture(bad, "scripts-missing");
+	const r1 = runChecker([badFile, "--phase", "2"]);
+	assert.equal(r1.code, 1);
+	assert.match(
+		r1.out,
+		/missing cited artifact: runtime\/scripts\/does-not-exist\.mjs/,
+	);
+
+	// A REAL runtime/scripts citation passes the existence check.
+	let good = fillBlock(
+		phase2Template,
+		"### (c)",
+		"node --test runtime/scripts/check-evidence.mjs",
+	);
+	good = tickAllBoxes(fillAllSentinels(good));
+	const goodFile = writeFixture(good, "scripts-exists");
+	const r2 = runChecker([goodFile, "--phase", "2"]);
+	assert.equal(r2.code, 0, r2.out);
+	assert.match(
+		r2.out,
+		/cited artifact exists: runtime\/scripts\/check-evidence\.mjs/,
+	);
+});
+
+test("15. a value-taking flag with no value fails CLOSED (exit 2), not open", () => {
+	// Dangling `--security-sample` must NOT silently fall back to a passing
+	// default — it must error so the operator's typo is surfaced.
+	const file = writeFixture(fullyFilled(), "dangling-flag");
+	const { code, out } = runChecker([
+		file,
+		"--phase",
+		"2",
+		"--strict",
+		"--security-sample",
+	]);
+	assert.equal(code, 2);
+	assert.match(out, /--security-sample requires a value/);
+});
+
+test("16. live-score acceptance: OK band within ceiling accepted, EXPOSED/UNSAFE rejected", () => {
+	// The opt-in e2e (test 2) uses this looser accepted-for-Phase-2 posture rather
+	// than the hard ≤2.0 strict target, so it does not false-FAIL the un-hardened
+	// unit's realistic OK-band score while still rejecting the OpenClaw 9.6 class.
+	assert.equal(isAcceptedLiveScore({ score: 2.0, band: "OK" }), true);
+	assert.equal(isAcceptedLiveScore({ score: 4.5, band: "OK" }), true);
+	assert.equal(
+		isAcceptedLiveScore({ score: SECURITY_LIVE_ACCEPTED_MAX, band: "MEDIUM" }),
+		true,
+	);
+	assert.equal(isAcceptedLiveScore({ score: 6.0, band: "MEDIUM" }), false); // > ceiling
+	assert.equal(isAcceptedLiveScore({ score: 8.0, band: "EXPOSED" }), false);
+	assert.equal(isAcceptedLiveScore({ score: 9.6, band: "UNSAFE" }), false);
+	// A tightened ceiling (the 2.0 hardening target) rejects an OK-band 3.0.
+	assert.equal(isAcceptedLiveScore({ score: 3.0, band: "OK" }, 2.0), false);
+});
+
+test("17. --strict enforces the <=2.0 cap even for an OK-band score above the cap", () => {
+	// A safe band does not bypass the numeric TARGET: 3.0 OK is within the OK band
+	// but exceeds the strict ≤2.0 cap, so --strict must reject it.
+	let content = fillBlock(
+		phase2Template,
+		"### (h)",
+		"→ Overall exposure level for iago-os-v2-daemon.service: 3.0 OK",
+	);
+	content = tickAllBoxes(fillAllSentinels(content));
+	const file = writeFixture(content, "strict-cap-ok-band");
+	const { code, out } = runChecker([file, "--phase", "2", "--strict"]);
+	assert.equal(code, 1);
+	assert.match(out, /exceeds target 2/);
 });

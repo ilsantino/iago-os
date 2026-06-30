@@ -94,3 +94,12 @@ jobs:
         if: steps.presence.outputs.exists == 'true'
         working-directory: runtime
         run: npx vitest run --coverage
+      # vitest's include glob is **/*.test.ts, so the acceptance-gate's node:test
+      # suite (check-evidence.test.mjs) is NOT collected by the step above. Run it
+      # explicitly — check-evidence.mjs IS the Phase 2 gate, so its regression net
+      # must execute on every PR (matches the explicit node:test pattern in the
+      # test-workflows job).
+      - name: Test runtime acceptance-gate scripts (node:test)
+        if: steps.presence.outputs.exists == 'true'
+        working-directory: runtime
+        run: npm run test:gate

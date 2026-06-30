@@ -41,7 +41,11 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 // Shared with check-evidence.mjs --strict so the live and fixture parses agree.
-import { parseSecurityScore } from "../scripts/check-evidence.mjs";
+import {
+	SECURITY_LIVE_ACCEPTED_MAX,
+	isAcceptedLiveScore,
+	parseSecurityScore,
+} from "../scripts/check-evidence.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -55,12 +59,18 @@ const skipNondisruptive = !E2E;
 const skipDisruptive = !E2E || NONDISRUPTIVE;
 
 type ExpectedEvent = { kind: string; criticality: string };
-const expectedEvents = JSON.parse(
-	readFileSync(
-		resolve(here, "phase-2-vps.fixtures/expected-events.json"),
-		"utf8",
-	),
-) as ExpectedEvent[];
+// LAZY — only test 7 consumes this. A top-level read would couple vitest
+// COLLECTION (every test in this file skips by default in CI) to the fixture's
+// presence: a renamed/removed fixture would throw at import and red-fail the
+// whole suite instead of cleanly skipping. Load it inside the one test that uses it.
+function loadExpectedEvents(): ExpectedEvent[] {
+	return JSON.parse(
+		readFileSync(
+			resolve(here, "phase-2-vps.fixtures/expected-events.json"),
+			"utf8",
+		),
+	) as ExpectedEvent[];
+}
 
 interface VpsResult {
 	code: number;
@@ -116,13 +126,22 @@ describe("Phase 2 VPS cutover e2e (opt-in: IAGO_VPS_E2E=1)", () => {
 	// Test 0 — telemetry sentinel marker. Makes it trivial to grep "where did
 	// the e2e poke start?" in post-test review. Skipped in nondisruptive mode
 	// (it WRITES to the cutover log).
-	it.skipIf(skipDisruptive)("0. emits an e2e-test-start sentinel marker", () => {
-		const sentinel = Date.now();
-		const r = vps(
-			`echo '{"kind":"e2e-test-start","sentinel":"${sentinel}"}' >> /var/log/iago-os/cutover.ndjson`,
-		);
-		expect(r.code).toBe(0);
-	});
+	it.skipIf(skipDisruptive)(
+		"0. emits an e2e-test-start sentinel marker",
+		() => {
+			const sentinel = Date.now();
+			// retries: 1 — this is the ONLY write. A 10s timeout-kill does NOT prove
+			// the remote append did not run server-side, so retrying could append a
+			// SECOND identical line (the sentinel is fixed before the call). One
+			// attempt keeps the diagnostic marker idempotent; a transport failure
+			// surfaces as a throw.
+			const r = vps(
+				`echo '{"kind":"e2e-test-start","sentinel":"${sentinel}"}' >> /var/log/iago-os/cutover.ndjson`,
+				{ retries: 1 },
+			);
+			expect(r.code).toBe(0);
+		},
+	);
 
 	// --- Nondisruptive subset (pure read-only) ------------------------------
 
@@ -189,7 +208,7 @@ describe("Phase 2 VPS cutover e2e (opt-in: IAGO_VPS_E2E=1)", () => {
 	// --- Disruptive / heavier subset ----------------------------------------
 
 	it.skipIf(skipDisruptive)(
-		"2. systemd-analyze security exposure score <= 2.0",
+		"2. systemd-analyze security exposure score within the accepted Phase-2 band",
 		() => {
 			const r = vps("systemd-analyze security iago-os-v2-daemon.service", {
 				timeoutMs: 15_000,
@@ -200,10 +219,21 @@ describe("Phase 2 VPS cutover e2e (opt-in: IAGO_VPS_E2E=1)", () => {
 				parsed,
 				`could not parse exposure score from:\n${r.stdout}`,
 			).not.toBeNull();
-			// Spec §1 TARGET. The shipped unit ships no SystemCallFilter, so a real
-			// capture may land MEDIUM (~3–5); if it exceeds the target the cutover PR
-			// hardens the unit or documents the accepted band (see block (h)).
-			expect(parsed.score).toBeLessThanOrEqual(2.0);
+			// LIVE post-cutover acceptance is the looser accepted-for-Phase-2 band
+			// (isAcceptedLiveScore: score ≤ SECURITY_LIVE_ACCEPTED_MAX, and
+			// EXPOSED/UNSAFE/DANGEROUS rejected), NOT the hard ≤2.0 TARGET. The
+			// shipped unit ships no SystemCallFilter, so a real capture realistically
+			// lands in the OK band (~3–5), documented + accepted in block (h);
+			// asserting the hard 2.0 target here would false-FAIL the
+			// un-hardened-but-accepted unit. The hard ≤2.0 target is enforced by
+			// `check-evidence --strict` against block (h) — the command a PR reviewer
+			// actually runs.
+			expect(
+				isAcceptedLiveScore(parsed),
+				`live exposure score ${parsed.score} ${parsed.band} exceeds the ` +
+					`accepted-for-Phase-2 band (≤ ${SECURITY_LIVE_ACCEPTED_MAX}, ` +
+					`EXPOSED/UNSAFE/DANGEROUS rejected)`,
+			).toBe(true);
 		},
 	);
 
@@ -232,9 +262,10 @@ describe("Phase 2 VPS cutover e2e (opt-in: IAGO_VPS_E2E=1)", () => {
 				nonEmptyLines(r.stdout).map((line) => JSON.parse(line).kind),
 			);
 			for (const kind of required) {
-				expect(kinds.has(kind), `required telemetry kind missing: ${kind}`).toBe(
-					true,
-				);
+				expect(
+					kinds.has(kind),
+					`required telemetry kind missing: ${kind}`,
+				).toBe(true);
 			}
 		},
 	);
@@ -242,7 +273,9 @@ describe("Phase 2 VPS cutover e2e (opt-in: IAGO_VPS_E2E=1)", () => {
 	it.skipIf(skipDisruptive)(
 		"12. archive-prune timer is scheduled within 24h",
 		() => {
-			const r = vps("systemctl list-timers iago-archive-prune.timer --no-pager");
+			const r = vps(
+				"systemctl list-timers iago-archive-prune.timer --no-pager",
+			);
 			expect(r.code).toBe(0);
 			expect(r.stdout).toContain("iago-archive-prune.timer");
 			// A scheduled next run shows hours/min/sec "left", never n/a or >=2 days.
@@ -261,11 +294,15 @@ describe("Phase 2 VPS cutover e2e (opt-in: IAGO_VPS_E2E=1)", () => {
 	it.skipIf(skipDisruptive)(
 		"14. telegram-token decrypts to a positive byte count",
 		() => {
-			// Length-only — NEVER assert the decrypted value.
+			// Length-only — NEVER assert the decrypted value. A Telegram bot token is
+			// `<digits>:<35+ chars>` ≈ 46 bytes, so assert ≥ 46: a `> 0` threshold
+			// green-lights a corrupted/partial decrypt (a few garbage bytes pass) —
+			// the `len > 0` anti-pattern the shell-deploy severity floor flags as
+			// ALWAYS Important. Length-only still keeps the secret value hidden.
 			const r = vps(
 				"systemd-creds decrypt /etc/credstore.encrypted/iago-telegram-token.cred - | wc -c",
 			);
-			expect(Number.parseInt(r.stdout, 10)).toBeGreaterThan(0);
+			expect(Number.parseInt(r.stdout, 10)).toBeGreaterThanOrEqual(46);
 		},
 	);
 });
