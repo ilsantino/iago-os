@@ -171,6 +171,16 @@ const PHASE_CONFIG = {
 			label: PHASE2_SENTINEL,
 		},
 		garryExpected: 9,
+		// §3 (failure-path) and §6 (sign-off) are otherwise enforced ONLY by the
+		// every-checkbox count — so DELETING either section (or gutting its boxes)
+		// leaves zero unticked boxes and the gate would silently PASS. Require each
+		// section's header AND a minimum checkbox count so absence or gutting is a
+		// HARD FAIL. (minBoxes = the shipped box counts: §3 has 5 failure-path
+		// boxes, §6 has 2 sign-off boxes.)
+		requiredCheckboxSections: [
+			{ id: "§3 failure-path checklist", header: "## 3.", minBoxes: 5 },
+			{ id: "§6 sign-off checklist", header: "## 6.", minBoxes: 2 },
+		],
 	},
 };
 
@@ -243,28 +253,146 @@ function checkGarry(lines, expected) {
 	return { ok, ticked, total, expected, detail };
 }
 
+// A fenced-code-block opener: ≤3 spaces of indent + a run of ≥3 backticks or
+// ≥3 tildes, optionally followed by an info string (captured separately so a
+// backtick opener carrying a backtick in its info string is rejected, per
+// CommonMark). A closer is the same but with ONLY whitespace after the run.
+const FENCE_OPEN_RE = /^(\s*)(`{3,}|~{3,})(.*)$/;
+const FENCE_CLOSE_RE = /^(\s*)(`{3,}|~{3,})\s*$/;
+
+/**
+ * Per-line fenced-code-block classification, shared (DRY) by checkAllCheckboxes
+ * and extractCitedPaths so the two can never disagree about what is "in a fence"
+ * and a stray/unbalanced fence can never silently INVERT in-fence state for the
+ * rest of the document (the naive `inFence = !inFence` toggle did exactly that —
+ * one stray ``` flipped every later line, skipping all trailing `- [ ]` boxes and
+ * cited paths = a false-PASS on incomplete evidence).
+ *
+ * CommonMark-ish: an opener is matched, its marker char (backtick or tilde), run
+ * length and indent recorded, and it is closed ONLY by a later line with the SAME
+ * marker char, a run length ≥ the opener's, indent ≤ the opener's, and nothing
+ * but whitespace after the run. Tilde fences and list-indented fences are
+ * recognized too.
+ *
+ * FAIL-SAFE (bias to BLOCK): an opening fence with NO matching closer — a
+ * stray/unbalanced backtick pasted into terminal evidence — is treated as
+ * NON-fenced from the opener onward, so genuinely-unticked `- [ ]` boxes after it
+ * are still COUNTED. The gate must never false-PASS incomplete evidence.
+ *
+ * Returns one classification per line:
+ *   "marker" — a fence opener or closer line (skipped by BOTH consumers)
+ *   "fenced" — content strictly inside a properly-closed fence
+ *   "text"   — prose, AND any unclosed-fence tail
+ */
+function classifyFenceLines(rawLines) {
+	// CRLF normalization: the evidence files ship with \r\n endings, so a line
+	// split on "\n" keeps a trailing \r. FENCE_OPEN_RE's `(.*)$` cannot consume
+	// that \r (JS `.` excludes \r and `$` does not match before it), so EVERY
+	// fence would be misread as a non-opener and nothing would ever be "fenced"
+	// (the old `/^```/` test was \r-tolerant; this stricter scan is not). Strip a
+	// trailing \r for classification only — `cls` still indexes 1:1 with the
+	// caller's raw array, so consumers keep using their own (possibly \r-tailed)
+	// lines unchanged.
+	const lines = rawLines.map((l) => (l.endsWith("\r") ? l.slice(0, -1) : l));
+	const cls = new Array(lines.length).fill("text");
+	let i = 0;
+	while (i < lines.length) {
+		const open = FENCE_OPEN_RE.exec(lines[i]);
+		const isOpener =
+			open !== null &&
+			open[1].length <= 3 &&
+			// A backtick opener may not carry a backtick in its info string.
+			!(open[2].startsWith("`") && open[3].includes("`"));
+		if (!isOpener) {
+			i++;
+			continue;
+		}
+		const indent = open[1].length;
+		const marker = open[2][0];
+		const runLen = open[2].length;
+		let close = -1;
+		for (let j = i + 1; j < lines.length; j++) {
+			const c = FENCE_CLOSE_RE.exec(lines[j]);
+			if (
+				c !== null &&
+				c[2][0] === marker &&
+				c[2].length >= runLen &&
+				c[1].length <= indent
+			) {
+				close = j;
+				break;
+			}
+		}
+		if (close === -1) {
+			// Unclosed/stray opener → fail-safe: leave it (and the rest) as "text".
+			i++;
+			continue;
+		}
+		cls[i] = "marker";
+		cls[close] = "marker";
+		for (let k = i + 1; k < close; k++) cls[k] = "fenced";
+		i = close + 1;
+	}
+	return cls;
+}
+
 /**
  * EVERY `- [ ]` markdown task checkbox in the rendered file must be ticked. The
  * Garry checklist is counted separately (checkGarry, exact 9/9); this catches the
  * §3 failure-path (5) and §6 sign-off (2) `- [ ]` boxes that share the syntax.
- * Fenced code blocks are skipped (mirroring extractCitedPaths) so a literal
- * `- [ ]` inside pasted terminal/markdown output never false-FAILs the gate.
+ * Lines strictly inside a properly-closed fenced code block are skipped (via the
+ * shared classifyFenceLines, mirroring extractCitedPaths) so a literal `- [ ]`
+ * inside pasted terminal/markdown output never false-FAILs the gate — while an
+ * unclosed/stray fence is classified "text" (fail-safe), so trailing real boxes
+ * after it are still COUNTED (bias to BLOCK incomplete evidence).
  * (The `### (x) — `[ ]`` per-block status headers are operator-facing visual
  * progress markers, ticked by hand but not gate-enforced — both Phase 1 and
  * Phase 2 use them and the gate treats neither phase's headers as a hard gate.)
  */
 function checkAllCheckboxes(content) {
+	const lines = content.split("\n");
+	const cls = classifyFenceLines(lines);
 	const unticked = [];
-	let inFence = false;
-	for (const line of content.split("\n")) {
-		if (/^```/.test(line)) {
-			inFence = !inFence;
-			continue;
-		}
-		if (inFence) continue;
-		if (/^\s*-\s+\[ \]/.test(line)) unticked.push(line.trim());
+	for (let i = 0; i < lines.length; i++) {
+		if (cls[i] !== "text") continue;
+		if (/^\s*-\s+\[ \]/.test(lines[i])) unticked.push(lines[i].trim());
 	}
 	return { ok: unticked.length === 0, unticked };
+}
+
+/**
+ * Required-checkbox-section guard. checkAllCheckboxes only flags UNTICKED boxes,
+ * so a deleted (or fully gutted) §3 failure-path / §6 sign-off section leaves
+ * ZERO unticked boxes and would silently PASS the gate. Assert each configured
+ * section's HEADER is present AND it carries at least `minBoxes` task checkboxes
+ * (ticked or not), so removing or emptying the section is a HARD FAIL.
+ */
+function checkRequiredCheckboxSections(lines, sections) {
+	const passes = [];
+	const failures = [];
+	for (const sec of sections) {
+		const region = findRegion(lines, (line) => line.startsWith(sec.header));
+		if (!region) {
+			failures.push(
+				`missing required section: ${sec.id} (expected a header starting with "${sec.header}")`,
+			);
+			continue;
+		}
+		let count = 0;
+		for (const line of region.text.split("\n")) {
+			if (/^\s*-\s+\[[ xX]\]/.test(line)) count++;
+		}
+		if (count < sec.minBoxes) {
+			failures.push(
+				`required section gutted: ${sec.id} has ${count} checkbox(es), expected ≥ ${sec.minBoxes}`,
+			);
+		} else {
+			passes.push(
+				`required section present: ${sec.id} (${count} checkbox(es))`,
+			);
+		}
+	}
+	return { passes, failures };
 }
 
 // --- Cited-artifact path extraction (C3) -----------------------------------
@@ -274,18 +402,18 @@ const ARTIFACT_PATH_RE =
 
 /**
  * Extract cited artifact paths from ONLY fenced code blocks and `[text](path)`
- * link targets (C3). Prose is deliberately ignored.
+ * link targets (C3). Prose is deliberately ignored. Uses the shared
+ * classifyFenceLines so an unbalanced/stray fence cannot invert in-fence state
+ * (it would otherwise start treating prose as fenced — or fenced as prose — and
+ * silently drop cited paths from the existence check).
  */
 function extractCitedPaths(content) {
 	const found = new Set();
-	let inFence = false;
-	for (const line of content.split("\n")) {
-		if (/^```/.test(line)) {
-			inFence = !inFence;
-			continue;
-		}
-		if (!inFence) continue;
-		for (const m of line.matchAll(ARTIFACT_PATH_RE)) found.add(m[0]);
+	const lines = content.split("\n");
+	const cls = classifyFenceLines(lines);
+	for (let i = 0; i < lines.length; i++) {
+		if (cls[i] !== "fenced") continue;
+		for (const m of lines[i].matchAll(ARTIFACT_PATH_RE)) found.add(m[0]);
 	}
 	// Link targets anywhere in the doc.
 	for (const link of content.matchAll(/\[[^\]]*\]\(([^)]+)\)/g)) {
@@ -294,9 +422,20 @@ function extractCitedPaths(content) {
 	return [...found];
 }
 
-/** Strip trailing punctuation / slash so existsSync resolves cleanly. */
+/**
+ * Strip trailing punctuation / slash / ellipsis so existsSync resolves cleanly.
+ * Terminal output frequently prints `path...done` / `path…`; the artifact regex
+ * (its char class includes `.`) over-matches the ellipsis (and any following
+ * word) into a nonexistent path, so cut at the FIRST run of ≥3 dots before the
+ * punctuation/slash trim (a real `..` parent-dir component, only 2 dots, is left
+ * intact). A real path followed by an ellipsis then resolves instead of
+ * false-FAILing.
+ */
 function cleanPath(p) {
-	return p.replace(/[).,;:]+$/, "").replace(/\/+$/, "");
+	return p
+		.replace(/\.{3,}.*$/, "")
+		.replace(/[).,;:]+$/, "")
+		.replace(/\/+$/, "");
 }
 
 // --- Strict mode (security score) ------------------------------------------
@@ -439,6 +578,19 @@ export function checkEvidence(
 		);
 	}
 
+	// (2c) Required checkbox-sections present + not gutted. checkAllCheckboxes only
+	// flags UNTICKED boxes, so DELETING §3 (failure-path) or §6 (sign-off) leaves
+	// zero unticked boxes and would silently PASS — assert each required section's
+	// header is present AND carries at least its minimum checkbox count.
+	if (config.requiredCheckboxSections) {
+		const sections = checkRequiredCheckboxSections(
+			lines,
+			config.requiredCheckboxSections,
+		);
+		passes.push(...sections.passes);
+		failures.push(...sections.failures);
+	}
+
 	// (3) Cited artifacts exist (fenced blocks + link targets only — C3).
 	for (const cited of extractCitedPaths(content)) {
 		const abs = resolve(repoRoot, cleanPath(cited));
@@ -488,7 +640,14 @@ function parseArgs(argv) {
 			opts.securitySample = requireValue(i, "--security-sample");
 			i++;
 		} else if (arg.startsWith("--security-sample=")) {
-			opts.securitySample = arg.slice("--security-sample=".length);
+			// The equals-form must fail CLOSED on an EMPTY value exactly like the
+			// space-separated form — an empty string is falsy and would silently
+			// fall back to parsing block (h) (a value-takes-no-value escape hatch).
+			const value = arg.slice("--security-sample=".length);
+			if (value === "") {
+				throw new Error("--security-sample requires a value");
+			}
+			opts.securitySample = value;
 		} else if (arg.startsWith("--")) {
 			throw new Error(`unknown flag: ${arg}`);
 		} else {

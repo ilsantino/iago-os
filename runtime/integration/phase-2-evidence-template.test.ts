@@ -69,6 +69,7 @@ import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
+import { SECURITY_SCORE_REGEX } from "../scripts/check-evidence.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const runtimeRoot = resolve(here, "..");
@@ -247,15 +248,15 @@ describe("security-analyze-sample.txt — fixture realism", () => {
 			// Trim the trailing alignment padding systemd-analyze right-pads onto
 			// each directive name so the dedupe is padding-insensitive (a duplicate
 			// with different padding must still collapse in the Set).
-			.map((l) => l.split("=")[0].trim());
+			.map((l) => (l.split("=")[0] ?? "").trim());
 		const unique = new Set(directiveLines);
 		expect(unique.size).toBe(directiveLines.length);
 	});
 
 	it("still exposes the score line the 05b --strict regex parses", () => {
-		const regex =
-			/Overall exposure level [^:]*:\s*(\d+\.\d+)\s+(UNSAFE|DANGEROUS|EXPOSED|MEDIUM|OK|SAFE)/m;
-		expect(regex.test(securitySample)).toBe(true);
+		// Use the SHARED SECURITY_SCORE_REGEX (I1 anti-drift) rather than a third
+		// hand-encoded copy that could silently diverge from the canonical source.
+		expect(SECURITY_SCORE_REGEX.test(securitySample)).toBe(true);
 	});
 });
 

@@ -405,3 +405,73 @@ test("18. --strict scans ALL block (h) score lines; an UNSAFE behind an OK still
 	assert.equal(code, 1);
 	assert.match(out, /9\.6|UNSAFE/);
 });
+
+test("19. a stray fence in pasted evidence does NOT hide later unticked boxes", () => {
+	// The pre-fix naive `inFence = !inFence` toggle let ONE stray ``` inside a
+	// pasted block flip fence parity for the whole rest of the document, hiding
+	// every later unticked `- [ ]` (a false-PASS on INCOMPLETE cutover evidence —
+	// the gate's worst failure mode). The robust classifier treats an
+	// unbalanced/stray fence as text (fail-safe to BLOCK), so the §3 + §6 boxes
+	// after it are still counted. block (m) is the last evidence block; §3/§6
+	// follow it, exactly the demonstrated bypass.
+	let content = fillBlock(
+		phase2Template,
+		"### (m)",
+		"SIGHUP reload OK\n```\norphaned fence above; evidence continues",
+	);
+	content = fillAllSentinels(content);
+	content = tickGarry(content, 9); // Garry 9/9 ticked; §3 + §6 left UNticked
+	const file = writeFixture(content, "stray-fence");
+	const { code, out } = runChecker([file, "--phase", "2"]);
+	assert.equal(code, 1, out);
+	assert.match(out, /unticked task checkbox/);
+});
+
+test("20. deleting the §3 failure-path section is a HARD FAIL, not a silent pass", () => {
+	// §3/§6 are otherwise enforced ONLY by unticked-box counting, so removing the
+	// whole section leaves zero unticked boxes and would silently PASS. The
+	// required-checkbox-section guard makes absence a hard fail.
+	const lines = fullyFilled().split("\n");
+	const s3 = lines.findIndex((l) => l.startsWith("## 3."));
+	const s4 = lines.findIndex((l) => l.startsWith("## 4."));
+	assert.ok(s3 !== -1 && s4 !== -1, "§3/§4 headers not found");
+	const gutted = [...lines.slice(0, s3), ...lines.slice(s4)].join("\n");
+	const file = writeFixture(gutted, "gutted-s3");
+	const { code, out } = runChecker([file, "--phase", "2"]);
+	assert.equal(code, 1, out);
+	assert.match(out, /missing required section/);
+});
+
+test("21. --security-sample= (empty equals-form value) fails CLOSED like the dangling form", () => {
+	// The dangling form already fails closed (test 15). The equals-form with an
+	// EMPTY value must NOT silently fall back to parsing block (h) — same typo,
+	// same fail-closed.
+	const file = writeFixture(fullyFilled(), "empty-equals-sample");
+	const { code, out } = runChecker([
+		file,
+		"--phase",
+		"2",
+		"--strict",
+		"--security-sample=",
+	]);
+	assert.equal(code, 2);
+	assert.match(out, /--security-sample requires a value/);
+});
+
+test("22. a real path followed by an ellipsis still resolves (no false missing-artifact)", () => {
+	// Terminal output prints `path...done`; the artifact regex (its char class
+	// includes `.`) would over-match the ellipsis into a nonexistent path and
+	// false-FAIL a complete evidence file. cleanPath now cuts at the first run of
+	// >=3 dots.
+	let content = fillBlock(
+		phase2Template,
+		"### (c)",
+		"writing runtime/scripts/check-evidence.mjs...done",
+	);
+	content = tickAllBoxes(fillAllSentinels(content));
+	const file = writeFixture(content, "ellipsis-path");
+	const { code, out } = runChecker([file, "--phase", "2"]);
+	assert.equal(code, 0, out);
+	assert.match(out, /cited artifact exists: runtime\/scripts\/check-evidence\.mjs/);
+	assert.doesNotMatch(out, /missing cited artifact/);
+});

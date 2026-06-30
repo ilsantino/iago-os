@@ -90,6 +90,15 @@ jobs:
         if: steps.presence.outputs.exists == 'true'
         working-directory: runtime
         run: npx tsc --noEmit
+      # The base tsconfig EXCLUDES **/*.test.ts and vitest SKIPS the opt-in VPS
+      # e2e by default, so phase-2-vps.test.ts — the proof artifact for the
+      # IRREVERSIBLE production cutover — is otherwise type-unchecked (a round-1
+      # ReferenceError shipped exactly that way). tsconfig.e2e.json type-checks the
+      # Phase 2 integration test BODIES so a regression inside them fails CI.
+      - name: Typecheck Phase 2 e2e test bodies
+        if: steps.presence.outputs.exists == 'true'
+        working-directory: runtime
+        run: npx tsc -p tsconfig.e2e.json
       - name: Test runtime (with coverage)
         if: steps.presence.outputs.exists == 'true'
         working-directory: runtime

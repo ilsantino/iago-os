@@ -83,6 +83,36 @@ function sleepSync(ms: number): void {
 	Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
 
+interface VpsSpawn {
+	cmd: string;
+	args: string[];
+	options: { input: string; encoding: BufferEncoding; timeout: number };
+}
+
+/**
+ * Build the spawnSync arguments for ONE remote command over Tailscale SSH.
+ *
+ * The remote command is delivered on STDIN to `bash -o pipefail -s`, NEVER as a
+ * trailing argv word. This is load-bearing: `tailscale ssh … -- bash -o pipefail
+ * -c <cmd>` space-JOINS its argv into ONE remote SSH exec string that the remote
+ * login shell RE-TOKENIZES, so `bash -c` would consume only the FIRST word of
+ * `remoteCmd` and the rest (pipes, `-u <unit>` filters, quoted args) would leak
+ * out as separate tokens — silently dropping the per-command `-o pipefail`
+ * wrapper AND the pipe filters. e.g. `journalctl -u <unit> | grep -c daemon-start`
+ * would lose its `-u` filter and count daemon-start across the WHOLE journal: a
+ * false-green on a production acceptance check. With `bash -s` the script is read
+ * verbatim from stdin, so spaces / pipes / quotes survive with ZERO remote
+ * re-tokenization and `-o pipefail` stays effective. Mirrors the proven
+ * `vssh bash -s <<EOF` stdin-delivery pattern in runtime/deploy/rollback.sh.
+ */
+function buildVpsSpawn(remoteCmd: string, timeoutMs: number): VpsSpawn {
+	return {
+		cmd: "tailscale",
+		args: ["ssh", VPS_HOST, "--", "bash", "-o", "pipefail", "-s"],
+		options: { input: remoteCmd, encoding: "utf8", timeout: timeoutMs },
+	};
+}
+
 /**
  * Run a command on the VPS over Tailscale SSH. Retries ONLY on transport
  * failure (spawn error or a 10s timeout-kill) — a command that runs and returns
@@ -95,16 +125,15 @@ function vps(
 	const { timeoutMs = 10_000, retries = 3, backoffMs = 5_000 } = opts;
 	let lastErr: unknown;
 	for (let attempt = 1; attempt <= retries; attempt++) {
-		// Run every remote command under `bash -o pipefail -c` so a failure in the
-		// FIRST stage of a remote pipe (e.g. journalctl|grep, cat|head) propagates
-		// to the exit code instead of being masked by the last stage's success
-		// (shell-deploy pipefail rule). spawnSync passes remoteCmd as a single argv
-		// to `bash -c` — no shell re-quoting, so embedded quotes survive intact.
-		const r = spawnSync(
-			"tailscale",
-			["ssh", VPS_HOST, "--", "bash", "-o", "pipefail", "-c", remoteCmd],
-			{ encoding: "utf8", timeout: timeoutMs },
-		);
+		// Deliver the remote command on STDIN to `bash -o pipefail -s` (see
+		// buildVpsSpawn): `-o pipefail` so a failure in the FIRST stage of a remote
+		// pipe (journalctl|grep, cat|head) propagates to the exit code instead of
+		// being masked by the last stage's success (shell-deploy pipefail rule),
+		// and `-s` (stdin) so the command is NOT a trailing argv word the remote
+		// login shell would re-tokenize (which drops pipes / `-u` filters = false
+		// green). Embedded quotes, spaces and pipes survive intact.
+		const call = buildVpsSpawn(remoteCmd, timeoutMs);
+		const r = spawnSync(call.cmd, call.args, call.options);
 		if (r.error || r.signal) {
 			lastErr =
 				r.error ??
@@ -169,8 +198,13 @@ describe("Phase 2 VPS cutover e2e (opt-in: IAGO_VPS_E2E=1)", () => {
 	it.skipIf(skipNondisruptive)(
 		"6. telemetry NDJSON head is valid JSON per line",
 		() => {
+			// UTC day-roll safety: the daemon writes UTC-dated NDJSON, so a capture
+			// taken just after UTC midnight (or a cutover finishing just before it)
+			// may find $(date -u +%F).ndjson absent/empty while the live events sit
+			// in yesterday's file — a false-FAIL on a healthy daemon. Read the
+			// FRESHEST telemetry NDJSON present instead of pinning to today's date.
 			const r = vps(
-				"cat /var/lib/iago-os/daemon-state/telemetry/$(date -u +%Y-%m-%d).ndjson | head -5",
+				'cat "$(ls -1t /var/lib/iago-os/daemon-state/telemetry/*.ndjson 2>/dev/null | head -1)" 2>/dev/null | head -5',
 			);
 			const lines = nonEmptyLines(r.stdout);
 			expect(lines.length).toBeGreaterThan(0);
@@ -218,19 +252,22 @@ describe("Phase 2 VPS cutover e2e (opt-in: IAGO_VPS_E2E=1)", () => {
 			});
 			expect(r.code).toBe(0);
 			const parsed = parseSecurityScore(r.stdout);
-			expect(
-				parsed,
-				`could not parse exposure score from:\n${r.stdout}`,
-			).not.toBeNull();
+			// Null-guard — also narrows `parsed` for the type-checked e2e tsconfig
+			// (a plain expect().not.toBeNull() asserts at runtime but not for TS).
+			if (parsed === null) {
+				throw new Error(`could not parse exposure score from:\n${r.stdout}`);
+			}
 			// LIVE post-cutover acceptance is the looser accepted-for-Phase-2 band
 			// (isAcceptedLiveScore: score ≤ SECURITY_LIVE_ACCEPTED_MAX, and
 			// EXPOSED/UNSAFE/DANGEROUS rejected), NOT the hard ≤2.0 TARGET. The
 			// shipped unit ships no SystemCallFilter, so a real capture realistically
 			// lands in the OK band (~3–5), documented + accepted in block (h);
 			// asserting the hard 2.0 target here would false-FAIL the
-			// un-hardened-but-accepted unit. The hard ≤2.0 target is enforced by
-			// `check-evidence --strict` against block (h) — the command a PR reviewer
-			// actually runs.
+			// un-hardened-but-accepted unit. The hard ≤2.0 score is the FUTURE
+			// hardening TARGET, checked only by the OPT-IN `check-evidence --strict`
+			// against block (h) — NOT the per-PR acceptance command. The per-PR gate
+			// is the DEFAULT (no --strict) `check-evidence --phase 2` run, which
+			// accepts the documented OK band in block (h) and does not enforce ≤2.0.
 			expect(
 				isAcceptedLiveScore(parsed),
 				`live exposure score ${parsed.score} ${parsed.band} exceeds the accepted-for-Phase-2 band (≤ ${SECURITY_LIVE_ACCEPTED_MAX}, EXPOSED/UNSAFE/DANGEROUS rejected)`,
@@ -259,8 +296,15 @@ describe("Phase 2 VPS cutover e2e (opt-in: IAGO_VPS_E2E=1)", () => {
 				.filter((e) => e.criticality === "required")
 				.map((e) => e.kind);
 			expect(required.length).toBeGreaterThan(0);
+			// UTC day-roll safety: the required startup kinds land in the NDJSON of
+			// the UTC day the daemon BOOTED. A cutover finishing just before UTC
+			// midnight writes them to YESTERDAY's file, so reading only today's file
+			// would false-FAIL a healthy daemon. Read today's AND yesterday's UTC
+			// files (2>/dev/null tolerates whichever does not exist yet).
 			const r = vps(
-				"cat /var/lib/iago-os/daemon-state/telemetry/$(date -u +%F).ndjson",
+				"cat /var/lib/iago-os/daemon-state/telemetry/$(date -u +%F).ndjson " +
+					"/var/lib/iago-os/daemon-state/telemetry/$(date -u -d yesterday +%F).ndjson " +
+					"2>/dev/null",
 			);
 			const kinds = new Set(
 				nonEmptyLines(r.stdout).map((line) => JSON.parse(line).kind),
@@ -307,4 +351,35 @@ describe("Phase 2 VPS cutover e2e (opt-in: IAGO_VPS_E2E=1)", () => {
 			expect(Number.parseInt(r.stdout, 10)).toBeGreaterThanOrEqual(40);
 		},
 	);
+});
+
+// Runs in CI (NOT opt-in / NOT skipIf-gated): a pure unit test of the spawn-arg
+// construction so the SSH argv-flattening false-green can never silently return.
+describe("vps() spawn construction", () => {
+	it("delivers remoteCmd on stdin to `bash -o pipefail -s`, never as a trailing argv word", () => {
+		// Regression guard: the pre-fix form passed remoteCmd as a trailing
+		// `-c <cmd>` argv word, which tailscale ssh space-joins and the remote login
+		// shell re-tokenizes — dropping pipe filters and the -o pipefail wrapper
+		// (e.g. `journalctl -u <unit> | grep -c …` loses its -u filter = false
+		// green). The fix delivers the command verbatim on stdin to `bash -s`.
+		const remoteCmd =
+			'journalctl -u iago-os-v2-daemon.service --since "10 minutes ago" --no-pager | grep -c daemon-start';
+		const call = buildVpsSpawn(remoteCmd, 10_000);
+		expect(call.cmd).toBe("tailscale");
+		expect(call.args).toEqual([
+			"ssh",
+			VPS_HOST,
+			"--",
+			"bash",
+			"-o",
+			"pipefail",
+			"-s",
+		]);
+		// The command MUST NOT appear as an argv word (it would be re-tokenized).
+		expect(call.args).not.toContain(remoteCmd);
+		expect(call.args.at(-1)).toBe("-s");
+		// It travels verbatim on stdin so pipes / quotes / `-u` filters survive.
+		expect(call.options.input).toBe(remoteCmd);
+		expect(call.options.timeout).toBe(10_000);
+	});
 });
