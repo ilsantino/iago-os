@@ -9,6 +9,15 @@ updated: 2026-05-18
 source: feature
 ---
 
+> **ARCHIVED 2026-07-01 — SHIPPED, do not execute.** This plan was the spec for the daemon
+> SIGHUP credential-reload handler, shipped in **PR #74** ("SIGHUP handler for live credential
+> reload", commit `2457d60`). `registerSighupHandler` in `runtime/daemon/main.ts`, its coverage
+> (`runtime/daemon/sighup.test.ts` — 12 tests, green on main `2ec6c07`), and the
+> `runtime/daemon/README.md` reload section are all merged. Verified 2026-07-01 by
+> `/iago-verify feature-phase-2-vps-bootstrap` (tsc `--noEmit` clean; sighup 12/12; SIGHUP wiring
+> covered in `main.test.ts`). Do **not** `/iago-execute` — the STRESS stage would correctly BLOCK
+> it as STALE. New credential-reload defects → derive a fresh plan against current main.
+
 # Plan: feature-phase-2-vps-bootstrap/06-sighup-credential-reload
 
 ## Goal

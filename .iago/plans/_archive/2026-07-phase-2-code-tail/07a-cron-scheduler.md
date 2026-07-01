@@ -10,6 +10,14 @@ split_from: 07-cron-scheduler-subsystem
 split_rationale: Pre-emptive split per .iago/decisions/2026-05-18-phase-2-split-and-dispatch.md to stay within 80-turn pipeline ceiling. 07a ships the CronScheduler class + tests + README (Tasks 1, 2, 5 of original 07); 07b ships the AgentManager polling extension + tests + OpenClaw cron inventory (Tasks 3, 4, 6).
 ---
 
+> **ARCHIVED 2026-07-01 — SHIPPED, do not execute.** The CronScheduler subsystem —
+> `runtime/daemon/cron-scheduler.{ts,test.ts}` + `cron-agent-env.ts` + `cron-scheduler.README.md` —
+> shipped and was hardened in **PR #92** ("Harden daemon recovery, registration, and cron
+> resilience", commit `b3af16c`). Tests green on main `2ec6c07` (`cron-scheduler.test.ts` 44/44).
+> Verified 2026-07-01 by `/iago-verify feature-phase-2-vps-bootstrap`. Paired with 07b, which
+> supplies the `task-resolved` decrement side of the `runningCount` chain. Do **not** re-execute —
+> the STRESS stage would BLOCK it as STALE; derive a fresh plan against main for any new defect.
+
 # Plan: feature-phase-2-vps-bootstrap/07a-cron-scheduler
 
 ## Goal

@@ -10,6 +10,14 @@ split_from: 07-cron-scheduler-subsystem
 split_rationale: Pre-emptive split per .iago/decisions/2026-05-18-phase-2-split-and-dispatch.md. 07b ships AgentManager EventEmitter extension + claimTask emit + polling loop + tests (Tasks 3, 4 of original 07) and the OpenClaw cron inventory artifact (Task 6).
 ---
 
+> **ARCHIVED 2026-07-01 — SHIPPED, do not execute.** The AgentManager EventEmitter extension +
+> `claimTask` (emits `task-resolved`) + `startPollingLoop`/`stopPollingLoop` — in
+> `runtime/daemon/agent-manager.{ts,test.ts}`, wired into `runtime/daemon/main.ts`, plus
+> `runtime/migration/openclaw-cron-inventory.json` — shipped in **PR #92** (commit `b3af16c`).
+> Tests green on main `2ec6c07` (`agent-manager.test.ts` 71 tests, 1 skipped; polling wire-up in
+> `main.test.ts`). Verified 2026-07-01 by `/iago-verify feature-phase-2-vps-bootstrap`. Completes
+> 07a's `runningCount` decrement chain. Do **not** re-execute — derive fresh against main if needed.
+
 # Plan: feature-phase-2-vps-bootstrap/07b-agent-manager-polling
 
 ## Goal
