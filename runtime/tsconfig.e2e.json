@@ -1,0 +1,24 @@
+{
+	// Scoped typecheck for the Phase 2 integration test BODIES, which the base
+	// tsconfig EXCLUDES (**/*.test.ts) and vitest SKIPS by default (opt-in e2e).
+	// Without this, a type error inside phase-2-vps.test.ts — the irreversible
+	// prod-cutover acceptance proof — is invisible to CI (exactly how a round-1
+	// ReferenceError shipped). allowJs + checkJs:false lets the imported
+	// check-evidence.mjs resolve without type-checking the JS itself.
+	// Wired into .github/workflows/validate.yml.
+	"extends": "./tsconfig.json",
+	"compilerOptions": {
+		"noEmit": true,
+		"declaration": false,
+		"declarationMap": false,
+		"sourceMap": false,
+		"composite": false,
+		"allowJs": true,
+		"checkJs": false
+	},
+	"include": [
+		"integration/phase-2-vps.test.ts",
+		"integration/phase-2-evidence-template.test.ts"
+	],
+	"exclude": ["dist", "node_modules"]
+}

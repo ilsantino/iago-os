@@ -3,14 +3,14 @@
  *
  * These assertions lock in the dual-adversarial review fixes (round 1):
  *
- *  - FALSE-GREEN MERGE GATE (Important x5): PHASE-2-EVIDENCE.md must NOT claim
- *    in present tense that `npm run check:evidence -- --phase 2` is a working
- *    Phase 2 gate. The on-disk `check-evidence.mjs` ignores argv, is hardcoded
- *    to PHASE-1-EVIDENCE.md, and greps the `PASTE-` sentinel — so running it
- *    today silently green-passes an empty Phase 2 template. The doc must
- *    down-state the `--phase` capability to a Plan-05b forward dependency. We
- *    assert that wherever the doc names the `--phase 2` command it is paired
- *    with an explicit "not yet wired / ships in Plan 05b / does NOT" caveat.
+ *  - VERIFICATION GATE LIVE (Plan 05b shipped — INVERTS the original 05a guard):
+ *    `check-evidence.mjs` now honors `--phase 2` (and defaults to it), so the
+ *    pre-05b "FALSE-GREEN MERGE GATE" guard — which REQUIRED the doc to caveat
+ *    every `--phase 2` mention as "not yet wired / ships in Plan 05b" and to
+ *    claim the checker is "hardcoded to PHASE-1-EVIDENCE.md / greps PASTE-" — is
+ *    now itself the false claim. The guard below is inverted: it asserts the
+ *    retired caveat and the hardcoded/PASTE- disclosure are GONE, while the doc
+ *    still points operators at the working `--phase 2` command.
  *
  *  - BAD pr-triage SHELLCHECK GLOB (Important): block (a) must not instruct the
  *    operator to `shellcheck ... runtime/agents/pr-triage/*.sh` — that dir ships
@@ -69,6 +69,7 @@ import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
+import { SECURITY_SCORE_REGEX } from "../scripts/check-evidence.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const runtimeRoot = resolve(here, "..");
@@ -83,10 +84,7 @@ const phase1 = readFileSync(
 );
 const expectedEvents = JSON.parse(
 	readFileSync(
-		resolve(
-			runtimeRoot,
-			"integration/phase-2-vps.fixtures/expected-events.json",
-		),
+		resolve(runtimeRoot, "integration/phase-2-vps.fixtures/expected-events.json"),
 		"utf8",
 	),
 );
@@ -119,29 +117,32 @@ function paragraphsMentioning(doc: string, needle: string): string[] {
 	return doc.split(/\n\s*\n/).filter((block) => block.includes(needle));
 }
 
-describe("PHASE-2-EVIDENCE.md — false-green merge-gate guard", () => {
-	it("never presents `--phase 2` as an already-working gate without a not-yet-wired caveat", () => {
+describe("PHASE-2-EVIDENCE.md — verification gate is live (05b shipped)", () => {
+	it("still references the `--phase 2` gate command", () => {
+		// 05b wired `--phase 2` (and made it the default). The doc must keep
+		// pointing operators at the now-working gate command.
 		const blocks = paragraphsMentioning(phase2, "--phase 2");
 		expect(blocks.length).toBeGreaterThan(0);
-		// Every block that names the command must, in the same block, carry a
-		// SUBSTANTIVE not-yet-wired disclosure (forward dependency on 05b). Weak
-		// generic tokens ("will be", "does NOT") are deliberately excluded so an
-		// incidental future-tense phrase cannot satisfy the guard.
-		const caveat =
-			/(NOT YET WIRED|ships in Plan 05b|Until (Plan )?05b (lands|ships))/;
-		for (const block of blocks) {
-			expect(
-				caveat.test(block),
-				`A block mentioning "--phase 2" lacks a not-yet-wired caveat:\n${block}`,
-			).toBe(true);
-		}
 	});
 
-	it("states the current check-evidence.mjs is hardcoded to Phase 1 / PASTE- sentinel", () => {
-		// The doc must disclose the actual current behavior so a reviewer is not
-		// misled into trusting the command before 05b lands.
-		expect(phase2).toMatch(/hardcoded to .*PHASE-1-EVIDENCE\.md/);
-		expect(phase2).toMatch(/PASTE-/);
+	it("no longer carries the retired pre-05b not-yet-wired caveat", () => {
+		// Inversion of the pre-05b guard: now that `--phase 2` is wired, a
+		// "NOT YET WIRED / ships in Plan 05b / Until 05b lands" disclosure is FALSE
+		// — it would tell a reviewer the working acceptance gate is broken.
+		const staleCaveat =
+			/(NOT YET WIRED|ships in Plan 05b|Until (Plan )?05b (lands|ships))/;
+		expect(
+			staleCaveat.test(phase2),
+			"PHASE-2-EVIDENCE.md still claims --phase 2 is not yet wired (retired in 05b)",
+		).toBe(false);
+	});
+
+	it("no longer claims the checker is hardcoded to Phase 1 / the PASTE- sentinel", () => {
+		// Pre-05b the checker ignored argv and was pinned to PHASE-1-EVIDENCE.md +
+		// the `PASTE-` sentinel. 05b added per-phase config (PHASE_CONFIG); the doc
+		// must not re-assert the retired limitation.
+		expect(phase2).not.toMatch(/hardcoded to .*PHASE-1-EVIDENCE\.md/);
+		expect(phase2).not.toMatch(/PASTE-/);
 	});
 });
 
@@ -247,15 +248,15 @@ describe("security-analyze-sample.txt — fixture realism", () => {
 			// Trim the trailing alignment padding systemd-analyze right-pads onto
 			// each directive name so the dedupe is padding-insensitive (a duplicate
 			// with different padding must still collapse in the Set).
-			.map((l) => l.split("=")[0].trim());
+			.map((l) => (l.split("=")[0] ?? "").trim());
 		const unique = new Set(directiveLines);
 		expect(unique.size).toBe(directiveLines.length);
 	});
 
 	it("still exposes the score line the 05b --strict regex parses", () => {
-		const regex =
-			/Overall exposure level [^:]*:\s*(\d+\.\d+)\s+(UNSAFE|DANGEROUS|EXPOSED|MEDIUM|OK|SAFE)/m;
-		expect(regex.test(securitySample)).toBe(true);
+		// Use the SHARED SECURITY_SCORE_REGEX (I1 anti-drift) rather than a third
+		// hand-encoded copy that could silently diverge from the canonical source.
+		expect(SECURITY_SCORE_REGEX.test(securitySample)).toBe(true);
 	});
 });
 
@@ -342,9 +343,7 @@ describe("02-cutover-runbook.md — Phase 2 cutover evidence is producible", () 
 		// The EXECUTABLE (not just the runbook prose) must not gate the run-up to
 		// the irreversible T+30 deauth on a flow Phase 2 cannot produce.
 		expect(cutoverScript).not.toContain("canonical workflow test passes");
-		expect(cutoverScript).not.toMatch(
-			/\/start hello-world\s*->\s*daemon spawns/,
-		);
+		expect(cutoverScript).not.toMatch(/\/start hello-world\s*->\s*daemon spawns/);
 	});
 });
 
