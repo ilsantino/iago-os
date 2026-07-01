@@ -180,7 +180,12 @@ exceeds the ≤2.0 target, the cutover PR must EITHER harden the unit (add
 `SystemCallFilter=@system-service` + `ProtectProc`/`RestrictNetworkInterfaces`/
 `RemoveIPC` as a follow-up hardening task) to reach it, OR document the achieved
 band as accepted-for-Phase-2 with rationale — do NOT fudge the fixture to claim
-2.0. The `2.0 OK` value in `integration/phase-2-vps.fixtures/security-analyze-sample.txt`
+2.0. **Automated ceiling:** documenting a rationale alone does not bypass the
+gate — `check:evidence --phase 2` (default, non-`--strict`) automatically
+rejects any EXPOSED/UNSAFE/DANGEROUS band or a score above 5.0 pasted into this
+block (`isAcceptedLiveScore`, `check-evidence.mjs` §(3b)); only a captured score
+within the accepted OK/SAFE/PERFECT band (≤5.0) passes the default gate. The
+`2.0 OK` value in `integration/phase-2-vps.fixtures/security-analyze-sample.txt`
 is an **illustrative parser fixture** (it exercises Plan 05b's `--strict`
 score-line regex), NOT a measured score; replace it with the live (anonymized)
 capture post-cutover.

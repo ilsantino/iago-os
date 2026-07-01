@@ -26,10 +26,12 @@
  *                         live score actually pasted into block (h).) Pass an
  *                         explicit anonymized live capture via
  *                         --security-sample <path> to parse that file instead.
- *                         --strict is OPT-IN: the default acceptance run only
- *                         checks block (h)'s sentinel was replaced, because a
- *                         legitimately-accepted higher band (documented in block
- *                         (h)) must not hard-fail the default gate.
+ *                         --strict is OPT-IN for the hard ≤2.0 TARGET only — the
+ *                         DEFAULT (non-strict) phase-2 gate ALSO band-checks block
+ *                         (h) via isAcceptedLiveScore (see (3b) below): it rejects
+ *                         EXPOSED/UNSAFE/DANGEROUS bands and any score above the
+ *                         ≤5.0 live-accepted cap, but still passes a documented,
+ *                         accepted OK/SAFE/PERFECT band (~3–5) without --strict.
  *
  * Exit code: 0 = PASS, 1 = FAIL (any check failed), 2 = could not read the file.
  *
