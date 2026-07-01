@@ -161,19 +161,22 @@ describe("Phase 2 VPS cutover e2e (opt-in: IAGO_VPS_E2E=1)", () => {
 	// Test 0 — telemetry sentinel marker. Makes it trivial to grep "where did
 	// the e2e poke start?" in post-test review. Skipped in nondisruptive mode
 	// (it WRITES to the cutover log).
-	it.skipIf(skipDisruptive)("0. emits an e2e-test-start sentinel marker", () => {
-		const sentinel = Date.now();
-		// retries: 1 — this is the ONLY write. A 10s timeout-kill does NOT prove
-		// the remote append did not run server-side, so retrying could append a
-		// SECOND identical line (the sentinel is fixed before the call). One
-		// attempt keeps the diagnostic marker idempotent; a transport failure
-		// surfaces as a throw.
-		const r = vps(
-			`echo '{"kind":"e2e-test-start","sentinel":"${sentinel}"}' >> /var/log/iago-os/cutover.ndjson`,
-			{ retries: 1 },
-		);
-		expect(r.code).toBe(0);
-	});
+	it.skipIf(skipDisruptive)(
+		"0. emits an e2e-test-start sentinel marker",
+		() => {
+			const sentinel = Date.now();
+			// retries: 1 — this is the ONLY write. A 10s timeout-kill does NOT prove
+			// the remote append did not run server-side, so retrying could append a
+			// SECOND identical line (the sentinel is fixed before the call). One
+			// attempt keeps the diagnostic marker idempotent; a transport failure
+			// surfaces as a throw.
+			const r = vps(
+				`echo '{"kind":"e2e-test-start","sentinel":"${sentinel}"}' >> /var/log/iago-os/cutover.ndjson`,
+				{ retries: 1 },
+			);
+			expect(r.code).toBe(0);
+		},
+	);
 
 	// --- Nondisruptive subset (pure read-only) ------------------------------
 
@@ -267,7 +270,10 @@ describe("Phase 2 VPS cutover e2e (opt-in: IAGO_VPS_E2E=1)", () => {
 			// hardening TARGET, checked only by the OPT-IN `check-evidence --strict`
 			// against block (h) — NOT the per-PR acceptance command. The per-PR gate
 			// is the DEFAULT (no --strict) `check-evidence --phase 2` run, which
-			// accepts the documented OK band in block (h) and does not enforce ≤2.0.
+			// band-checks block (h) with this SAME isAcceptedLiveScore predicate —
+			// REJECTING the EXPOSED/UNSAFE/DANGEROUS class (and any score above the
+			// ≤5.0 cap) while accepting the documented OK band — and does not enforce
+			// the ≤2.0 floor.
 			expect(
 				isAcceptedLiveScore(parsed),
 				`live exposure score ${parsed.score} ${parsed.band} exceeds the accepted-for-Phase-2 band (≤ ${SECURITY_LIVE_ACCEPTED_MAX}, EXPOSED/UNSAFE/DANGEROUS rejected)`,
@@ -275,13 +281,29 @@ describe("Phase 2 VPS cutover e2e (opt-in: IAGO_VPS_E2E=1)", () => {
 		},
 	);
 
-	it.skipIf(skipDisruptive)("4. journalctl shows a recent daemon-start", () => {
-		// Window is "last 10 min" — run shortly post-cutover/restart.
-		const r = vps(
-			'journalctl -u iago-os-v2-daemon.service --since "10 minutes ago" --no-pager | grep -c daemon-start',
-		);
-		expect(Number.parseInt(r.stdout, 10)).toBeGreaterThanOrEqual(1);
-	});
+	it.skipIf(skipDisruptive)(
+		"4. journalctl shows a recent systemd unit start",
+		() => {
+			// Liveness signal = the systemd "Started <Description>." line journald logs
+			// when the unit reaches active. It is DISTINCT from test 7 (telemetry
+			// daemon-start via NDJSON): the `daemon-start` telemetry kind reaches
+			// journald ONLY on the emit() write-FAILURE path (telemetry.ts appendFile's
+			// to the NDJSON and console.error's to stderr only when the append throws),
+			// so a HEALTHY daemon logs ZERO `daemon-start` lines to journald — grepping
+			// journald for `daemon-start` is an INVERTED signal that false-FAILs a
+			// healthy daemon. Grep the systemd unit-start line instead. The `Started
+			// .*iaGO-OS v2 daemon` regex matches BOTH the pre-v250 `Started <Description>.`
+			// and the newer `Started <unit>.service - <Description>.` formats (Description
+			// = "iaGO-OS v2 daemon — multi-agent runtime" per deploy/iago-os-v2-daemon.service);
+			// it stops before the em-dash so the pattern stays ASCII, and "Started" is not
+			// a substring of "Starting" so the pending-start line is not miscounted.
+			// Window is "last 10 min" — run shortly post-cutover/restart.
+			const r = vps(
+				'journalctl -u iago-os-v2-daemon.service --since "10 minutes ago" --no-pager | grep -cE "Started .*iaGO-OS v2 daemon"',
+			);
+			expect(Number.parseInt(r.stdout, 10)).toBeGreaterThanOrEqual(1);
+		},
+	);
 
 	it.skipIf(skipDisruptive)(
 		"7. telemetry contains the required startup kinds (presence-only)",
@@ -310,9 +332,10 @@ describe("Phase 2 VPS cutover e2e (opt-in: IAGO_VPS_E2E=1)", () => {
 				nonEmptyLines(r.stdout).map((line) => JSON.parse(line).kind),
 			);
 			for (const kind of required) {
-				expect(kinds.has(kind), `required telemetry kind missing: ${kind}`).toBe(
-					true,
-				);
+				expect(
+					kinds.has(kind),
+					`required telemetry kind missing: ${kind}`,
+				).toBe(true);
 			}
 		},
 	);
@@ -320,7 +343,9 @@ describe("Phase 2 VPS cutover e2e (opt-in: IAGO_VPS_E2E=1)", () => {
 	it.skipIf(skipDisruptive)(
 		"12. archive-prune timer is scheduled within 24h",
 		() => {
-			const r = vps("systemctl list-timers iago-archive-prune.timer --no-pager");
+			const r = vps(
+				"systemctl list-timers iago-archive-prune.timer --no-pager",
+			);
 			expect(r.code).toBe(0);
 			expect(r.stdout).toContain("iago-archive-prune.timer");
 			// A scheduled next run shows hours/min/sec "left", never n/a or >=2 days.

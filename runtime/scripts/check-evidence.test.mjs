@@ -536,3 +536,34 @@ test("25. parseSecurityScore accepts the PERFECT band (0.0 — perfectly hardene
 	assert.equal(parsed.score, 0);
 	assert.equal(parsed.band, "PERFECT");
 });
+
+test("26. DEFAULT gate (no --strict) REJECTs an UNSAFE band in block (h) but PASSes an OK band", () => {
+	// Finding C: the default per-PR gate validated only that block (h)'s SENTINEL
+	// was replaced — a `9.6 UNSAFE` capture green-passed. The default gate now
+	// band-checks block (h) via isAcceptedLiveScore (reject EXPOSED/UNSAFE/DANGEROUS,
+	// ≤5.0 live-accepted cap) WITHOUT the ≤2.0 strict floor, so the documented OK
+	// band still passes while the OpenClaw 9.6 class is rejected. NO --strict here.
+	let bad = fillBlock(
+		phase2Template,
+		"### (h)",
+		"→ Overall exposure level for iago-os-v2-daemon.service: 9.6 UNSAFE",
+	);
+	bad = tickAllBoxes(fillAllSentinels(bad));
+	const badFile = writeFixture(bad, "default-blockh-unsafe");
+	const rBad = runChecker([badFile, "--phase", "2"]);
+	assert.equal(rBad.code, 1, rBad.out);
+	assert.match(rBad.out, /block \(h\) security score rejected: 9\.6 UNSAFE/);
+
+	// A 3.5 OK is above the ≤2.0 strict target but within the accepted OK band —
+	// the DEFAULT gate must PASS it (it does not enforce ≤2.0).
+	let good = fillBlock(
+		phase2Template,
+		"### (h)",
+		"→ Overall exposure level for iago-os-v2-daemon.service: 3.5 OK",
+	);
+	good = tickAllBoxes(fillAllSentinels(good));
+	const goodFile = writeFixture(good, "default-blockh-ok");
+	const rGood = runChecker([goodFile, "--phase", "2"]);
+	assert.equal(rGood.code, 0, rGood.out);
+	assert.match(rGood.out, /block \(h\) security band accepted: 3\.5 OK/);
+});

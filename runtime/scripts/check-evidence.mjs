@@ -535,7 +535,7 @@ function runStrict({ content, securitySample }) {
 			problems.push(`score ${score} exceeds target ${SECURITY_SCORE_MAX}`);
 		}
 		if (!SECURITY_SAFE_BANDS.has(band)) {
-			problems.push(`band ${band} not in {OK, SAFE}`);
+			problems.push(`band ${band} not in {PERFECT, SAFE, OK}`);
 		}
 	}
 	if (problems.length) {
@@ -646,6 +646,42 @@ export function checkEvidence(
 			passes.push(`cited artifact exists: ${cited}`);
 		} else {
 			failures.push(`missing cited artifact: ${cited} (resolved ${abs})`);
+		}
+	}
+
+	// (3b) DEFAULT-gate security-band check (phase 2, non-strict). block (h) holds
+	// the pasted `systemd-analyze security` capture. The requiredBlocks loop above
+	// only verifies its SENTINEL was replaced — so a `9.6 UNSAFE` capture (the
+	// OpenClaw class) green-passed the per-PR gate. Reject the EXPOSED/UNSAFE/
+	// DANGEROUS bands here via isAcceptedLiveScore — the SAME looser accepted-for-
+	// Phase-2 predicate the opt-in VPS e2e (test 2) applies to the LIVE capture
+	// (band-reject + the ≤5.0 live-accepted cap) — so the pasted score and the live
+	// score are judged identically. This deliberately does NOT enforce the hard ≤2.0
+	// TARGET (that stays opt-in via --strict), so the documented, accepted OK band
+	// (~3–5) still passes. Zero parsed score lines → NO assertion (meaningfulness is
+	// the human reviewer's job); only a PARSED-but-unsafe band fails the gate. The
+	// prose mention of "9.6 / UNSAFE" in block (h) does not match SECURITY_SCORE_REGEX
+	// (no `Overall exposure level …:` prefix), so it never spuriously trips this.
+	if (phase === "2" && !strict) {
+		const region = findRegion(lines, (line) => line.startsWith("### (h)"));
+		if (region) {
+			// Global scan so a before/after paste (both an OK and an UNSAFE line) is
+			// rejected on the unsafe line regardless of order — mirrors runStrict.
+			const scoreRe = new RegExp(SECURITY_SCORE_REGEX.source, "gm");
+			const scores = [...region.text.matchAll(scoreRe)].map((m) => ({
+				score: Number.parseFloat(m[1]),
+				band: m[2],
+			}));
+			const rejected = scores.filter((s) => !isAcceptedLiveScore(s));
+			if (rejected.length > 0) {
+				const worst = rejected.reduce((a, b) => (b.score > a.score ? b : a));
+				failures.push(
+					`block (h) security score rejected: ${worst.score} ${worst.band} — an EXPOSED/UNSAFE/DANGEROUS-class band or a score above the ≤${SECURITY_LIVE_ACCEPTED_MAX} live-accepted cap. Harden the unit (see block (h) hardening note) or paste an accepted OK-band capture.`,
+				);
+			} else if (scores.length > 0) {
+				const rendered = scores.map((s) => `${s.score} ${s.band}`).join(", ");
+				passes.push(`block (h) security band accepted: ${rendered}`);
+			}
 		}
 	}
 
