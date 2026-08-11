@@ -3,7 +3,7 @@ name: industry-patterns
 description: >-
   Use when building domain-specific features. Loads DynamoDB schemas, API patterns,
   and compliance guidance for a vertical industry. Not when building generic CRUD
-  (use standard profiles) or when the domain is healthcare (use /healthcare-phi-compliance).
+  (use standard profiles).
 ---
 
 ## Purpose
@@ -26,14 +26,11 @@ Available domains:
 - `quality` — Inspections, defect classification, CAPA workflows, root cause analysis
 - `returns` — RMA creation, return shipping, disposition, refund processing
 
-For healthcare/PHI compliance, use `/healthcare-phi-compliance` instead (it has
-real implementation patterns, not just advisory schemas).
-
 ## Steps
 
 ### 1. Load domain patterns
 
-Read `.claude/rules/patterns/{domain}.md` (mapped from the `--domain` flag).
+Read `references/{domain}.md` (relative to this skill folder, mapped from the `--domain` flag).
 
 If the file doesn't exist, STOP: "Pattern file not found for domain '{domain}'.
 Available: logistics, inventory, customs, energy, carrier, production, quality, returns."
@@ -64,6 +61,5 @@ Based on the loaded patterns and the user's current task:
 ## Boundaries
 
 - Advisory only — does not write application code
-- Does not replace `/healthcare-phi-compliance` for PHI/HIPAA work
 - Patterns are starting points — adapt to project-specific access patterns
 - If the domain doesn't match any available pattern, suggest `/brainstorming` for custom design

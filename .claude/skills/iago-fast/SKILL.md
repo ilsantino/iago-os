@@ -85,5 +85,5 @@ Display:
 - No agent dispatch — orchestrator executes everything inline
 - No review step — the change is trivially obvious by definition
 - No ROADMAP or STATE.md phase/status manipulation
-- If verification fails, fix inline (up to 3 attempts per systematic-debugging.md)
+- If verification fails, fix inline (up to 3 attempts per CLAUDE.md 3-fix rule)
 - Never skip verification to save time

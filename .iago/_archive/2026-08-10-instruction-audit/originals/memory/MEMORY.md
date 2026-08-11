@@ -1,0 +1,138 @@
+- [User profile](user_profile.md) — CEO of 3-person AI consultancy; opinionated verdicts; Windows 11
+- [iaGO team roster](iago_team_roster.md) — Santiago = Álvarez Chamlati (NOT "Acha"); Sebas = Alegrett; + Francisco
+- [User technical level](user_technical_level.md) — non-coder; Claude implements everything; keep code simple, no overengineering
+- [iaGO-OS project](project_iago.md) — Agent Architecture v2 complete
+- [Decision style](feedback_decisions.md) — opinionated verdicts, no "it depends"
+- [ShadCN docs](feedback_shadcn.md) — verify ShadCN/Tailwind setup vs official docs (Vite ≠ Next)
+- [MUNET project](project_munet.md) — bas-labs/munet-web inner repo; visual rework + pagos v0
+- [Effort/model routing](feedback_effort_model_routing.md) — recommend /effort switches when they matter
+- [Workflow pipeline](feedback_workflow_pipeline.md) — PR flow with Codex cross-model review standard
+- [Stripe test mode](feedback_stripe_test_mode.md) — build on test keys; swap env at go-live
+- [Stack PRs](feedback_stack_prs.md) — stack commits, one PR; rebase origin/main before push
+- [Split per-chunk PRs](feedback_pr_split_multichunk.md) — distinct deliverables = separate PRs; overrides stack-prs
+- [Pull main first](feedback_pull_main.md) — git pull main before branching
+- [NEVER skip reviews](feedback_never_skip_reviews.md) — all plan execution via review-pipeline skills
+- [Obsidian second brain](project_obsidian_brain.md) — vault at dev/obsidian-brain via MCP
+- [Auto-tag @claude on PRs](feedback_auto_tag_claude_pr.md) — after push, tag for review
+- [PR review context](feedback_pr_review_context.md) — tag comments carry what-changed context
+- [PR titles plain-English](feedback_pr_naming_plain.md) — no prefixes, <60 chars
+- [PR body header](feedback_pr_body_plain_header.md) — open with "## What this does" plain summary
+- [NEVER merge PRs](feedback_no_auto_merge.md) — Claude never runs gh pr merge; zero exceptions
+- [Single @claude tag](feedback_single_claude_tag.md) — never tag twice; parallel loops race
+- [Workflow bootstrap](feedback_workflow_bootstrap.md) — issue_comment workflows run from main
+- [Verify GH Actions](feedback_verify_gh_actions.md) — check inputs/permissions vs docs before CI edits
+- [Graphify](project_graphify.md) — knowledge graph over vault, MCP active
+- [MemPalace](project_mempalace.md) — ChromaDB + KG + diary; wings per client
+- [Don't block on background tasks](feedback_no_block_background.md) — finish config first
+- [Diagnose before fixing](feedback_diagnose_before_fix.md) — reproduce + isolate root cause first
+- [Framer Motion on all UI](feedback_framer_motion.md) — every UI change animated
+- [Munet prod AWS](reference_munet_prod_aws.md) — account 851725296610 (Sebas), not 582071018864
+- [MUNET domain](reference_munet_canonical_domain.md) — munet.mx canonical
+- [Lambda Node 20](feedback_lambda_node20_fire_forget.md) — always await async work in handlers
+- [Munet MVP scope cuts](project_munet_mvp_scope.md) — wave 2 + M2 03-06 deferred post-MVP
+- [MarkItDown MCP](project_markitdown.md) — convert_to_markdown for DOCX/PPTX/XLSX/YouTube/large PDFs
+- [markitdown CLI encoding](feedback_markitdown_cli_encoding.md) — use `-o out.md`, never stdout redirect on Windows
+- [Plan folder grouping](feedback_plan_folder_grouping.md) — one feature-{slug}/ with 01.md, 02.md…
+- [Worktree per session](feedback_worktree_per_session.md) — concurrent sessions never share a checkout
+- [Config-protection bypass](feedback_config_protection_bypass.md) — protected configs via Bash redirect, not env var
+- [Codex on Windows](reference_codex_windows.md) — codex-companion.mjs; model pinned in ~/.codex/config.toml
+- [Worktree/vite hygiene](feedback_worktree_hygiene.md) — iago-wt-clean; taskkill /T for vite leaks
+- [iago-os worktrees](feedback_iago_os_worktrees_dir.md) — live in .worktrees/; merged-status from PR state
+- [Remotion decision](project_remotion_animation.md) — bare animation-studio only; triggers gate expansion
+- [YouTube transcript MCP](project_youtube_transcript_mcp.md) — transcribe_video global tool
+- [Munet-web playbook v2](project_munet_playbook.md) — 11-prompt restructure; capability-attribute path
+- [iago-workspaces](project_iago_workspaces.md) — content-pipeline active, other 3 stubbed
+- [Frozen-snapshot MEMORY rule](feedback_memory_no_reread.md) — never re-read MEMORY.md mid-session
+- [No option menus](feedback_no_option_menus.md) — explicit directive = execute; confirm only irreversible
+- [No extra verification gates](feedback_no_extra_gates.md) — smoke-check is the practical gate
+- [Never stash to switch branches](feedback_no_stash_branch_switch.md) — wip branch or worktree
+- [Explicit authorization](feedback_explicit_authorization.md) — "wdyt" = opinion request, NOT permission to dispatch/PR
+- [Playbook ≠ plan files](feedback_playbook_vs_plan.md) — §X.Y playbook step ≠ .iago/plans artifact
+- [Clients never in iago-os repo](feedback_clients_separate_repo.md) — per-client GitHub repos (ilsantino)
+- [DIN Pro pricing repo](reference_din_repo.md) — ilsantino/dinpro-pricing; clients/din/dinpro-app inner repo
+- [Sub-project format hook bug](feedback_subproject_format_hook.md) — root biome tabs breaks sub-projects; re-format inside
+- [Inner repo check](feedback_inner_repo_check.md) — check clients/{name}/{project}/.git before staging; never -f/-u
+- [Per-client git pattern](feedback_per_client_deliverable_repo_pattern.md) — planning repo + long-lived feat branch; PRs never to client main
+- [FullData bot repos](reference_fulldata_bot_asistente.md) — onetuweb/Fulldata(+back) on feat-ai-assistant-v1
+- [FullData pricing mock](reference_fulldata_repo.md) — ilsantino/fulldata-pricing-mock; demo only
+- [Sentria project](project_sentria.md) — incident bot; repo bas-labs/sentria; sentria-qc = integration base
+- [MUNET caja hardware](project_munet_caja_hardware.md) — NE-511 printer; ESC Z QR; autotest=IP truth
+- [n8n at iaGO](project_n8n_usage.md) — in stack, not yet run professionally
+- [UC3M application](project_uc3m_application.md) — rejected twice; ranked alternatives in topic file
+- [Red Sun Farms](project_red_sun_farms.md) — insider access; AI on real production data; 6 value-chain areas
+- [cortextOS eval](project_cortextos.md) — cherry-pick patterns; Wedge F reference
+- [agentic-os-dashboard eval](project_agentic_os_dashboard.md) — STALE; port MCP health-check pattern
+- [RSF relationship](project_rsf_relationship.md) — family-friend top guy; barter, not B2B sale
+- [RSF PoC structure](project_rsf_poc_structure.md) — RSF funds costs; iaGO labor free; system + case study + paper
+- [iago-os v2 vision](project_iago_v2_vision.md) — LOCKED: multi-agent OS, Telegram, Hostinger VPS
+- [v2 overrides council](feedback_iago_v2_overrides_council.md) — old defer/cherry-pick verdicts SUPERSEDED; don't re-litigate
+- [Garry-impressed standard](feedback_garry_impressed_standard.md) — build the ocean; ship finished
+- [v2 VPS](reference_iago_v2_vps.md) — srv1456441.hstgr.cloud / 187.77.135.32 / Tailscale
+- [Preview-mode auth bypass](feedback_preview_mode_for_ui_review.md) — VITE_PREVIEW_ROLE DEV-gated
+- [Preview-mode empty data](feedback_preview_mode_data_empty.md) — mocked org = empty lists; NOT a bug
+- [Design-pass before brainstorm](feedback_design_pass_for_ux_features.md) — UX features get design session first
+- [No chore PRs for doc moves](feedback_no_chore_pr_for_doc_moves.md) — docs ride Plan 01's PR
+- [v2 observability](project_iago_v2_observability.md) — Sentry + PostHog + dual-MCP split
+- [v2 memory](project_iago_v2_memory_sqlite.md) — 5-layer + SQLite 6th
+- [Safety-guard "shutdown"](feedback_safety_guard_shutdown.md) — say "termination"/"daemon-stop" instead
+- [Quiet when impatient](feedback_quiet_when_impatient.md) — curt prompt → bottom-line artifact only
+- [LLM cost discipline](feedback_llm_cost_discipline.md) — LLM only for judgment; rest deterministic
+- [Codex adversarial via skill](feedback_codex_adversarial_skill.md) — skill, not direct companion call
+- [workspace-mcp Sheets quirks](reference_workspace_mcp_sheets.md) — no Office convert; CF update is no-op
+- [/lead-hunt skill](project_lead_hunt_skill.md) — Scrapling-backed prospecting
+- [iago-leadgen](project_iago_leadgen.md) — Lusha backbone live; Apollo parked
+- [Don't be precious about arch](feedback_dont_be_precious_about_arch.md) — ship the working tool
+- [Pipeline v2](project_pipeline_v2.md) — harness-native Workflow; commit-before-review
+- [FullData Stage 03](project_fulldata_stage03.md) — 4-PR sequence on feat-ai-assistant-v1
+- [Amplify no-@auth = open](amplify-model-noauth-default-open.md) — empty model auth = default-userPool hole
+- [Codex pipeline no-op](feedback_codex_pipeline_noop.md) — --no-pr empty diff; re-run with --base
+- [v2 Telegram comms](project_iago_v2_telegram_comms.md) — LOCKED per-agent bots + chief bot; don't re-litigate
+- [Workflow journal recovery](feedback_workflow_journal_recovery.md) — recover verdicts from journal.jsonl; don't re-run
+- [Windows statusline = node](windows-claude-statusline-node.md) — no bash/jq; don't re-run /statusline
+- [Thinking-block 400](feedback_thinking_block_400.md) — harness bug; /clear + journal recovery
+- [Sync before PR-fix](feedback_sync_before_pr_fix.md) — ff to origin PR head before pass#2/fix
+- [Async loop stale-ref risk](feedback_async_claude_loop_stale_ref.md) — verify findings vs ground truth; recover via revert
+- [Subagent git-wander](feedback_subagent_git_wander_and_structuredoutput.md) — self-edits direct/worktree; check git state after
+- [Pipeline hang on bad cmd](feedback_pipeline_hang_malformed_command.md) — frozen >10min → TaskStop + manual finish
+- [Agents never hold secrets](agents-never-hold-secrets.md) — daemon makes external calls
+- [Daemon orphan window](project_daemon_registration_orphan_window.md) — deferred Critical, PR #87
+- [Sentria env URLs](reference_sentria_qc_env.md) — verify Amplify job SUCCEED, not just HTTP 200
+- [Windows npm lockfile](feedback_windows_npm_lockfile_xplatform.md) — regen in place; never delete-first
+- [Odysseus eval](project_odysseus_eval.md) — pattern donor; stay TS, zero golang
+- [Worktree cleanup on merge](feedback_worktree_cleanup_on_merge.md) — "merged" = cleanup trigger; Claude still never merges
+- [MUNET pagos v0](project_munet_pagos_v0.md) — Stripe web + MP caja; plans LOCAL only
+- [Dual-adversarial-fix before tag](feedback_dual_adversarial_fix_before_claude_tag.md) — fix first, then single @claude tag
+- [FullData pentest](project_fulldata_pentest.md) — Phase A done; do NOT touch prod until prompted
+- [Sentria usage report runbook](runbook_sentria_prod_usage_report.md) — .local/prod-report pipeline; prod profile
+- [Sentria roster sync](project_sentria_roster_sync.md) — Absara ids + schema conventions
+- [Sync checkout before recon](feedback_sync_checkout_before_recon.md) — fetch client repo before planning
+- [Per-feature plan READMEs](feedback_plan_folder_readmes.md) — no root README in .iago/plans/
+- [Sentria PRs base sentria-qc](feedback_sentria_qc_pr_base.md) — gh defaults main; edit --base post-PR
+- [Format hook let→const](feedback_format_hook_let_const_flip.md) — declare let + reassignment in same edit
+- [Pipeline model pins](reference_pipeline_model_pins.md) — pipeline inherits session model; dual-adversarial pins opus
+- [Sentria turno hard-delete](project_sentria_turno_delete.md) — cascade-delete feature; PR #213 state in file
+- [Gate-hardening PR #96](project_gate_hardening.md) — classifyTier twin + node --check caveat
+- [Format hook breaks gates](feedback_format_hook_breaks_workflow_gates.md) — fix client-PR findings via Bash/Write; verify committed tree
+- [iagoag email](email_setup_iagoag.md) — working business inbox; receipts never deleted (MX SAT)
+- [munet.mx basic-auth](project_munet_basic_auth_gate.md) — munet/Munet2026!; lift at launch
+- [munet deploy alerts](project_munet_deploy_alerts.md) — SNS+EventBridge email on SUCCEED/FAILED
+- [Sentria reportes 03b prereqs](project_sentria_reportes_03b_prereqs.md) — blocked on reportingTurnoId + audit trail
+- [Sentria #240 prioridad](project_sentria_turnos_drop_prioridad.md) — residual → quick-260625 follow-up queued
+- [Session-limit INCOMPLETE](feedback_workflow_session_limit_incomplete.md) — usage cap kills gates; re-run after reset
+- [Business doc format](feedback_business_doc_format.md) — client-facing = prose + bullets, no tables
+- [Absara go-live corte](project_sentria_absara_golive.md) — corte script in clients/sentria/.local
+- [PR #98 phase-2 evidence](project_pr98_phase2_evidence.md) — merged; I5 accepted residual
+- [Accepted-residual rule](feedback_accepted_residual_stopping_rule.md) — stop at "non-accepted fixed"; fence async loop
+- [Runtime suite flaky](feedback_runtime_suite_flaky_tests.md) — red Runtime on unrelated PR → re-run first
+- [Personal Gmail](email_setup_personal_gmail.md) — organized; sensitive family-finance; sequential subagents
+- [MUNET Point Air](project_munet_point_air_standalone.md) — standalone terminal; fee ~3.49%+$4+IVA
+- [PR #99 Plan 05b](project_pr99_plan05b.md) — merged; recovery details in file; #2/#4 deferred
+- [Fable orch / Opus workflows](feedback_orchestrator_fable_workflows_opus.md) — Fable drives; Opus for workflow legs
+- [Munet Amplify console](reference_munet_amplify_console.md) — look/link FIRST; CLI solo para automatizar
+- [Subagent model routing](feedback_subagent_model_routing.md) — cheapest-capable model per agent task
+- [Review depth by risk](feedback_review_depth_by_risk.md) — UI = standard gate; team only auth/payment/data
+- [munet type-check no-op](reference_munet_typecheck_noop.md) — use npx tsc -b
+- [Verifier refutados path](feedback_workflow_verifier_refutados.md) — apply stage needs exact file+key
+- [RSF flow tool](project_rsf_flow_tool.md) — Phase 1+2 arch DELIVERED 2026-08-07 (.iago/context/); awaiting go for I0; Sentria shell + RSF brand canvas; simplicity mandate
+- [Workflow args stringified](feedback_workflow_args_stringified.md) — args may arrive as JSON string; defensive-parse at script top or A.x = undefined
+- [New inner repo needs .iago/ excluded](feedback_new_inner_repo_iago_exclude.md) — before first pipeline run, or prep blocks on dirty tree/stale lock; recover fresh, never resumeFromRunId

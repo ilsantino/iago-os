@@ -1,16 +1,9 @@
 # iaGO-OS
 
-3-person AI consultancy (CEO Windows, CTO Mac). Stack fixed — see `.claude/rules/stack.md`.
-
-## Prerequisites
-macOS: `brew install coreutils` (provides `timeout`/`gsort` for `scripts/execute-pipeline.sh`; BSD `sort -r` fallback exists for codex-companion lookup).
-
-## Architecture
-- **AWS mandatory for backend.** Amplify Gen 2 only (`defineBackend`, `defineAuth`, `defineData`, `defineFunction`); no raw CF/CDK/SAM/Serverless. DynamoDB single-table vs multi-table per project (access patterns drive schema; no ORMs — DocumentClient + typed helpers). Lambda thin handlers calling domain modules.
-- Cognito JWT validation in API Gateway authorizer. TanStack Query for server state, React Context for UI. Forms: React Hook Form + Zod. Feature folders: `src/features/{name}/`.
+3-person AI consultancy (CEO Santiago/Windows, CTO Sebas/Mac). Stack fixed — `.claude/rules/stack.md`. Backend: AWS Amplify Gen 2 ONLY — never raw CloudFormation/CDK/SAM/Serverless (details: `.claude/rules/aws-amplify.md`).
 
 ## Doc routing — where new docs go
-Auto-loads with this file. Consult before any Write to a `.md` path.
+Consult before any Write to a `.md` path. Heuristic: name the doc's primary reader (Claude in this repo / Claude in a client subtree / human via GitHub) — that names the location.
 
 | Doc type | Location |
 |---|---|
@@ -23,48 +16,35 @@ Auto-loads with this file. Consult before any Write to a `.md` path.
 | Ops runbook (repeatable how-to) | `.iago/_config/runbooks/{slug}.md` |
 | Recurring review pattern | `.iago/learnings/patterns.md` (append) |
 | Client-specific (any of the above) | `clients/{name}/.iago/{same-taxonomy}/` |
-| Public-facing iaGO-OS docs | `README.md` (canonical entry); historical `docs/` content folded into README + rules + runbooks |
-| Domain-skill reference (industry pattern) | `.claude/rules/patterns/{domain}.md` |
-| Phase-cycle artifact (vision / canonical roadmap) | `docs/specs/` (paired with `.iago/research/`) |
-| Stale / superseded plan | `.iago/plans/_archive/{YYYY-MM-{slug}}/` (with roadmap pointer) |
-| Stale / superseded doc (decision-bearing) | `.iago/_archive/` |
-| Stale / superseded doc (no future value) | DELETE |
-
-**Heuristic.** Name the doc's primary reader (Claude in this repo / Claude in a client subtree / human via GitHub) — that names the location. <!-- paths reflect Phase 1 (Wave 1 docs) layout; update after feature-mwp-restructure-code/01 physical split ships -->
+| Public-facing iaGO-OS docs | `README.md` |
+| Domain-skill reference | `.claude/skills/industry-patterns/references/{domain}.md` |
+| Phase-cycle artifact (vision / roadmap) | `docs/specs/` (paired with `.iago/research/`) |
+| Superseded plan | `.iago/plans/_archive/{YYYY-MM-{slug}}/` (with roadmap pointer) |
+| Superseded doc (decision-bearing) | `.iago/_archive/` |
+| Superseded doc (no future value) | DELETE |
 
 ## Workflow
-Phases: init → discuss → plan (+ stress) → execute → verify. See `/iago-*` skills. Plan modes: `/iago-plan {slug}` (ROADMAP) | `--feature "desc"|file.md/.pdf` (standalone). Quick: `/iago-fast` (≤3 files) | `/iago-quick` (1-3 tasks). Artifacts per `## Doc routing`. STATE.md ≤ 80 lines; overflow → PROJECT.md.
+Phases: init → discuss → plan (+stress) → execute → verify, via `/iago-*` skills. STATE.md ≤ 80 lines; overflow → PROJECT.md.
 
 ## Execution Path
-**NEVER implement plan/spec/task by editing code directly.** All via matching skill (user says "execute plan X" → invoke skill, not read or decompose):
+**NEVER implement a plan/spec/task by editing code directly.** Invoke the matching skill (user says "execute plan X" → invoke skill, not read/decompose):
 
-| Scope | Skill | Review |
-|-------|-------|--------|
-| ROADMAP phase (1+ plans) | `/iago-execute {slug}` | Full 8-stage pipeline |
-| Standalone plan (1-3 tasks) | `/iago-quick {desc}` | Full 8-stage pipeline |
-| Multi-task plan (outside ROADMAP) | `/subagent-driven-development` | Full 8-stage pipeline |
-| Trivial fix (≤3 files, obvious) | `/iago-fast {desc}` | Build gate only |
+| Scope | Skill |
+|-------|-------|
+| ROADMAP phase | `/iago-execute {slug}` |
+| Standalone 1-3 tasks | `/iago-quick {desc}` |
+| Multi-task plan outside ROADMAP | `/subagent-driven-development` |
+| Trivial (≤3 files, obvious) | `/iago-fast {desc}` — only path that skips review |
 
-## Review Pipeline
-Harness-native Workflow `.claude/workflows/execute-pipeline.js`: stress → impl → build gate → commit → dual-adversarial (Opus ∥ Codex GPT-5.5) → fix → PR → tag → summary + async GitHub loop + post-async dual-adversarial gate (`.claude/workflows/dual-adversarial.js`). (`scripts/execute-pipeline.sh` deprecated — retained one cycle.) Details in `.claude/rules/execution-pipeline.md`. Skip only via `/iago-fast`.
+Pipeline contract: `.claude/rules/execution-pipeline.md`.
 
-## Verification
-Never claim done without running verification and reading output. "Tests pass" = ran them, saw green. "Build succeeds" = ran it, saw exit 0.
-
-## Search First
-Search codebase before creating any new file/component/utility. Duplication is bug.
-
-## Agent Escalation Protocol
-Every subagent ends with one status: **DONE** (verified) / **DONE_WITH_CONCERNS** (minor issues listed) / **NEEDS_CONTEXT** (state missing info) / **BLOCKED** (state external blocker; no retry without resolving).
+## Agent Escalation
+Every subagent ends with one status: **DONE** / **DONE_WITH_CONCERNS** (issues listed) / **NEEDS_CONTEXT** (state missing info) / **BLOCKED** (state blocker).
 
 ## Execution Discipline
-7+ consecutive Read/Grep/Glob without Edit/Write/Bash: STOP, state findings, ask to continue. 3 failed fixes same issue: STOP, escalate. During execution: only what plan specifies; new ideas deferred; auto-fix bugs/imports/blockers; ASK before architectural changes.
+During execution: only what the plan specifies; auto-fix bugs/imports/blockers; ASK before architectural changes. 3 failed fixes on the same issue → STOP, escalate; no 4th attempt without new information — consider `/codex:rescue` for a cross-model second opinion.
 
-## Rules
-Detailed rules in `.claude/rules/`: `stack.md` (tech stack), `output-style.md` (orchestrator response style), `memory.md` (six-layer memory + frozen-snapshot rule), `execution-pipeline.md` (**MANDATORY** review pipeline), `tdd.md` (RED-GREEN-REFACTOR), `systematic-debugging.md` (4-phase debugging), `git-workflow.md` (branching/PRs), `available-skills.md` (full skill catalog). Path-scoped: `react-vite.md` (src/**/*.tsx), `aws-amplify.md` (amplify/**), `e2e-testing.md` (tests), `mcp-server-patterns.md` (MCP files). Code standards live in the path-scoped React/AWS/TDD/MCP rules.
+## Agents & Models
+Agent defs in `.claude/agents/`. Hub-and-spoke: only the orchestrator dispatches. Model routing: orchestrator = session model (Fable); workflow legs — impl/review/fix/debug → Opus (keep existing pins), PR/commit/tag/mechanical → Sonnet; cross-model adversarial review → Codex GPT-5.5 (pinned in `~/.codex/config.toml`). Never blanket-inherit the session model for every leg.
 
-## Agents
-3 bases, 14 capabilities, 13 profiles in `.claude/agents/` (authoritative live counts on disk). Hub-and-spoke: only orchestrator dispatches.
-
-## Model Routing
-Opus: orchestrator + code-writing (impl/fix/debug). Sonnet: PR creation, @claude tags, Codex fallback, mechanical analysis. Codex (GPT-5.5): cross-model adversarial review, `/codex:rescue` — pinned in `~/.codex/config.toml`.
+Path-scoped rules in `.claude/rules/` (tdd, react-vite, aws-amplify, e2e-testing, mcp-server-patterns, layer-triage, skill-authoring) auto-load on matching paths; the rest auto-load every session.

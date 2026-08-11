@@ -112,8 +112,6 @@ learnings + task. Dispatch via the profile's base agent with the routed model.
 Provide each dispatch with:
 - The single task (not the full plan)
 - CLAUDE.md
-- rules/tdd.md
-- rules/systematic-debugging.md
 
 The dispatched agent must end with an escalation status:
 - **DONE** — task complete, verify command passed
@@ -243,5 +241,5 @@ Display:
 - Only the orchestrator (this session) dispatches agents — agents never spawn agents
 - Plan is the contract — implement what it says, nothing more
 - New ideas discovered during execution go to a "deferred" section in the summary
-- Max 3 retry attempts per task (systematic-debugging.md escalation rule)
+- Max 3 retry attempts per task (CLAUDE.md Execution Discipline 3-fix rule)
 - If >50% of tasks are BLOCKED, abort and escalate the entire plan

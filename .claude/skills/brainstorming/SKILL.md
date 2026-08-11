@@ -3,7 +3,7 @@ name: brainstorming
 description: >-
   Use when starting a new feature, design decision, or architecture choice.
   Not when modifying existing code with clear requirements (just implement it)
-  or when a spec already exists (use /writing-plans instead).
+  or when a spec already exists (use /iago-plan --feature docs/specs/{slug}.md instead).
 ---
 
 
@@ -85,7 +85,7 @@ Create `docs/specs/` if it doesn't exist.
 ### 5. Handoff
 
 Display the spec summary and suggest:
-"Run `/writing-plans docs/specs/{slug}.md` to break this into implementation tasks."
+"Run `/iago-plan --feature docs/specs/{slug}.md` to break this into implementation tasks."
 
 ## Output
 
@@ -96,7 +96,7 @@ Display the spec summary and suggest:
 
 ## Boundaries
 
-- Does not produce implementation plans — that's `/writing-plans`
+- Does not produce implementation plans — that's `/iago-plan --feature docs/specs/{slug}.md`
 - Does not write code — exploration only
 - Does not dispatch agents — orchestrator runs the conversation directly
 - Specs must target our stack (React 19 + Vite + TS + Tailwind + ShadCN + AWS)
