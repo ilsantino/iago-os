@@ -125,7 +125,9 @@ async function sessionStart(input) {
       // Archive after loading (preserves history; allows manual recovery)
       archiveHandoff(latestHandoff.path, latestHandoff.name);
 
-      process.stdout.write(JSON.stringify({ hookSpecificOutput: output.join("\n") }));
+      // Plain stdout on SessionStart is injected as context (JSON hookSpecificOutput
+      // string form fails schema validation and gets dropped entirely).
+      process.stdout.write(output.join("\n"));
       return;
     } catch { /* fall through to session snapshot */ }
   }
@@ -149,13 +151,13 @@ async function sessionStart(input) {
         output.push("⚠ Previous session ended unexpectedly.");
       }
 
-      process.stdout.write(JSON.stringify({ hookSpecificOutput: output.join("\n") }));
+      process.stdout.write(output.join("\n"));
       return;
     } catch { /* ignore corrupt snapshots */ }
   }
 
   // No prior state — first session
-  process.stdout.write(JSON.stringify({ hookSpecificOutput: "First iaGO session. No prior context." }));
+  process.stdout.write("First iaGO session. No prior context.");
 }
 
 // === PreCompact ===
@@ -186,17 +188,9 @@ async function preCompact(input) {
   const snapshotPath = join(SESSIONS_DIR, `${sessionId}.json`);
   writeFileSync(snapshotPath, JSON.stringify(snapshot, null, 2));
 
-  // Output compact instructions
-  const lines = [
-    "## Session Context (iaGO)",
-    `Client: ${clientInfo.client}`,
-    `Branch: ${snapshot.git_branch}`,
-  ];
-  if (snapshot.current_task) lines.push(`Task: ${snapshot.current_task}`);
-  if (filesModified.length > 0) lines.push(`Files modified: ${filesModified.slice(0, 10).join(", ")}`);
-  if (decisions.length > 0) lines.push(`Key decisions: ${decisions.slice(0, 5).join("; ")}`);
-
-  process.stdout.write(JSON.stringify({ hookSpecificOutput: lines.join("\n") }));
+  // No stdout: PreCompact hooks cannot inject model-visible context (harness only
+  // parses control JSON). The SessionStart hook fires after compaction (source
+  // "compact") and re-injects this snapshot.
 }
 
 // === Stop ===

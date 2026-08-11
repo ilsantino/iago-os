@@ -24,6 +24,11 @@ async function main() {
   if (!EXTENSIONS.has(getExtension(filePath))) process.exit(0);
   if (!existsSync(filePath)) process.exit(0);
 
+  // Skip client sub-projects (clients/**): they carry their own formatter/tooling
+  // (e.g. munet-web uses ESLint, not iaGO-root Biome). Running iaGO-root Biome here
+  // rewrites whole files to tabs/double-quote/semicolons and corrupts their diffs.
+  if (/[\\/]clients[\\/]/.test(filePath)) process.exit(0);
+
   // Shell metachar guard
   if (/[;&|`$(){}]/.test(filePath)) process.exit(0);
 
