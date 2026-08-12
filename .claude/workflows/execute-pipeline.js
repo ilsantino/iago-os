@@ -227,23 +227,26 @@ async function withRetry(fn, label, tries) {
   throw lastErr
 }
 
-// Retry a MUTATING stage safely. Before each RE-attempt (not the first), roll back
-// partial edits from the failed attempt so the retry starts from the checkpoint —
-// a blind retry on a half-edited worktree could duplicate work. Keeps transient-
-// error survival for the impl stage without the corruption risk Codex flagged.
-// `restoreCmd` is a git command run in projectDir to discard partial changes
-// (e.g. `git checkout <preImplSha> -- .`). Commit and fix stages do NOT use this —
-// they create commits, so they run single-attempt to avoid double-commits.
+// Retry a MUTATING stage safely. Before each RE-attempt (not the first), PRESERVE the
+// failed attempt's partial work in a `wip/*` ref and then reset the worktree to the
+// checkpoint — a blind retry on a half-edited worktree could duplicate work. Keeps
+// transient-error survival for the impl stage without the corruption risk Codex flagged.
+// `restoreCmd` is a command run in projectDir that must snapshot-then-restore
+// (scripts/pipeline-wip-restore.sh); it is fail-closed — it exits non-zero WITHOUT
+// restoring if the snapshot cannot be written, so a retry never costs the work
+// outright (a 2026-08-11 sentria run lost 60 minutes of implementation to the earlier
+// restore-only command). Commit and fix stages do NOT use this — they create commits,
+// so they run single-attempt to avoid double-commits.
 async function withRetryMutating(fn, label, restoreCmd) {
   const max = 2
   let lastErr
   for (let i = 0; i < max; i++) {
     if (i > 0) {
-      log(`${label}: rolling back partial changes before retry`)
+      log(`${label}: preserving partial work, then rolling back before retry`)
       // Capture and VERIFY the rollback — never retry a mutating stage on a dirty
       // tree. If the rollback can't reach a clean checkpoint, fail closed.
       const rb = await agent(
-        `${PREAMBLE}\n\nRoll back ALL partial changes from a FAILED pipeline attempt so the retry starts from the checkpoint. In ${projectDir} run exactly:\n  ${restoreCmd}\nThen VERIFY: git status --porcelain MUST be empty. Return status=DONE only if the tree is clean; otherwise status=BLOCKED with what remains.`,
+        `${PREAMBLE}\n\nA pipeline attempt FAILED. PRESERVE its partial work and then reset to the checkpoint so the retry starts clean. In ${projectDir} run exactly:\n  ${restoreCmd}\nThe command snapshots the partial work into a recovery ref BEFORE restoring, and prints a "snapshot=<ref>" line (or "snapshot=none") followed by "clean". Run NOTHING else that changes state — no git reset --hard, no git clean, no branch switch, no commit.\nThen VERIFY: git status --porcelain MUST be empty. Return status=DONE only if the command exited 0 AND the tree is clean, with notes set to the exact "snapshot=..." line it printed; otherwise status=BLOCKED with the command's stderr.`,
         { label: `${label}-rollback`, schema: IMPL_SCHEMA, model: 'haiku' },
       )
       if (!rb || rb.status !== 'DONE') {
@@ -251,6 +254,9 @@ async function withRetryMutating(fn, label, restoreCmd) {
           `${label}: rollback before retry did not reach a clean tree (status=${rb ? rb.status : 'null'}${rb && rb.notes ? ': ' + rb.notes : ''}) — refusing to retry on dirty state`,
         )
       }
+      // Surface the recovery ref in the run log — it is the ONLY pointer back to the
+      // discarded attempt, and the run log is what gets read after an overnight failure.
+      log(`${label}: partial work preserved — ${rb.notes || '(agent reported no snapshot line)'}`)
     }
     try {
       const result = await fn()
@@ -1006,8 +1012,9 @@ const preImplSha = prep.preImplSha
 if (!preImplSha) throw new Error('Prep did not return preImplSha')
 log(`pre-impl HEAD: ${preImplSha} (branch ${prep.branch || '?'})`)
 
-// withRetryMutating: on a retry, partial edits from the failed attempt are rolled
-// back to preImplSha first (impl makes no commits, so a worktree restore suffices).
+// withRetryMutating: on a retry, the failed attempt's partial edits are SNAPSHOTTED to a
+// `wip/${planName}` ref and then rolled back to preImplSha (impl makes no commits, so a
+// worktree restore suffices).
 const impl = await withRetryMutating(
   () =>
     agent(implPrompt(stress.notes), {
@@ -1016,12 +1023,15 @@ const impl = await withRetryMutating(
       schema: IMPL_SCHEMA,
     }),
   'implement',
-  // Restore tracked files to the checkpoint AND remove untracked files the failed
-  // attempt created (git checkout -- . only reverts tracked paths; without this the
-  // Commit stage's `git add -A` would sweep the failed attempt's orphan files into
-  // the PR). --exclude-standard keeps gitignored runtime state (.iago/state) intact.
-  // Portable NUL-safe loop (no `xargs -r`, which is GNU-only and absent on macOS/BSD).
-  `git checkout "${preImplSha}" -- . && git ls-files --others --exclude-standard -z | while IFS= read -r -d '' f; do rm -f "$f"; done`,
+  // pipeline-wip-restore.sh does BOTH halves, in this order and no other:
+  //   1. commit the dirty worktree (tracked edits + untracked orphans, secrets excluded)
+  //      to `wip/${planName}` without moving HEAD/index — recover with
+  //      `git diff ${preImplSha} wip/${planName}` or `git checkout wip/... -- .`;
+  //   2. restore tracked files to the checkpoint AND remove the untracked files the
+  //      failed attempt created (git checkout -- . only reverts tracked paths; without
+  //      this the Commit stage's `git add -A` would sweep those orphans into the PR).
+  // If step 1 fails it exits non-zero BEFORE step 2 — work is never wiped unsaved.
+  `bash "${iagoRoot}/scripts/pipeline-wip-restore.sh" "${preImplSha}" "${planName}"`,
 )
 if (impl.status !== 'DONE') {
   throw new Error(`Implementation ${impl.status}: ${impl.notes || '(no detail)'}`)

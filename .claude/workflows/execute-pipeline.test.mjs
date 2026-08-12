@@ -829,5 +829,87 @@ await test('round-0 domainsSelected is preserved into the round-2 re-review hint
   )
 })
 
+// ════ Suite C — a failed implement attempt is PRESERVED, not wiped ══════════════════
+// The implement stage retries once, and before the retry it resets the worktree to the
+// checkpoint. Until 2026-08-12 that reset was a bare `git checkout <sha> -- .` + untracked
+// sweep, so a transient API error mid-implementation destroyed everything the attempt had
+// written (a sentria run lost 60 minutes of it overnight). The rollback must now run
+// scripts/pipeline-wip-restore.sh, which snapshots the partial work to a `wip/<plan>` ref
+// FIRST and only then restores.
+
+// Rules where the implement agent dies on its first call (transient server_error) and
+// succeeds on the retry. Listed BEFORE flowRules so they win the first-match lookup.
+function retryImplRules(rollbackReply) {
+  let implCalls = 0
+  return [
+    {
+      match: (l) => l === 'implement',
+      reply: () => {
+        implCalls++
+        if (implCalls === 1) throw new Error('API Error: Unable to connect to API (ENOTFOUND)')
+        return { status: 'DONE' }
+      },
+    },
+    { match: (l) => l === 'implement-rollback', reply: rollbackReply },
+    ...flowRules({ prUrl: 'http://pr/1', prNumber: '1', tagStatus: 'TAGGED' }),
+  ]
+}
+
+await test('a failed implement attempt is snapshotted to a wip ref BEFORE the worktree is reset', async () => {
+  const rules = retryImplRules({ status: 'DONE', notes: 'snapshot=wip/p (abc0000)' })
+  const h = makeHarness(rules)
+  const logs = []
+  const wf = buildWorkflow()
+  await wf(h.agent, h.parallel, null, (m) => logs.push(m), h.phase, { ...baseArgs, skipStress: true }, null, null)
+
+  const rb = h.calls.find((c) => c.label === 'implement-rollback')
+  assert.ok(rb, 'the failed attempt triggered a rollback stage')
+  assert.ok(
+    /pipeline-wip-restore\.sh" "abc123" "p"/.test(rb.prompt),
+    'the rollback runs pipeline-wip-restore.sh with the checkpoint sha and the plan name',
+  )
+  // Drift guard: the old restore-only command must never come back.
+  assert.ok(
+    !/git checkout "abc123" -- \./.test(rb.prompt),
+    'the rollback does NOT run a bare restore that would destroy the partial work',
+  )
+  assert.ok(/status=DONE only if/.test(rb.prompt), 'the rollback is still verified before any retry')
+  assert.strictEqual(h.calls.filter((c) => c.label === 'implement').length, 2, 'implement retried after the rollback')
+  // The recovery ref is the only pointer back to the discarded work — it has to reach the log.
+  assert.ok(
+    logs.some((l) => /snapshot=wip\/p/.test(l)),
+    'the run log names the recovery ref',
+  )
+})
+
+await test('a rollback that cannot reach a clean tree aborts instead of retrying', async () => {
+  const rules = retryImplRules({ status: 'BLOCKED', notes: 'wip ref could not be written' })
+  const h = makeHarness(rules)
+  const wf = buildWorkflow()
+  await assert.rejects(
+    () => wf(h.agent, h.parallel, null, h.log, h.phase, { ...baseArgs, skipStress: true }, null, null),
+    /refusing to retry on dirty state/,
+    'the workflow fails closed when the preserve-then-restore step does not finish',
+  )
+  assert.strictEqual(
+    h.calls.filter((c) => c.label === 'implement').length,
+    1,
+    'implement is NOT retried on a worktree that still holds the failed attempt',
+  )
+})
+
+await test('the impl stage wires the preserve-then-restore script, not a destructive reset', () => {
+  // Source-level drift guard: the behavioral tests above assert on the rollback PROMPT,
+  // which only proves the command that was passed in. This pins the command itself.
+  assert.ok(
+    /pipeline-wip-restore\.sh/.test(SRC),
+    'execute-pipeline.js calls scripts/pipeline-wip-restore.sh',
+  )
+  assert.ok(
+    !/git checkout "\$\{preImplSha\}" -- \./.test(SRC),
+    'execute-pipeline.js no longer restores the impl checkpoint without snapshotting first',
+  )
+})
+
 console.log(`\n${passed} passed, ${failed} failed`)
 process.exit(failed ? 1 : 0)
