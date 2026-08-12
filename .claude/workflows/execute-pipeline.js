@@ -275,7 +275,7 @@ async function withRetryMutating(fn, label, restoreCmd) {
 // (it needs a leading path segment), so a root-level secret would otherwise be
 // staged by `git add -A`. Caught by the PR #83 dual-adversarial (Opus leg).
 const SECRET_EXCLUDES =
-  "':!.env' ':!.env.*' ':!*.pem' ':!*.key' ':!*.p12' ':!*.pfx' ':!**/.env' ':!**/.env.*' ':!**/*.pem' ':!**/*.key' ':!**/*.p12' ':!**/*.pfx' ':!.iago/state/**' ':!**/.iago/state/**'"
+  "':!.env' ':!.env.*' ':!*.pem' ':!*.key' ':!*.p12' ':!*.pfx' ':!**/.env' ':!**/.env.*' ':!**/*.pem' ':!**/*.key' ':!**/*.p12' ':!**/*.pfx' ':!.envrc' ':!**/.envrc' ':!*.p8' ':!**/*.p8' ':!*.jks' ':!**/*.jks' ':!credentials.json' ':!**/credentials.json' ':!service-account*.json' ':!**/service-account*.json' ':!id_rsa' ':!**/id_rsa' ':!id_dsa' ':!**/id_dsa' ':!id_ecdsa' ':!**/id_ecdsa' ':!id_ed25519' ':!**/id_ed25519' ':!.netrc' ':!**/.netrc' ':!.npmrc' ':!**/.npmrc' ':!.iago/state/**' ':!**/.iago/state/**'"
 
 // Standing context every working agent needs.
 const PREAMBLE = `You are a stage in the iaGO execution pipeline (harness-native v2).
