@@ -45,10 +45,27 @@ if ! git rev-parse --verify --quiet "${CHECKPOINT}^{commit}" >/dev/null; then
   exit 2
 fi
 
+# The impl agent is instructed not to commit, but nothing enforces that. If it commits
+# ONLY brand-new tracked files (no edits to pre-existing tracked paths, no other dirty
+# state), `git status --porcelain` below is empty, the snapshot step is skipped
+# entirely, and `git checkout <checkpoint> -- .` does not delete paths absent from the
+# checkpoint — so those new files stay committed on HEAD and the script would report
+# clean/exit 0 while the retry silently runs on top of an undisclosed commit. Catch it
+# here, before anything else runs.
+HEAD_SHA=$(git rev-parse HEAD)
+CHECKPOINT_SHA=$(git rev-parse "${CHECKPOINT}^{commit}")
+if [ "$HEAD_SHA" != "$CHECKPOINT_SHA" ]; then
+  echo "ERROR: HEAD ($HEAD_SHA) has moved past the checkpoint ($CHECKPOINT_SHA) — refusing to run on an unexpected commit" >&2
+  exit 1
+fi
+
 # git check-ref-format is strict: keep only characters that are always legal in a ref
 # component, then trim leading/trailing separators (a plan named ".."" or "-x-" would
-# otherwise produce an unusable ref).
-SLUG=$(printf '%s' "$REF_BASE" | tr -c 'A-Za-z0-9._-' '-' | sed 's/^[-.]*//; s/[-.]*$//')
+# otherwise produce an unusable ref). Two more rules `tr`+trim alone don't cover: no
+# internal ".." anywhere (collapse repeated dots to one), and a ref cannot end in
+# ".lock" (strip a trailing .lock, case-insensitive, after the dot-collapse so a name
+# like "foo..lock" is still caught).
+SLUG=$(printf '%s' "$REF_BASE" | tr -c 'A-Za-z0-9._-' '-' | sed 's/^[-.]*//; s/[-.]*$//' | sed 's/\.\.\+/./g' | sed -E 's/\.[Ll][Oo][Cc][Kk]$//')
 [ -n "$SLUG" ] || SLUG="attempt"
 
 SNAPSHOT="none"
@@ -61,6 +78,10 @@ if [ -n "$(git status --porcelain)" ]; then
   git add -A -- . \
     ':!.env' ':!.env.*' ':!*.pem' ':!*.key' ':!*.p12' ':!*.pfx' \
     ':!**/.env' ':!**/.env.*' ':!**/*.pem' ':!**/*.key' ':!**/*.p12' ':!**/*.pfx' \
+    ':!.envrc' ':!**/.envrc' ':!*.p8' ':!**/*.p8' ':!*.jks' ':!**/*.jks' \
+    ':!credentials.json' ':!**/credentials.json' ':!service-account*.json' ':!**/service-account*.json' \
+    ':!id_rsa' ':!**/id_rsa' ':!id_dsa' ':!**/id_dsa' ':!id_ecdsa' ':!**/id_ecdsa' ':!id_ed25519' ':!**/id_ed25519' \
+    ':!.netrc' ':!**/.netrc' ':!.npmrc' ':!**/.npmrc' \
     ':!.iago/state/**' ':!**/.iago/state/**'
   TREE=$(git write-tree)
   # Put the index back immediately. `git reset` with NO commit argument is a mixed

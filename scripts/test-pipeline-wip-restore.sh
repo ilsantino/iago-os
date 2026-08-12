@@ -151,7 +151,58 @@ assert_eq "subdirectory run cleans the whole tree" "" "$(git -C "$REPO" status -
 assert_contains "subdirectory run preserved the nested orphan" \
   "$(git -C "$REPO" diff --name-only "$CHECKPOINT" "wip/from-subdir")" "nested/deep/orphan.ts"
 
+# ── 7. Fail-closed: HEAD moved past the checkpoint (agent committed anyway) ────────────
+# The impl agent is told not to commit. If it does — and the illicit commit adds only a
+# brand-new tracked file with nothing else dirty — `git status --porcelain` is empty, so
+# without a guard the script would skip the snapshot entirely and silently succeed on
+# top of the undisclosed commit. Simulate exactly that: commit a new file straight onto
+# the checkpoint, then invoke the script with the (now stale) checkpoint sha.
+printf 'undisclosed\n' >"$REPO/illicit.ts"
+(cd "$REPO" && git add illicit.ts && git commit -qm "illicit commit the impl agent was told not to make")
+OUT8=$(cd "$REPO" && bash "$SUBJECT" "$CHECKPOINT" "head-drift" 2>&1)
+RC8=$?
+assert_eq "HEAD drift exits non-zero" "1" "$RC8"
+assert_contains "HEAD drift explains itself" "$OUT8" "has moved past the checkpoint"
+assert_eq "HEAD drift leaves no wip ref" "1" \
+  "$(git -C "$REPO" show-ref --verify --quiet refs/heads/wip/head-drift && echo 0 || echo 1)"
+# Undo the illicit commit so later state matches what earlier tests assume.
+(cd "$REPO" && git reset -q --hard "$CHECKPOINT")
+
+# ── 8. Ref-name sanitation: internal ".." and a trailing ".lock" ──────────────────────
+dirty_it "$REPO"
+OUT9=$(cd "$REPO" && bash "$SUBJECT" "$CHECKPOINT" "feature..double-dot" 2>&1)
+assert_eq "internal .. slug exits 0" "0" "$?"
+assert_contains "internal .. collapsed to a single dot" "$OUT9" "snapshot=wip/feature.double-dot"
+assert_eq "collapsed-dot ref actually exists" "0" \
+  "$(git -C "$REPO" show-ref --verify --quiet refs/heads/wip/feature.double-dot && echo 0 || echo 1)"
+
+dirty_it "$REPO"
+OUT10=$(cd "$REPO" && bash "$SUBJECT" "$CHECKPOINT" "risky-plan.lock" 2>&1)
+assert_eq "trailing .lock slug exits 0" "0" "$?"
+assert_contains "trailing .lock stripped" "$OUT10" "snapshot=wip/risky-plan"
+assert_eq "delocked ref actually exists" "0" \
+  "$(git -C "$REPO" show-ref --verify --quiet refs/heads/wip/risky-plan && echo 0 || echo 1)"
+
 rm -rf "$REPO"
+
+# ── 9. Fail-closed: the snapshot write itself fails (D/F ref conflict), not just early
+#      arg validation — proves the fail-closed ordering holds mid-run, before restore.
+DFREPO=$(make_repo) || {
+  echo "could not create D/F conflict test repo"
+  exit 1
+}
+DFCHECKPOINT=$(git -C "$DFREPO" rev-parse HEAD)
+(cd "$DFREPO" && git branch wip >/dev/null)
+dirty_it "$DFREPO"
+BEFORE_DF=$(git -C "$DFREPO" status --porcelain)
+OUT11=$(cd "$DFREPO" && bash "$SUBJECT" "$DFCHECKPOINT" "df-conflict" 2>&1)
+RC11=$?
+# `set -e` propagates git's own exit code (128) when update-ref itself fails, not the
+# script's custom `exit 1` — either way, non-zero is the property under test.
+assert_eq "D/F ref conflict exits non-zero" "0" "$([ "$RC11" -ne 0 ] && echo 0 || echo 1)"
+assert_eq "D/F ref conflict leaves the worktree untouched" "$BEFORE_DF" "$(git -C "$DFREPO" status --porcelain)"
+assert_eq "D/F ref conflict does not move HEAD" "$DFCHECKPOINT" "$(git -C "$DFREPO" rev-parse HEAD)"
+rm -rf "$DFREPO"
 
 echo
 echo "${PASS} passed, ${FAIL} failed"
