@@ -63,6 +63,15 @@ if (!plan || !projectDir || !iagoRoot) {
 
 // Derive the plan name for summary/telemetry (pure string ops — fs is unavailable).
 const planName = (plan.split(/[\\/]/).pop() || 'plan').replace(/\.md$/i, '')
+// planName is interpolated into shell command lines that agents are told to run VERBATIM
+// (the wip-restore rollback). Double quotes do NOT neutralize `$(...)` or backticks, so a
+// plan filename carrying either would execute inside them. Reject rather than sanitize: a
+// silently-rewritten name would point post-mortem recovery at a ref that does not exist.
+if (!/^[A-Za-z0-9._-]+$/.test(planName)) {
+  throw new Error(
+    `Unsafe plan file name "${planName}" — plan basenames must match [A-Za-z0-9._-] because the name is interpolated into shell commands. Rename the plan file.`,
+  )
+}
 
 // ─── Schemas (validated at the tool-call layer; the model retries on mismatch) ─
 const FINDING = {
@@ -101,6 +110,30 @@ const IMPL_SCHEMA = {
   properties: {
     status: { type: 'string', enum: ['DONE', 'BLOCKED', 'NEEDS_CONTEXT'] },
     notes: { type: 'string' },
+  },
+}
+
+// Preserve-then-restore rollback before a mutating retry. `snapshotRef` is the ref NAME the
+// script printed on its `snapshot=<ref> (<sha>)` line (or "none") — a CLAIM, not proof: the
+// REFCHECK leg below asks git whether that ref actually exists before the retry is allowed.
+const ROLLBACK_SCHEMA = {
+  type: 'object',
+  required: ['status'],
+  properties: {
+    status: { type: 'string', enum: ['DONE', 'BLOCKED'] },
+    snapshotRef: { type: 'string' },
+    notes: { type: 'string' },
+  },
+}
+
+// Read-only proof that a recovery ref exists (git rev-parse) and the tree really is clean.
+const REFCHECK_SCHEMA = {
+  type: 'object',
+  required: ['status'],
+  properties: {
+    status: { type: 'string', enum: ['DONE', 'BLOCKED'] },
+    sha: { type: 'string' },
+    porcelain: { type: 'string' },
   },
 }
 
@@ -243,20 +276,64 @@ async function withRetryMutating(fn, label, restoreCmd) {
   for (let i = 0; i < max; i++) {
     if (i > 0) {
       log(`${label}: preserving partial work, then rolling back before retry`)
-      // Capture and VERIFY the rollback — never retry a mutating stage on a dirty
+      // (1) What is there to preserve? Captured BEFORE the rollback, read-only, so the
+      // verification below can tell an honest "snapshot=none" (nothing was written yet)
+      // from a rollback that restored real work away. An unusable answer counts as DIRTY —
+      // fail-safe toward DEMANDING a recovery ref.
+      const preSnap = await agent(
+        `${PREAMBLE}\n\nREAD-ONLY. In ${projectDir} run exactly:\n  git status --porcelain\nReturn status=DONE with porcelain set to its EXACT output (empty string if the tree is clean). Do NOT edit, stage, commit, or delete anything.`,
+        { label: `${label}-dirty-snap`, schema: SNAP_SCHEMA, model: 'haiku' },
+      )
+      const treeWasDirty = !preSnap || preSnap.status !== 'DONE' || !!String(preSnap.porcelain || '').trim()
+
+      // (2) Capture and VERIFY the rollback — never retry a mutating stage on a dirty
       // tree. If the rollback can't reach a clean checkpoint, fail closed.
       const rb = await agent(
-        `${PREAMBLE}\n\nA pipeline attempt FAILED. PRESERVE its partial work and then reset to the checkpoint so the retry starts clean. In ${projectDir} run exactly:\n  ${restoreCmd}\nThe command snapshots the partial work into a recovery ref BEFORE restoring, and prints a "snapshot=<ref>" line (or "snapshot=none") followed by "clean". Run NOTHING else that changes state — no git reset --hard, no git clean, no branch switch, no commit.\nThen VERIFY: git status --porcelain MUST be empty. Return status=DONE only if the command exited 0 AND the tree is clean, with notes set to the exact "snapshot=..." line it printed; otherwise status=BLOCKED with the command's stderr.`,
-        { label: `${label}-rollback`, schema: IMPL_SCHEMA, model: 'haiku' },
+        `${PREAMBLE}\n\nA pipeline attempt FAILED. PRESERVE its partial work and then reset to the checkpoint so the retry starts clean. In ${projectDir} run exactly:\n  ${restoreCmd}\nThe command snapshots the partial work into a recovery ref BEFORE restoring, and prints a "snapshot=<ref> (<sha>)" line (or "snapshot=none") followed by "clean". Run NOTHING else that changes state — no git reset --hard, no git clean, no branch switch, no commit.\nThen VERIFY: git status --porcelain MUST be empty. Return status=DONE only if the command exited 0 AND the tree is clean, with notes set to the exact "snapshot=..." line it printed AND snapshotRef set to JUST the ref name from that line (e.g. "wip/03-plan"), or exactly "none" when the line said snapshot=none. Do NOT invent a ref name — the workflow re-checks it with git and ABORTS the run if it does not exist. Otherwise status=BLOCKED with the command's stderr.`,
+        { label: `${label}-rollback`, schema: ROLLBACK_SCHEMA, model: 'haiku' },
       )
       if (!rb || rb.status !== 'DONE') {
         throw new Error(
           `${label}: rollback before retry did not reach a clean tree (status=${rb ? rb.status : 'null'}${rb && rb.notes ? ': ' + rb.notes : ''}) — refusing to retry on dirty state`,
         )
       }
-      // Surface the recovery ref in the run log — it is the ONLY pointer back to the
-      // discarded attempt, and the run log is what gets read after an overnight failure.
-      log(`${label}: partial work preserved — ${rb.notes || '(agent reported no snapshot line)'}`)
+      // (3) PROVE the recovery ref with git. The rollback's notes are a model paraphrase;
+      // an agent that skipped or garbled the command — or invented a snapshot line — would
+      // otherwise produce an identical-looking successful run with the work gone.
+      const claimed = String(rb.snapshotRef || '')
+        .trim()
+        .replace(/^refs\/heads\//, '')
+      const hasClaim = !!claimed && claimed.toLowerCase() !== 'none'
+      if (treeWasDirty && !hasClaim) {
+        throw new Error(
+          `${label}: the tree was dirty before the rollback but it reported no recovery ref (snapshotRef=${claimed || 'missing'}) — the partial work would be unrecoverable, refusing to retry`,
+        )
+      }
+      if (hasClaim) {
+        // Validate before interpolating into the verify command (same injection surface as
+        // restoreCmd) — a ref name is agent-supplied text.
+        if (!/^wip\/[A-Za-z0-9._/-]+$/.test(claimed)) {
+          throw new Error(`${label}: rollback reported an unusable recovery ref "${claimed}" — refusing to retry`)
+        }
+        const refCheck = await agent(
+          `${PREAMBLE}\n\nREAD-ONLY verification of a recovery ref. In ${projectDir} run exactly:\n  git rev-parse --verify --quiet "refs/heads/${claimed}^{commit}"\n  git status --porcelain\nReturn status=DONE with sha set to the full 40-character sha the FIRST command printed (empty string if it printed nothing or exited non-zero — do NOT invent one) and porcelain set to the exact output of the second (empty string if the tree is clean). Do NOT create, move, or delete any ref, branch, file, or commit.`,
+          { label: `${label}-rollback-verify`, schema: REFCHECK_SCHEMA, model: 'haiku' },
+        )
+        const sha = refCheck && refCheck.status === 'DONE' ? String(refCheck.sha || '').trim() : ''
+        if (!/^[0-9a-f]{40}$/.test(sha)) {
+          throw new Error(
+            `${label}: recovery ref ${claimed} could not be verified with git (rev-parse returned "${sha || 'nothing'}") — the partial work may be unrecoverable, refusing to retry`,
+          )
+        }
+        if (String(refCheck.porcelain || '').trim()) {
+          throw new Error(`${label}: the tree is still dirty after the rollback — refusing to retry on dirty state`)
+        }
+        // Surface the VERIFIED recovery ref in the run log — it is the ONLY pointer back to
+        // the discarded attempt, and the run log is what gets read after an overnight failure.
+        log(`${label}: partial work preserved — ${claimed} @ ${sha}`)
+      } else {
+        log(`${label}: nothing to preserve — the tree was already clean before the rollback`)
+      }
     }
     try {
       const result = await fn()
@@ -274,8 +351,17 @@ async function withRetryMutating(fn, label, restoreCmd) {
 // in default git pathspec mode `**/.env` does NOT match a top-level `.env`
 // (it needs a leading path segment), so a root-level secret would otherwise be
 // staged by `git add -A`. Caught by the PR #83 dual-adversarial (Opus leg).
+//
+// Kept to material that is NEVER legitimately committed. `.env.*` (it matches the tracked
+// runtime/.env.example), `.npmrc` and `.envrc` were REMOVED on 2026-08-12: this constant
+// governs the COMMIT stage, so naming routinely-tracked config here silently dropped a
+// legitimate edit from the commit and the PR — and, via scripts/pipeline-wip-restore.sh,
+// excluded it from the wip snapshot while the restore deleted it anyway.
+// SYNC CONTRACT: identical policy in scripts/pipeline-wip-restore.sh (SECRET_PATTERNS) and
+// .claude/workflows/dual-adversarial-fix.js; execute-pipeline.test.mjs's DRIFT GUARD fails
+// when any copy diverges. Edit all three in lockstep.
 const SECRET_EXCLUDES =
-  "':!.env' ':!.env.*' ':!*.pem' ':!*.key' ':!*.p12' ':!*.pfx' ':!**/.env' ':!**/.env.*' ':!**/*.pem' ':!**/*.key' ':!**/*.p12' ':!**/*.pfx' ':!.envrc' ':!**/.envrc' ':!*.p8' ':!**/*.p8' ':!*.jks' ':!**/*.jks' ':!credentials.json' ':!**/credentials.json' ':!service-account*.json' ':!**/service-account*.json' ':!id_rsa' ':!**/id_rsa' ':!id_dsa' ':!**/id_dsa' ':!id_ecdsa' ':!**/id_ecdsa' ':!id_ed25519' ':!**/id_ed25519' ':!.netrc' ':!**/.netrc' ':!.npmrc' ':!**/.npmrc' ':!.iago/state/**' ':!**/.iago/state/**'"
+  "':!.env' ':!**/.env' ':!*.pem' ':!**/*.pem' ':!*.key' ':!**/*.key' ':!*.p12' ':!**/*.p12' ':!*.pfx' ':!**/*.pfx' ':!*.p8' ':!**/*.p8' ':!*.jks' ':!**/*.jks' ':!credentials.json' ':!**/credentials.json' ':!service-account*.json' ':!**/service-account*.json' ':!id_rsa' ':!**/id_rsa' ':!id_dsa' ':!**/id_dsa' ':!id_ecdsa' ':!**/id_ecdsa' ':!id_ed25519' ':!**/id_ed25519' ':!.netrc' ':!**/.netrc' ':!.iago/state/**' ':!**/.iago/state/**'"
 
 // Standing context every working agent needs.
 const PREAMBLE = `You are a stage in the iaGO execution pipeline (harness-native v2).
@@ -1010,6 +1096,13 @@ if (prep.status !== 'DONE') {
 }
 const preImplSha = prep.preImplSha
 if (!preImplSha) throw new Error('Prep did not return preImplSha')
+// Agent-returned text that is interpolated into shell command lines (the wip-restore
+// rollback) and into diff ranges — assert it looks like a git sha before it gets there.
+if (!/^[0-9a-f]{7,40}$/.test(preImplSha)) {
+  throw new Error(
+    `Prep returned an unusable preImplSha "${String(preImplSha).slice(0, 80)}" — expected a 7-40 character hex git sha (it is interpolated into shell commands)`,
+  )
+}
 log(`pre-impl HEAD: ${preImplSha} (branch ${prep.branch || '?'})`)
 
 // withRetryMutating: on a retry, the failed attempt's partial edits are SNAPSHOTTED to a

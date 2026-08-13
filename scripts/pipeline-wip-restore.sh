@@ -18,8 +18,10 @@
 #   git diff <checkpoint> wip/<slug>     # the partial diff
 #   git checkout wip/<slug> -- .         # put it back on top of the checkpoint
 #
-# FAIL-CLOSED: if the snapshot cannot be written, the script exits non-zero BEFORE
-# restoring anything — the partial work is never wiped without a recovery ref.
+# FAIL-CLOSED: if the snapshot cannot be written — or cannot cover every dirty path — the
+# script exits non-zero BEFORE restoring anything. "Cannot be preserved" always means "not
+# wiped": a dirty path that matches the secret-exclude list aborts the whole operation
+# rather than being restored away with no recovery ref.
 #
 # Usage (run anywhere inside the target repo):
 #   bash scripts/pipeline-wip-restore.sh <checkpoint-sha> <wip-ref-base>
@@ -68,44 +70,104 @@ fi
 SLUG=$(printf '%s' "$REF_BASE" | tr -c 'A-Za-z0-9._-' '-' | sed 's/^[-.]*//; s/[-.]*$//' | sed 's/\.\.\+/./g' | sed -E 's/\.[Ll][Oo][Cc][Kk]$//')
 [ -n "$SLUG" ] || SLUG="attempt"
 
+# ── Secret material, the ONE list this script keeps ───────────────────────────────────
+# Narrowed on 2026-08-12 to material that is genuinely unrecoverable if it lands in a
+# long-lived ref. Entries that routinely match TRACKED, non-secret config (`.env.*` — it
+# matches `.env.example` — plus `.npmrc` and `.envrc`) were REMOVED: skipping them in the
+# snapshot while the restore below still reverted/deleted them destroyed real work with no
+# recovery ref. Kept in lockstep with execute-pipeline.js's SECRET_EXCLUDES (and
+# dual-adversarial-fix.js's copy); the drift guard in
+# .claude/workflows/execute-pipeline.test.mjs fails if any copy diverges.
+SECRET_PATTERNS=(
+  '.env' '*.pem' '*.key' '*.p12' '*.pfx' '*.p8' '*.jks'
+  'credentials.json' 'service-account*.json'
+  'id_rsa' 'id_dsa' 'id_ecdsa' 'id_ed25519' '.netrc'
+  '.iago/state/**'
+)
+SECRET_EXCLUDES=()
+SECRET_MATCHES=()
+for p in "${SECRET_PATTERNS[@]}"; do
+  # Both root (`:!.env`) and nested (`:!**/.env`) forms are required: in default pathspec
+  # mode `**/.env` does NOT match a top-level `.env`. SECRET_MATCHES is the same list in
+  # POSITIVE form — what the fail-closed guard below looks for.
+  SECRET_EXCLUDES+=(":!${p}" ":!**/${p}")
+  SECRET_MATCHES+=("${p}" "**/${p}")
+done
+
+# ── FAIL-CLOSED GUARD: never wipe what the snapshot cannot keep ───────────────────────
+# The snapshot skips SECRET_PATTERNS, but the restore at the bottom reverts EVERY tracked
+# path and deletes EVERY untracked one — secrets included. So a dirty excluded path used to
+# be destroyed outright while the script printed `snapshot=...` + `clean` and exited 0.
+# Refuse the whole operation instead and let a human deal with the secret. (Gitignored
+# paths never appear here: `git status` skips them and neither half of this script touches
+# them, so an ignored `.env` is not affected.)
+UNPRESERVABLE=$(git status --porcelain --no-renames -- "${SECRET_MATCHES[@]}")
+if [ -n "$UNPRESERVABLE" ]; then
+  echo "ERROR: these dirty paths are excluded from the snapshot as secret material and would be destroyed by the restore:" >&2
+  printf '%s\n' "$UNPRESERVABLE" >&2
+  echo "Nothing was touched. Commit, move, or gitignore them, then re-run." >&2
+  exit 1
+fi
+
 SNAPSHOT="none"
 
 if [ -n "$(git status --porcelain)" ]; then
   # `git add -A` already skips gitignored paths, but a repo that forgot to ignore a
   # secret must not leak one into a long-lived ref — same exclude list the Commit
-  # stage uses. Both root (`:!.env`) and nested (`:!**/.env`) patterns are required:
-  # in default pathspec mode `**/.env` does NOT match a top-level `.env`.
-  git add -A -- . \
-    ':!.env' ':!.env.*' ':!*.pem' ':!*.key' ':!*.p12' ':!*.pfx' \
-    ':!**/.env' ':!**/.env.*' ':!**/*.pem' ':!**/*.key' ':!**/*.p12' ':!**/*.pfx' \
-    ':!.envrc' ':!**/.envrc' ':!*.p8' ':!**/*.p8' ':!*.jks' ':!**/*.jks' \
-    ':!credentials.json' ':!**/credentials.json' ':!service-account*.json' ':!**/service-account*.json' \
-    ':!id_rsa' ':!**/id_rsa' ':!id_dsa' ':!**/id_dsa' ':!id_ecdsa' ':!**/id_ecdsa' ':!id_ed25519' ':!**/id_ed25519' \
-    ':!.netrc' ':!**/.netrc' ':!.npmrc' ':!**/.npmrc' \
-    ':!.iago/state/**' ':!**/.iago/state/**'
+  # stage uses.
+  if ! ADD_ERR=$(git add -A -- . "${SECRET_EXCLUDES[@]}" 2>&1); then
+    # ONE tolerated failure: git exits 1 when a wildcard-free exclude pathspec names a
+    # file that is gitignored AND present (`:!.env` + a real, ignored `.env` — the
+    # everyday case in any real repo). It stages everything else correctly, and the two
+    # post-conditions below are what actually gate the snapshot. Any other add failure is
+    # fatal HERE, before the restore.
+    case "$ADD_ERR" in
+    *"are ignored by one of your .gitignore files"*) : ;;
+    *)
+      git reset -q
+      echo "ERROR: git add failed while building the snapshot — refusing to restore:" >&2
+      printf '%s\n' "$ADD_ERR" >&2
+      exit 1
+      ;;
+    esac
+  fi
+  # Post-condition 1: no secret path may have reached the index.
+  STAGED_SECRETS=$(git diff --cached --name-only -- "${SECRET_MATCHES[@]}")
+  if [ -n "$STAGED_SECRETS" ]; then
+    git reset -q
+    echo "ERROR: secret paths reached the snapshot index — refusing to write the ref:" >&2
+    printf '%s\n' "$STAGED_SECRETS" >&2
+    exit 1
+  fi
   TREE=$(git write-tree)
   # Put the index back immediately. `git reset` with NO commit argument is a mixed
   # reset against HEAD: it rewrites the index only — HEAD, the branch, and the
   # worktree are untouched. The tree object written above survives in the object DB.
   git reset -q
 
-  # A dirty worktree whose staged content is identical to the checkpoint (mode bits,
-  # line-ending churn, secrets-only edits) has nothing worth preserving.
-  if [ "$TREE" != "$(git rev-parse "${CHECKPOINT}^{tree}")" ]; then
-    REF="refs/heads/wip/${SLUG}"
-    N=1
-    while git show-ref --verify --quiet "$REF"; do
-      REF="refs/heads/wip/${SLUG}-${N}"
-      N=$((N + 1))
-    done
-    # commit-tree writes a real commit whose parent is the checkpoint, so the ref is a
-    # normal branch: log it, diff it, cherry-pick it. update-ref creates it without
-    # checking it out. If either fails (e.g. a D/F conflict with an existing `wip`
-    # branch), `set -e` aborts HERE — before the restore — leaving the work on disk.
-    SNAP=$(git commit-tree "$TREE" -p "$CHECKPOINT" -m "wip(pipeline): partial work from a failed attempt (${SLUG})")
-    git update-ref "$REF" "$SNAP"
-    SNAPSHOT="${REF#refs/heads/} (${SNAP})"
+  # Post-condition 2: a DIRTY worktree whose staged tree equals the checkpoint means the
+  # snapshot captured nothing — a half-failed `git add`, or churn (mode bits, line
+  # endings) the ref cannot represent. Either way the restore would wipe the worktree
+  # with no recovery ref, so abort instead. (A CLEAN worktree never gets here: `snapshot=none`
+  # stays reserved for the nothing-to-preserve case handled by the enclosing `if`.)
+  if [ "$TREE" = "$(git rev-parse "${CHECKPOINT}^{tree}")" ]; then
+    echo "ERROR: the worktree is dirty but the snapshot tree is identical to the checkpoint — nothing could be preserved, so the restore is refused:" >&2
+    git status --porcelain >&2
+    exit 1
   fi
+  REF="refs/heads/wip/${SLUG}"
+  N=1
+  while git show-ref --verify --quiet "$REF"; do
+    REF="refs/heads/wip/${SLUG}-${N}"
+    N=$((N + 1))
+  done
+  # commit-tree writes a real commit whose parent is the checkpoint, so the ref is a
+  # normal branch: log it, diff it, cherry-pick it. update-ref creates it without
+  # checking it out. If either fails (e.g. a D/F conflict with an existing `wip`
+  # branch), `set -e` aborts HERE — before the restore — leaving the work on disk.
+  SNAP=$(git commit-tree "$TREE" -p "$CHECKPOINT" -m "wip(pipeline): partial work from a failed attempt (${SLUG})")
+  git update-ref "$REF" "$SNAP"
+  SNAPSHOT="${REF#refs/heads/} (${SNAP})"
 fi
 
 # Restore: tracked files back to the checkpoint, then remove the untracked (non-ignored)

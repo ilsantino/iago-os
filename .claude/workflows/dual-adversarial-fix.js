@@ -130,9 +130,14 @@ const VERIFY_SCHEMA = {
 // Both ROOT-level (`:!.env`) AND nested (`:!**/.env`) patterns are required: in default
 // git pathspec mode `**/.env` does NOT match a top-level `.env` (it needs a leading
 // path segment), so a root-level secret would otherwise be staged by `git add -A`.
-// Lifted verbatim from execute-pipeline.js — same staging hazard applies here.
+// SYNC CONTRACT: one policy, three copies — this one, execute-pipeline.js's SECRET_EXCLUDES
+// and scripts/pipeline-wip-restore.sh's SECRET_PATTERNS. They HAD drifted (this copy carried
+// 12 of the 30 patterns while claiming to be lifted verbatim), so the DRIFT GUARD in
+// .claude/workflows/execute-pipeline.test.mjs now fails when any copy diverges. Edit all
+// three in lockstep, and keep the list to material that is never legitimately committed
+// (`.env.*`/`.npmrc`/`.envrc` match tracked config and would silently drop real edits).
 const SECRET_EXCLUDES =
-  "':!.env' ':!.env.*' ':!*.pem' ':!*.key' ':!*.p12' ':!*.pfx' ':!**/.env' ':!**/.env.*' ':!**/*.pem' ':!**/*.key' ':!**/*.p12' ':!**/*.pfx' ':!.iago/state/**' ':!**/.iago/state/**'"
+  "':!.env' ':!**/.env' ':!*.pem' ':!**/*.pem' ':!*.key' ':!**/*.key' ':!*.p12' ':!**/*.p12' ':!*.pfx' ':!**/*.pfx' ':!*.p8' ':!**/*.p8' ':!*.jks' ':!**/*.jks' ':!credentials.json' ':!**/credentials.json' ':!service-account*.json' ':!**/service-account*.json' ':!id_rsa' ':!**/id_rsa' ':!id_dsa' ':!**/id_dsa' ':!id_ecdsa' ':!**/id_ecdsa' ':!id_ed25519' ':!**/id_ed25519' ':!.netrc' ':!**/.netrc' ':!.iago/state/**' ':!**/.iago/state/**'"
 
 // M1 — mirror execute-pipeline.js's withRetryMutating semantics, NOT dual-adversarial.js's
 // null-returning withRetry. This workflow MUTATES (edits + commits), so a blind retry on

@@ -42,8 +42,9 @@ assert_not_contains() { # <name> <haystack> <needle>
 
 # A repo with one commit (the checkpoint) and a .gitignore, plus a dirty worktree that
 # mirrors what a half-finished implement stage leaves behind: an edited tracked file, a
-# brand-new untracked file, a deleted tracked file, an ignored runtime artifact, and a
-# secret the pipeline must never capture.
+# brand-new untracked file, a deleted tracked file, an ignored runtime artifact, a
+# gitignored secret the pipeline must never capture, and TRACKED config (.env.example,
+# deploy.key) — the two shapes that separate "not preserved" from "not wiped".
 make_repo() {
   local dir
   dir=$(mktemp -d)
@@ -53,9 +54,15 @@ make_repo() {
     git config user.email "test@iago.local"
     git config user.name "iago test"
     git config commit.gpgsign false
-    printf 'ignored/\n' >.gitignore
+    printf 'ignored/\n.env\n' >.gitignore
     printf 'original\n' >kept.ts
     printf 'doomed\n' >removed.ts
+    # Tracked, NON-secret config that the pre-2026-08-12 exclude list matched
+    # (':!**/.env.*'): edits to it are real work and must reach the snapshot.
+    printf 'API_URL=https://example.test\n' >.env.example
+    # Tracked, GENUINE secret material (':!*.key'): can never reach the snapshot, so a
+    # dirty one must abort the whole run instead of being restored away.
+    printf 'KEY-MATERIAL\n' >deploy.key
     git add -A
     git commit -qm "checkpoint"
   ) || return 1
@@ -72,6 +79,8 @@ dirty_it() {
     mkdir -p ignored
     printf 'runtime\n' >ignored/state.json
     printf 'SECRET=hunter2\n' >.env
+    printf 'REGION=eu-west-1\n' >>.env.example
+    printf 'registry=https://npm.example.test\n' >.npmrc
   )
 }
 
@@ -103,8 +112,23 @@ assert_contains "snapshot keeps the new file" "$SNAP_FILES" "new-feature.ts"
 assert_contains "snapshot records the deletion" "$SNAP_FILES" "D	removed.ts"
 assert_contains "snapshot content is recoverable" \
   "$(git -C "$REPO" show "wip/03-reporte-operacion:kept.ts")" "half-written implementation"
-assert_not_contains "snapshot excludes the secret" "$SNAP_FILES" ".env"
+# Exact-path match: `.env.example` contains the substring ".env", so a substring assertion
+# here would silently pass while the real secret sat in the ref.
+assert_eq "snapshot excludes the secret" "absent" \
+  "$(git -C "$REPO" diff --name-only "$CHECKPOINT" "wip/03-reporte-operacion" | grep -Fxq '.env' && echo present || echo absent)"
+assert_eq "gitignored secret left untouched on disk" "SECRET=hunter2" "$(cat "$REPO/.env" 2>/dev/null)"
 assert_not_contains "snapshot excludes gitignored state" "$SNAP_FILES" "ignored/state.json"
+
+# Narrowed exclude list (2026-08-12): entries that routinely match TRACKED, non-secret
+# config were destroying real work — excluded from the snapshot, then reverted/deleted by
+# the restore, with `snapshot=...` + `clean` + rc 0 reported. Both shapes are pinned here.
+assert_contains "snapshot keeps the tracked .env.example edit" "$SNAP_FILES" ".env.example"
+# `git show <ref>:<path>` is unusable here: Git Bash rewrites a dotfile after the colon
+# into a Windows path list. Read the content out of the diff instead — portable everywhere.
+assert_contains "the .env.example edit is recoverable" \
+  "$(git -C "$REPO" diff "$CHECKPOINT" "wip/03-reporte-operacion" -- .env.example)" "+REGION=eu-west-1"
+assert_contains "snapshot keeps the untracked .npmrc" "$SNAP_FILES" ".npmrc"
+assert_eq "tracked .env.example restored to the checkpoint" "API_URL=https://example.test" "$(cat "$REPO/.env.example")"
 assert_eq "snapshot parent is the checkpoint" "$CHECKPOINT" "$(git -C "$REPO" rev-parse "wip/03-reporte-operacion^")"
 
 # ── 2. A second failed attempt must not clobber the first snapshot ────────────────────
@@ -203,6 +227,52 @@ assert_eq "D/F ref conflict exits non-zero" "0" "$([ "$RC11" -ne 0 ] && echo 0 |
 assert_eq "D/F ref conflict leaves the worktree untouched" "$BEFORE_DF" "$(git -C "$DFREPO" status --porcelain)"
 assert_eq "D/F ref conflict does not move HEAD" "$DFCHECKPOINT" "$(git -C "$DFREPO" rev-parse HEAD)"
 rm -rf "$DFREPO"
+
+# ── 10. Fail-closed: a dirty path the snapshot CANNOT preserve is never wiped ──────────
+# The worst shape of the pre-2026-08-12 bug: the attempt's ONLY dirty path is one the
+# exclude list skips. `git add -A` staged nothing, so TREE equalled the checkpoint tree,
+# SNAPSHOT stayed "none" — and the restore reverted the edit anyway while the script
+# printed `snapshot=none` + `clean` and exited 0. "Cannot be preserved" must mean "not
+# wiped": the script now refuses the whole operation before touching the worktree.
+SECREPO=$(make_repo) || {
+  echo "could not create unpreservable-path test repo"
+  exit 1
+}
+SECCHECKPOINT=$(git -C "$SECREPO" rev-parse HEAD)
+printf 'ROTATED-KEY\n' >>"$SECREPO/deploy.key"
+BEFORE_SEC=$(git -C "$SECREPO" status --porcelain)
+OUT12=$(cd "$SECREPO" && bash "$SUBJECT" "$SECCHECKPOINT" "secret-only" 2>&1)
+RC12=$?
+assert_eq "unpreservable-only tree exits non-zero" "0" "$([ "$RC12" -ne 0 ] && echo 0 || echo 1)"
+assert_contains "unpreservable path is named" "$OUT12" "deploy.key"
+assert_not_contains "unpreservable-only tree never reports a snapshot" "$OUT12" "snapshot="
+assert_eq "unpreservable-only tree left untouched" "$BEFORE_SEC" "$(git -C "$SECREPO" status --porcelain)"
+assert_contains "the unpreservable edit survives on disk" "$(cat "$SECREPO/deploy.key")" "ROTATED-KEY"
+assert_eq "aborted run leaves no wip ref" "1" \
+  "$(git -C "$SECREPO" show-ref --verify --quiet refs/heads/wip/secret-only && echo 0 || echo 1)"
+rm -rf "$SECREPO"
+
+# ── 11. Fail-closed: an UNTRACKED secret aborts before the sweep deletes it ────────────
+# The untracked half of the same bug: `git ls-files --others` + `rm -f` deleted an
+# untracked excluded file outright — no ref, no file, no way back.
+UNTREPO=$(make_repo) || {
+  echo "could not create untracked-secret test repo"
+  exit 1
+}
+UNTCHECKPOINT=$(git -C "$UNTREPO" rev-parse HEAD)
+dirty_it "$UNTREPO"
+printf 'fake-key-material-for-tests\n' >"$UNTREPO/id_rsa"
+BEFORE_UNT=$(git -C "$UNTREPO" status --porcelain)
+OUT13=$(cd "$UNTREPO" && bash "$SUBJECT" "$UNTCHECKPOINT" "untracked-secret" 2>&1)
+RC13=$?
+assert_eq "untracked secret exits non-zero" "0" "$([ "$RC13" -ne 0 ] && echo 0 || echo 1)"
+assert_contains "untracked secret is named" "$OUT13" "id_rsa"
+assert_eq "untracked secret still on disk" "present" "$([ -e "$UNTREPO/id_rsa" ] && echo present || echo absent)"
+assert_eq "untracked-secret abort left the whole tree untouched" "$BEFORE_UNT" "$(git -C "$UNTREPO" status --porcelain)"
+assert_contains "the rest of the attempt survives the abort" "$(cat "$UNTREPO/kept.ts")" "half-written implementation"
+assert_eq "untracked-secret abort leaves no wip ref" "1" \
+  "$(git -C "$UNTREPO" show-ref --verify --quiet refs/heads/wip/untracked-secret && echo 0 || echo 1)"
+rm -rf "$UNTREPO"
 
 echo
 echo "${PASS} passed, ${FAIL} failed"
