@@ -43,7 +43,7 @@ if (-not $GitBash) {
     Write-Host "Alternatively, run the setup manually:" -ForegroundColor Yellow
     Write-Host "  1. pip install mempalace graphifyy python-docx openpyxl"
     Write-Host "  2. Copy templates/memory/*.json to ~/.mempalace/"
-    Write-Host "  3. Copy templates/memory/session-diary.py to ~/.claude/scripts/"
+    Write-Host "  3. Point the Stop hook at scripts/hooks/session-diary.py (see scripts/hooks/README.md) — do not copy it"
     Write-Host "  4. See Memory Architecture section in CLAUDE.md for MCP server + hook registration"
     Write-Host ""
     exit 1

@@ -17,7 +17,7 @@ REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 TEMPLATES_DIR="$REPO_DIR/templates/memory"
 PALACE_DIR="$HOME/.mempalace"
 CLAUDE_SETTINGS="$HOME/.claude/settings.json"
-CLAUDE_SCRIPTS="$HOME/.claude/scripts"
+
 DRY_RUN=false
 
 if [[ "${1:-}" == "--dry-run" ]]; then
@@ -167,22 +167,17 @@ fi
 
 # ─── Step 4: Install session diary hook ──────────────────────────────────────
 
-info "Installing session diary script..."
+# The hook scripts are NOT copied into ~/.claude/scripts/ any more. A copy there
+# drifts from the repo silently — that is how both the mtime-selection and the
+# flat-schema defects survived for months. The Stop hook below points straight
+# at the version-controlled originals in scripts/hooks/.
+info "Locating versioned session hook scripts..."
 
-if ! dry "mkdir -p $CLAUDE_SCRIPTS"; then
-    mkdir -p "$CLAUDE_SCRIPTS" 2>/dev/null || true
-fi
-DIARY_TARGET="$CLAUDE_SCRIPTS/session-diary.py"
-
-if [[ -f "$DIARY_TARGET" ]]; then
-    skip "session-diary.py already exists in ~/.claude/scripts/"
+HOOKS_DIR="$REPO_DIR/scripts/hooks"
+if [[ -f "$HOOKS_DIR/session-diary.py" ]]; then
+    ok "Using $HOOKS_DIR/session-diary.py"
 else
-    if dry "cp $TEMPLATES_DIR/session-diary.py $DIARY_TARGET"; then
-        :
-    else
-        cp "$TEMPLATES_DIR/session-diary.py" "$DIARY_TARGET"
-        ok "Installed session-diary.py"
-    fi
+    warn "scripts/hooks/session-diary.py missing — Stop hook will not be wired"
 fi
 
 # ─── Step 5: Register MCP servers ────────────────────────────────────────────
@@ -246,8 +241,8 @@ else
     if dry "Install PreToolUse (graphify) and Stop (diary) hooks"; then
         :
     else
-        $PYTHON_CMD - <<'PYEOF'
-import json, sys
+        IAGO_HOOKS_DIR="$HOOKS_DIR" $PYTHON_CMD - <<'PYEOF'
+import json, os, sys
 from pathlib import Path
 
 settings_path = Path.home() / ".claude" / "settings.json"
@@ -292,20 +287,26 @@ has_diary_hook = any(
     for h in stop_hooks
     if isinstance(h, dict) and "hooks" in h
 )
-if not has_diary_hook:
-    diary_path = str(Path.home() / ".claude" / "scripts" / "session-diary.py")
+# Point at the repo copy, never a duplicate under ~/.claude/scripts/ — a second
+# copy is exactly how the mtime-selection and flat-schema defects survived.
+hooks_dir = os.environ.get("IAGO_HOOKS_DIR", "")
+diary_path = Path(hooks_dir) / "session-diary.py" if hooks_dir else None
+
+if has_diary_hook:
+    print("  [SKIP]  Stop diary hook already exists")
+elif diary_path is None or not diary_path.exists():
+    print("  [SKIP]  Stop diary hook — scripts/hooks/session-diary.py not found")
+else:
     stop_hooks.append({
         "hooks": [{
             "type": "command",
-            "command": f'{sys.executable} "{diary_path}"',
+            "command": f'{sys.executable} "{diary_path.as_posix()}"',
             "timeout": 10000,
             "async": True,
         }],
     })
     changed = True
     print("  [OK]    Added Stop diary hook")
-else:
-    print("  [SKIP]  Stop diary hook already exists")
 
 if changed:
     with open(settings_path, "w") as f:
