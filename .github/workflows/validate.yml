@@ -44,6 +44,8 @@ jobs:
         run: bash scripts/hooks/test-session-hooks.sh
       - name: pattern-harvest aggregator tests
         run: python3 scripts/hooks/test-pattern-harvest.py
+      - name: settings-hook repoint tests
+        run: python3 scripts/hooks/test-lib-settings-hooks.py
 
   validate-workflows:
     name: Validate Workflows
