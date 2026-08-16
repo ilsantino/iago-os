@@ -107,3 +107,14 @@ After T2 and T5 land: `python scripts/hooks/session-pattern-signals.py --backfil
 - **Repo-as-hook-source:** if the checkout is mid-rebase or moved, hooks fail silently (async + timeout). Accepted — they are best-effort. The repoint is per-machine; Sebas's Mac keeps its own `settings.json`, so the Windows-absolute paths must not be committed as a shared assumption.
 - **CRLF:** do not assert byte-identical file copies (`core.autocrlf` rewrites on checkout). Compare normalized hashes.
 - **Live-queue race:** the Stop hook rewrites `pattern-harvest-queue.ndjson` wholesale on every session end. Any assertion against live state will flake.
+
+## Found during execution — history cannot be re-attributed
+
+Claude Code rotates transcripts. At harvest time there were **37 transcripts on disk against 139 queue records: 119 reference a transcript that no longer exists.** The mis-attribution fix therefore applies going forward only — the evidence needed to re-derive the correct project for the historical records is deleted, so `--backfill` can only rebuild the 37 survivors.
+
+Consequences, all accepted rather than papered over:
+
+- The queue's project column stays 132 × `iago-os`. The two "cross-client" candidates (`obsidian-brain`, `iago-workspaces`) are not clients, so **the harvester cannot yet answer "did I solve this for two clients?"** — that capability starts accruing from today, not retroactively.
+- Ghost records are **not** deleted. Their signal slugs are still real historical evidence of recurrence; only their attribution is unverifiable. Deleting them would destroy the only trace of months of sessions to make a column look tidy.
+- Worktree folding was added to the aggregator's read path as well as the emitter, since legacy records can never be rewritten by a backfill.
+- Follow-up worth considering: have the emitter copy the signal-bearing evidence (not the transcript) into the record, so a rotated transcript no longer takes the evidence with it.

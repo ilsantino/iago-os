@@ -49,10 +49,22 @@ def load_records():
     return out
 
 
+def fold_project(name):
+    """Fold a worktree checkout back onto its parent project.
+
+    Legacy records were written before the emitter folded these, and their
+    transcripts are long deleted, so they cannot be re-derived — normalising on
+    read is the only way `iago-os` and `iago-os--worktrees-x` stop counting as
+    two distinct clients and falsely satisfying the cross-client threshold.
+    """
+    name = name or "unknown"
+    return name.split("--worktrees-")[0] or "unknown"
+
+
 def aggregate(records):
     by_signal = {}
     for rec in records:
-        project = rec.get("project", "unknown")
+        project = fold_project(rec.get("project"))
         for slug in rec.get("signals", []):
             agg = by_signal.setdefault(
                 slug, {"signal": slug, "sessions": [], "projects": {}}
