@@ -166,8 +166,10 @@ async function preCompact(input) {
 
   const sessionId = getSessionId(input);
   const clientInfo = getClient();
-  const decisions = extractDecisions();
-  const filesModified = getFilesModified();
+  // Pass the payload's transcript_path: without it the reader falls back to the
+  // globally newest transcript, which mid-pipeline is some subagent's, not ours.
+  const decisions = extractDecisions(input.transcript_path);
+  const filesModified = getFilesModified(input.transcript_path);
 
   const snapshot = {
     session_id: sessionId,

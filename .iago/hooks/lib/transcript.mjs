@@ -46,7 +46,23 @@ function findLatestTranscript() {
   }
 }
 
+// Real transcript lines wrap their blocks: {type:"assistant", message:{role, content:[...]}}.
+// Reading a top-level `role` / `tool_name` / `content` matches nothing.
+function* assistantBlocks(entries) {
+  for (const entry of entries) {
+    if (entry?.type !== "assistant") continue;
+    const content = entry.message?.content;
+    if (!Array.isArray(content)) continue;
+    for (const block of content) {
+      if (block && typeof block === "object") yield block;
+    }
+  }
+}
+
 export function readTranscript(path) {
+  // `path` comes from the hook payload's transcript_path. The mtime scan below
+  // is a fallback only: it takes the globally newest transcript, which during a
+  // pipeline run is almost never the session that fired the hook.
   const filePath = path || findLatestTranscript();
   if (!filePath || !existsSync(filePath)) return [];
 
@@ -96,13 +112,9 @@ export function extractDecisions(path) {
   const entries = readTranscript(path);
   const decisions = [];
 
-  for (const entry of entries) {
-    if (entry.role !== "assistant" || !entry.content) continue;
-    const text = typeof entry.content === "string"
-      ? entry.content
-      : Array.isArray(entry.content)
-        ? entry.content.filter((b) => b.type === "text").map((b) => b.text).join(" ")
-        : "";
+  for (const block of assistantBlocks(entries)) {
+    if (block.type !== "text") continue;
+    const text = block.text || "";
 
     for (const sentence of text.split(/[.!?\n]+/)) {
       const lower = sentence.toLowerCase();
@@ -122,13 +134,11 @@ export function getFilesModified(path) {
   const entries = readTranscript(path);
   const files = new Set();
 
-  for (const entry of entries) {
-    const toolInput = entry.tool_input || entry.message?.tool_input;
-    if (!toolInput) continue;
-    const filePath = toolInput.file_path || toolInput.path;
-    if (filePath && (entry.tool_name === "Edit" || entry.tool_name === "Write" || entry.tool_name === "MultiEdit")) {
-      files.add(filePath);
-    }
+  const WRITERS = new Set(["Edit", "Write", "MultiEdit", "NotebookEdit"]);
+  for (const block of assistantBlocks(entries)) {
+    if (block.type !== "tool_use" || !WRITERS.has(block.name)) continue;
+    const filePath = block.input?.file_path || block.input?.path;
+    if (filePath) files.add(filePath);
   }
   return [...files];
 }
