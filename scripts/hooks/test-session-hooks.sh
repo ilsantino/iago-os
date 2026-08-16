@@ -85,6 +85,33 @@ AFTER="$("$PY" -c "import hashlib,sys;print(hashlib.sha256(open(sys.argv[1],'rb'
 check "$AFTER" "$BEFORE" "canonical digest untouched"
 if [ -f "$VAULT3/_auto/$TODAY-iago-os.md" ]; then ok "auto digest diverted to _auto/"; else bad "auto digest diverted to _auto/"; fi
 
+echo "T5 — a hand-written digest that merely quotes the marker is not 'ours'"
+VAULT5="$WORK/vault5"; mkdir -p "$VAULT5"
+CANON5="$VAULT5/$TODAY-iago-os.md"
+printf '%s\n' "# Session: hand written by Claude" \
+  "This file documents the hook's own marker text, e.g. \"*Auto-captured by stop hook*\", inline." \
+  > "$CANON5"
+BEFORE5="$("$PY" -c "import hashlib,sys;print(hashlib.sha256(open(sys.argv[1],'rb').read()).hexdigest())" "$(to_native "$CANON5")")"
+OBSIDIAN_SESSIONS_DIR="$(to_native "$VAULT5")" "$PY" "$HERE/session-obsidian.py" < "$WORK/payload.json" 2>/dev/null
+AFTER5="$("$PY" -c "import hashlib,sys;print(hashlib.sha256(open(sys.argv[1],'rb').read()).hexdigest())" "$(to_native "$CANON5")")"
+check "$AFTER5" "$BEFORE5" "canonical digest with an inline-quoted marker is untouched"
+if [ -f "$VAULT5/_auto/$TODAY-iago-os.md" ]; then ok "auto digest diverted to _auto/ despite the quoted marker"; else bad "auto digest diverted to _auto/ despite the quoted marker"; fi
+
+echo "T6 — a named-but-missing transcript path fails safe (no mtime fallback)"
+PROJ_DIR6="$PROJECTS/C--Users-sanal-dev-fail-safe-probe"
+mkdir -p "$PROJ_DIR6"
+# Globally newest file on disk, WITH real tool activity — if resolve_transcript
+# still fell back to a mtime scan on a missing named path, this is what it
+# would misattribute the digest to.
+cp "$FIXTURE" "$PROJ_DIR6/sess-real.jsonl"
+touch -t 203201010000 "$PROJ_DIR6/sess-real.jsonl" 2>/dev/null || true
+NATIVE_MISSING="$(to_native "$PROJ_DIR6/sess-gone.jsonl")"
+write_payload "$NATIVE_MISSING" "$WORK/missing.json"
+VAULT6="$WORK/vault6"
+OBSIDIAN_SESSIONS_DIR="$(to_native "$VAULT6")" "$PY" "$HERE/session-obsidian.py" < "$WORK/missing.json" 2>/dev/null
+MD_COUNT6="$(find "$VAULT6" -name '*.md' 2>/dev/null | wc -l | tr -d ' ')"
+check "$MD_COUNT6" "0" "missing transcript_path wrote no digest (no mtime fallback to a different session)"
+
 echo "T4 — repeat turns rewrite one file, they do not pile up"
 OBSIDIAN_SESSIONS_DIR="$(to_native "$VAULT")" "$PY" "$HERE/session-obsidian.py" < "$WORK/payload.json" 2>/dev/null
 COUNT="$(find "$VAULT" -maxdepth 1 -name "$TODAY-iago-os*.md" | wc -l | tr -d ' ')"

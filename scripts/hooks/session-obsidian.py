@@ -193,11 +193,17 @@ AUTO_MARKER = "*Auto-captured by stop hook*"
 
 
 def is_auto_digest(path):
-    """True when this file is one of ours (safe to overwrite)."""
+    """True when this file is one of ours (safe to overwrite).
+
+    Anchored to an own-line match rather than freeform substring containment
+    — a hand-written digest that merely quotes the marker text (this file's
+    own docs do) must not be misclassified as auto-generated and overwritten.
+    """
     try:
-        return AUTO_MARKER in path.read_text(encoding="utf-8", errors="replace")
+        text = path.read_text(encoding="utf-8", errors="replace")
     except OSError:
         return False
+    return any(line.strip() == AUTO_MARKER for line in text.splitlines())
 
 
 def write_digest(project_name, data):

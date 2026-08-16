@@ -241,9 +241,12 @@ else
     if dry "Install PreToolUse (graphify) and Stop (diary) hooks"; then
         :
     else
-        IAGO_HOOKS_DIR="$HOOKS_DIR" $PYTHON_CMD - <<'PYEOF'
+        IAGO_HOOKS_DIR="$HOOKS_DIR" IAGO_SCRIPT_DIR="$SCRIPT_DIR" $PYTHON_CMD - <<'PYEOF'
 import json, os, sys
 from pathlib import Path
+
+sys.path.insert(0, str(Path(os.environ["IAGO_SCRIPT_DIR"]) / "hooks"))
+from lib_settings_hooks import sync_stop_diary_hook
 
 settings_path = Path.home() / ".claude" / "settings.json"
 with open(settings_path, "r") as f:
@@ -281,31 +284,23 @@ else:
     print("  [SKIP]  PreToolUse graphify hook already exists")
 
 # Stop hook for session diary
-stop_hooks = hooks.setdefault("Stop", [])
-has_diary_hook = any(
-    "session-diary" in str(next(iter(h.get("hooks", [])), {}).get("command", ""))
-    for h in stop_hooks
-    if isinstance(h, dict) and "hooks" in h
-)
 # Point at the repo copy, never a duplicate under ~/.claude/scripts/ — a second
 # copy is exactly how the mtime-selection and flat-schema defects survived.
 hooks_dir = os.environ.get("IAGO_HOOKS_DIR", "")
 diary_path = Path(hooks_dir) / "session-diary.py" if hooks_dir else None
+diary_target_exists = diary_path is not None and diary_path.exists()
+diary_command = f'{sys.executable} "{diary_path.as_posix()}"' if diary_target_exists else None
 
-if has_diary_hook:
+diary_changed, diary_status = sync_stop_diary_hook(hooks, diary_command)
+changed = changed or diary_changed
+
+if diary_status == "unchanged":
     print("  [SKIP]  Stop diary hook already exists")
-elif diary_path is None or not diary_path.exists():
+elif diary_status == "repointed":
+    print(f"  [FIX]   Repointed stale Stop diary hook -> {diary_path}")
+elif diary_status == "missing-target":
     print("  [SKIP]  Stop diary hook — scripts/hooks/session-diary.py not found")
 else:
-    stop_hooks.append({
-        "hooks": [{
-            "type": "command",
-            "command": f'{sys.executable} "{diary_path.as_posix()}"',
-            "timeout": 10000,
-            "async": True,
-        }],
-    })
-    changed = True
     print("  [OK]    Added Stop diary hook")
 
 if changed:

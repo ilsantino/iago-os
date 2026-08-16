@@ -99,6 +99,12 @@ def resolve_transcript(payload=None, root=None):
 
     `payload` may be passed in when the caller already consumed stdin (it can
     only be read once). Pass {} to force the fallback.
+
+    A named `transcript_path` that no longer exists (rotated/stale) fails
+    safe and returns None rather than falling back to the mtime scan — a
+    misattributed record is worse than a skipped one, and the mtime fallback
+    is exactly the bug this module exists to avoid. The fallback only runs
+    when the payload names no transcript at all (manual run, empty stdin).
     """
     if payload is None:
         payload = read_hook_payload()
@@ -111,6 +117,11 @@ def resolve_transcript(payload=None, root=None):
                 return candidate
         except OSError:
             pass
+        print(
+            f"resolve_transcript: named transcript missing, not falling back: {path}",
+            file=sys.stderr,
+        )
+        return None
 
     return newest_transcript(root)
 
