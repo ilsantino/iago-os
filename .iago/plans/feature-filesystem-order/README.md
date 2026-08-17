@@ -55,6 +55,14 @@ The 621 low-confidence proposals are almost all `no-entity` — the file simply 
 
 **Acceptance:** every file either conforms or is listed as ambiguous; journal replays clean; Santiago reviews the low-confidence list.
 
+**DONE 2026-08-17** — `.iago/summaries/feature-filesystem-order-p2-downloads.md`. 388 renamed and bucketed across 3 journals; root went 387 loose files → 2 (both machine-managed); file count delta 0. 57 entity judgments: 46 promoted out of `misc`, 11 corrected where `extract_entity` took the first vocabulary token rather than the most specific one (`personal` beating `sentria` on a Spanish staff roster; `iago` beating `rsf`/`munet` on client deliverables).
+
+**143 files deliberately not renamed.** `--bucket` flattens, and four work/source trees (`lis-discovery`, `CrewAI-Studio-main`, `_assets_build`, `CASA_discovery`) reference their own subdirectories — `out/schema.json`, `fb25`, `vba_modules/`, sibling `.ps1`. Same class as the Part B checkouts. `85b465d` fixed this for unpacked app payloads mid-run; these four are the residue.
+
+**Blocked on a vocabulary call:** `allende` (17 files) and `installflow` (4) have a clear owner outside §4. `ENTITIES` is hardcoded in `organize.py`, so adding them is a code change.
+
+**Part B, awaiting Santiago** — both checkouts profiled, nothing touched. `cortextos_probe`: shallow, clean, third-party remote, zero unique content → safe to delete. `tweetGPT`: **37 dirty paths, uncommitted and on no remote** — an unfinished Threads port of the extension → rescue to `dev\` before anything else. Bonus finding: `CrewAI-Studio-main` is 70,055 files / 2.14 GB (91% of the Downloads file count), a zip extraction whose bulk is a regenerable `venv/`, unprotected by the git guard.
+
 ### P3 — Top-level taxonomy *(folders only, dozens of renames)*
 
 Fix the top two levels of WORK and PERSONAL. Folder renames only — the files underneath keep their names until P4.
@@ -150,7 +158,7 @@ Same grammar, different mechanics — `workspace-mcp` against the Drive API, no 
 | Standard | **locked** 2026-08-16 |
 | P0 inventory | **done** 2026-08-16 → `.iago/research/2026-08-16-filesystem-inventory.md` |
 | P1 tooling | **DONE** 2026-08-17 — `scripts/organize/organize.py`, 62 assertions green, apply→undo byte-identical |
-| P2 Downloads | scanned: 726 renameable (621 low-confidence) · 911 skipped inside 2 git checkouts · 10.1 GB |
+| P2 Downloads | **DONE** 2026-08-17 — 388 renamed + bucketed, root 387 → 2 loose, count delta 0; 143 excluded (load-bearing trees), 21 blocked on vocabulary |
 | P2b Reclaim | scoped: artifacts 148,798 files + 502 dup candidates in od-documents |
 | P3 taxonomy | blocked on the two open decisions |
 | P3b Evict code | **DONE** 2026-08-17 — OneDrive 151,395 -> 3,303 files, 3.02 GB reclaimed, 0 artifacts left |
