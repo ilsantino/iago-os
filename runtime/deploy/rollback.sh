@@ -61,6 +61,18 @@ LOCK_MARKER=""
 # IAGO_ROLLBACK_DRY_RUN=1       test harness — injects DRYRUN_TOKEN_AAA and
 #                               bypasses all `read` prompts; same loud
 #                               DRY-RUN warning as cutover
+# IAGO_ROLLBACK_GREENFIELD=1    the box never ran OpenClaw (set automatically by
+#                               cutover.sh under IAGO_CUTOVER_GREENFIELD=1).
+#                               Rollback == "stop + disable v2 and stop there":
+#                               there is no OpenClaw to hand the Telegram
+#                               control surface back to. Steps T+R+1:30 through
+#                               T+R+4:00 (token re-rotation, openclaw.json
+#                               patch, openclaw-gateway start, /status smoke
+#                               test) are skipped. Without this flag those steps
+#                               fail on a greenfield box — the patch targets
+#                               ~ilsantino/.openclaw/openclaw.json and the unit
+#                               start exits 2 — which reads as "rollback
+#                               failed" even though the v2 teardown succeeded.
 
 if [[ "${IAGO_ROLLBACK_DRY_RUN:-0}" == "1" ]]; then
   echo "DRY-RUN MODE — manual steps simulated as instant success."
@@ -283,6 +295,36 @@ main() {
       exit 2
       ;;
   esac
+
+  # --- Greenfield exit — v2 is down, and there is nothing to restore ---
+  # Everything below this point restores OpenClaw: re-rotate the token, patch
+  # ~ilsantino/.openclaw/openclaw.json, start openclaw-gateway, smoke-test
+  # /status. On a box that never ran OpenClaw all four fail (no ilsantino home,
+  # no unit) and the operator sees exit 2 — "rollback failed" — when in fact the
+  # only thing rollback needed to do (stop + disable the v2 daemon) just
+  # succeeded and was verified above. Exit clean here instead.
+  if [[ "${IAGO_ROLLBACK_GREENFIELD:-0}" == "1" ]]; then
+    echo ""
+    echo "[T+R+1:00] GREENFIELD: v2 daemon stopped and disabled — nothing to restore."
+    echo "           Skipping token re-rotation, OpenClaw config patch, gateway start"
+    echo "           and /status smoke test (no OpenClaw on this box)."
+    ndjson_write +1:00 greenfield-exit ok
+    echo ""
+    echo "ROLLBACK COMPLETE (greenfield — v2 stopped + disabled, box back to pre-cutover state)."
+    echo ""
+    echo "State left behind ON PURPOSE (diagnostics — do not delete):"
+    echo "  - /var/lib/iago-os/daemon-state   (state root, incl. any telemetry)"
+    echo "  - /var/log/iago-os                (cutover NDJSON)"
+    echo "  - /etc/credstore.encrypted/*.cred (encrypted creds; unit is disabled)"
+    echo "  - /opt/iago-os                    (checkout + build)"
+    echo ""
+    echo "Post-rollback action list (NOT on the wall clock — do these now, calmly):"
+    echo "  1. Write incident note under sessions/$(date -u +%Y-%m-%d)-iago-v2-rollback.md"
+    echo "  2. Update .iago/STATE.md Updated: date + add row marking rollback"
+    echo "  3. Capture journalctl -u iago-os-v2-daemon.service --since '2 hours ago' for diagnosis"
+    echo "  4. The Telegram bot token remains valid — no BotFather action needed."
+    exit 0
+  fi
 
   # --- T+R+1:30 — BotFather token re-rotation (skipped if SKIP_TOKEN) ---
   # T+R+1:30 token re-rotation

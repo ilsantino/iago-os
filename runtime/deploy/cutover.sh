@@ -80,6 +80,20 @@ LOCK_MARKER=""
 # IAGO_CUTOVER_RESUME_FROM=Tnn           skip earlier T-steps (I2)
 # IAGO_CUTOVER_SKIP_TMINUS5_BASELINE=1   skip optional T-05 ping (M1)
 # IAGO_CUTOVER_DRY_RUN_REPLY=y|n         dry-run default reply for `read` (default y)
+# IAGO_CUTOVER_GREENFIELD=1              no OpenClaw on the box (2026-08-16: /opt
+#                                        empty, no ilsantino unit, no WhatsApp
+#                                        binding). Converts the three
+#                                        migration-only steps into VERIFIED
+#                                        no-ops: T-05 baseline ping, T+00
+#                                        archive, T+30 WhatsApp deauth. Also
+#                                        drops the two OpenClaw-only pre-flight
+#                                        checks (age pubkey, archive script) and
+#                                        propagates to rollback.sh so the
+#                                        rollback path does not try to restore an
+#                                        OpenClaw that was never installed.
+#                                        FAILS CLOSED: if OpenClaw is actually
+#                                        found on the box, the run aborts rather
+#                                        than silently skipping the archive.
 
 if [[ "${IAGO_CUTOVER_DRY_RUN:-0}" == "1" ]]; then
   echo "DRY-RUN MODE — manual steps simulated as instant success."
@@ -113,6 +127,14 @@ T10_DRY_RUN_REPLY="${IAGO_CUTOVER_DRY_RUN_REPLY:-y}"
 # T+30 knob defaults to the T+15 reply.
 T15_DRY_RUN_REPLY="${IAGO_CUTOVER_T15_DRY_RUN_REPLY:-y}"
 T30_DRY_RUN_REPLY="${IAGO_CUTOVER_T30_DRY_RUN_REPLY:-$T15_DRY_RUN_REPLY}"
+
+# Greenfield mode (2026-08-16). The spec this script encodes assumed a live
+# OpenClaw install being replaced in place. The actual box has never had one:
+# /opt is empty, there is no openclaw-gateway user unit, and no WhatsApp
+# number is bound. Rather than delete the migration steps (they remain the
+# correct behaviour for any box that DOES run OpenClaw, and the test harness
+# covers them), each becomes a verified no-op under this flag.
+GREENFIELD="${IAGO_CUTOVER_GREENFIELD:-0}"
 
 # ============================================================================
 # Helpers
@@ -200,6 +222,73 @@ preflight_check() {
   fi
 }
 
+# assert_greenfield_or_abort: prove the box really has no OpenClaw before any
+# migration step is skipped. GREENFIELD is an operator ASSERTION; this turns it
+# into a VERIFIED fact. Fails closed — finding OpenClaw while greenfield is
+# claimed aborts the run (during pre-flight, before anything is touched) rather
+# than silently skipping the archive and letting two bots poll Telegram at once.
+#
+# Three independent probes; any hit aborts:
+#   1. /opt/openclaw or ~ilsantino/.openclaw on disk
+#   2. an openclaw-gateway user unit under ilsantino
+#   3. any systemd unit matching *openclaw*
+# The probe runs entirely on the VPS and prints FOUND/CLEAN so the decision is
+# visible in the transcript rather than inferred from an exit code.
+assert_greenfield_or_abort() {
+  local probe
+  if ! probe=$(vssh bash -s <<'EOF'
+found=""
+[[ -d /opt/openclaw ]] && found="${found} /opt/openclaw"
+if getent passwd ilsantino > /dev/null 2>&1; then
+  home=$(getent passwd ilsantino | cut -d: -f6)
+  [[ -n "$home" && -d "$home/.openclaw" ]] && found="${found} ${home}/.openclaw"
+  if su - ilsantino -c 'systemctl --user list-unit-files --no-pager' 2>/dev/null \
+       | grep -qi openclaw; then
+    found="${found} openclaw-user-unit"
+  fi
+fi
+if ls /etc/systemd/system/ 2>/dev/null | grep -qi openclaw; then
+  found="${found} openclaw-system-unit"
+fi
+if [[ -n "$found" ]]; then
+  echo "FOUND:${found}"
+else
+  echo "CLEAN"
+fi
+EOF
+  ); then
+    echo "ABORT: greenfield probe could not run on ${VPS_HOST}." >&2
+    echo "       Refusing to skip migration steps on an unverified box." >&2
+    exit 1
+  fi
+  probe="${probe//[[:space:]]/ }"
+  # Three-way, not two. "Not CLEAN" is not the same as "OpenClaw found": a
+  # probe that never executed (wrong shell, truncated ssh, stubbed transport)
+  # also fails the CLEAN test, and reporting that as "OpenClaw artifacts exist"
+  # sends the operator hunting for an install that isn't there. All three
+  # outcomes below except CLEAN abort — fail closed either way — but the
+  # message has to say which one actually happened.
+  case "$probe" in
+    *CLEAN*)
+      echo "  OK greenfield verified — no OpenClaw on ${VPS_HOST}"
+      ;;
+    *FOUND:*)
+      echo "ABORT: IAGO_CUTOVER_GREENFIELD=1 was set, but OpenClaw artifacts exist." >&2
+      echo "       Probe: ${probe}" >&2
+      echo "       Skipping the archive here would leave two bots polling Telegram." >&2
+      echo "       Re-run WITHOUT the greenfield flag to take the migration path." >&2
+      exit 1
+      ;;
+    *)
+      echo "ABORT: greenfield probe returned unrecognised output — it did not run." >&2
+      echo "       Probe: '${probe}'" >&2
+      echo "       Expected a line containing CLEAN or FOUND:. Refusing to skip" >&2
+      echo "       migration steps on the strength of a probe that did not execute." >&2
+      exit 1
+      ;;
+  esac
+}
+
 # ============================================================================
 # Global lock (Codex P1-5) — acquired BEFORE any T-step runs
 # ============================================================================
@@ -276,7 +365,18 @@ trap release_remote_lock EXIT
 # ============================================================================
 
 run_preflight() {
-  echo "=== Pre-flight gate (13 checks) ==="
+  local total=13
+  if [[ "$GREENFIELD" == "1" ]]; then
+    # Checks 6 (age pubkey), 9 (archive-openclaw.sh on VPS) and 13 (SendEnv
+    # FRESH_TOKEN) all exist to serve the OpenClaw path: 6 and 9 gate the
+    # archive itself, 13 gates rollback.sh's OpenClaw-token patch. None applies
+    # to a box that has never run OpenClaw.
+    total=10
+    echo "=== Pre-flight gate (${total} checks — GREENFIELD: 3 OpenClaw-only checks dropped) ==="
+    assert_greenfield_or_abort
+  else
+    echo "=== Pre-flight gate (${total} checks) ==="
+  fi
 
   # 1. IAGO_TELEGRAM_USER_ID set
   [[ -n "$SANTIAGO_USER_ID" ]] || { echo "ABORT: IAGO_TELEGRAM_USER_ID not set" >&2; exit 1; }
@@ -295,7 +395,14 @@ run_preflight() {
   preflight_check "VPS iago user exists" vssh "getent passwd iago > /dev/null"
 
   # 6. VPS age pubkey for openclaw archive encryption (02a)
-  preflight_check "VPS santiago-age.pub present" vssh "test -f /etc/iago-os/santiago-age.pub"
+  # Greenfield: the pubkey exists only to encrypt the OpenClaw archive. No
+  # archive is produced, so requiring the key would block the run on a
+  # credential with nothing to protect.
+  if [[ "$GREENFIELD" == "1" ]]; then
+    echo "  SKIP santiago-age.pub (greenfield — no OpenClaw archive to encrypt)"
+  else
+    preflight_check "VPS santiago-age.pub present" vssh "test -f /etc/iago-os/santiago-age.pub"
+  fi
 
   # 7. VPS /opt/iago-os/.git for any agent needing cwd-with-git (I3)
   preflight_check "VPS /opt/iago-os/.git present" vssh "test -d /opt/iago-os/.git"
@@ -309,7 +416,12 @@ run_preflight() {
   fi
 
   # 9. archive-openclaw.sh deployed on VPS (02a output)
-  preflight_check "VPS archive-openclaw.sh present" vssh "test -x /opt/iago-os/runtime/deploy/archive-openclaw.sh"
+  # Greenfield: T+00 never invokes it, so its presence is irrelevant.
+  if [[ "$GREENFIELD" == "1" ]]; then
+    echo "  SKIP archive-openclaw.sh presence (greenfield — T+00 is a no-op)"
+  else
+    preflight_check "VPS archive-openclaw.sh present" vssh "test -x /opt/iago-os/runtime/deploy/archive-openclaw.sh"
+  fi
 
   # 10. Local provision-credentials.sh present (01a output)
   preflight_check "local provision-credentials.sh present" test -x "$DEPLOY_DIR/provision-credentials.sh"
@@ -325,19 +437,27 @@ run_preflight() {
   # underlying SSH library, and (b) the VPS sshd has AcceptEnv FRESH_TOKEN
   # configured (provisioned by 01a). Without this, rollback.sh silently fails
   # at T+R+2:00 — under time pressure, when a confusing error is worst.
-  local sendenv_out
-  sendenv_out=$(FRESH_TOKEN=probe tailscale ssh -o SendEnv=FRESH_TOKEN \
-    "${VPS_USER}@${VPS_HOST}" -- 'echo "$FRESH_TOKEN"' 2>&1 || true)
-  if echo "$sendenv_out" | grep -q "^probe$"; then
-    echo "  OK SendEnv FRESH_TOKEN forwarded to VPS sshd"
+  # Greenfield: FRESH_TOKEN exists solely to carry a re-rotated BotFather token
+  # into rollback.sh's OpenClaw config patch. Greenfield rollback stops and
+  # disables the v2 unit and stops there — there is no OpenClaw to hand a token
+  # back to — so an unconfigured AcceptEnv must not block the cutover.
+  if [[ "$GREENFIELD" == "1" ]]; then
+    echo "  SKIP SendEnv FRESH_TOKEN probe (greenfield — rollback does not patch OpenClaw)"
   else
-    echo "ABORT: SendEnv FRESH_TOKEN probe failed — rollback.sh token-patch will fail." >&2
-    echo "       Check: sshd_config AcceptEnv FRESH_TOKEN on ${VPS_HOST}." >&2
-    echo "       Probe output: ${sendenv_out}" >&2
-    exit 1
+    local sendenv_out
+    sendenv_out=$(FRESH_TOKEN=probe tailscale ssh -o SendEnv=FRESH_TOKEN \
+      "${VPS_USER}@${VPS_HOST}" -- 'echo "$FRESH_TOKEN"' 2>&1 || true)
+    if echo "$sendenv_out" | grep -q "^probe$"; then
+      echo "  OK SendEnv FRESH_TOKEN forwarded to VPS sshd"
+    else
+      echo "ABORT: SendEnv FRESH_TOKEN probe failed — rollback.sh token-patch will fail." >&2
+      echo "       Check: sshd_config AcceptEnv FRESH_TOKEN on ${VPS_HOST}." >&2
+      echo "       Probe output: ${sendenv_out}" >&2
+      exit 1
+    fi
   fi
 
-  echo "=== Pre-flight gate: all 13 checks passed ==="
+  echo "=== Pre-flight gate: all ${total} checks passed ==="
   ndjson_write cutover-step preflight ok
 }
 
@@ -357,6 +477,13 @@ trigger_rollback() {
   local rollback_env=(IAGO_ROLLBACK_CONFIRM=YES)
   if [[ "${IAGO_CUTOVER_DRY_RUN:-0}" == "1" ]]; then
     rollback_env+=(IAGO_ROLLBACK_DRY_RUN=1 IAGO_ROLLBACK_SKIP_TOKEN=1)
+  fi
+  # Propagate greenfield so rollback stops at "v2 stopped + disabled" instead of
+  # demanding a fresh BotFather token to patch into an OpenClaw config that does
+  # not exist. Without this the rollback path fails halfway on a greenfield box
+  # — exactly when it is most needed.
+  if [[ "$GREENFIELD" == "1" ]]; then
+    rollback_env+=(IAGO_ROLLBACK_GREENFIELD=1)
   fi
   env "${rollback_env[@]}" bash "$DEPLOY_DIR/rollback.sh"
   exit 2
@@ -454,7 +581,12 @@ main() {
   # T-15 final operator confirmation
   if should_run "T-15"; then
     echo ""
-    echo "[T-15] Final operator confirmation — confirm Santiago is at keyboard, OpenClaw queue is drained, no in-flight work."
+    if [[ "$GREENFIELD" == "1" ]]; then
+      echo "[T-15] Final operator confirmation — GREENFIELD install (no OpenClaw to drain)."
+      echo "       Confirm Santiago is at keyboard and the bot token is ready."
+    else
+      echo "[T-15] Final operator confirmation — confirm Santiago is at keyboard, OpenClaw queue is drained, no in-flight work."
+    fi
     read_or_skip "Type 'go' to proceed, anything else aborts: " confirm "go"
     if [[ "$confirm" != "go" ]]; then
       echo "ABORT: operator did not type 'go' at T-15." >&2
@@ -462,7 +594,11 @@ main() {
     fi
 
     # T-05 baseline ping via OpenClaw (M1 opt-out)
-    if [[ "${IAGO_CUTOVER_SKIP_TMINUS5_BASELINE:-0}" == "1" ]]; then
+    # Greenfield: the ping proves the OUTGOING bot still works before it is
+    # replaced. With nothing to replace there is no baseline to take.
+    if [[ "$GREENFIELD" == "1" ]]; then
+      echo "[T-05] NO-OP: baseline ping skipped (greenfield — no OpenClaw bot to ping)"
+    elif [[ "${IAGO_CUTOVER_SKIP_TMINUS5_BASELINE:-0}" == "1" ]]; then
       echo "[T-05] Skipping baseline ping (IAGO_CUTOVER_SKIP_TMINUS5_BASELINE=1)"
     else
       echo "[T-05] MANUAL: send 'v2 cutover starting' to OpenClaw bot from phone to confirm baseline."
@@ -475,6 +611,15 @@ main() {
   # T+00 archive openclaw
   if should_run "T+00"; then
     echo ""
+    # Greenfield: there is no OpenClaw to stop, encrypt, or prune. Pre-flight
+    # already PROVED that (assert_greenfield_or_abort), so this is a verified
+    # no-op rather than an assumed one. The step and its NDJSON marker survive
+    # so the sequence, the resume arithmetic and the marker manifest are
+    # unchanged; only the work is skipped.
+    if [[ "$GREENFIELD" == "1" ]]; then
+      echo "[T+00] NO-OP: OpenClaw archive skipped — greenfield verified at pre-flight"
+      ndjson_write cutover-step T+00 skipped-greenfield
+    else
     echo "[T+00] Archive OpenClaw — invoking archive-openclaw.sh on VPS"
     verify_lock_still_ours
 
@@ -523,16 +668,30 @@ main() {
     fi
     echo "  OK openclaw-gateway is inactive"
     ndjson_write cutover-step T+00 ok
+    fi
   fi
 
   # ----- T+02: BotFather rotation (manual) -----
   # T+02 botfather rotation
   if should_run "T+02"; then
     echo ""
-    echo "[T+02] MANUAL: run BotFather rotation per ${MIGRATION_DIR}/02-telegram-bot-rotation.md (Plan 02b artifact)"
-    echo "         Use /revoke against the v2 bot; capture the new token into 1Password vault iago-os item v2-daemon-telegram-bot field token."
-    read_or_skip "Press Enter once BotFather rotation completes: " _ack
-    ndjson_write cutover-step T+02 ok
+    # Greenfield: rotation exists to invalidate a token an OUTGOING OpenClaw
+    # still holds. Nothing else holds this token, so /revoke is optional
+    # hygiene, not a correctness requirement. What IS required either way is
+    # that 1Password holds the token T+05 will provision.
+    if [[ "$GREENFIELD" == "1" ]]; then
+      echo "[T+02] MANUAL (greenfield): no OpenClaw holds this token, so /revoke is OPTIONAL."
+      echo "         Required: 1Password vault 'iago-os' item 'v2-daemon-telegram-bot' field 'token'"
+      echo "         holds the bot token T+05 will provision. Rotate first via BotFather /revoke"
+      echo "         only if the token has ever been pasted somewhere untrusted."
+      read_or_skip "Press Enter once the token is confirmed in 1Password: " _ack
+      ndjson_write cutover-step T+02 ok-greenfield
+    else
+      echo "[T+02] MANUAL: run BotFather rotation per ${MIGRATION_DIR}/02-telegram-bot-rotation.md (Plan 02b artifact)"
+      echo "         Use /revoke against the v2 bot; capture the new token into 1Password vault iago-os item v2-daemon-telegram-bot field token."
+      read_or_skip "Press Enter once BotFather rotation completes: " _ack
+      ndjson_write cutover-step T+02 ok
+    fi
   fi
 
   # ----- T+05: provision credentials locally + verify decrypt round-trip -----
@@ -755,10 +914,22 @@ TEST_BLOCK
     assert_bot_reachable_or_rollback "T+30 (pre-deauth re-check)" "$T30_DRY_RUN_REPLY"
     assert_daemon_health_or_rollback "T+30 (pre-deauth re-check)"
     ndjson_write cutover-step T+30-pre-deauth-gate ok
-    echo "[T+30] MANUAL: run revoke-whatsapp.sh per ${MIGRATION_DIR}/02-whatsapp-deauth.md (Plan 02b artifact)"
-    echo "         Required env: WABA_ID, APP_ID, APP_SECRET, SYSTEM_USER_TOKEN."
-    read_or_skip "Press Enter once revoke-whatsapp.sh succeeds: " _ack
-    ndjson_write cutover-step T+30 ok
+    # Greenfield: the deauth releases the WhatsApp Business number OpenClaw was
+    # bound to. This box never ran OpenClaw and no number is bound to it, so the
+    # step has no target. It is also IRREVERSIBLE and rollback.sh explicitly
+    # does NOT undo it — running it "just in case" against whatever WABA_ID
+    # happened to be exported would deauthorise a live number for nothing.
+    # Skipped, not prompted. The reachability + health gates above still ran.
+    if [[ "$GREENFIELD" == "1" ]]; then
+      echo "[T+30] NO-OP: WhatsApp deauth skipped — greenfield, no number bound to this box."
+      echo "         (Irreversible step; rollback.sh never undoes it. Not run without a target.)"
+      ndjson_write cutover-step T+30 skipped-greenfield
+    else
+      echo "[T+30] MANUAL: run revoke-whatsapp.sh per ${MIGRATION_DIR}/02-whatsapp-deauth.md (Plan 02b artifact)"
+      echo "         Required env: WABA_ID, APP_ID, APP_SECRET, SYSTEM_USER_TOKEN."
+      read_or_skip "Press Enter once revoke-whatsapp.sh succeeds: " _ack
+      ndjson_write cutover-step T+30 ok
+    fi
   fi
 
   # ----- T+45 / T+50 / T+55: spec § 8 verification checkpoints -----

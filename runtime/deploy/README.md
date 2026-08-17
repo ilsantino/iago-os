@@ -8,10 +8,11 @@ Phase 2 VPS deploy artifacts. **NOT executed by the iaGO pipeline.** These files
 
 | File | Purpose | Runs on | Prerequisites | Idempotent | Landed via |
 |---|---|---|---|---|---|
-| `iago-os-v2-daemon.service` | systemd unit for the v2 daemon — installs at `/etc/systemd/system/` on the VPS. References `iago-telegram-token` and `iago-gh-token` via `LoadCredentialEncrypted=` (active Phase 2); 3 Anthropic profiles + 2 webhook secrets stay commented until Phase 3/9 | VPS | `iago` system user + `/var/lib/iago-os/daemon-state` + compiled `/opt/iago-os/runtime/dist/daemon/main.js` (all created by Plan 03a cutover.sh) | Y (file is declarative) | Plan 01a |
+| `iago-os-v2-daemon.service` | systemd unit for the v2 daemon — installs at `/etc/systemd/system/` on the VPS. References `iago-telegram-token` and `iago-gh-token` via `LoadCredentialEncrypted=` (active Phase 2); 3 Anthropic profiles + 2 webhook secrets stay commented until Phase 3/9 | VPS | `iago` system user + `/var/lib/iago-os/daemon-state` + compiled `/opt/iago-os/runtime/dist/daemon/main.js` (all created by `bootstrap-vps.sh`) | Y (file is declarative) | Plan 01a |
 | `provision-credentials.sh` | 1Password → systemd-creds → `/etc/credstore.encrypted/` over Tailscale SSH; plaintext never lands on local OR remote disk. Provisions `telegram-token`, `gh-token`, and 3 Anthropic profile credentials | Santiago's local box (Git Bash / WSL / macOS) | 1Password CLI signed in, Tailscale CLI installed, VPS reachable, root SSH on VPS | Y (re-running rotates ciphertext) | Plan 01a |
 | `provision-credentials.test.sh` | bats-core tests for the provisioning script — all external commands stubbed | Local (Linux / macOS) or VPS pre-cutover | bats-core installed | Y | Plan 01a |
 | `README.md` | This catalog | n/a (docs) | n/a | Y | Plan 01a |
+| `bootstrap-vps.sh` | Provisions the box to the state `cutover.sh` asserts: `iago` user, state root + subdirs, log dir, credstore, `/opt/iago-os` checkout, `npm ci` + build. **Run this BEFORE `cutover.sh`** — the cutover verifies these conditions but does not create them | Santiago's local box (drives the VPS over Tailscale SSH) | Tailscale reachable, root SSH, public repo clone-able from the VPS | Y (user/dirs skipped if present; checkout fetch+reset; `npm ci` re-runs cheaply) | 2026-08-17 |
 | `archive-openclaw.sh` | OpenClaw stop + age-encrypted tar + 30-day retention timer install | VPS | age binary on VPS, OpenClaw running | N (consumes OpenClaw state) | _(landed via Plan 02a)_ |
 | `iago-archive-prune.{service,timer}` | systemd timer for 30-day archive retention | VPS | written by `archive-openclaw.sh` | Y (timer is declarative) | _(landed via Plan 02a)_ |
 | `MANIFEST.template.md` | OpenClaw archive manifest template | n/a (template) | n/a | Y | _(landed via Plan 02a)_ |
@@ -42,15 +43,19 @@ The `(landed via Plan XX)` rows are forward references — those files do not ex
 | `systemd` (with `systemd-creds`) | Encrypts + loads credentials via `LoadCredentialEncrypted=` | Default on Debian 13 |
 | `age` | Encrypts OpenClaw archive (Plan 02a) | Confirmed present per Phase 0 audit |
 | `tar`, `jq` | Archive packaging | Confirmed present per Phase 0 audit |
-| `iago` system user | Daemon process owner | Created by Plan 03a cutover.sh (`useradd --system --no-create-home --shell /usr/sbin/nologin`) |
-| `/var/lib/iago-os/daemon-state` | Daemon state root (writable per unit `ReadWritePaths=`) | Created by Plan 03a cutover.sh |
-| `/var/log/iago-os` | Daemon log dir (writable per unit `ReadWritePaths=`) | Created by Plan 03a cutover.sh |
-| `/opt/iago-os/runtime/dist/daemon/main.js` | Compiled daemon entry point | Built + rsynced by Plan 03a cutover.sh |
+| `iago` system user | Daemon process owner | Created by `bootstrap-vps.sh` (`useradd --system --no-create-home --shell /usr/sbin/nologin`) |
+| `/var/lib/iago-os/daemon-state` | Daemon state root (writable per unit `ReadWritePaths=`) | Created by `bootstrap-vps.sh`, including the `tasks/`, `markers/`, `telemetry/`, `agents/` subdirs |
+| `/var/log/iago-os` | Daemon log dir (writable per unit `ReadWritePaths=`) | Created by `bootstrap-vps.sh` |
+| `/opt/iago-os/runtime/dist/daemon/main.js` | Compiled daemon entry point | Cloned + built **on the VPS** by `bootstrap-vps.sh` |
 | Root SSH via Tailscale | Required by provisioning script (writes to `/etc/credstore.encrypted/`) | Confirmed present per Phase 0 audit |
 
 ## 4. Run order
 
 The cutover script (`cutover.sh`, lands Plan 03a) orchestrates the full sequence. For reference, here is the explicit order with provenance:
+
+0. **Provision the box** — `IAGO_BOOTSTRAP_CONFIRM=YES bash runtime/deploy/bootstrap-vps.sh`. Creates the `iago` user, the state root and its subdirs, the log dir, the credstore, and the `/opt/iago-os` checkout, then runs `npm ci` + `npm run build` on the VPS. Safe to run days ahead — it is additive and does not touch a running OpenClaw.
+
+   > **Correction (2026-08-17).** Rows 45-48 of § 3 previously stated that `cutover.sh` created the `iago` user, the state root, the log dir, and the built dist tree. It does not, and never did: its pre-flight gate *asserts* those conditions and aborts if they are missing. The commands that create them existed only as a human checklist in `runtime/migration/02-cutover-runbook.md` § 3a "Day -1 prep". `bootstrap-vps.sh` automates that checklist. Note also that the dist tree is **built on the VPS**, not rsynced: `runtime/.gitignore` excludes `dist/`, and `node-pty` is a native module, so a tree built on Windows carries an unloadable binary.
 
 1. **Install systemd unit** — `cutover.sh` copies `iago-os-v2-daemon.service` to `/etc/systemd/system/`, substitutes `__SANTIAGO_TELEGRAM_USER_ID__` with the real Telegram user ID, runs `systemctl daemon-reload`. (Plan 03a)
 2. **Provision Phase 2 active credentials** — `bash runtime/deploy/provision-credentials.sh telegram-token gh-token`. Run AFTER the BotFather `/revoke` rotation completes (Plan 02b). `telegram-token` is required for the Telegram control surface; `gh-token` is required by the Plan 04a/04b PR-triage agent (PTY adapter needs `GH_TOKEN` in the spawned shell environment). The `gh-token` value is a GitHub classic PAT with scopes `repo` + `read:org`, 90-day expiry; rotate via `bash runtime/deploy/provision-credentials.sh gh-token` (idempotent).
