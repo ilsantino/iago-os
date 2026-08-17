@@ -60,6 +60,8 @@ Per project: keep → move the source to `dev\`; dead → archive source-only an
 
 **Acceptance:** no `node_modules`, `.venv`, `dist`, `build`, `__pycache__` or `.next` remains under any OneDrive path; every surviving project is in `dev\` and still builds.
 
+**DONE 2026-08-17** — `.iago/summaries/feature-filesystem-order-p3b-evict-code.md`. Source rescued to `dev\_archive\onedrive-20260817\` (1,072 files, git history intact) before anything was deleted; three of the seven had no git remote and existed nowhere else.
+
 ### P2b — Reclaim *(deletion — quarantine first, always)*
 
 Added 2026-08-16 at Santiago's request: remove what he never looks at or uses.
@@ -124,7 +126,7 @@ Same grammar, different mechanics — `workspace-mcp` against the Drive API, no 
 | P2 Downloads | scoped: 1,648 files / 10.1 GB / 93 dup candidates / 236 older than 3y |
 | P2b Reclaim | scoped: artifacts 148,798 files + 502 dup candidates in od-documents |
 | P3 taxonomy | blocked on the two open decisions |
-| P3b Evict code | scoped: 7 projects, 3.01 GB |
+| P3b Evict code | **DONE** 2026-08-17 — OneDrive 151,395 -> 3,303 files, 3.02 GB reclaimed, 0 artifacts left |
 | P4 | deleted by P0 |
 | P5 Documents | 1,381 real files, 36% duplicate rate |
 | P6 enforcement / P7 Drive | not scoped |
