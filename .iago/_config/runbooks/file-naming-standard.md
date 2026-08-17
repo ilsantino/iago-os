@@ -99,11 +99,16 @@ iagoagency/
 
 ## 4. Entity vocabulary (controlled — extend deliberately, never ad hoc)
 
-**Clients / orgs:** `rsf` · `munet` · `sentria` · `din` · `fulldata` · `palazuelos`
-**Own:** `iago` (the agency itself) · `iago-os` (the product)
+**Clients / orgs:** `rsf` · `munet` · `sentria` · `din` · `fulldata` · `palazuelos` · `allende`
+**Own:** `iago` (the agency itself) · `iago-os` (the product) · `installflow`
 **Personal:** `personal` · `familia` · `cfa` · `uc3m` · `rennes`
+**Sentinel:** `misc` — an honest "no owner in the filename", not a failure. It sorts, it lints, and it is upgradable.
 
-Adding an entity means adding it here first. An unrecognised entity token is what the linter flags.
+Adding an entity means adding it here first, and in `ENTITIES` in `organize.py` — the linter refuses a hint outside the vocabulary, because an ad-hoc entity is how a controlled vocabulary dies.
+
+**Extending §4 reaches backwards.** `organize.py scan --upgrade-sentinel` re-derives files already named `…-misc-…` and proposes the real owner where the new vocabulary now explains it. A file named under the sentinel is not finished — it is waiting. Added 2026-08-17 with `allende` and `installflow`, which upgraded 18 files in one pass.
+
+Two entities were added on 2026-08-17: **`allende`** (Cervecería Allende — proposals, pricing, churn analysis, contract) and **`installflow`** (the OneEleven contract and improvement structure).
 
 ---
 

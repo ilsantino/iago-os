@@ -22,6 +22,9 @@ from collections import Counter, defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import organize as org                                              # noqa: E402
+
 HOME = Path.home()
 
 # Zone roots. `dev` is deliberately absent — it is rename-frozen (Claude Code
@@ -43,11 +46,10 @@ ZONES = {
     "od-attachments": HOME / "OneDrive" / "Attachments",
 }
 
-SKIP_DIRS = {
-    ".git", "node_modules", "appdata", "$recycle.bin", "__pycache__",
-    ".venv", "venv", ".next", "dist", "build", ".cache", ".pytest_cache",
-    "system volume information", ".claude", ".worktrees",
-}
+# Single source of truth, shared with organize.py. Keeping a second copy here is
+# how the census and the linter came to disagree on their denominators (1,648 vs
+# 1,453) after organize.py learned to prune application payloads.
+SKIP_DIRS = org.SKIP_DIRS
 
 # Windows attribute bits marking a OneDrive file that is not local.
 FILE_ATTRIBUTE_OFFLINE = 0x00001000
@@ -59,11 +61,7 @@ PLACEHOLDER_MASK = (
     | FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS
 )
 
-ENTITIES = {
-    "rsf", "munet", "sentria", "din", "fulldata", "palazuelos",
-    "iago", "iago-os", "iagoag", "iagoagency",
-    "personal", "familia", "cfa", "uc3m", "rennes",
-}
+ENTITIES = org.ENTITIES        # shared, for the same reason as SKIP_DIRS
 
 # {YYYYMMDD}-{entity}-{descriptor}[-vN]
 CONFORMING = re.compile(r"^\d{8}-[a-z0-9]+(?:-[a-z0-9]+)*(?:-v\d+)?$")
@@ -100,6 +98,8 @@ class ZoneStats:
         self.dirs = 0
         self.empty_dirs = 0
         self.placeholders = 0
+        self.payload_dirs = 0
+        self.machine_managed = 0
         self.local_files = 0
         self.by_ext = Counter()
         self.bytes_by_ext = Counter()
@@ -126,6 +126,9 @@ class ZoneStats:
             "dirs": self.dirs,
             "empty_dirs": self.empty_dirs,
             "placeholders": self.placeholders,
+            "payload_dirs_pruned": self.payload_dirs,
+            "machine_managed": self.machine_managed,
+            "organizable": self.files - self.machine_managed,
             "local_files": self.local_files,
             "conforming": self.conforming,
             "has_date_in_name": self.has_date,
@@ -165,6 +168,11 @@ def walk_zone(name, root, now):
         if not entries:
             st.empty_dirs += 1
 
+        # Same prune organize.py applies, so `inventory` and `lint` agree.
+        if org.looks_like_app_payload(entries):
+            st.payload_dirs += 1
+            continue
+
         here_files = 0
         for entry in entries:
             try:
@@ -181,6 +189,8 @@ def walk_zone(name, root, now):
 
             here_files += 1
             st.files += 1
+            if org.is_protected_file(entry.name):
+                st.machine_managed += 1
             size = info.st_size
             st.bytes += size
 
@@ -255,7 +265,9 @@ def main():
     results.sort(key=lambda r: -r["files"])
     totals = {
         k: sum(r[k] for r in results)
-        for k in ("files", "bytes", "dirs", "empty_dirs", "placeholders", "local_files", "conforming", "has_entity_in_name", "errors")
+        for k in ("files", "bytes", "dirs", "empty_dirs", "placeholders", "local_files",
+                  "conforming", "has_entity_in_name", "errors", "machine_managed",
+                  "organizable", "payload_dirs_pruned")
     }
 
     report = {
@@ -270,7 +282,10 @@ def main():
             json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8"
         )
 
-    print(f"TOTAL  files={totals['files']:,}  size={human(totals['bytes'])}  "
+    print(f"TOTAL  files={totals['files']:,}  organizable={totals['organizable']:,}  "
+          f"machine-managed={totals['machine_managed']:,}  "
+          f"payload-dirs-pruned={totals['payload_dirs_pruned']:,}")
+    print(f"       size={human(totals['bytes'])}  "
           f"dirs={totals['dirs']:,}  placeholders={totals['placeholders']:,}  "
           f"local={totals['local_files']:,}  errors={totals['errors']}")
     print(f"CONFORMING to grammar: {totals['conforming']:,} "

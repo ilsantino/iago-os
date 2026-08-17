@@ -84,8 +84,8 @@ SKIP_ROOTS = {(HOME / "OneDrive - Rennes School of Business").resolve()}
 FROZEN_ROOTS = {(HOME / "dev").resolve()}
 
 ENTITIES = {
-    "rsf", "munet", "sentria", "din", "fulldata", "palazuelos",
-    "iago", "iago-os", "iagoag", "iagoagency",
+    "rsf", "munet", "sentria", "din", "fulldata", "palazuelos", "allende",
+    "iago", "iago-os", "iagoag", "iagoagency", "installflow",
     "personal", "familia", "cfa", "uc3m", "rennes",
 }
 ENTITY_SENTINEL = "misc"
@@ -231,8 +231,8 @@ CONFORMING = re.compile(
 )
 
 
-def is_conforming(stem):
-    """True if the stem already parses under the grammar with a known entity.
+def conforming_entity(stem):
+    """The entity token of an already-conforming stem, or None if it does not parse.
 
     The undated form is legal (§3: reference documents lead with the entity), so
     a deliberate undated name is left alone rather than having a date forced on
@@ -240,14 +240,18 @@ def is_conforming(stem):
     """
     match = CONFORMING.fullmatch(stem)
     if not match:
-        return False
+        return None
     rest = match.group("rest")
     for entity in sorted(ENTITIES | {ENTITY_SENTINEL}, key=len, reverse=True):
         if rest == entity:
-            return False                     # entity but no descriptor
+            return None                      # entity but no descriptor
         if rest.startswith(f"{entity}-"):
-            return True
-    return False
+            return entity
+    return None
+
+
+def is_conforming(stem):
+    return conforming_entity(stem) is not None
 
 
 def truncate_descriptor(descriptor):
@@ -288,9 +292,13 @@ def derive_name(filename, mtime, path_parts, entity_override=None):
     else:
         entity, entity_source = extract_entity(stem, path_parts)
 
+    # The sentinel is never a descriptor word. Without this, re-scanning a file
+    # already named `...-misc-...` after its entity joins the vocabulary yields
+    # `20251229-allende-misc-prompts-cerveceria` — the old placeholder demoted
+    # into the description instead of being replaced by the real owner.
     descriptor_tokens = [
         t for t in slugify(stem).split("-")
-        if t and t != entity and t not in entity.split("-")
+        if t and t != entity and t not in entity.split("-") and t != ENTITY_SENTINEL
     ]
     descriptor = truncate_descriptor("-".join(descriptor_tokens))
     if not descriptor:
@@ -465,7 +473,7 @@ def find_git_root(path):
 # scan
 # --------------------------------------------------------------------------
 
-def scan(root, bucket=False, limit=None, hints=None):
+def scan(root, bucket=False, limit=None, hints=None, upgrade_sentinel=False):
     """Walk `root` and propose a rename per file.
 
     `hints` maps a root-relative path (forward slashes) to an entity token, so an
@@ -542,9 +550,15 @@ def scan(root, bucket=False, limit=None, hints=None):
             # Casing counts: `20250301-rsf-Informe.PDF` parses under the grammar
             # but is not conforming, and must still be lowercased.
             already_lower = stem == stem.lower() and raw_ext == raw_ext.lower()
-            if already_lower and is_conforming(stem) and target_dir == current:
-                skipped.append({"path": entry.path, "reason": "already-conforming"})
-                continue
+            existing_entity = conforming_entity(stem) if already_lower else None
+            if existing_entity and target_dir == current:
+                # A conforming file named under the sentinel is not finished — it
+                # is waiting for its entity to join the vocabulary. Extending §4
+                # must be able to reach back and upgrade what it explains.
+                upgradable = (upgrade_sentinel and existing_entity == ENTITY_SENTINEL)
+                if not upgradable:
+                    skipped.append({"path": entry.path, "reason": "already-conforming"})
+                    continue
 
             rel_parts = Path(current).relative_to(root).parts
             rel_path = "/".join([*rel_parts, entry.name])
@@ -804,7 +818,8 @@ def cmd_scan(args):
     hints = {}
     if args.hints:
         hints = json.loads(Path(args.hints).read_text(encoding="utf-8"))
-    plan = scan(root, bucket=args.bucket, limit=args.limit, hints=hints)
+    plan = scan(root, bucket=args.bucket, limit=args.limit, hints=hints,
+                upgrade_sentinel=args.upgrade_sentinel)
 
     out = Path(args.out) if args.out else Path(".local/organize") / (
         f"plan-{args.zone or Path(root).name}-{datetime.now().strftime('%Y%m%d-%H%M%S')}.json")
@@ -882,6 +897,8 @@ def main():
     scan_parser.add_argument("--bucket", action="store_true", help="also file into type buckets")
     scan_parser.add_argument("--limit", type=int)
     scan_parser.add_argument("--hints", help="JSON map of root-relative path -> entity token")
+    scan_parser.add_argument("--upgrade-sentinel", action="store_true",
+                             help="re-derive conforming files named `misc` — use after extending §4")
     scan_parser.set_defaults(func=cmd_scan)
 
     apply_parser = subparsers.add_parser("apply", help="execute a plan (dry-run by default)")

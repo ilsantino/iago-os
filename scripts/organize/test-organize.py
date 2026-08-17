@@ -126,6 +126,12 @@ def test_derive_name():
     check(result["confidence"] == "low", "degenerate stem -> low confidence")
     check("degenerate-stem" in result["flags"], "degenerate stem flagged for review")
 
+    # Re-scanning a file that was named under the sentinel, after its entity
+    # joined the vocabulary: the placeholder must be replaced, not demoted.
+    result = org.derive_name("20251229-misc-prompts-cerveceria-allende.md", fixed_mtime, [])
+    check(result["name"] == "20251229-allende-prompts-cerveceria.md",
+          f"sentinel replaced by the real entity, not kept as a word: {result['name']}")
+
     result = org.derive_name("informe.pdf", fixed_mtime, ["clients", "munet"])
     check(result["entity"] == "munet" and result["entity_source"] == "path", "entity inherited from path")
 

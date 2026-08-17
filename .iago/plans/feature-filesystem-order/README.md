@@ -59,7 +59,7 @@ The 621 low-confidence proposals are almost all `no-entity` — the file simply 
 
 **143 files deliberately not renamed.** `--bucket` flattens, and four work/source trees (`lis-discovery`, `CrewAI-Studio-main`, `_assets_build`, `CASA_discovery`) reference their own subdirectories — `out/schema.json`, `fb25`, `vba_modules/`, sibling `.ps1`. Same class as the Part B checkouts. `85b465d` fixed this for unpacked app payloads mid-run; these four are the residue.
 
-**Blocked on a vocabulary call:** `allende` (17 files) and `installflow` (4) have a clear owner outside §4. `ENTITIES` is hardcoded in `organize.py`, so adding them is a code change.
+~~**Blocked on a vocabulary call:** `allende` (17 files) and `installflow` (4) have a clear owner outside §4.~~ **RESOLVED 2026-08-17** — both added to §4 and to `ENTITIES`. `allende` is Cervecería Allende (proposals, pricing, churn analysis, contract); `installflow` is the OneEleven contract. This surfaced a gap: a file already named `…-misc-…` *conforms*, so a plain re-scan would never revisit it — extending the vocabulary could not reach the files it explained. `scan --upgrade-sentinel` re-derives sentinel-named files; **18 upgraded, 0 residual, undo verified reversible.** It also surfaced a defect: without filtering the sentinel out of the descriptor, the upgrade produced `20251229-allende-misc-prompts-cerveceria` — the placeholder demoted into the description rather than replaced.
 
 **Part B, awaiting Santiago** — both checkouts profiled, nothing touched. `cortextos_probe`: shallow, clean, third-party remote, zero unique content → safe to delete. `tweetGPT`: **37 dirty paths, uncommitted and on no remote** — an unfinished Threads port of the extension → rescue to `dev\` before anything else. Bonus finding: `CrewAI-Studio-main` is 70,055 files / 2.14 GB (91% of the Downloads file count), a zip extraction whose bulk is a regenerable `venv/`, unprotected by the git guard.
 
@@ -84,6 +84,8 @@ Per project: keep → move the source to `dev\`; dead → archive source-only an
 **Acceptance:** no `node_modules`, `.venv`, `dist`, `build`, `__pycache__` or `.next` remains under any OneDrive path; every surviving project is in `dev\` and still builds.
 
 **DONE 2026-08-17** — `.iago/summaries/feature-filesystem-order-p3b-evict-code.md`. Source rescued to `dev\_archive\onedrive-20260817\` (1,072 files, git history intact) before anything was deleted; three of the seven had no git remote and existed nowhere else.
+
+**Correction, 2026-08-17.** The "0 artifacts remaining" verification was wrong: it matched artifact folders **by name**, and an eighth project — `Cursor\TravelApp` — carried a virtualenv called `.venvTA`, which `.venv` does not match. 454 files / 6.6 MB survived the sweep. No source was lost (the tree held one `.lnk` and nothing else; `pyvenv.cfg` showed it was a leftover copy of a scratch venv). Removed, and the detection now keys on `pyvenv.cfg` — PEP 405 guarantees the marker, a name list guarantees nothing. Re-verified by marker: **0 virtualenvs, 0 `node_modules`, 0 artifact dirs anywhere under OneDrive. 2,849 files.**
 
 ### P2b — Reclaim *(deletion — quarantine first, always)*
 
@@ -111,6 +113,15 @@ Added 2026-08-16 at Santiago's request: remove what he never looks at or uses.
 - Photos and anything under `Pictures`.
 
 **Acceptance:** a purge cannot happen without a prior quarantine batch and an explicit approval for that batch; `undo` restores a quarantine batch byte-identically.
+
+**TOOLING DONE 2026-08-17** — `scripts/organize/reclaim.py` + `test-reclaim.py` (34 assertions). Quarantine journals in `organize.py`'s format, so `organize.py undo` restores a batch with machinery that already has a byte-identical round-trip test. Trash lives at `~\_trash\{stamp}\`, outside OneDrive, so the cloud quota is reclaimed at stage 2 while the safety net is intact. `purge` refuses a batch younger than 7 days, a path outside the trash, and any directory it did not create.
+
+**Two rules the roadmap did not anticipate, both found by running it:**
+
+- **Identical bytes under different names is a different finding.** `descripcion materias RSB.pdf` and `book DBAN.pdf` are one document filed under two meanings; which name survives is a judgment no hash can make. Only same-stem duplicates auto-quarantine — 19 of 51 were this case and now route to review.
+- **Caches diverge from `organize.py`'s protected list.** A thumbnail cache is regenerable and *should* be deleted; `desktop.ini` holds a customisation someone chose and should not. Protection from renaming and protection from deletion are different questions.
+
+**First real scan (read-only, OneDrive zones): 63 candidates / 895 MB** — 2 stale installers (867 MB, `SPSS28_Win_x64.exe` alone is 840 MB), 31 duplicates, 27 partial downloads, 3 zero-byte. Plus 22 for review. Nothing has been quarantined: awaiting Santiago's go.
 
 ### P5 — `Documents` + `Pictures` *(re-scoped 2026-08-17 — much smaller than P0 thought)*
 
@@ -145,6 +156,7 @@ Same grammar, different mechanics — `workspace-mcp` against the Drive API, no 
 3. **Path length.** 260-char default ceiling; `iagoagency` already runs deep.
 4. **SAT-relevant records** (invoices, receipts, `iagoag` attachments) are legally retained — renamed, never deleted, never swept.
 5. **Cloud-only files stay cloud-only.** Touching a placeholder forces a download; a naive walk over `iagoagency` could pull gigabytes.
+6. **Machine-managed paths are out of scope, like `dev\`.** `WindowsPowerShell` is the live `PSModulePath`; `desktop.ini` drives folder customisation; a DLL is loaded by literal name. See §6 of the standard. Detect machine-generated trees by **marker file**, never by folder name — that is how `.venvTA` survived a sweep and how 134 DLLs nearly got renamed.
 
 ## Open decisions (block P3)
 
@@ -158,10 +170,10 @@ Same grammar, different mechanics — `workspace-mcp` against the Drive API, no 
 | Standard | **locked** 2026-08-16 |
 | P0 inventory | **done** 2026-08-16 → `.iago/research/2026-08-16-filesystem-inventory.md` |
 | P1 tooling | **DONE** 2026-08-17 — `scripts/organize/organize.py`, 62 assertions green, apply→undo byte-identical |
-| P2 Downloads | **DONE** 2026-08-17 — 388 renamed + bucketed, root 387 → 2 loose, count delta 0; 143 excluded (load-bearing trees), 21 blocked on vocabulary |
-| P2b Reclaim | scoped: artifacts 148,798 files + 502 dup candidates in od-documents |
+| P2 Downloads | **DONE** 2026-08-17 — 406 renamed + bucketed (388 + 18 sentinel upgrades), root 387 → 2 loose, count delta 0; 143 excluded (load-bearing trees) |
+| P2b Reclaim | **tooling DONE** 2026-08-17 — `reclaim.py`, 34 assertions. First scan: 63 candidates / 895 MB + 22 review. **Awaiting go to quarantine.** |
 | P3 taxonomy | blocked on the two open decisions |
-| P3b Evict code | **DONE** 2026-08-17 — OneDrive 151,395 -> 3,303 files, 3.02 GB reclaimed, 0 artifacts left |
+| P3b Evict code | **DONE** 2026-08-17 — OneDrive 151,395 → 2,849 files, 3.03 GB reclaimed; an 8th project (`.venvTA`, 454 files) was missed by name-matching and swept after |
 | P4 | deleted by P0 |
 | P5 Documents | re-scoped: ~364 real docs (914 of 1,278 are the live PSModulePath); the 36% dup rate was DLLs |
 | P6 enforcement / P7 Drive | not scoped |
