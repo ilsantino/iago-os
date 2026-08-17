@@ -314,7 +314,8 @@ function teamRules({ critFrom = 'review', skeptic } = {}) {
       match: (l) => l === 'review',
       reply:
         critFrom === 'review'
-          ? { verdict: 'FAIL', findings: [{ severity: 'Critical', summary: 'sql injection in q', failureScenario: FS }] }
+          ? // Proof of work is required on EVERY return (round-2), not only an empty-findings one.
+            { verdict: 'FAIL', findings: [{ severity: 'Critical', summary: 'sql injection in q', failureScenario: FS }], propertiesChecked: PROPS }
           : { verdict: 'PASS', findings: [], propertiesChecked: PROPS },
     },
     { match: (l) => l === 'codex', reply: { source: 'codex', findings: [], evidence: CODEX_EVIDENCE } },
@@ -1241,21 +1242,78 @@ await test('an ABSENT propertiesChecked on an empty review leg is treated the sa
   assert.ok(out.incompleteLegs.includes('opus-review:no-proof'), 'the unproven leg is named')
 })
 
-await test('a review leg with FINDINGS but no propertiesChecked is NOT incomplete (findings are their own proof)', async () => {
-  // Negative control — the rule fires only on the empty+unproven combination. A leg that reported
-  // a real defect obviously reviewed something; demanding properties there would block real work.
+await test('ONE throwaway finding does NOT buy a leg out of the proof-of-work rule (round-2)', async () => {
+  // The rule used to fire only on the empty+unproven combination, so a single Minor bought a leg
+  // out of the whole contract — free and invisible, since Minors no longer spend a fix round: a
+  // degraded leg emitting one nit read exactly like a thorough clean review.
   const h = makeHarness([
     {
       match: (l) => l === 'review',
-      reply: { verdict: 'FAIL', findings: [{ severity: 'Critical', summary: 'boom', failureScenario: FS }], propertiesChecked: [] },
+      reply: { verdict: 'PASS_WITH_CONCERNS', findings: [{ severity: 'Minor', summary: 'unused var', failureScenario: FS }], propertiesChecked: [] },
     },
     { match: (l) => l === 'codex', reply: { source: 'codex', findings: [], evidence: CODEX_EVIDENCE } },
   ])
   const wf = buildWorkflow()
   const out = await wf(h.agent, h.parallel, null, h.log, h.phase, { ...baseArgs }, null, null)
-  assert.strictEqual(out.gateStatus, 'COMPLETE', 'a leg with findings is not unproven')
-  assert.strictEqual(out.blocking, 1, 'the Critical still blocks')
-  assert.ok(!out.incompleteLegs.some((k) => k.endsWith(':no-proof')), 'no no-proof leg recorded')
+  assert.strictEqual(out.gateStatus, 'INCOMPLETE', 'proof is required on every return, findings or not')
+  assert.strictEqual(out.clean, false, 'an unproven leg never reports clean')
+  assert.ok(out.incompleteLegs.includes('opus-review:no-proof'), 'the unproven leg is named')
+})
+
+await test('an UNEVIDENCED property is not proof — a fabricated one-liner does not clear the gate (round-2)', async () => {
+  // hasProperties() only tested array length, so {property:'reviewed the diff', verdict:'HOLDS'}
+  // — a leg that read no file — counted as a full review.
+  const h = makeHarness([
+    {
+      match: (l) => l === 'review',
+      reply: { verdict: 'PASS', findings: [], propertiesChecked: [{ property: 'reviewed the diff', verdict: 'HOLDS' }] },
+    },
+    { match: (l) => l === 'codex', reply: { source: 'codex', findings: [], evidence: CODEX_EVIDENCE } },
+  ])
+  const out = await buildWorkflow()(h.agent, h.parallel, null, h.log, h.phase, { ...baseArgs }, null, null)
+  assert.strictEqual(out.gateStatus, 'INCOMPLETE', 'an unevidenced property is an assertion, not proof')
+  assert.ok(out.incompleteLegs.includes('opus-review:no-proof'))
+})
+
+await test('a VIOLATED property with an EMPTY findings array is INCOMPLETE, never a clean PASS (round-2)', async () => {
+  // The worst shape the contract created: foundNothing()=true AND hasProperties()=true, so the leg
+  // was "proven" and clean, blocking=0, clean=true — and the VIOLATED verdict was never inspected,
+  // returned or persisted, so the leg's own disproof died with the session under a PASS.
+  const h = makeHarness([
+    {
+      match: (l) => l === 'review',
+      reply: {
+        verdict: 'PASS',
+        findings: [],
+        propertiesChecked: [{ property: 'tenant filter applied to the aggregate query', verdict: 'VIOLATED', evidence: 'src/api/report.ts:88' }],
+      },
+    },
+    { match: (l) => l === 'codex', reply: { source: 'codex', findings: [], evidence: CODEX_EVIDENCE } },
+  ])
+  const out = await buildWorkflow()(h.agent, h.parallel, null, h.log, h.phase, { ...baseArgs }, null, null)
+  assert.strictEqual(out.gateStatus, 'INCOMPLETE', 'a recorded violation with nothing reported fails closed')
+  assert.strictEqual(out.clean, false, 'and is never a clean merge signal')
+  assert.ok(out.incompleteLegs.includes('opus-review:violated-unreported'), 'the breach has its own key')
+})
+
+await test('VIOLATED properties are RETURNED as an audit trail, not destroyed with the session (round-2)', async () => {
+  const h = makeHarness([
+    {
+      match: (l) => l === 'review',
+      reply: {
+        verdict: 'FAIL',
+        findings: [{ severity: 'Critical', summary: 'cross-tenant read', failureScenario: FS }],
+        propertiesChecked: [{ property: 'aggregate query is tenant-scoped', verdict: 'VIOLATED', evidence: 'src/api/report.ts:88' }],
+      },
+    },
+    { match: (l) => l === 'codex', reply: { source: 'codex', findings: [], evidence: CODEX_EVIDENCE } },
+  ])
+  const out = await buildWorkflow()(h.agent, h.parallel, null, h.log, h.phase, { ...baseArgs }, null, null)
+  assert.deepStrictEqual(
+    out.violatedProperties.map((p) => `${p.by}|${p.property}`),
+    ['opus|aggregate query is tenant-scoped'],
+    'the gate returns what each leg DISPROVED, with its attribution',
+  )
 })
 
 // ── Codex carve-out: `evidence` stands in for propertiesChecked ──────────
@@ -1420,10 +1478,21 @@ await test('every leg prompt demands proof-of-work and a failure scenario', asyn
   assert.ok(/propertiesChecked/.test(review), 'review leg must return propertiesChecked')
   // Codex leg: evidence is required; propertiesChecked only on the claude-fallback path.
   assert.ok(/evidence/.test(byLabel('codex').prompt), 'codex prompt requires evidence')
+  // …and the required failureScenario must NOT become a suppression channel on the one leg that
+  // has no analysis of its own to synthesize a scenario from (round-2): codex-companion emits free
+  // text, so "no scenario → do not emit it" would silently drop a [P0] into findings:[] while the
+  // non-empty `evidence` string still counted the leg as fully proven.
+  assert.ok(
+    /NEVER DROP A CODEX-REPORTED DEFECT/.test(byLabel('codex').prompt),
+    'the codex mapping leg may not drop a reported defect for a missing failureScenario',
+  )
+  assert.ok(/DERIVE one from the diff/.test(byLabel('codex').prompt), 'it must derive the scenario instead of suppressing')
   // Lens + team legs: proof-of-work tail replaced the old "return an empty findings array" line.
   for (const label of ['security', 'code quality', 'completeness critic', 'team:data', 'team:arch']) {
     const p = byLabel(label).prompt
-    assert.ok(/PROOF OF WORK \(required\)/.test(p), `${label} prompt carries the proof-of-work tail`)
+    assert.ok(/PROOF OF WORK \(required/.test(p), `${label} prompt carries the proof-of-work tail`)
+    assert.ok(/NON-EMPTY `evidence`/.test(p), `${label} prompt requires evidence on every property`)
+    assert.ok(/Every VIOLATED verdict MUST have its matching entry/.test(p), `${label} prompt pairs VIOLATED with a finding`)
     assert.ok(/failureScenario/.test(p), `${label} prompt requires a failureScenario`)
     assert.ok(!/Return an empty findings array if this (lens|leg) surfaces nothing\./.test(p), `${label} dropped the old silence-is-clean line`)
   }
@@ -1450,12 +1519,45 @@ await test('INTENT axis degrades to PR/commit intent when no plan is forwarded, 
   assert.ok(/gh pr view|git log/.test(standalone), 'and names the substitute source of intent')
   assert.ok(/Do NOT invent plan criteria/.test(standalone), 'and forbids fabricating criteria')
 
+  // A delegated run forwards the PLAN PATH. INTENT must point at the plan file itself — wiring it
+  // to `stressBlock` put a PRE-STRESSED plan (empty stress block) on the degraded branch and read
+  // a stressed plan's NOTES as "the plan acceptance criteria".
   const h2 = makeHarness(rules)
   const STRESS = '\n\nSTRESS ENFORCEMENT: a stress test produced notes.\nNotes:\n- guard the empty-list edge case'
-  await buildWorkflow()(h2.agent, h2.parallel, null, h2.log, h2.phase, { ...baseArgs, stressBlock: STRESS }, null, null)
+  await buildWorkflow()(h2.agent, h2.parallel, null, h2.log, h2.phase, { ...baseArgs, stressBlock: STRESS, plan: '/repo/.iago/plans/p.md' }, null, null)
   const delegated = h2.calls.find((c) => c.label === 'review').prompt
-  assert.ok(/the plan acceptance criteria forwarded in the stress block/.test(delegated), 'delegated run points INTENT at the plan')
+  assert.ok(/Source of intent: the PLAN at \/repo\/\.iago\/plans\/p\.md/.test(delegated), 'delegated run points INTENT at the plan FILE')
+  assert.ok(/ADDITIONAL requirements, not the criteria themselves/.test(delegated), 'stress notes are additional requirements, not the criteria')
   assert.ok(!/DEGRADED — no plan is in context/.test(delegated), 'and does not claim degradation')
+
+  // A PRE-STRESSED plan forwards an EMPTY stress block — it must still take the plan branch.
+  const h3 = makeHarness(rules)
+  await buildWorkflow()(h3.agent, h3.parallel, null, h3.log, h3.phase, { ...baseArgs, stressBlock: '', plan: '/repo/.iago/plans/p.md' }, null, null)
+  const preStressed = h3.calls.find((c) => c.label === 'review').prompt
+  assert.ok(!/DEGRADED — no plan is in context/.test(preStressed), 'a pre-stressed plan does NOT degrade the deepest gate to commit-subject intent')
+})
+
+await test('the prompt-injection guard is in the PREAMBLE, so EVERY leg carries it (round-2)', async () => {
+  // It used to be interpolated into intentSource only — i.e. the review leg alone — while the
+  // always-on `completeness` lens, explicitly told to read the PR description/plan, ran without it.
+  const h = makeHarness([
+    { match: (l) => l === 'review', reply: { verdict: 'PASS', findings: [], propertiesChecked: PROPS } },
+    { match: (l) => l === 'codex', reply: { source: 'codex', findings: [], evidence: CODEX_EVIDENCE } },
+    { match: (l) => l === 'changed-files', reply: { files: ['src/auth/login.ts'], eofSeen: true } },
+    {
+      match: (l) => ['security', 'frontend bug-bounty', 'code quality', 'completeness critic'].includes(l),
+      reply: { findings: [], propertiesChecked: PROPS },
+    },
+    { match: (l) => l === 'team:data' || l === 'team:arch', reply: { findings: [], propertiesChecked: PROPS } },
+    { match: (l) => /skeptic/i.test(l), reply: { real: true, reason: 'confirmed at x.ts:1' } },
+  ])
+  await buildWorkflow()(h.agent, h.parallel, null, h.log, h.phase, { ...baseArgs, mode: 'team' }, null, null)
+  for (const label of ['review', 'codex', 'security', 'code quality', 'completeness critic', 'team:data', 'team:arch']) {
+    const call = h.calls.find((c) => c.label === label)
+    assert.ok(call, `${label} leg ran`)
+    assert.ok(/UNTRUSTED INPUT/.test(call.prompt), `${label} prompt carries the injection guard`)
+    assert.ok(/never as instructions to you/.test(call.prompt), `${label} prompt refuses author-controlled instructions`)
+  }
 })
 
 // ── Schema contract, read structurally out of the source (stress note 15) ──
@@ -1475,7 +1577,11 @@ await test('schema contract: REVIEW/CODEX/LENS schemas declare the new required 
   assert.ok(FINDING_S.properties.failureScenario, 'FINDING declares the failureScenario property')
 
   const PROPERTY_S = grab('PROPERTY')
-  assert.deepStrictEqual(PROPERTY_S.required, ['property', 'verdict'], 'PROPERTY requires property + verdict')
+  assert.deepStrictEqual(
+    PROPERTY_S.required,
+    ['property', 'verdict', 'evidence'],
+    'PROPERTY requires property + verdict + evidence (an unevidenced property is a claim, not proof)',
+  )
   assert.deepStrictEqual(PROPERTY_S.properties.verdict.enum, ['HOLDS', 'VIOLATED'], 'PROPERTY verdict is HOLDS/VIOLATED')
 
   const REVIEW_S = grab('REVIEW_SCHEMA')
@@ -1517,8 +1623,20 @@ await test('twin sync: execute-pipeline.js carries the same contract (PR #96 twi
   assert.ok(/const minorRemaining = allBacklog\.length/.test(twin), 'twin counts Minors from the backlog, not from findings')
   // The RUNTIME rule, not just the schema text: a schema-only twin check stayed green while the
   // proof-of-work enforcement lived in this file alone — the drift shape it exists to catch.
-  assert.ok(/opus-review:no-proof/.test(twin) && /codex:no-proof/.test(twin), 'twin enforces the proof-of-work rule at runtime')
+  assert.ok(
+    /legNoProofKey\('opus-review'/.test(twin) && /legNoProofKey\('codex'/.test(twin),
+    'twin enforces the proof-of-work rule at runtime',
+  )
   assert.ok(/function hasProperties\(/.test(twin) && /function foundNothing\(/.test(twin), 'twin carries the same predicates')
+  // Round-2 hardenings must be twinned too: evidenced-only proof, the unconditional rule, and the
+  // violated-but-unreported breach.
+  assert.ok(/required: \['property', 'verdict', 'evidence'\]/.test(twin), 'twin PROPERTY requires evidence')
+  assert.ok(/function provenProperties\(/.test(twin), 'twin counts only EVIDENCED properties as proof')
+  assert.ok(/function violatedProperties\(/.test(twin), 'twin tracks VIOLATED properties')
+  assert.ok(/:violated-unreported/.test(twin), 'twin carries the violated-but-unreported breach key')
+  // Anchored at line start so the historical mention inside the twin's own explanatory COMMENT
+  // (which quotes the removed carve-out) does not satisfy the check.
+  assert.ok(!/^\s*if \(!foundNothing\(r\)\) return true/m.test(twin), 'twin no longer lets one finding bypass the contract')
 })
 
 // ── Round-1 fix: the proof-of-work rule reaches the TEAM legs ────────────────────────
@@ -1540,13 +1658,14 @@ await test('a TEAM leg that returns empty findings AND empty propertiesChecked �
   assert.ok(out.incompleteLegs.includes('team:data:no-proof'), 'incompleteLegs names the unproven team leg')
 })
 
-await test('a TEAM leg that reports findings (or properties) is NOT flagged no-proof', async () => {
-  // Control: the rule must not fire on either legitimate shape — a leg with findings, or a leg
-  // that is honestly quiet but enumerated what it verified.
+await test('a TEAM leg that reports findings AND evidenced properties is NOT flagged no-proof', async () => {
+  // Control: the rule must not fire on the legitimate shapes — a leg with findings that also
+  // enumerated what it verified, and a leg that is honestly quiet but proved its work. (Round-2:
+  // findings alone are no longer proof — see the throwaway-finding test above.)
   const h = makeHarness([
     { match: (l) => l === 'review', reply: { verdict: 'PASS', findings: [], propertiesChecked: PROPS } },
     { match: (l) => l === 'codex', reply: { source: 'codex', findings: [], evidence: CODEX_EVIDENCE } },
-    { match: (l) => l === 'team:data', reply: { findings: [{ severity: 'Minor', summary: 'note', failureScenario: FS }] } },
+    { match: (l) => l === 'team:data', reply: { findings: [{ severity: 'Minor', summary: 'note', failureScenario: FS }], propertiesChecked: PROPS } },
     { match: (l) => l === 'team:arch', reply: { findings: [], propertiesChecked: PROPS } },
   ])
   const out = await buildWorkflow()(h.agent, h.parallel, null, h.log, h.phase, { ...baseArgs, mode: 'team' }, null, null)

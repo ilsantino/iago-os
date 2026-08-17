@@ -582,7 +582,9 @@ await test('team mode runs a dedicated PLAN-COMPLIANCE leg and its findings driv
       reply: () => {
         complianceCalls++
         return complianceCalls === 1
-          ? { verdict: 'FAIL', findings: [{ severity: 'Critical', file: 'amplify/data/resource.ts', summary: 'plan task T01 (schema migration) has no corresponding change in the diff' }] }
+          ? // Proof of work is required on EVERY return, not only an empty-findings one (round-2
+            // fix), so even a leg that reports a Critical must enumerate what it verified.
+            { verdict: 'FAIL', findings: [{ severity: 'Critical', file: 'amplify/data/resource.ts', summary: 'plan task T01 (schema migration) has no corresponding change in the diff', failureScenario: FS }], propertiesChecked: PROPS }
           : { verdict: 'PASS', findings: [], propertiesChecked: PROPS }
       },
     },
@@ -811,10 +813,10 @@ await test('round-0 domainsSelected is preserved into the round-2 re-review hint
     // round 0: blocking + domains → triggers fix round 1
     {
       match: (l) => l === 'review:r0',
-      reply: { verdict: 'FAIL', findings: [{ severity: 'Critical', summary: 'c0' }], domainsSelected: ['auth', 'api'] },
+      reply: { verdict: 'FAIL', findings: [{ severity: 'Critical', summary: 'c0', failureScenario: FS }], propertiesChecked: PROPS, domainsSelected: ['auth', 'api'] },
     },
     // round 1 re-review: still blocking, returns NO domainsSelected → triggers fix round 2
-    { match: (l) => l === 'review:r1', reply: { verdict: 'FAIL', findings: [{ severity: 'Critical', summary: 'c1' }] } },
+    { match: (l) => l === 'review:r1', reply: { verdict: 'FAIL', findings: [{ severity: 'Critical', summary: 'c1', failureScenario: FS }], propertiesChecked: PROPS } },
     // round 2 re-review: clean → loop ends
     { match: (l) => l === 'review:r2', reply: { verdict: 'PASS', findings: [], propertiesChecked: PROPS } },
     { match: (l) => /^codex:/.test(l), reply: { source: 'codex', findings: [], evidence: CODEX_EVIDENCE } },
@@ -1006,9 +1008,14 @@ await test('TEAM proof-of-work: a plan-compliance leg with no findings AND no pr
   const h = makeHarness(rules, teamGate)
   await assert.rejects(
     () => buildWorkflow()(h.agent, h.parallel, null, h.log, h.phase, { ...baseArgs }, null, h.workflow),
-    /plan-compliance leg returned an empty findings array AND no propertiesChecked/,
+    /plan-compliance leg is INCOMPLETE \[plan-compliance:no-proof\]/,
     'an unproven compliance leg is INCOMPLETE, not a compliant plan',
   )
+  // The abort lands AFTER the commit stage, so the error must name the real recoveries — a bare
+  // "re-run the pipeline" dead-ends at the Commit stage on an empty diff.
+  const err = await buildWorkflow()(h.agent, h.parallel, null, h.log, h.phase, { ...baseArgs }, null, h.workflow).catch((e) => e)
+  assert.ok(/git reset --hard base123/.test(err.message), 'the abort names the pre-impl sha to reset to')
+  assert.ok(/\/iago-prfix/.test(err.message), 'and the keep-the-commit recovery')
 })
 
 await test('an INCOMPLETE team gate releases the pipeline lock before throwing', async () => {
@@ -1129,9 +1136,314 @@ await test('twin sync: the proof-of-work RUNTIME guard exists in execute-pipelin
   // it stayed green while the runtime rule lived in one file only — the PR #96 twin-drift shape.
   assert.ok(/function hasProperties\(/.test(SRC), 'twin declares hasProperties')
   assert.ok(/function foundNothing\(/.test(SRC), 'twin declares foundNothing')
-  assert.ok(/opus-review:no-proof/.test(SRC) && /codex:no-proof/.test(SRC), 'twin emits the same no-proof leg keys')
-  assert.ok(/legProved\(codex, 'codex'\)/.test(SRC), 'twin applies the guard to the inline codex leg')
-  assert.ok(/legProved\(review, 'review'\)/.test(SRC), 'twin applies the guard to the inline Opus leg')
+  assert.ok(/function provenProperties\(/.test(SRC), 'twin only counts EVIDENCED properties as proof')
+  assert.ok(/function violatedProperties\(/.test(SRC), 'twin tracks VIOLATED properties')
+  assert.ok(/legNoProofKey\('opus-review'/.test(SRC) && /legNoProofKey\('codex'/.test(SRC), 'twin emits the same no-proof leg keys')
+  assert.ok(/:violated-unreported/.test(SRC), 'twin carries the violated-but-unreported breach key')
+  assert.ok(/legDefect\(codex, 'codex'\)/.test(SRC), 'twin applies the guard to the inline codex leg')
+  assert.ok(/legDefect\(review, 'review'\)/.test(SRC), 'twin applies the guard to the inline Opus leg')
+  assert.ok(/required: \['property', 'verdict', 'evidence'\]/.test(SRC), 'twin PROPERTY requires evidence')
+})
+
+// ════ Suite E — verification contract, round-2 hardening ═════════════════════════════
+// Round 1 landed the proof-of-work rule with three holes the dual-adversarial pass found:
+// an UNEVIDENCED property counted as proof, ONE throwaway finding bought a leg out of the
+// rule entirely, and a VIOLATED property alongside an empty findings array read as clean.
+// Plus: the inline verdict was read off the Opus leg alone, the lock release was
+// unconditional + unverified, and a no-proof abort dead-ended the operator.
+
+await test('an UNEVIDENCED property is not proof of work — a leg that "reviewed the diff" with no file:line fails closed', async () => {
+  // RED before the fix: hasProperties() only tested Array.isArray && length>0, so one
+  // fabricated line ({property:'reviewed the diff', verdict:'HOLDS'}) cleared the guard and the
+  // pipeline opened the PR + tagged @claude over a leg that read nothing.
+  const h = makeHarness(
+    inlineRules([
+      {
+        match: (l) => /^review:/.test(l),
+        reply: { verdict: 'PASS', findings: [], propertiesChecked: [{ property: 'reviewed the diff', verdict: 'HOLDS' }] },
+      },
+    ]),
+  )
+  await assert.rejects(
+    () => buildWorkflow()(h.agent, h.parallel, null, h.log, h.phase, { ...baseArgs, skipStress: true }, null, null),
+    /opus-review:no-proof/,
+    'an unevidenced property is an assertion, not proof',
+  )
+  assert.ok(!h.calls.some((c) => c.label === 'create-pr-tag'), 'no PR over an unevidenced leg')
+})
+
+await test('a VIOLATED property with an EMPTY findings array fails closed (violated-unreported), never a clean PASS', async () => {
+  // RED before the fix: foundNothing(review)=true but hasProperties(review)=true → legProved
+  // returned true, gateFindings was empty, zero fix rounds, PR opened, and the summary + NDJSON
+  // recorded "verdict PASS" while the leg's own VIOLATED verdict was discarded with the session.
+  const h = makeHarness(
+    inlineRules([
+      {
+        match: (l) => /^review:/.test(l),
+        reply: {
+          verdict: 'PASS',
+          findings: [],
+          propertiesChecked: [{ property: 'tenant filter applied to the aggregate query', verdict: 'VIOLATED', evidence: 'src/api/report.ts:88' }],
+        },
+      },
+    ]),
+  )
+  await assert.rejects(
+    () => buildWorkflow()(h.agent, h.parallel, null, h.log, h.phase, { ...baseArgs, skipStress: true }, null, null),
+    /opus-review:violated-unreported/,
+    'a recorded violation with nothing reported is a contract breach, not a clean leg',
+  )
+  assert.ok(!h.calls.some((c) => c.label === 'create-pr-tag'), 'no PR is opened over an unreported violation')
+})
+
+await test('VIOLATED properties reach the RETURN and the durable summary instead of dying with the session', async () => {
+  const VIOLATION = { property: 'aggregate query is tenant-scoped', verdict: 'VIOLATED', evidence: 'src/api/report.ts:88' }
+  const h = makeHarness(
+    inlineRules([
+      {
+        match: (l) => l === 'review:r0',
+        reply: {
+          verdict: 'FAIL',
+          findings: [{ severity: 'Critical', summary: 'cross-tenant read on the aggregate', file: 'src/api/report.ts', failureScenario: FS }],
+          propertiesChecked: [VIOLATION],
+        },
+      },
+      { match: (l) => l === 'review:r1', reply: { verdict: 'PASS', findings: [], propertiesChecked: PROPS } },
+      { match: (l) => /^fix:/.test(l), reply: { status: 'DONE' } },
+      { match: (l) => /^rebuild:/.test(l), reply: { passed: true } },
+    ]),
+  )
+  const out = await buildWorkflow()(h.agent, h.parallel, null, h.log, h.phase, { ...baseArgs, skipStress: true }, null, null)
+  assert.deepStrictEqual(
+    out.violatedProperties.map((p) => p.property),
+    ['aggregate query is tenant-scoped'],
+    'the pipeline return carries what a leg DISPROVED',
+  )
+  const summaryCall = h.calls.find((c) => c.label === 'summary')
+  assert.ok(/aggregate query is tenant-scoped/.test(summaryCall.prompt), 'the durable summary records the violated property')
+  assert.ok(/"violated":1/.test(summaryCall.prompt), 'the NDJSON ledger counts it')
+})
+
+await test('one throwaway Minor does NOT buy a leg out of the proof-of-work rule', async () => {
+  // RED before the fix: legProved short-circuited on `!foundNothing(r)` — a degraded leg that
+  // emitted a single nit and read no source file was byte-indistinguishable from a thorough
+  // clean review, and (since Minors no longer spend a fix round) the bypass was free.
+  const h = makeHarness(
+    inlineRules([
+      {
+        match: (l) => /^review:/.test(l),
+        reply: {
+          verdict: 'PASS_WITH_CONCERNS',
+          findings: [{ severity: 'Minor', summary: 'unused var', file: 'a.ts', failureScenario: FS }],
+          propertiesChecked: [],
+        },
+      },
+    ]),
+  )
+  await assert.rejects(
+    () => buildWorkflow()(h.agent, h.parallel, null, h.log, h.phase, { ...baseArgs, skipStress: true }, null, null),
+    /opus-review:no-proof/,
+    'proof of work is required on EVERY return, not only an empty-findings one',
+  )
+})
+
+await test('an unproven leg gets ONE corrective re-dispatch and a conformant redo completes the run', async () => {
+  // The guard fires AFTER the commit stage, where a bare throw strands a committed
+  // implementation with no PR. An unproven return is usually a formatting slip, so name the
+  // defect and re-dispatch once before failing closed.
+  let reviewCalls = 0
+  const h = makeHarness(
+    inlineRules([
+      {
+        match: (l) => /^review:/.test(l),
+        reply: () => {
+          reviewCalls++
+          return reviewCalls === 1
+            ? { verdict: 'PASS', findings: [], propertiesChecked: [] }
+            : { verdict: 'PASS', findings: [], propertiesChecked: PROPS }
+        },
+      },
+      { match: (l) => /^review-reprove:/.test(l), reply: { verdict: 'PASS', findings: [], propertiesChecked: PROPS } },
+    ]),
+  )
+  const out = await buildWorkflow()(h.agent, h.parallel, null, h.log, h.phase, { ...baseArgs, skipStress: true }, null, null)
+  const reprove = h.calls.find((c) => c.label === 'review-reprove:r0')
+  assert.ok(reprove, 'the unproven leg is re-dispatched exactly once')
+  assert.ok(/CORRECTIVE RE-RUN/.test(reprove.prompt), 'the re-dispatch names the contract rejection')
+  assert.ok(/no proof of work/.test(reprove.prompt), 'and the exact defect, so the retry is informed')
+  assert.strictEqual(out.reviewVerdict, 'PASS', 'a conformant redo completes the run normally')
+  assert.ok(h.calls.some((c) => c.label === 'create-pr-tag'), 'the PR is opened after a successful re-prove')
+})
+
+await test('a post-commit abort names the real recovery (reset sha / manual PR), not a bare "re-run"', async () => {
+  // "re-run the pipeline" dead-ends: PREP passes on a clean tree, the impl agent finds the plan
+  // already implemented, and the Commit stage returns BLOCKED on an empty diff.
+  const h = makeHarness(
+    inlineRules([{ match: (l) => /^codex:/.test(l), reply: { source: 'codex', findings: [], evidence: '   ' } }]),
+  )
+  const err = await buildWorkflow()(h.agent, h.parallel, null, h.log, h.phase, { ...baseArgs, skipStress: true }, null, null).catch((e) => e)
+  assert.ok(/codex:no-proof/.test(err.message), 'the offending leg is named')
+  assert.ok(/git reset --hard abc123/.test(err.message), 'the abort names the pre-impl sha the summary stage never recorded')
+  assert.ok(/\/iago-prfix/.test(err.message), 'and the keep-the-commit recovery path')
+})
+
+await test('INLINE verdict counts BOTH legs: a Codex-only Minor records PASS_WITH_CONCERNS, never a clean PASS', async () => {
+  // RED before the fix: `verdict = review.verdict` — the Opus leg alone. A Minor raised only by
+  // the Codex leg left `.iago/summaries/{plan}.md` and pipeline-runs.ndjson reading "PASS" with
+  // an open defect in the backlog, contradicting the rule this contract ships and diverging from
+  // the team-gate branch on identical evidence.
+  const h = makeHarness(
+    inlineRules([
+      { match: (l) => /^review:/.test(l), reply: { verdict: 'PASS', findings: [], propertiesChecked: PROPS } },
+      {
+        match: (l) => /^codex:/.test(l),
+        reply: {
+          source: 'codex',
+          evidence: CODEX_EVIDENCE,
+          findings: [{ severity: 'Minor', summary: 'stale comment references a removed flag', file: 'b.ts', failureScenario: FS }],
+        },
+      },
+    ]),
+  )
+  const out = await buildWorkflow()(h.agent, h.parallel, null, h.log, h.phase, { ...baseArgs, skipStress: true }, null, null)
+  assert.strictEqual(out.fixRounds, 0, 'a Minor still never spends a fix round')
+  assert.strictEqual(out.minorRemaining, 1, 'the Codex Minor is in the backlog')
+  assert.strictEqual(out.reviewVerdict, 'PASS_WITH_CONCERNS', 'the recorded verdict reflects the whole gate, not one leg')
+  const summaryCall = h.calls.find((c) => c.label === 'summary')
+  assert.ok(/"verdict":"PASS_WITH_CONCERNS"/.test(summaryCall.prompt), 'the NDJSON ledger stays queryable for genuinely clean runs')
+})
+
+await test('the Minor backlog dedupes a RE-WORDED restatement of the same never-fixed Minor', async () => {
+  // RED before the fix: the key embedded the LLM-authored summary and the reporting leg, so a
+  // fresh re-review agent phrasing the same defect differently created a new entry —
+  // minorRemaining inflating to findings × rounds and duplicates filling the @claude comment's
+  // 10-entry cap, pushing distinct Minors into "(+N more)".
+  const teamGate = (n) =>
+    n === 1
+      ? {
+          clean: false, blocking: 1, gateStatus: 'COMPLETE', verdict: 'FAIL', codexSource: 'codex',
+          findings: [{ severity: 'Critical', summary: 'real blocker', failureScenario: FS, by: 'opus' }],
+          backlog: [{ severity: 'Minor', summary: 'Missing null check on user.id', file: 'a.ts', failureScenario: FS, by: 'opus' }],
+        }
+      : {
+          clean: true, blocking: 0, gateStatus: 'COMPLETE', verdict: 'PASS', codexSource: 'codex', findings: [],
+          // Same defect, re-authored by a fresh agent and attributed to a different leg.
+          backlog: [{ severity: 'Minor', summary: 'Missing null guard for user.id', file: 'a.ts', failureScenario: FS, by: 'lens:codeQuality' }],
+        }
+  const h = makeHarness(stageRules(TIER2_PLAN), teamGate)
+  const out = await buildWorkflow()(h.agent, h.parallel, null, h.log, h.phase, { ...baseArgs }, null, h.workflow)
+  assert.strictEqual(out.fixRounds, 1, 'the Critical drove one fix round')
+  assert.strictEqual(out.minorRemaining, 1, 'one DEFECT, not one entry per round')
+})
+
+await test('the pipeline lock carries an ownership token and no release ever deletes another run\'s lock', async () => {
+  // RED before the fix: every release was an unconditional `rm -rf ${LOCK_DIR}`. After the 3h
+  // stale window handed the lock to a SECOND run, the first run's summary (or its abort path)
+  // deleted that run's LIVE lock and two pipelines could commit on one worktree.
+  const h = makeHarness(inlineRules())
+  await buildWorkflow()(h.agent, h.parallel, null, h.log, h.phase, { ...baseArgs, skipStress: true }, null, null)
+  const acquire = h.calls.find((c) => c.label === 'lock-acquire')
+  const tokenMatch = acquire.prompt.match(/echo "([^"]+)" > \.iago\/state\/\.pipeline\.lock\.d\/token/)
+  assert.ok(tokenMatch, 'acquire writes an ownership token into the lock dir')
+  const summaryCall = h.calls.find((c) => c.label === 'summary')
+  assert.ok(
+    summaryCall.prompt.includes(`cat .iago/state/.pipeline.lock.d/token 2>/dev/null)" = "${tokenMatch[1]}"`),
+    'the summary release is conditional on THIS run still owning the lock',
+  )
+  assert.ok(/not-ours/.test(summaryCall.prompt), 'and leaves a lock it does not own intact')
+})
+
+await test('a FAILED lock release after an abort is reported as a failure, never logged as "released"', async () => {
+  // RED before the fix: releaseLockBestEffort logged "released pipeline lock after abort" without
+  // inspecting the agent's result, so a real failure (a Windows handle open on the lock dir) read
+  // as success and the operator's prescribed re-run then died on "another pipeline is running" —
+  // a second, contradictory diagnosis.
+  const logs = []
+  const h = makeHarness(
+    inlineRules([
+      { match: (l) => /^review:/.test(l), reply: { verdict: 'PASS', findings: [], propertiesChecked: [] } },
+      { match: (l) => l === 'lock-release-on-abort', reply: { status: 'BLOCKED', notes: 'rm -rf: permission denied' } },
+    ]),
+  )
+  await assert.rejects(
+    () => buildWorkflow()(h.agent, h.parallel, null, (m) => logs.push(m), h.phase, { ...baseArgs, skipStress: true }, null, null),
+    /opus-review:no-proof/,
+  )
+  assert.ok(
+    logs.some((l) => /pipeline lock NOT released/.test(l) && /rmdir/.test(l)),
+    'a BLOCKED release is surfaced with the manual-clear instruction',
+  )
+  assert.ok(!logs.some((l) => /^released pipeline lock/.test(l)), 'and is never reported as a successful release')
+})
+
+await test('a lock the run no longer owns is left INTACT on abort (token mismatch is a correct outcome)', async () => {
+  const logs = []
+  const h = makeHarness(
+    inlineRules([
+      { match: (l) => /^review:/.test(l), reply: { verdict: 'PASS', findings: [], propertiesChecked: [] } },
+      { match: (l) => l === 'lock-release-on-abort', reply: { status: 'DONE', notes: 'not-ours' } },
+    ]),
+  )
+  await assert.rejects(
+    () => buildWorkflow()(h.agent, h.parallel, null, (m) => logs.push(m), h.phase, { ...baseArgs, skipStress: true }, null, null),
+    /opus-review:no-proof/,
+  )
+  assert.ok(
+    logs.some((l) => /left intact after abort/.test(l)),
+    'the run reports that another holder owns the lock instead of claiming a release',
+  )
+})
+
+await test('a long run refreshes the lock heartbeat at each fix round (a live Tier-3 run is not reclaimed as stale)', async () => {
+  // The 3h stale window is measured from ACQUIRE time and was never refreshed, so a healthy
+  // long-running pipeline was reclaimable while alive — the precondition for two pipelines on
+  // one worktree.
+  const h = makeHarness(
+    inlineRules([
+      {
+        match: (l) => l === 'review:r0',
+        reply: { verdict: 'FAIL', findings: [{ severity: 'Critical', summary: 'boom', failureScenario: FS }], propertiesChecked: PROPS },
+      },
+      { match: (l) => l === 'review:r1', reply: { verdict: 'PASS', findings: [], propertiesChecked: PROPS } },
+      { match: (l) => l === 'lock-heartbeat', reply: { status: 'DONE', notes: 'refreshed' } },
+      { match: (l) => /^fix:/.test(l), reply: { status: 'DONE' } },
+      { match: (l) => /^rebuild:/.test(l), reply: { passed: true } },
+    ]),
+  )
+  const out = await buildWorkflow()(h.agent, h.parallel, null, h.log, h.phase, { ...baseArgs, skipStress: true }, null, null)
+  assert.strictEqual(out.fixRounds, 1)
+  const beat = h.calls.find((c) => c.label === 'lock-heartbeat')
+  assert.ok(beat, 'the fix round refreshes the lock timestamp')
+  assert.ok(/acquired/.test(beat.prompt) && /token/.test(beat.prompt), 'the heartbeat is token-guarded and touches `acquired`')
+})
+
+await test('the inline codex leg may not drop a Codex-reported defect for a missing failureScenario', async () => {
+  // The required failureScenario plus "a finding with no failureScenario is a worry, do not emit
+  // it" is a suppression channel on the ONE leg that only MAPS another model's free text: a [P0]
+  // with no reproduction steps would become findings:[] while the non-empty `evidence` string
+  // still counted the leg as fully proven, and the defect would ship.
+  const h = makeHarness(inlineRules())
+  await buildWorkflow()(h.agent, h.parallel, null, h.log, h.phase, { ...baseArgs, skipStress: true }, null, null)
+  const codexPrompt = h.calls.find((c) => c.label === 'codex:r0').prompt
+  assert.ok(/NEVER DROP A CODEX-REPORTED DEFECT/.test(codexPrompt), 'the mapping leg is told not to suppress')
+  assert.ok(/DERIVE one from the diff/.test(codexPrompt), 'it derives the scenario from the diff it can read')
+  assert.ok(/still emit the finding at the mapped severity/.test(codexPrompt), 'and emits the finding regardless')
+})
+
+await test('the team gate receives the PLAN for its INTENT axis, not just the stress block', async () => {
+  // RED before the fix: dual-adversarial.js derived INTENT from `stressBlock`. A PRE-STRESSED
+  // plan forwards an EMPTY stress block, so the DEEPEST gate ran on the "no plan in context"
+  // degraded branch and verified intent from commit subjects; a plan WITH notes had its stress
+  // NOTES read as "the plan acceptance criteria".
+  const teamGate = () => ({
+    clean: true, blocking: 0, gateStatus: 'COMPLETE', verdict: 'PASS', codexSource: 'codex', findings: [],
+  })
+  const h = makeHarness(stageRules(TIER3_PLAN), teamGate)
+  await buildWorkflow()(h.agent, h.parallel, null, h.log, h.phase, { ...baseArgs, skipStress: true }, null, h.workflow)
+  assert.ok(h.workflowCalls.length > 0, 'the Tier-3 plan delegated to the team gate')
+  for (const c of h.workflowCalls) {
+    assert.strictEqual(c.wargs.plan, baseArgs.plan, 'every delegation forwards the plan path for the INTENT axis')
+  }
 })
 
 console.log(`\n${passed} passed, ${failed} failed`)

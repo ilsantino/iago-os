@@ -88,12 +88,16 @@ const FINDING = {
 }
 // PROOF-OF-WORK unit — twin of dual-adversarial.js's PROPERTY. A leg reports what it VERIFIED,
 // not only what it found, so a clean review is auditable instead of merely silent.
+// `evidence` is REQUIRED (round-2 fix): an unevidenced property is a claim, not proof — a leg that
+// read no file can emit {property:'reviewed the diff', verdict:'HOLDS'} and clear the runtime
+// guard, which is the same silent no-op the contract exists to close, one fabricated line wider.
 const PROPERTY = {
   type: 'object',
-  required: ['property', 'verdict'],
+  required: ['property', 'verdict', 'evidence'],
   properties: {
     property: { type: 'string' },
     verdict: { type: 'string', enum: ['HOLDS', 'VIOLATED'] },
+    // file:line (or the exact command output) that proves the verdict. Never empty.
     evidence: { type: 'string' },
   },
 }
@@ -336,19 +340,85 @@ function hasBlocking(findings) {
 //     counts (requiring properties there would make every clean Codex run a re-run);
 //   - a CLAUDE-authored leg (the Opus review leg, plan-compliance, or source='claude-fallback')
 //     must enumerate `propertiesChecked`.
+// THREE round-2 hardenings, all twinned in dual-adversarial.js:
+//   (a) proof is required UNCONDITIONALLY, not only when `findings` is empty. The old
+//       `if (!foundNothing(r)) return true` carve-out meant one throwaway Minor bought a leg out of
+//       the whole contract — and since Minors no longer spend a fix round, that bypass was free and
+//       invisible (a degraded leg emitting one nit read exactly like a thorough clean review).
+//   (b) a property only counts as proof when it carries BOTH a non-empty `property` and non-empty
+//       `evidence` — an unevidenced one-liner is an assertion, not proof of work.
+//   (c) a VIOLATED property with an EMPTY findings array is a contract breach, not a clean leg:
+//       the leg recorded a violation and then reported nothing actionable, so the violation would
+//       die with the session while the gate reported PASS. Fail closed on it.
 // EDIT BOTH FILES, ALWAYS (see the twin note above FINDING).
+function provenProperties(r) {
+  if (!r || !Array.isArray(r.propertiesChecked)) return []
+  return r.propertiesChecked.filter(
+    (p) =>
+      p &&
+      typeof p.property === 'string' &&
+      p.property.trim().length > 0 &&
+      typeof p.evidence === 'string' &&
+      p.evidence.trim().length > 0,
+  )
+}
 function hasProperties(r) {
-  return Array.isArray(r && r.propertiesChecked) && r.propertiesChecked.length > 0
+  return provenProperties(r).length > 0
+}
+function violatedProperties(r) {
+  if (!r || !Array.isArray(r.propertiesChecked)) return []
+  return r.propertiesChecked.filter((p) => p && p.verdict === 'VIOLATED')
 }
 function foundNothing(r) {
   return !r || !Array.isArray(r.findings) || r.findings.length === 0
 }
 function legProved(r, kind) {
-  if (!foundNothing(r)) return true // it reported something — that IS the work
   if (kind === 'codex' && r && r.source === 'codex') {
     return (typeof r.evidence === 'string' && r.evidence.trim().length > 0) || hasProperties(r)
   }
   return hasProperties(r)
+}
+// '' when the leg honored the contract; otherwise the exact defect, used both as the corrective
+// re-dispatch instruction and as the abort reason.
+function legDefect(r, kind) {
+  if (!legProved(r, kind)) {
+    return kind === 'codex' && r && r.source === 'codex'
+      ? 'no proof of work — the `evidence` string is empty and propertiesChecked carries no evidenced entry'
+      : 'no proof of work — propertiesChecked is empty or every entry is missing its `property` text or its `evidence` (file:line)'
+  }
+  if (violatedProperties(r).length > 0 && foundNothing(r)) {
+    return 'propertiesChecked reported a VIOLATED property while `findings` was EMPTY — every VIOLATED verdict must ship the matching finding (with a failureScenario), or the violation is silently discarded'
+  }
+  return ''
+}
+// The no-proof leg key routed to the abort message. Distinguishes an unreviewed leg from one that
+// found a violation and then failed to report it — different corrective actions for the operator.
+function legNoProofKey(name, r, kind) {
+  return violatedProperties(r).length > 0 && foundNothing(r) && legProved(r, kind)
+    ? `${name}:violated-unreported`
+    : `${name}:no-proof`
+}
+// Appended to a leg's own prompt for its ONE corrective re-dispatch. Names the exact defect so the
+// retry is informed (a blind re-run of the same prompt reproduces the same slip).
+function correctiveBlock(defect) {
+  return `
+
+CORRECTIVE RE-RUN — your previous return was REJECTED by the verification contract: ${defect}.
+Redo the review and return a CONFORMANT result this time:
+- propertiesChecked must list EVERY property you actually verified, each with a non-empty \`property\`, a HOLDS/VIOLATED \`verdict\`, and non-empty \`evidence\` (file:line, or the exact command output). Properties you did not really check must NOT be invented — verify them now.
+- Every VIOLATED property MUST have a matching entry in \`findings\` (with its failureScenario). A violation you record but do not report is discarded.
+- An empty \`findings\` array is fine when the code is clean; an empty/unevidenced propertiesChecked is not.
+This is your LAST attempt: the pipeline fails closed (aborts the run) if this return is unproven too.`
+}
+// One corrective re-dispatch, fully guarded: never throws (a failed re-dispatch just leaves the
+// original unproven leg in place, and the caller then fails closed with the real defect).
+async function reproveLeg(fn, label) {
+  try {
+    return await fn()
+  } catch (e) {
+    log(`${label}: corrective re-dispatch failed (${String(e).slice(0, 160)}) — keeping the unproven result`)
+    return null
+  }
 }
 
 // Best-effort lock release for a FAIL-CLOSED abort (an INCOMPLETE gate or an unproven leg).
@@ -358,18 +428,66 @@ function legProved(r, kind) {
 // INCOMPLETE reachable from a leg FORMATTING slip (not only an infra crash), and every such
 // abort would otherwise park the per-project lock for the full 3h stale window. LOCK_DIR is
 // declared in the Flow section below and is only READ here, at call time (always post-acquire).
+// OWNERSHIP-GUARDED (round-2 fix): the release is conditional on the lock still holding THIS run's
+// token. An unconditional `rm -rf` deletes whatever lock is there — including a SECOND run's live
+// lock after the 3h stale-reclaim handed it over (this run has no heartbeat, so a long Tier-3 run
+// IS reclaimable while alive), which would let two pipelines commit on one worktree.
+// HONEST (round-2 fix): the agent's result is inspected. Logging "released" unconditionally means a
+// failed release (a Windows handle open on the lock dir) reads as success, and the operator's
+// prescribed re-run then dies on "another pipeline is running" — a second, contradictory diagnosis.
 async function releaseLockBestEffort(reason) {
   try {
-    await agent(
-      `${PREAMBLE}\n\nThe pipeline is ABORTING (${reason}). Release the per-project pipeline lock so the next run on this projectDir is not blocked. In ${projectDir} run EXACTLY:\n  rm -rf ${LOCK_DIR}\nRun nothing else — do NOT edit, stage, commit, or push. Return status=DONE if the directory is gone, BLOCKED otherwise.`,
+    const res = await agent(
+      `${PREAMBLE}\n\nThe pipeline is ABORTING (${reason}). Release the per-project pipeline lock — but ONLY if this run still owns it — so the next run on this projectDir is not blocked. In ${projectDir} run EXACTLY:\n  if [ "$(cat ${LOCK_DIR}/token 2>/dev/null)" = "${LOCK_TOKEN}" ]; then rm -rf ${LOCK_DIR} && echo released; else echo "not-ours"; fi\nRun nothing else — do NOT edit, stage, commit, or push. Return status=DONE with notes="released" if it printed released and ${LOCK_DIR} is gone; status=DONE with notes="not-ours" if the token did not match (another run owns the lock — leave it alone, this is a correct outcome); status=BLOCKED with the error if the removal failed.`,
       { label: 'lock-release-on-abort', phase: 'Review', schema: IMPL_SCHEMA, model: 'haiku' },
     )
-    log(`released pipeline lock after abort (${reason})`)
+    if (!res || res.status !== 'DONE') {
+      log(
+        `WARNING: pipeline lock NOT released after abort (${reason}) — agent ${res ? res.status : 'null'}${res && res.notes ? ': ' + res.notes : ''}; clear it manually with \`rmdir ${LOCK_DIR}\` BEFORE re-running, or the re-run will report "another pipeline is running on this projectDir"`,
+      )
+    } else if (/not-ours/i.test(res.notes || '')) {
+      log(`pipeline lock left intact after abort (${reason}) — it is owned by another run (token mismatch)`)
+    } else {
+      log(`released pipeline lock after abort (${reason})`)
+    }
   } catch (e) {
     log(
       `WARNING: best-effort lock release failed after abort (${reason}): ${String(e).slice(0, 120)} — clear it manually with \`rmdir ${LOCK_DIR}\``,
     )
   }
+}
+
+// HEARTBEAT — refresh the lock's `acquired` timestamp while this run is still alive.
+// The stale-reclaim window is 3h measured from ACQUIRE time, and a Tier-3 run (team gate +
+// skeptic panel + 3 fix rounds) can exceed it while perfectly healthy — a second run would then
+// judge this one dead and reclaim the lock, putting two pipelines on one worktree. Refreshing at
+// each fix-round boundary keeps a live run's timestamp fresh. TOKEN-GUARDED: if the lock is no
+// longer ours (an earlier reclaim already happened) the heartbeat does NOT recreate or steal it.
+// Fully guarded and best-effort — a failed heartbeat only risks the pre-existing reclaim, so it
+// must never abort a healthy run.
+async function touchLockBestEffort(reason) {
+  try {
+    const res = await agent(
+      `${PREAMBLE}\n\nThe pipeline is still running (${reason}). Refresh the pipeline lock heartbeat — but ONLY if this run still owns the lock. In ${projectDir} run EXACTLY:\n  if [ "$(cat ${LOCK_DIR}/token 2>/dev/null)" = "${LOCK_TOKEN}" ]; then date -u +%Y-%m-%dT%H:%M:%SZ > ${LOCK_DIR}/acquired && echo refreshed; else echo "not-ours"; fi\nRun nothing else — do NOT create the lock directory, do NOT edit, stage, commit, or push. Return status=DONE with notes = the exact word it printed ("refreshed" or "not-ours"); status=BLOCKED with the error if the command failed.`,
+      { label: 'lock-heartbeat', phase: 'Fix', schema: IMPL_SCHEMA, model: 'haiku' },
+    )
+    if (!res || res.status !== 'DONE') {
+      log(`WARNING: pipeline lock heartbeat did not run (${reason}) — a run longer than the 3h stale window may be reclaimed by a second run`)
+    } else if (/not-ours/i.test(res.notes || '')) {
+      log(`WARNING: pipeline lock is NO LONGER OWNED by this run (${reason}) — another run reclaimed it (3h stale window); this run will not delete it, but a concurrent pipeline may be active on this projectDir`)
+    }
+  } catch (e) {
+    log(`WARNING: pipeline lock heartbeat failed (${reason}): ${String(e).slice(0, 120)}`)
+  }
+}
+
+// Recovery text appended to every POST-COMMIT abort. The implementation is already committed at
+// that point, so the bare "re-run the pipeline" instruction dead-ends: PREP passes (clean tree),
+// the impl agent finds the plan already implemented and edits nothing, and the Commit stage returns
+// BLOCKED on an empty diff. Name the two real recoveries instead, including the pre-impl sha the
+// summary stage never got to record.
+function abortRecovery(preImplSha) {
+  return ` RECOVERY: the implementation IS already committed (${preImplSha}..HEAD), so a plain re-run will dead-end at the Commit stage ("implementation produced an empty diff"). Either (a) keep the commit: push the branch, open the PR manually, and run /iago-prfix to tag @claude for the async review; or (b) discard it first: \`git reset --hard ${preImplSha}\` in ${projectDir}, then re-run the pipeline on the plan.`
 }
 
 // ─── Deterministic risk-tier classifier (60/30/10 rule-based layer — ZERO LLM) ──────
@@ -480,7 +598,7 @@ Assemble your context (in ${projectDir}). The implementation is already COMMITTE
 
 Categorize findings as Critical, Important, or Minor, each with a concrete failureScenario (inputs/state → the wrong output or crash). A finding with no failureScenario is a worry, not a finding — do not emit it as one.
 
-PROOF OF WORK (required): return propertiesChecked listing EVERY property you evaluated with its HOLDS/VIOLATED verdict and evidence. A property that HOLDS is a real, welcome result. An empty findings array is a VALID result ONLY alongside a non-empty propertiesChecked — a leg that reports neither did not review anything.
+PROOF OF WORK (required on EVERY return — findings or no findings): return propertiesChecked listing EVERY property you evaluated with its HOLDS/VIOLATED verdict and NON-EMPTY evidence (file:line, or the exact command output). A property that HOLDS is a real, welcome result. An unevidenced property is an assertion, not proof, and does not count. Every VIOLATED verdict MUST have its matching entry in findings (with a failureScenario) — a violation you record but do not report is discarded. A leg whose propertiesChecked is empty or unevidenced did not review anything, even if it reported a finding.
 
 Verdict: PASS = no findings; PASS_WITH_CONCERNS = only Minor; FAIL = any Critical or Important.`
 }
@@ -503,6 +621,7 @@ PROOF OF WORK (required — a leg that reports nothing and proves nothing reads 
 - ALWAYS return \`evidence\`: a non-empty string naming what you actually ran and what it returned — resolved companion path + exact command + Codex's verdict line, or (on the fallback) the changed files you read in full.
 - source="claude-fallback" is a CLAUDE-authored review, so it must ALSO return \`propertiesChecked\`: every property evaluated with its HOLDS/VIOLATED verdict and file:line evidence. source="codex" does not need propertiesChecked — \`evidence\` stands in for it.
 - Every finding needs a concrete failureScenario (inputs/state → the wrong output or crash).
+- NEVER DROP A CODEX-REPORTED DEFECT for lack of a failureScenario. codex-companion emits free text and often gives no reproduction steps; the failureScenario bar applies to YOUR OWN analysis, never as a license to suppress another model's finding. When Codex reports a defect without a scenario, DERIVE one from the diff and the file you can read yourself (you have both), and if the code genuinely does not let you construct one, say so in the failureScenario ("Codex reported X at <file>; no triggering input could be derived from the diff — verify manually") and still emit the finding at the mapped severity. Silently returning findings:[] because scenarios were missing is a suppression, not a clean review.
 
 Return the structured findings array (empty if clean), source, evidence, and propertiesChecked when applicable. NOTE: a Codex verdict of "approve" / "no material findings" is a SUCCESSFUL codex run with an empty findings array — set source="codex", record the verdict line in evidence, do NOT fall back.`
 }
@@ -603,7 +722,7 @@ FIX session (round ${round} of ${maxRounds}). Findings from the dual-adversarial
 Findings:
 ${JSON.stringify(findings, null, 2)}
 
-Process, in priority order Critical → Important → Minor:
+Process, in priority order Critical → Important (there are no Minors here — the verification contract routes every Minor to the backlog, so the list above is Critical/Important only):
 1. Read the file referenced by the finding IN FULL (not just a snippet).
 2. Apply the smallest correct fix, matching existing style.
 3. For each Critical/Important finding, add or extend a regression test in the same commit — it must fail without the fix and pass with it. Locate by convention (foo.ts → foo.test.ts; bash → test-{name}.{mjs,bats,sh} beside it). If no test infra exists for that path, say so explicitly in notes and skip the test for THAT finding only.
@@ -695,7 +814,7 @@ FAILURE HONESTY (do NOT hallucinate success): if listing the comments OR posting
 Return prUrl, prNumber, branch, and tagStatus.`
 }
 
-function summaryPrompt(preImplSha, prUrl, reviewVerdict, codexSource, rounds, vSameFamily, vDegraded, backlog) {
+function summaryPrompt(preImplSha, prUrl, reviewVerdict, codexSource, rounds, vSameFamily, vDegraded, backlog, violated) {
   // T06 — verification honesty must reach the DURABLE summary artifact, not just the
   // live return object (which dies with the session): a Tier 2/3 run whose skeptic
   // verification was same-family or degraded leaves an audit trail in the .md + NDJSON.
@@ -711,14 +830,27 @@ function summaryPrompt(preImplSha, prUrl, reviewVerdict, codexSource, rounds, vS
   const backlogSection = minors
     ? `, plus a "Minor backlog (reported, not fixed in-loop)" section listing these ${minorCount} finding(s) VERBATIM, one bullet each:\n${minors}\n`
     : ''
+  // VIOLATED PROPERTIES → DURABLE ARTIFACT. A leg's VIOLATED verdict is the strongest evidence
+  // the gate produces (it disproved a property against the code). The runtime guard forces the
+  // matching finding to exist, but the finding's severity is the leg's own call — so persist the
+  // raw violations too, or the audit trail dies with the session while the ledger says PASS.
+  const violations = Array.isArray(violated) ? violated.filter((p) => p && (p.property || p.evidence)) : []
+  const violatedSection = violations.length
+    ? `, plus a "Properties VIOLATED during review" section listing these ${violations.length} entr(y/ies) VERBATIM, one bullet each:\n${violations
+        .map(
+          (p, i) =>
+            `${i + 1}. ${p.by ? `(${p.by}) ` : ''}${String(p.property || '').replace(/\s+/g, ' ')} — evidence: ${String(p.evidence || '(none)').replace(/\s+/g, ' ')}`,
+        )
+        .join('\n')}\n`
+    : ''
   return `${PREAMBLE}
 
 Write the pipeline summary. In ${projectDir}:
 1. mkdir -p .iago/summaries
-2. Write .iago/summaries/${planName}.md with frontmatter (plan, status: done, verified: today's UTC date via  date -u +%Y-%m-%d, pr) and sections: Pipeline Result (review verdict ${reviewVerdict}, codex source ${codexSource}, fix rounds ${rounds}, minor backlog ${minorCount}, PR ${prUrl || '(none)'}${honesty}) and Diff Stats (git diff --stat ${preImplSha}..HEAD)${backlogSection}
-3. Append one NDJSON line to .iago/state/pipeline-runs.ndjson (mkdir -p .iago/state first): {"plan":"${planName}","pr":"${prUrl || ''}","verdict":"${reviewVerdict}","codex":"${codexSource}","rounds":${rounds},"minorRemaining":${minorCount},"vSameFamily":${vSameFamily === true},"vDegraded":${vDegraded === true},"ts":"<date -u +%Y-%m-%dT%H:%M:%SZ>"}
+2. Write .iago/summaries/${planName}.md with frontmatter (plan, status: done, verified: today's UTC date via  date -u +%Y-%m-%d, pr) and sections: Pipeline Result (review verdict ${reviewVerdict}, codex source ${codexSource}, fix rounds ${rounds}, minor backlog ${minorCount}, PR ${prUrl || '(none)'}${honesty}) and Diff Stats (git diff --stat ${preImplSha}..HEAD)${backlogSection}${violatedSection}
+3. Append one NDJSON line to .iago/state/pipeline-runs.ndjson (mkdir -p .iago/state first): {"plan":"${planName}","pr":"${prUrl || ''}","verdict":"${reviewVerdict}","codex":"${codexSource}","rounds":${rounds},"minorRemaining":${minorCount},"violated":${violations.length},"vSameFamily":${vSameFamily === true},"vDegraded":${vDegraded === true},"ts":"<date -u +%Y-%m-%dT%H:%M:%SZ>"}
 4. COMMIT the summary so the working tree is left CLEAN for the next sequential plan's prep guard: git add .iago/summaries/${planName}.md && git commit -m "docs(summary): ${planName} pipeline result". (.iago/state/* is gitignored — do NOT stage it. This commit is local bookkeeping; it is fine that it lands after the PR push and is not part of the PR.)
-5. Release the pipeline lock: run  rm -rf ${LOCK_DIR}  in ${projectDir}.
+5. Release the pipeline lock — ONLY if this run still owns it. In ${projectDir} run EXACTLY:  if [ "$(cat ${LOCK_DIR}/token 2>/dev/null)" = "${LOCK_TOKEN}" ]; then rm -rf ${LOCK_DIR} && echo released; else echo "not-ours"; fi   (a token mismatch means another run reclaimed and now owns the lock — leave it INTACT; deleting it would let two pipelines run on this projectDir. "not-ours" is a successful outcome for this step.)
 Return status=DONE only when ALL of the above steps succeed.`
 }
 
@@ -738,7 +870,7 @@ In ${projectDir}:
 3. For EACH task in the plan, verify the committed changes implement it correctly and completely. Flag every missing, incomplete, or incorrect implementation as a finding — severity Important, or Critical when the omission is security/data-integrity relevant. Do NOT review code quality, style, or anything the diff-side legs cover; plan compliance only. An empty findings array asserts every plan task is verifiably implemented.
 
 READ-ONLY: do NOT edit any file, do NOT stage, do NOT commit, do NOT run any build or test command. Your ONLY permitted operations are: reading files (cat, git show, git diff), reading git history (git log, git diff --name-only). Any write operation here corrupts the pipeline tree.
-PROOF OF WORK (required): return propertiesChecked with ONE entry PER PLAN TASK — property = the task/acceptance criterion, verdict = HOLDS (implemented and verified) or VIOLATED (missing/incomplete/incorrect), evidence = the file:line that implements it or the reason it is absent. This is what makes "every plan task is implemented" auditable instead of merely asserted; an empty findings array is valid ONLY alongside a non-empty propertiesChecked.
+PROOF OF WORK (required on EVERY return): return propertiesChecked with ONE entry PER PLAN TASK — property = the task/acceptance criterion, verdict = HOLDS (implemented and verified) or VIOLATED (missing/incomplete/incorrect), evidence = the file:line that implements it or the reason it is absent (NEVER empty). This is what makes "every plan task is implemented" auditable instead of merely asserted. Every VIOLATED task MUST also appear in findings with its failureScenario — a violation recorded but not reported is discarded and the pipeline fails closed on it.
 
 Return verdict (PASS / PASS_WITH_CONCERNS / FAIL), findings (file, severity, summary, failureScenario) and propertiesChecked.`
 }
@@ -803,7 +935,12 @@ async function runDualAdversarial(label, isReReview, stressBlock, preImplSha, op
         // Forward stressBlock + isReReview so the team gate enforces the SAME stress-note
         // coverage and re-review integrity check as the inline 2-leg — a delegated Tier 2/3
         // review must not be SHALLOWER than the Tier-1 path on either dimension.
-        { projectDir, iagoRoot, base: preImplSha, mode: 'team', lenses, skepticCap, stressBlock, isReReview },
+        // `plan` is forwarded too (round-2 fix): the gate's INTENT axis was wired to stressBlock,
+        // so a pre-stressed plan (stressBlock '') put the DEEPEST gate on the "no plan in context"
+        // degraded branch — verifying intent from commit subjects — while a plan WITH notes had
+        // its stress NOTES mislabelled as "the plan acceptance criteria". The gate now reads the
+        // plan file itself for INTENT.
+        { projectDir, iagoRoot, base: preImplSha, mode: 'team', lenses, skepticCap, stressBlock, isReReview, plan },
       )
     } catch (e) {
       // A thrown team gate (nested workflow() unavailable, or the gate's own
@@ -831,7 +968,7 @@ async function runDualAdversarial(label, isReReview, stressBlock, preImplSha, op
       // block the re-run this error asks for.
       await releaseLockBestEffort(`team gate ${label} gateStatus=${da.gateStatus}`)
       throw new Error(
-        `team gate (${label}) did NOT complete (gateStatus=${da.gateStatus}, incompleteLegs=[${(da.incompleteLegs || []).join(', ')}]) — a core reviewer failed; tier ${tier} requires a COMPLETE team review, failing closed (re-run), NOT downgrading to the inline 2-leg.`,
+        `team gate (${label}) did NOT complete (gateStatus=${da.gateStatus}, incompleteLegs=[${(da.incompleteLegs || []).join(', ')}]) — a core reviewer failed; tier ${tier} requires a COMPLETE team review, failing closed (re-run), NOT downgrading to the inline 2-leg.${abortRecovery(preImplSha)}`,
       )
     }
     // #89 re-gate Critical — run the plan-compliance pass the delegation otherwise
@@ -846,7 +983,7 @@ async function runDualAdversarial(label, isReReview, stressBlock, preImplSha, op
       () => agent(complianceSnapPrompt('before'), { label: 'compliance-pre-snap', phase: 'Review', schema: SNAP_SCHEMA, model: 'haiku' }),
       'compliance-pre-snap',
     )
-    const compliance = await withRetry(
+    let compliance = await withRetry(
       () =>
         agent(planCompliancePrompt(isReReview, preImplSha), {
           label: `plan-compliance:${label}`,
@@ -855,6 +992,25 @@ async function runDualAdversarial(label, isReReview, stressBlock, preImplSha, op
         }),
       `plan-compliance:${label}`,
     )
+    // CORRECTIVE RE-DISPATCH before the fail-closed throw below (round-2 fix). The proof-of-work
+    // guard fires AFTER the commit stage, where an abort strands a committed implementation with
+    // no PR — and an unproven return is usually a FORMATTING slip, not a dead leg. Give it exactly
+    // ONE corrective attempt with the defect named. It runs INSIDE the snapshot bracket so the
+    // read-only guard still covers it.
+    const complianceDefect0 = legDefect(compliance, 'review')
+    if (compliance && complianceDefect0) {
+      log(`plan-compliance (${label}) returned an unproven result (${complianceDefect0}) — one corrective re-dispatch`)
+      const redo = await reproveLeg(
+        () =>
+          agent(`${planCompliancePrompt(isReReview, preImplSha)}${correctiveBlock(complianceDefect0)}`, {
+            label: `plan-compliance-reprove:${label}`,
+            phase: 'Review',
+            schema: REVIEW_SCHEMA,
+          }),
+        `plan-compliance-reprove:${label}`,
+      )
+      if (redo && Array.isArray(redo.findings) && !legDefect(redo, 'review')) compliance = redo
+    }
     const postComplianceSnap = await withRetry(
       () => agent(complianceSnapPrompt('after'), { label: 'compliance-post-snap', phase: 'Review', schema: SNAP_SCHEMA, model: 'haiku' }),
       'compliance-post-snap',
@@ -886,10 +1042,15 @@ async function runDualAdversarial(label, isReReview, stressBlock, preImplSha, op
     // propertiesChecked entry PER PLAN TASK precisely so "every plan task is implemented" is
     // auditable rather than merely asserted — an empty findings array with no properties asserts
     // exactly that with zero evidence, which is an unreviewed leg, not a compliant plan.
-    if (!legProved(compliance, 'review')) {
-      await releaseLockBestEffort(`team gate ${label} plan-compliance:no-proof`)
+    // Proof is required UNCONDITIONALLY (round-2 fix — it was skipped whenever the leg reported
+    // any finding), every property must carry evidence, and a VIOLATED property with no matching
+    // finding is a breach, not a pass.
+    const complianceDefect = legDefect(compliance, 'review')
+    if (complianceDefect) {
+      const key = legNoProofKey('plan-compliance', compliance, 'review')
+      await releaseLockBestEffort(`team gate ${label} ${key}`)
       throw new Error(
-        `team gate (${label}) plan-compliance leg returned an empty findings array AND no propertiesChecked — an "every plan task is implemented" claim must be PROVEN (one property per task), not asserted; INCOMPLETE, failing closed (re-run).`,
+        `team gate (${label}) plan-compliance leg is INCOMPLETE [${key}]: ${complianceDefect}. An "every plan task is implemented" claim must be PROVEN (one evidenced property per task), not asserted; failing closed (re-run).${abortRecovery(preImplSha)}`,
       )
     }
     const merged = [
@@ -945,12 +1106,23 @@ async function runDualAdversarial(label, isReReview, stressBlock, preImplSha, op
       // otherwise erase a real Critical with no visible trace). Propagated verbatim;
       // not re-blocking here — the gate already adjudicated them.
       filtered: Array.isArray(da.filtered) ? da.filtered : [],
+      // VIOLATED properties are an audit trail in their own right: a leg can record a violation
+      // and (mis)file the matching finding at a low severity or not at all. Propagate them so the
+      // orchestrator sees what a leg says it disproved instead of it dying with the session.
+      violatedProperties: [
+        ...(Array.isArray(da.violatedProperties) ? da.violatedProperties : []),
+        ...violatedProperties(compliance).map((p) => ({ ...p, by: 'plan-compliance' })),
+      ],
       // Shape parity with the inline 2-leg's return. The team gate does its own domain
       // routing, so there is no round-0 domainsSelected hint to thread forward.
       domainsSelected: [],
     }
   }
-  const [review, codex] = await parallel([
+  // `let`, not `const`: an unproven leg gets ONE corrective re-dispatch below and its result
+  // REPLACES the rejected one (see the CORRECTIVE RE-DISPATCH block). Do NOT let a formatter
+  // flip this back to `const` — the reassignments below would then throw at runtime.
+  // biome-ignore lint/style/useConst: reassigned by the corrective re-dispatch below
+  let [review, codex] = await parallel([
     () =>
       withRetry(
         () =>
@@ -998,17 +1170,55 @@ async function runDualAdversarial(label, isReReview, stressBlock, preImplSha, op
   // findings=[] → no fix round → PR opened and @claude tagged over a review that read no code.
   // The team gate maps this to gateStatus INCOMPLETE and this file throws on that; here the
   // equivalent fail-closed action IS the throw — a re-run condition, never a /iago-prfix finding.
+  // CORRECTIVE RE-DISPATCH (round-2 fix) — this guard fires AFTER the commit stage, so a bare
+  // throw strands a committed implementation with no PR and no summary, and the "re-run the
+  // pipeline" it prescribes dead-ends at the Commit stage (empty diff → BLOCKED). An unproven
+  // return is most often a leg FORMATTING slip, so each offending leg gets exactly ONE corrective
+  // attempt with its defect named before the run fails closed.
+  let reviewDefect = legDefect(review, 'review')
+  if (reviewDefect) {
+    log(`inline review leg (${label}) rejected: ${reviewDefect} — one corrective re-dispatch`)
+    const redo = await reproveLeg(
+      () =>
+        agent(`${reviewPrompt(isReReview, stressBlock, preImplSha, domainsSelected)}${correctiveBlock(reviewDefect)}`, {
+          label: `review-reprove:${label}`,
+          phase: 'Review',
+          schema: REVIEW_SCHEMA,
+        }),
+      `review-reprove:${label}`,
+    )
+    if (redo && Array.isArray(redo.findings) && !legDefect(redo, 'review')) {
+      review = redo
+      reviewDefect = ''
+    }
+  }
+  let codexDefect = legDefect(codex, 'codex')
+  if (codexDefect) {
+    log(`inline codex leg (${label}) rejected: ${codexDefect} — one corrective re-dispatch`)
+    const redo = await reproveLeg(
+      () =>
+        agent(`${codexPrompt(preImplSha)}${correctiveBlock(codexDefect)}`, {
+          label: `codex-reprove:${label}`,
+          phase: 'Codex',
+          schema: CODEX_SCHEMA,
+        }),
+      `codex-reprove:${label}`,
+    )
+    if (redo && Array.isArray(redo.findings) && !legDefect(redo, 'codex')) {
+      codex = redo
+      codexDefect = ''
+    }
+  }
   const noProof = []
-  if (!legProved(review, 'review')) noProof.push('opus-review:no-proof')
-  if (!legProved(codex, 'codex')) noProof.push('codex:no-proof')
+  if (reviewDefect) noProof.push(`${legNoProofKey('opus-review', review, 'review')}: ${reviewDefect}`)
+  if (codexDefect) noProof.push(`${legNoProofKey('codex', codex, 'codex')}: ${codexDefect}`)
   if (noProof.length) {
-    await releaseLockBestEffort(`inline review ${label}: ${noProof.join(', ')}`)
+    await releaseLockBestEffort(`inline review ${label}: ${noProof.join(' | ')}`)
     throw new Error(
-      `Inline review (${label}) INCOMPLETE — [${noProof.join(', ')}]: a core leg returned an empty findings array AND no proof of work (propertiesChecked, or the codex \`evidence\` string), so it reviewed nothing rather than reviewing cleanly (the PR #78 silent no-op). This is a RE-RUN condition, not a fixable finding — re-run the pipeline.`,
+      `Inline review (${label}) INCOMPLETE — [${noProof.join(' | ')}]. A core leg did not honor the verification contract even after a corrective re-dispatch, so it reviewed nothing it can be held to rather than reviewing cleanly (the PR #78 silent no-op). This is a RE-RUN condition, not a fixable finding.${abortRecovery(preImplSha)}`,
     )
   }
   const findings = []
-  const verdict = review.verdict
   const codexSource = codex.source
   for (const f of review.findings || []) findings.push({ ...f, by: 'opus' })
   for (const f of codex.findings || []) findings.push({ ...f, by: codex.source })
@@ -1017,6 +1227,18 @@ async function runDualAdversarial(label, isReReview, stressBlock, preImplSha, op
   // the @claude tag comment) but never consume a fix round.
   const backlog = findings.filter((f) => f.severity === 'Minor')
   const gateFindings = findings.filter((f) => f.severity !== 'Minor')
+  // VERDICT over BOTH legs (round-2 fix) — it used to be `review.verdict`, i.e. the Opus leg
+  // ALONE, so a Minor raised only by the Codex leg recorded a clean "PASS" in
+  // .iago/summaries/{plan}.md and in the pipeline-runs.ndjson ledger while the defect sat open in
+  // the backlog. That contradicted the rule this contract ships (".claude/rules/execution-pipeline.md":
+  // "A Minor-only run records PASS_WITH_CONCERNS, never PASS") and diverged from the team-gate
+  // branch above, which counts its backlog — the classifyTier twin-drift shape, inside one file.
+  const verdict =
+    gateFindings.some((f) => f.severity === 'Critical' || f.severity === 'Important')
+      ? 'FAIL'
+      : findings.length > 0 || review.verdict !== 'PASS'
+        ? 'PASS_WITH_CONCERNS'
+        : 'PASS'
   // Inline 2-leg has no separate skeptic-verification pass, so neither flag applies.
   // crossModelDegraded mirrors the team gate's semantics: true when the cross-model
   // leg ran as a same-family fallback rather than real Codex. No skeptic panel here,
@@ -1030,6 +1252,15 @@ async function runDualAdversarial(label, isReReview, stressBlock, preImplSha, op
     verificationDegraded: false,
     crossModelDegraded: codex.source !== 'codex',
     filtered: [],
+    // VIOLATED properties are an audit trail in their own right (twin of the team-gate branch
+    // above): a leg can record a violation and file the matching finding at a softer severity.
+    // Propagating them means the leg's own disproof outlives the session instead of being
+    // destroyed with it — the guard above only proves a violation was REPORTED, not at what
+    // severity it landed.
+    violatedProperties: [
+      ...violatedProperties(review).map((p) => ({ ...p, by: 'opus' })),
+      ...violatedProperties(codex).map((p) => ({ ...p, by: codex.source || 'codex' })),
+    ],
     // #93 — round-0 domain selection threaded into a re-review as a focus hint.
     domainsSelected: review.domainsSelected || [],
   }
@@ -1050,14 +1281,21 @@ log(`execute-pipeline v2 — plan ${planName} — project ${projectDir}`)
 // Concurrent same-projectDir runs are discouraged regardless — use a worktree
 // (MEMORY: worktree-per-session). This lock is belt-and-suspenders for the accident.
 const LOCK_DIR = '.iago/state/.pipeline.lock.d'
+// OWNERSHIP TOKEN — written into the lock at acquire time and re-checked at EVERY release
+// (the abort path and the summary stage). Without it a release is an unconditional `rm -rf`
+// that deletes whatever lock is present: after the 3h stale-reclaim hands the lock to a SECOND
+// run (this run has no way to prove it is alive to the reclaimer), the first run's release would
+// delete the second run's LIVE lock and two pipelines would commit on one worktree. Shell-safe
+// by construction: only [A-Za-z0-9._-] so it needs no quoting inside the release command.
+const LOCK_TOKEN = `${planName.replace(/[^A-Za-z0-9._-]/g, '-')}-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
 const lock = await agent(
   `${PREAMBLE}
 
 Acquire the per-project pipeline lock in ${projectDir}. Run EXACTLY, in order:
 1. mkdir -p .iago/state   (ensure the PARENT exists — this is not the lock)
 2. Atomically claim the lock: run  mkdir ${LOCK_DIR}   with NO -p flag. A NON-ZERO exit means the lock is already held. (Never use -p on the lock dir — it would not fail on an existing dir and would defeat the lock.)
-3. If step 2 SUCCEEDED: write owner metadata —  date -u +%Y-%m-%dT%H:%M:%SZ > ${LOCK_DIR}/acquired ; echo "${planName}" > ${LOCK_DIR}/owner  — then return status=ACQUIRED.
-4. If step 2 FAILED (held): check staleness. If ${LOCK_DIR}/acquired is MISSING or its timestamp is older than 3 hours, the previous holder is dead — reclaim: run  rm -rf ${LOCK_DIR}  then retry step 2 once and, on success, do step 3 and return ACQUIRED. Otherwise return status=BLOCKED with notes: "another pipeline is running on this projectDir; if you are sure it is dead, clear it with: rmdir ${LOCK_DIR}".`,
+3. If step 2 SUCCEEDED: write owner metadata —  date -u +%Y-%m-%dT%H:%M:%SZ > ${LOCK_DIR}/acquired ; echo "${planName}" > ${LOCK_DIR}/owner ; echo "${LOCK_TOKEN}" > ${LOCK_DIR}/token  — then return status=ACQUIRED. The token file is MANDATORY: every later release checks it and refuses to delete a lock it does not own.
+4. If step 2 FAILED (held): check staleness. If ${LOCK_DIR}/acquired is MISSING or its timestamp is older than 3 hours, the previous holder is dead — reclaim: run  rm -rf ${LOCK_DIR}  then retry step 2 once and, on success, do step 3 (including the token file) and return ACQUIRED. Otherwise return status=BLOCKED with notes: "another pipeline is running on this projectDir; if you are sure it is dead, clear it with: rmdir ${LOCK_DIR}".`,
   {
     label: 'lock-acquire',
     phase: 'Stress',
@@ -1259,7 +1497,7 @@ log(`committed on ${branch} @ ${commit.headSha || '?'}`)
 // review DELEGATES to the dual-adversarial.js team gate (diverse personas + skeptic panel).
 phase('Review')
 const reviewOpts = { mode: reviewMode, lenses: reviewLenses, skepticCap: 8, tier }
-let { findings, backlog, verdict, codexSource, verificationSameFamily, verificationDegraded, crossModelDegraded, filtered, domainsSelected } = await runDualAdversarial('r0', false, stressBlock, preImplSha, reviewOpts)
+let { findings, backlog, verdict, codexSource, verificationSameFamily, verificationDegraded, crossModelDegraded, filtered, violatedProperties: violated, domainsSelected } = await runDualAdversarial('r0', false, stressBlock, preImplSha, reviewOpts)
 // Minor findings NEVER enter a fix round (verification contract, plan 01 Task 7) — they are
 // accumulated here and reported. Cumulative across rounds like allFiltered: each round's
 // runDualAdversarial returns only THAT round's backlog, so without this the run would report only
@@ -1271,11 +1509,47 @@ let { findings, backlog, verdict, codexSource, verificationSameFamily, verificat
 // surface verbatim at the merge decision.
 const allBacklog = []
 const backlogSeen = new Set()
+// The dedupe key must survive RE-AUTHORING, not just byte-identical repetition. A fresh
+// re-review agent re-reports the same never-fixed Minor in its OWN words ("Missing null check on
+// user.id" → "Missing null guard for user.id") and may attribute it to a different leg — so
+// keying on the raw summary + `by` counted one defect once per round and inflated
+// `minorRemaining` to findings × rounds, which is exactly what the dedupe exists to prevent
+// (and it fills the @claude comment's 10-entry cap with duplicates, pushing distinct Minors into
+// "(+N more)"). Key on severity + file + NORMALIZED summary, and treat a re-worded summary on the
+// same severity+file as the same defect when the word sets substantially overlap.
+function normSummary(s) {
+  return String(s || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim()
+}
+function summaryWords(s) {
+  // Words of 3+ chars only — articles/prepositions ("on", "of", "the") are noise that would
+  // inflate the overlap of two genuinely different summaries.
+  return new Set(normSummary(s).split(' ').filter((w) => w.length > 2))
+}
+function sameDefect(a, b) {
+  const A = summaryWords(a)
+  const B = summaryWords(b)
+  if (A.size === 0 || B.size === 0) return false
+  let inter = 0
+  for (const w of A) if (B.has(w)) inter++
+  // Jaccard ≥ 0.5 — a re-worded restatement of the same defect keeps most of its content words;
+  // two different defects on the same file share far fewer.
+  return inter / (A.size + B.size - inter) >= 0.5
+}
 function addBacklog(items) {
   for (const f of Array.isArray(items) ? items : []) {
     if (!f) continue
-    const key = `${f.severity || ''}|${f.by || ''}|${f.file || ''}|${String(f.summary || '').trim()}`
+    const key = `${f.severity || ''}|${f.file || ''}|${normSummary(f.summary)}`
     if (backlogSeen.has(key)) continue
+    if (
+      allBacklog.some(
+        (e) => (e.severity || '') === (f.severity || '') && (e.file || '') === (f.file || '') && sameDefect(e.summary, f.summary),
+      )
+    ) {
+      continue
+    }
     backlogSeen.add(key)
     allBacklog.push(f)
   }
@@ -1286,6 +1560,10 @@ addBacklog(backlog)
 // pipeline return would carry only the last round's audit trail and silently lose round 0's
 // dropped blockers. Intentionally cumulative; do NOT revert to the per-round `filtered`.
 const allFiltered = [...(filtered || [])]
+// Cumulative VIOLATED-property audit trail (same reasoning as allFiltered): each round returns
+// only that round's violations, and a violation a leg recorded is the strongest evidence the gate
+// produces — it must not die with the session.
+const allViolated = [...(violated || [])]
 let rounds = 0
 // maxFixRounds is the per-plan local from the tier classifier (Tier 3 → 3, else 2) — a
 // per-plan local, NOT a module const, so a stacked multi-plan run cannot bleed one plan's
@@ -1304,6 +1582,8 @@ while (
   rounds++
   phase('Fix')
   log(`fix round ${rounds}: ${actionable(findings).length} findings (codex=${codexSource})`)
+  // Keep the lock's stale-reclaim clock fresh while this (potentially multi-hour) run continues.
+  await touchLockBestEffort(`fix round ${rounds}`)
   // Single attempt — the fix agent commits its fixes; a blind retry could
   // double-commit. A transient failure here aborts the run for inspection.
   const fix = await agent(fixPrompt(actionable(findings), rounds, maxFixRounds), {
@@ -1334,10 +1614,11 @@ while (
     ...reviewOpts,
     domainsSelected,
   })
-  ;({ findings, backlog, verdict, codexSource, verificationSameFamily, verificationDegraded, crossModelDegraded, filtered } = reReview)
+  ;({ findings, backlog, verdict, codexSource, verificationSameFamily, verificationDegraded, crossModelDegraded, filtered, violatedProperties: violated } = reReview)
   // push (mutate) rather than reassign — keeps `allFiltered` a const and immune to the
   // formatter's let→const flip; same cumulative effect.
   allFiltered.push(...(filtered || []))
+  allViolated.push(...(violated || []))
   // addBacklog (not push) — a Minor is never fixed, so every re-review re-reports it; deduping
   // keeps `minorRemaining` a count of DISTINCT defects instead of findings × rounds.
   addBacklog(backlog)
@@ -1434,7 +1715,7 @@ if (noPr) {
 // if summary throws, lock-release never ran anyway, so merging changes nothing —
 // and a failed `rm -rf` now surfaces as BLOCKED instead of silent best-effort.
 phase('Summary')
-const summary = await agent(summaryPrompt(preImplSha, prUrl, verdict, codexSource, rounds, verificationSameFamily, verificationDegraded, allBacklog), {
+const summary = await agent(summaryPrompt(preImplSha, prUrl, verdict, codexSource, rounds, verificationSameFamily, verificationDegraded, allBacklog, allViolated), {
   label: 'summary',
   phase: 'Summary',
   schema: IMPL_SCHEMA,
@@ -1465,4 +1746,8 @@ return {
   crossModelDegraded,
   // Cumulative across all fix rounds (allFiltered), not just the last round's set.
   filtered: allFiltered,
+  // Cumulative VIOLATED properties — what a leg says it DISPROVED against the code, with its
+  // evidence. Also written into .iago/summaries/{plan}.md (see summaryPrompt) so it survives the
+  // session that produced it.
+  violatedProperties: allViolated,
 }

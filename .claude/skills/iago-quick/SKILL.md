@@ -156,9 +156,15 @@ Workflow({ scriptPath: "<IAGO_ROOT>/.claude/workflows/dual-adversarial.js",
 ```
 `mode: "team"` is REQUIRED — the pre-merge gate always runs Team depth (skeptic
 verification of every Critical/Important finding); omitting it silently runs the
-shallower standard gate. Lead on `clean` (the authoritative merge signal); if
-`gateStatus === "INCOMPLETE"`, a core leg failed — re-run the gate. If it returns
-`clean`, tell Santiago it's safe to merge. Never merge yourself.
+shallower standard gate. It returns `{ clean, mode, gateStatus, verdict, findings,
+backlog, violatedProperties, blocking, ... }`. Lead on `clean` (the authoritative
+merge signal); if `gateStatus === "INCOMPLETE"`, a core leg failed — re-run the gate.
+**`findings` is Critical/Important ONLY — every Minor is in `backlog`.** ALWAYS
+surface `backlog` (severity, `by:` leg, file, summary, marked "reported, not fixed in
+this loop") even on a clean gate: it writes no durable artifact, so an unspoken Minor
+is deleted. Surface `violatedProperties` too — each is a property a leg DISPROVED
+against the code, with its evidence. If it returns `clean`, tell Santiago it's safe to
+merge (with the backlog listed). Never merge yourself.
 
 Review-fix loop runs async via GitHub Action (`claude-review-fix.yml`).
 

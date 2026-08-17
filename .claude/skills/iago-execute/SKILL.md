@@ -180,12 +180,17 @@ Workflow({
 `mode: "team"` is REQUIRED — the final pre-merge gate always runs Team depth
 (adversarial skeptic verification of every Critical/Important finding); omitting
 it silently runs the shallower standard gate. It returns
-`{ clean, mode, gateStatus, verdict, findings, blocking, ... }` (full shape in
-`dual-adversarial/SKILL.md`). Lead on `clean` — the authoritative merge signal.
-If `gateStatus === "INCOMPLETE"` a core leg failed: re-run the gate (not a
-`/iago-prfix` finding). If `clean`, tell Santiago it's safe to merge. If
-`blocking > 0`, surface the findings and offer `/iago-prfix`.
-**Never merge** — Santiago merges.
+`{ clean, mode, gateStatus, verdict, findings, backlog, violatedProperties, blocking, ... }`
+(full shape in `dual-adversarial/SKILL.md`). Lead on `clean` — the authoritative
+merge signal. **`findings` is Critical/Important ONLY — every Minor is in
+`backlog`.** ALWAYS surface `backlog` (severity, `by:` leg, file, summary, marked
+"reported, not fixed in this loop") even when `clean` is true: the gate writes no
+durable artifact, so a Minor you do not speak aloud is deleted. Surface
+`violatedProperties` the same way — each is a property a leg DISPROVED against the
+code, with its evidence. If `gateStatus === "INCOMPLETE"` a core leg failed: re-run
+the gate (not a `/iago-prfix` finding). If `clean`, tell Santiago it's safe to merge
+(with the backlog listed). If `blocking > 0`, surface the findings and offer
+`/iago-prfix`. **Never merge** — Santiago merges.
 
 ### 5. Report results
 
