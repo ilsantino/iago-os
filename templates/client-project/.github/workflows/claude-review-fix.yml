@@ -214,7 +214,13 @@ jobs:
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          claude_args: '--max-turns 10 --allowedTools "Read,Bash(gh:*),Glob,Grep"'
+          # 25, no 10. This step reads the PR, ALL its comments and the touched
+          # files before writing anything: on a PR with several review rounds,
+          # 10 turns are spent reading and the step dies with "Reached maximum
+          # number of turns". The loop had already reported CLEAN, so the run
+          # goes red for a summary that never posted — it reads as a failed
+          # review. Observed on rsf-flow-tool PR #3.
+          claude_args: '--max-turns 25 --allowedTools "Read,Bash(gh:*),Glob,Grep"'
           prompt: |
             The review-fix loop has completed — all findings are resolved.
 
