@@ -55,6 +55,13 @@ python scripts/organize/organize.py apply .local/organize/p2-plan.json --confide
 
 Dry-run first, always. Read the output. Then spot-check ~10 renamed files in Explorer and confirm they open.
 
+> **Re-scan before the second batch — do not reuse `p2-plan.json` for the low tail.**
+> A plan generated before commit `85b465d` proposes renaming 134 machine-managed files:
+> `desktop.ini`, and 128 DLLs belonging to extracted installers under `CASA_discovery\fb25`
+> and similar. All of them scored `low`, so batch one never touched them, but applying a
+> stale plan without `--confidence high,medium` will. Step A3 regenerates the plan, which
+> is why it exists. After hardening, the tail is 415 files, not 621.
+
 ### A3. The entity pass — the genuine AI 10%
 
 621 proposals carry `no-entity`: the filename does not say who the file belongs to. `misc` is honest, but a good share of these are recoverable from context a script cannot see — `Unsolicited Investment Order Portfolio 8` is Palazuelos; a Munet ticket export is `munet`.

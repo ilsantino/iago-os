@@ -104,9 +104,21 @@ Added 2026-08-16 at Santiago's request: remove what he never looks at or uses.
 
 **Acceptance:** a purge cannot happen without a prior quarantine batch and an explicit approval for that batch; `undo` restores a quarantine batch byte-identically.
 
-### P5 — `Documents` (22k) + `Pictures` (1k)
+### P5 — `Documents` + `Pictures` *(re-scoped 2026-08-17 — much smaller than P0 thought)*
 
-Same machinery, lower stakes than P4. Pictures likely wants date-based foldering rather than per-file renaming.
+P0's "1,381 real files" was still counting a machine tree. A closer look:
+
+| | files | what it is |
+|---|---|---|
+| `WindowsPowerShell\Modules` | **914** (900 `.dll`) | the **live** user-scope `PSModulePath` — a 219 MB installed `SqlServer` module |
+| `RSB` | 334 | Rennes coursework |
+| everything else | ~30 | root loose files, `TEC`, `GENESIS LAB`, `OneNote Notebooks` |
+
+**The real document corpus in `Documents` is ~364 files, not 1,381** — and P0's "502 duplicate candidates, the densest dedup target on the machine" was mostly versioned DLLs sharing a size and a stem. That target does not exist either.
+
+What is left is one coursework tree and thirty loose files. This is a small job, and `Pictures` (1,069 files, 3 dup candidates) wants date-based foldering rather than per-file renaming.
+
+**Worth noting, not acting on:** the PowerShell module tree syncs 219 MB through OneDrive for a module that `Install-Module` rebuilds. It cannot simply be moved — the path follows the redirected `Documents` known folder — so reclaiming it means uninstalling the module, which is a separate call.
 
 ### P6 — Enforcement *(so it does not rot)*
 
@@ -143,5 +155,5 @@ Same grammar, different mechanics — `workspace-mcp` against the Drive API, no 
 | P3 taxonomy | blocked on the two open decisions |
 | P3b Evict code | **DONE** 2026-08-17 — OneDrive 151,395 -> 3,303 files, 3.02 GB reclaimed, 0 artifacts left |
 | P4 | deleted by P0 |
-| P5 Documents | 1,381 real files, 36% duplicate rate |
+| P5 Documents | re-scoped: ~364 real docs (914 of 1,278 are the live PSModulePath); the 36% dup rate was DLLs |
 | P6 enforcement / P7 Drive | not scoped |

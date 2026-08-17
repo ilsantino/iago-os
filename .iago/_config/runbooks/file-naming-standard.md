@@ -126,6 +126,17 @@ This is a scheduled script (§7), not a habit. Habits do not survive 387 loose f
 3. **Path length.** Windows caps at 260 chars by default and `iagoagency` already runs deep. This is why the standard is lowercase (shorter than ALL CAPS in practice once compounds appear) and caps folder depth at 4.
 4. **Never rename inside a git working tree**, including `.iago/` and any client repo — git tracks paths.
 5. **SAT-relevant records** (invoices, receipts, `iagoag` email attachments) are legally retained. They get renamed, never deleted, never "swept".
+6. **Machine-managed paths are out of scope, like `dev\`.** Some names are an interface, not a description — something resolves them by literal string and no rename updates the reference. Found on disk 2026-08-17, all inside the zones:
+
+   | Path | Resolved by | Breaks if renamed |
+   |---|---|---|
+   | `OneDrive\Documents\WindowsPowerShell\Modules` | first entry in `$env:PSModulePath` | `Import-Module` — holds a live 219 MB `SqlServer` install |
+   | `desktop.ini` | Windows Explorer | folder icon, localised display name |
+   | `*.dll` `*.sys` `*.ocx` `*.pdb` `*.manifest` `*.config` | import tables, manifests | the application that loads them |
+   | `OneNote Notebooks`, `Custom Office Templates` | OneNote / Office | the app's own store |
+   | dotfiles (`.RData`, `.Rhistory`) | their tool, by convention | that tool's state |
+
+   `organize.py` enforces this in code: protected names and extensions, application-managed folders in `SKIP_DIRS`, and `looks_like_app_payload()` — a **majority** test that prunes an unpacked-application subtree whole while leaving a download folder that merely contains some installers alone.
 
 ---
 
