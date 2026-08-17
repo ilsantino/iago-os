@@ -33,12 +33,27 @@ Rules enforced in code: never descend into `dev\`, `.git`, `node_modules`, `AppD
 
 **Acceptance:** tests pass against a synthetic tree covering collisions, unicode names, already-conforming names, and a full `apply` → `undo` round trip that returns the tree byte-identical.
 
-### P2 — Downloads *(387 files, fully reversible, nothing depends on it)*
+**DONE 2026-08-17** — `scripts/organize/organize.py` + `scripts/organize/test-organize.py` (62 assertions, all green), plan `01-tooling.md`. The round trip returns files *and* the directory set byte-identical, bucket dirs included.
+
+### P2 — Downloads *(726 renameable files, fully reversible, nothing depends on it)*
 
 Rename in place and bucket by type. **No cross-zone moves yet** — promoting keepers into OneDrive is P3's job, once the taxonomy exists to promote them into.
 
 **Why here:** worst chaos-to-volume ratio on the disk, and the only zone where being wrong costs nothing. This is where the tooling earns trust on real data.
-**Acceptance:** every file either conforms or is listed as ambiguous; journal replays clean; Santiago reviews the ambiguous list.
+
+**Scoped by a real P1 scan, 2026-08-17** — 1,648 files, of which:
+
+| | count | disposition |
+|---|---|---|
+| inside a git working tree | **911** | skipped by the tool; a separate decision (below) |
+| already conforming | 11 | untouched |
+| **renameable** | **726** | high 6 · medium 99 · **low 621** |
+
+The 621 low-confidence proposals are almost all `no-entity` — the file simply does not say who it belongs to. `misc` is the honest label; the review is about promoting the ones that deserve a real entity, not about fixing errors.
+
+**New finding — two code projects are living in Downloads**: `cortextos_probe` (863 files) and `tweetGPT` (48). Same disease P3b just cured in OneDrive. The tool correctly refuses to touch them; the call of move-to-`dev\` vs archive-and-drop is Santiago's, and it is what the 911 number is.
+
+**Acceptance:** every file either conforms or is listed as ambiguous; journal replays clean; Santiago reviews the low-confidence list.
 
 ### P3 — Top-level taxonomy *(folders only, dozens of renames)*
 
@@ -122,8 +137,8 @@ Same grammar, different mechanics — `workspace-mcp` against the Drive API, no 
 |---|---|
 | Standard | **locked** 2026-08-16 |
 | P0 inventory | **done** 2026-08-16 → `.iago/research/2026-08-16-filesystem-inventory.md` |
-| P1 tooling | not started |
-| P2 Downloads | scoped: 1,648 files / 10.1 GB / 93 dup candidates / 236 older than 3y |
+| P1 tooling | **DONE** 2026-08-17 — `scripts/organize/organize.py`, 62 assertions green, apply→undo byte-identical |
+| P2 Downloads | scanned: 726 renameable (621 low-confidence) · 911 skipped inside 2 git checkouts · 10.1 GB |
 | P2b Reclaim | scoped: artifacts 148,798 files + 502 dup candidates in od-documents |
 | P3 taxonomy | blocked on the two open decisions |
 | P3b Evict code | **DONE** 2026-08-17 — OneDrive 151,395 -> 3,303 files, 3.02 GB reclaimed, 0 artifacts left |

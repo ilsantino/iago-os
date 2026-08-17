@@ -46,3 +46,11 @@ docs/research/_drop-*/
 
 # Learnings-writer fallback artifacts (transient — written when patterns.md is unwritable)
 .iago/logs/learnings-fallback-*.md
+
+# Machine-local scratch: organize.py plans and rename journals live here so
+# `undo` can find them. Machine-specific by definition — never committed.
+.local/
+
+# Python bytecode
+__pycache__/
+*.pyc
