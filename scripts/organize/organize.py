@@ -64,6 +64,7 @@ SKIP_DIRS = {
     "windowspowershell", "onenote notebooks", "custom office templates",
     "plantillas personalizadas de office", "microsoft copilot chat files",
     "my music", "my pictures", "my videos",
+    ".rproj.user",          # RStudio session state — same class as .venv
 }
 
 # Files whose NAME is an interface. Renaming these breaks something silently:

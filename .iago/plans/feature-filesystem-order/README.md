@@ -121,6 +121,8 @@ Added 2026-08-16 at Santiago's request: remove what he never looks at or uses.
 - **Identical bytes under different names is a different finding.** `descripcion materias RSB.pdf` and `book DBAN.pdf` are one document filed under two meanings; which name survives is a judgment no hash can make. Only same-stem duplicates auto-quarantine — 19 of 51 were this case and now route to review.
 - **Caches diverge from `organize.py`'s protected list.** A thumbnail cache is regenerable and *should* be deleted; `desktop.ini` holds a customisation someone chose and should not. Protection from renaming and protection from deletion are different questions.
 
+**EXECUTED 2026-08-17** — `.iago/summaries/feature-filesystem-order-p2b-reclaim.md`. 3.30 GB reclaimed: 75,161 artifact files deleted outright (retired `CrewAI-Studio-main` and `tweetGPT`), 200 files / 898 MB quarantined and reversible until 2026-08-24. Downloads 77,025 → 1,739 files. 0 residual candidates; both batches verified restorable.
+
 **First real scan (read-only, OneDrive zones): 63 candidates / 895 MB** — 2 stale installers (867 MB, `SPSS28_Win_x64.exe` alone is 840 MB), 31 duplicates, 27 partial downloads, 3 zero-byte. Plus 22 for review. Nothing has been quarantined: awaiting Santiago's go.
 
 ### P5 — `Documents` + `Pictures` *(re-scoped 2026-08-17 — much smaller than P0 thought)*
@@ -171,7 +173,7 @@ Same grammar, different mechanics — `workspace-mcp` against the Drive API, no 
 | P0 inventory | **done** 2026-08-16 → `.iago/research/2026-08-16-filesystem-inventory.md` |
 | P1 tooling | **DONE** 2026-08-17 — `scripts/organize/organize.py`, 62 assertions green, apply→undo byte-identical |
 | P2 Downloads | **DONE** 2026-08-17 — 406 renamed + bucketed (388 + 18 sentinel upgrades), root 387 → 2 loose, count delta 0; 143 excluded (load-bearing trees) |
-| P2b Reclaim | **tooling DONE** 2026-08-17 — `reclaim.py`, 34 assertions. First scan: 63 candidates / 895 MB + 22 review. **Awaiting go to quarantine.** |
+| P2b Reclaim | **DONE** 2026-08-17 — 3.30 GB reclaimed (2.40 GB deleted, 898 MB quarantined). Purge held until 2026-08-24. 21 items await judgment. |
 | P3 taxonomy | blocked on the two open decisions |
 | P3b Evict code | **DONE** 2026-08-17 — OneDrive 151,395 → 2,849 files, 3.03 GB reclaimed; an 8th project (`.venvTA`, 454 files) was missed by name-matching and swept after |
 | P4 | deleted by P0 |
