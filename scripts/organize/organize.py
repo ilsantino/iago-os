@@ -401,6 +401,12 @@ def looks_like_app_payload(entries):
     loose installers among hundreds of documents; that makes it a download folder,
     not an application. Requiring binaries to dominate is what separates the two.
     """
+    # A virtualenv, whatever someone named it. PEP 405 guarantees pyvenv.cfg at
+    # the root, which is the only reliable marker — matching on `.venv` by name
+    # missed a real one called `.venvTA` and left 454 files behind.
+    if any(entry.name.lower() == "pyvenv.cfg" for entry in entries):
+        return True
+
     files, binaries = 0, 0
     for entry in entries:
         try:
