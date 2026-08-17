@@ -323,6 +323,55 @@ function hasBlocking(findings) {
   return findings.some((f) => f.severity === 'Critical' || f.severity === 'Important')
 }
 
+// ─── PROOF-OF-WORK RUNTIME GUARD — TWIN of dual-adversarial.js's hasProperties/foundNothing ──
+// A leg that returned an EMPTY findings array AND no proof of work did not review anything and
+// must NEVER be read as "clean" (PR #78: the codex leg is logged verbatim as "context-read only,
+// no structured findings written" and the gate still reported fine). The schemas alone cannot
+// catch it — JSON-Schema `required` enforces key PRESENCE only, so `{findings: [], evidence: ''}`
+// and `{verdict:'PASS', findings: [], propertiesChecked: []}` are both schema-VALID.
+// dual-adversarial.js routes this to gateStatus 'INCOMPLETE' (and this file throws on that); the
+// INLINE Tier-0/1 path has no gateStatus, so the equivalent fail-closed action here is a THROW —
+// the same posture as a null leg. Proof differs by AUTHOR (identical carve-out to the twin):
+//   - a source='codex' leg only MAPS codex-companion free text → a non-empty `evidence` string
+//     counts (requiring properties there would make every clean Codex run a re-run);
+//   - a CLAUDE-authored leg (the Opus review leg, plan-compliance, or source='claude-fallback')
+//     must enumerate `propertiesChecked`.
+// EDIT BOTH FILES, ALWAYS (see the twin note above FINDING).
+function hasProperties(r) {
+  return Array.isArray(r && r.propertiesChecked) && r.propertiesChecked.length > 0
+}
+function foundNothing(r) {
+  return !r || !Array.isArray(r.findings) || r.findings.length === 0
+}
+function legProved(r, kind) {
+  if (!foundNothing(r)) return true // it reported something — that IS the work
+  if (kind === 'codex' && r && r.source === 'codex') {
+    return (typeof r.evidence === 'string' && r.evidence.trim().length > 0) || hasProperties(r)
+  }
+  return hasProperties(r)
+}
+
+// Best-effort lock release for a FAIL-CLOSED abort (an INCOMPLETE gate or an unproven leg).
+// The design deliberately has NO finally-release (a release agent can itself throw on the same
+// outage that aborted the run and mask the real error), so this is fully guarded: it never
+// throws and never changes the abort reason. It exists because the proof-of-work rule makes
+// INCOMPLETE reachable from a leg FORMATTING slip (not only an infra crash), and every such
+// abort would otherwise park the per-project lock for the full 3h stale window. LOCK_DIR is
+// declared in the Flow section below and is only READ here, at call time (always post-acquire).
+async function releaseLockBestEffort(reason) {
+  try {
+    await agent(
+      `${PREAMBLE}\n\nThe pipeline is ABORTING (${reason}). Release the per-project pipeline lock so the next run on this projectDir is not blocked. In ${projectDir} run EXACTLY:\n  rm -rf ${LOCK_DIR}\nRun nothing else — do NOT edit, stage, commit, or push. Return status=DONE if the directory is gone, BLOCKED otherwise.`,
+      { label: 'lock-release-on-abort', phase: 'Review', schema: IMPL_SCHEMA, model: 'haiku' },
+    )
+    log(`released pipeline lock after abort (${reason})`)
+  } catch (e) {
+    log(
+      `WARNING: best-effort lock release failed after abort (${reason}): ${String(e).slice(0, 120)} — clear it manually with \`rmdir ${LOCK_DIR}\``,
+    )
+  }
+}
+
 // ─── Deterministic risk-tier classifier (60/30/10 rule-based layer — ZERO LLM) ──────
 // Reads a plan's TEXT and assigns a review-depth tier. Plans are prose (not structured
 // path fields), so keywords are matched case-insensitively as substrings across the
@@ -389,7 +438,9 @@ function reviewPrompt(isReReview, stressBlock, preImplSha, domainsSelected) {
       ? `\n\nDomains identified in round 0: ${domainsSelected.join(', ')}. Use as a starting hint for PASS 3 focus (a fix may have introduced a new domain — all modules are loaded regardless, so apply any that now apply).`
       : ''
   const head = isReReview
-    ? `Re-review after a fix round. Verify ALL previous findings (Critical, Important, Minor) are resolved, and check for regressions the fixes may have introduced.${domainHint}
+    ? `Re-review after a fix round. Verify every previously-reported CRITICAL and IMPORTANT finding is resolved, and check for regressions the fixes may have introduced.${domainHint}
+
+MINOR FINDINGS ARE OUT OF THE FIX LOOP BY DESIGN (verification contract): they were routed to the backlog and the fix agent was never handed them, so an unfixed Minor is the EXPECTED state — do NOT treat it as an unaddressed finding and do NOT escalate it for being unfixed. If it still stands, simply re-report it at its original Minor severity.
 
 INTEGRITY CHECK: if the prior fix claimed "no test infrastructure" to skip a regression test for a Critical/Important finding, verify by probing conventions — sibling *.test.ts / *.test.tsx, vitest.config.ts, package.json test scripts, test-{name}.{mjs,bats,sh} beside bash scripts, e2e/, amplify/functions/*/handler.test.ts. If infra exists that was missed, raise a NEW Important finding.
 
@@ -587,7 +638,30 @@ CREATE PR for the plan ${planName}. The changes are ALREADY COMMITTED on branch 
 // agent does both side-effecting steps. The two idempotency guards (reuse an existing
 // PR; skip an already-posted @claude tag) MUST survive the merge — a duplicate PR or a
 // double @claude tag races the parallel review-fix loops (MEMORY: single-@claude-tag).
-function prTagPrompt(branch) {
+// Render the Minor backlog as plain lines for a prompt. `limit` caps how many entries are
+// inlined (the @claude comment has a word budget); the FULL list always reaches the durable
+// summary. Returns '' for an empty/absent backlog so the callers interpolate nothing.
+function backlogLines(backlog, limit) {
+  const items = Array.isArray(backlog) ? backlog.filter((f) => f && (f.summary || f.file)) : []
+  if (!items.length) return ''
+  const shown = limit && items.length > limit ? items.slice(0, limit) : items
+  const lines = shown
+    .map(
+      (f, i) =>
+        `${i + 1}. [${f.severity || 'Minor'}]${f.by ? ` (${f.by})` : ''} ${f.file ? `${f.file} — ` : ''}${String(f.summary || '').replace(/\s+/g, ' ')}`,
+    )
+    .join('\n')
+  return shown.length < items.length ? `${lines}\n(+${items.length - shown.length} more)` : lines
+}
+
+function prTagPrompt(branch, backlog) {
+  // MINOR BACKLOG → ASYNC LOOP. Minors never enter a local fix round, so the @claude tag comment
+  // is the only place the async reviewer can pick them up; without this they would exist solely
+  // in the in-memory return, which dies with the orchestrator session.
+  const minors = backlogLines(backlog, 10)
+  const backlogStep = minors
+    ? `\n   - Blank line. Open Minor backlog from the local gate (routed OUT of the fix loop by the verification contract — ask the reviewer to confirm or close each):\n${minors}`
+    : ''
   return `${PREAMBLE}
 
 CREATE PR and request @claude review for the plan ${planName}. The changes are ALREADY COMMITTED on branch "${branch}". In ${projectDir}, do BOTH steps in order:
@@ -612,28 +686,37 @@ STEP B — TAG @claude (only if STEP A yielded a PR number):
    - First line: @claude Review this PR thoroughly.
    - Blank line. Context: 2-3 sentences on what this PR implements and why (synthesize from the plan ${plan}); note the full plan is embedded in the PR description.
    - Blank line. Focus areas: name the specific domains the diff touches (auth, API, React, backend, infra, i18n) and concrete patterns to watch — reference specific files/functions.
-   - Blank line. Edge cases the local pipeline could not fully verify (integration effects, runtime/load, UX empty/error/loading states, concurrency).
+   - Blank line. Edge cases the local pipeline could not fully verify (integration effects, runtime/load, UX empty/error/loading states, concurrency).${backlogStep}
    - Blank line. End: General pass for anything unexpected.
-   No markdown headers, no bullets, under 300 words. Post exactly once. Set tagStatus="TAGGED".
+   No markdown headers, under 300 words excluding the backlog list (which must be reproduced verbatim, one numbered line each). Post exactly once. Set tagStatus="TAGGED".
 
 FAILURE HONESTY (do NOT hallucinate success): if listing the comments OR posting the @claude comment ERRORS (gh non-zero exit, auth/network/rate-limit/GitHub error) AFTER the PR exists, you MUST set tagStatus="TAG_FAILED" and STILL return the prUrl and prNumber you obtained in STEP A (so the run can be recovered with /iago-prfix). NEVER report tagStatus="TAGGED" unless a comment was actually posted successfully, and NEVER report "ALREADY_TAGGED" unless you actually confirmed an existing @claude comment.
 
 Return prUrl, prNumber, branch, and tagStatus.`
 }
 
-function summaryPrompt(preImplSha, prUrl, reviewVerdict, codexSource, rounds, vSameFamily, vDegraded) {
+function summaryPrompt(preImplSha, prUrl, reviewVerdict, codexSource, rounds, vSameFamily, vDegraded, backlog) {
   // T06 — verification honesty must reach the DURABLE summary artifact, not just the
   // live return object (which dies with the session): a Tier 2/3 run whose skeptic
   // verification was same-family or degraded leaves an audit trail in the .md + NDJSON.
   const honesty =
     `${vSameFamily ? '. NOTE: team-mode skeptic verification is same-family (Opus) — cross-model diversity came from the Codex leg only' : ''}` +
     `${vDegraded ? '. WARNING: one or more skeptic verification agents failed to run — blocking findings were kept fail-safe but NOT fully adversarially verified' : ''}`
+  // MINOR BACKLOG → DURABLE ARTIFACT. Minors never enter a fix round, so without this section
+  // they would survive only in the in-memory return: a session that dies before reporting would
+  // erase them while every persisted artifact said "PASS, 0 fix rounds". The FULL list goes in
+  // the .md (no cap — it is a file, not a PR comment) and the count goes in the NDJSON line.
+  const minors = backlogLines(backlog)
+  const minorCount = Array.isArray(backlog) ? backlog.length : 0
+  const backlogSection = minors
+    ? `, plus a "Minor backlog (reported, not fixed in-loop)" section listing these ${minorCount} finding(s) VERBATIM, one bullet each:\n${minors}\n`
+    : ''
   return `${PREAMBLE}
 
 Write the pipeline summary. In ${projectDir}:
 1. mkdir -p .iago/summaries
-2. Write .iago/summaries/${planName}.md with frontmatter (plan, status: done, verified: today's UTC date via  date -u +%Y-%m-%d, pr) and sections: Pipeline Result (review verdict ${reviewVerdict}, codex source ${codexSource}, fix rounds ${rounds}, PR ${prUrl || '(none)'}${honesty}) and Diff Stats (git diff --stat ${preImplSha}..HEAD).
-3. Append one NDJSON line to .iago/state/pipeline-runs.ndjson (mkdir -p .iago/state first): {"plan":"${planName}","pr":"${prUrl || ''}","verdict":"${reviewVerdict}","codex":"${codexSource}","rounds":${rounds},"vSameFamily":${vSameFamily === true},"vDegraded":${vDegraded === true},"ts":"<date -u +%Y-%m-%dT%H:%M:%SZ>"}
+2. Write .iago/summaries/${planName}.md with frontmatter (plan, status: done, verified: today's UTC date via  date -u +%Y-%m-%d, pr) and sections: Pipeline Result (review verdict ${reviewVerdict}, codex source ${codexSource}, fix rounds ${rounds}, minor backlog ${minorCount}, PR ${prUrl || '(none)'}${honesty}) and Diff Stats (git diff --stat ${preImplSha}..HEAD)${backlogSection}
+3. Append one NDJSON line to .iago/state/pipeline-runs.ndjson (mkdir -p .iago/state first): {"plan":"${planName}","pr":"${prUrl || ''}","verdict":"${reviewVerdict}","codex":"${codexSource}","rounds":${rounds},"minorRemaining":${minorCount},"vSameFamily":${vSameFamily === true},"vDegraded":${vDegraded === true},"ts":"<date -u +%Y-%m-%dT%H:%M:%SZ>"}
 4. COMMIT the summary so the working tree is left CLEAN for the next sequential plan's prep guard: git add .iago/summaries/${planName}.md && git commit -m "docs(summary): ${planName} pipeline result". (.iago/state/* is gitignored — do NOT stage it. This commit is local bookkeeping; it is fine that it lands after the PR push and is not part of the PR.)
 5. Release the pipeline lock: run  rm -rf ${LOCK_DIR}  in ${projectDir}.
 Return status=DONE only when ALL of the above steps succeed.`
@@ -742,6 +825,11 @@ async function runDualAdversarial(label, isReReview, stressBlock, preImplSha, op
     // INCOMPLETE gate is a re-run condition (incompleteLegs names the failed core legs), not a
     // pass — fail closed so a half-completed mandatory review can never gate a Tier>=2 merge.
     if (da.gateStatus !== 'COMPLETE') {
+      // Release the lock best-effort BEFORE throwing: since the proof-of-work rule landed,
+      // INCOMPLETE is reachable from a leg formatting slip (not only an infra crash), and this
+      // abort happens AFTER the commit stage — parking the lock for 3h on every such run would
+      // block the re-run this error asks for.
+      await releaseLockBestEffort(`team gate ${label} gateStatus=${da.gateStatus}`)
       throw new Error(
         `team gate (${label}) did NOT complete (gateStatus=${da.gateStatus}, incompleteLegs=[${(da.incompleteLegs || []).join(', ')}]) — a core reviewer failed; tier ${tier} requires a COMPLETE team review, failing closed (re-run), NOT downgrading to the inline 2-leg.`,
       )
@@ -794,6 +882,16 @@ async function runDualAdversarial(label, isReReview, stressBlock, preImplSha, op
         `team gate (${label}) plan-compliance leg failed after retries — tier ${tier} requires the plan-compliance pass; failing closed (re-run), NOT proceeding without it.`,
       )
     }
+    // PROOF OF WORK on the compliance leg (same rule as the core legs). Its prompt requires ONE
+    // propertiesChecked entry PER PLAN TASK precisely so "every plan task is implemented" is
+    // auditable rather than merely asserted — an empty findings array with no properties asserts
+    // exactly that with zero evidence, which is an unreviewed leg, not a compliant plan.
+    if (!legProved(compliance, 'review')) {
+      await releaseLockBestEffort(`team gate ${label} plan-compliance:no-proof`)
+      throw new Error(
+        `team gate (${label}) plan-compliance leg returned an empty findings array AND no propertiesChecked — an "every plan task is implemented" claim must be PROVEN (one property per task), not asserted; INCOMPLETE, failing closed (re-run).`,
+      )
+    }
     const merged = [
       ...da.findings,
       ...compliance.findings.map((f) => ({ ...f, by: f.by || 'plan-compliance' })),
@@ -822,10 +920,17 @@ async function runDualAdversarial(label, isReReview, stressBlock, preImplSha, op
       // Critical/Important only — Minors moved to `backlog` (reported, never fix-looped).
       findings: mergedGateFindings,
       backlog: mergedBacklog,
+      // `merged` no longer carries Minors (the gate partitioned its own into da.backlog), so it
+      // CANNOT be the sole PASS/PASS_WITH_CONCERNS input: a Minor-only run would record a clean
+      // PASS in .iago/summaries/{plan}.md and the pipeline-runs.ndjson ledger while real defects
+      // sat in the backlog — and the inline Tier-0/1 path (verdict = review.verdict) would still
+      // say PASS_WITH_CONCERNS on identical evidence. Count the backlog too, so the rule injected
+      // into every review prompt ("PASS = no findings; PASS_WITH_CONCERNS = only Minor") holds on
+      // both paths and the ledger stays queryable for genuinely clean runs.
       verdict:
         mergedBlocking > 0
           ? 'FAIL'
-          : merged.length > 0 || !da.clean
+          : merged.length > 0 || mergedBacklog.length > 0 || !da.clean
             ? 'PASS_WITH_CONCERNS'
             : 'PASS',
       codexSource: da.codexSource || 'unavailable',
@@ -882,6 +987,24 @@ async function runDualAdversarial(label, isReReview, stressBlock, preImplSha, op
   if (!codex) {
     throw new Error(
       `Codex leg failed at ${label} after retries (codex-companion AND its Claude fallback both unavailable) — the dual-adversarial guarantee cannot be met; stopping`,
+    )
+  }
+  // PROOF-OF-WORK GUARD — runtime TWIN of dual-adversarial.js's hasProperties/foundNothing/
+  // proofMissing rule. The null checks above catch a leg that failed to RETURN; this catches the
+  // one the schemas cannot: a leg that RETURNED nothing it can be held to
+  // ({verdict:'PASS', findings:[], propertiesChecked:[]} or {source:'codex', findings:[],
+  // evidence:''} — both schema-valid, since `required` enforces key presence only). Without it
+  // the PR #78 silent no-op stays open on this path (the 2-leg pair most plans actually run):
+  // findings=[] → no fix round → PR opened and @claude tagged over a review that read no code.
+  // The team gate maps this to gateStatus INCOMPLETE and this file throws on that; here the
+  // equivalent fail-closed action IS the throw — a re-run condition, never a /iago-prfix finding.
+  const noProof = []
+  if (!legProved(review, 'review')) noProof.push('opus-review:no-proof')
+  if (!legProved(codex, 'codex')) noProof.push('codex:no-proof')
+  if (noProof.length) {
+    await releaseLockBestEffort(`inline review ${label}: ${noProof.join(', ')}`)
+    throw new Error(
+      `Inline review (${label}) INCOMPLETE — [${noProof.join(', ')}]: a core leg returned an empty findings array AND no proof of work (propertiesChecked, or the codex \`evidence\` string), so it reviewed nothing rather than reviewing cleanly (the PR #78 silent no-op). This is a RE-RUN condition, not a fixable finding — re-run the pipeline.`,
     )
   }
   const findings = []
@@ -1141,7 +1264,23 @@ let { findings, backlog, verdict, codexSource, verificationSameFamily, verificat
 // accumulated here and reported. Cumulative across rounds like allFiltered: each round's
 // runDualAdversarial returns only THAT round's backlog, so without this the run would report only
 // the last round's Minors and silently lose round 0's.
-const allBacklog = [...(backlog || [])]
+// DEDUPED, unlike allFiltered: a Minor is never fixed (the fix agent is handed Critical/Important
+// only), so the code it flags is unchanged and EVERY re-review re-reports it. A raw push would
+// count 2 distinct Minors as 4 after one fix round (6 on a Tier-3 3-round run) and hand the
+// orchestrator a `backlog` list with exact duplicates — which both /iago-execute and /iago-quick
+// surface verbatim at the merge decision.
+const allBacklog = []
+const backlogSeen = new Set()
+function addBacklog(items) {
+  for (const f of Array.isArray(items) ? items : []) {
+    if (!f) continue
+    const key = `${f.severity || ''}|${f.by || ''}|${f.file || ''}|${String(f.summary || '').trim()}`
+    if (backlogSeen.has(key)) continue
+    backlogSeen.add(key)
+    allBacklog.push(f)
+  }
+}
+addBacklog(backlog)
 // Accumulate the skeptic-FILTERED (double-refute-dropped) findings across EVERY fix round —
 // each round's runDualAdversarial returns only THAT round's filtered set, so without this the
 // pipeline return would carry only the last round's audit trail and silently lose round 0's
@@ -1199,7 +1338,9 @@ while (
   // push (mutate) rather than reassign — keeps `allFiltered` a const and immune to the
   // formatter's let→const flip; same cumulative effect.
   allFiltered.push(...(filtered || []))
-  allBacklog.push(...(backlog || []))
+  // addBacklog (not push) — a Minor is never fixed, so every re-review re-reports it; deduping
+  // keeps `minorRemaining` a count of DISTINCT defects instead of findings × rounds.
+  addBacklog(backlog)
   if (reReview.domainsSelected && reReview.domainsSelected.length > 0) {
     domainsSelected = reReview.domainsSelected
   }
@@ -1244,7 +1385,7 @@ if (noPr) {
   // double-post the @claude tag, racing parallel review-fix loops (MEMORY:
   // feedback_single_claude_tag). The prompt is idempotent instead — it reuses an
   // existing PR for the branch and skips an already-posted @claude comment.
-  const pr = await agent(prTagPrompt(branch), {
+  const pr = await agent(prTagPrompt(branch, allBacklog), {
     label: 'create-pr-tag',
     phase: 'PR',
     schema: PR_TAG_SCHEMA,
@@ -1293,7 +1434,7 @@ if (noPr) {
 // if summary throws, lock-release never ran anyway, so merging changes nothing —
 // and a failed `rm -rf` now surfaces as BLOCKED instead of silent best-effort.
 phase('Summary')
-const summary = await agent(summaryPrompt(preImplSha, prUrl, verdict, codexSource, rounds, verificationSameFamily, verificationDegraded), {
+const summary = await agent(summaryPrompt(preImplSha, prUrl, verdict, codexSource, rounds, verificationSameFamily, verificationDegraded, allBacklog), {
   label: 'summary',
   phase: 'Summary',
   schema: IMPL_SCHEMA,
@@ -1312,8 +1453,10 @@ return {
   codexSource,
   fixRounds: rounds,
   minorRemaining,
-  // Minor findings, reported but never fix-looped. Cumulative across rounds. Plan 02 forwards
-  // these into the @claude tag comment so the async loop can see what the gate left open.
+  // Minor findings, reported but never fix-looped. Cumulative across rounds AND deduped (a Minor
+  // is re-reported by every re-review because nothing fixes it). Also forwarded into the @claude
+  // tag comment (prTagPrompt) and into the durable summary + NDJSON telemetry (summaryPrompt),
+  // so they survive a session that dies before the orchestrator reports.
   backlog: allBacklog,
   verificationSameFamily,
   verificationDegraded,

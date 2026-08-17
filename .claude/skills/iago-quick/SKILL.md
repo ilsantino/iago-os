@@ -137,9 +137,10 @@ stress → implement → build gate → **commit** → **dual adversarial (Opus 
 fix + regression tests (≤2 rounds) → PR → summary. It returns `{ branch, prUrl,
 reviewVerdict, codexSource, fixRounds, minorRemaining, backlog, verificationSameFamily,
 verificationDegraded, crossModelDegraded, filtered }` and notifies you on completion.
-`backlog` holds every Minor finding the gate reported — Minors never enter a fix round, so
-`minorRemaining` is the backlog count, not unfixed work the loop failed at. List it at the
-merge decision: routed out of the fix loop is not the same as resolved.
+`backlog` holds every Minor finding the gate reported, deduped across fix rounds — Minors never
+enter a fix round, so `minorRemaining` is the backlog count, not unfixed work the loop failed at.
+The Workflow also forwards it into the @claude tag comment and the durable summary. List it at
+the merge decision: routed out of the fix loop is not the same as resolved.
 At the merge decision, surface ALL THREE honesty signals to Santiago — never declare safe
 to merge without them: `verificationDegraded === true` (skeptic verification did not fully
 run — a real gate gap, Tier 2/3), `crossModelDegraded === true` (the Codex leg fell back to

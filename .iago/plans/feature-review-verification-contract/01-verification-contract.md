@@ -27,6 +27,9 @@ Convert every adversarial review leg from open-ended generation ("find problems"
 | modify | `.claude/workflows/execute-pipeline.js` | TWIN schemas + prompts for the inline Tier-0/1 legs; same Minor→backlog policy (stress note 13/14) |
 | modify | `.claude/skills/dual-adversarial/SKILL.md` | Document `backlog` in the return shape and REQUIRE the Report step surface it (stress note 5) |
 | modify | `.claude/rules/execution-pipeline.md` | Land the Minor-backlog rule with the behavior, or code and standing rule contradict (stress note 4) |
+| modify | `.claude/skills/iago-execute/SKILL.md` | Document `backlog` in the pipeline return and require it at the merge decision (Task 7's "must be SURFACED") |
+| modify | `.claude/skills/iago-quick/SKILL.md` | Same surfacing requirement on the quick path |
+| modify | `.claude/workflows/execute-pipeline.test.mjs` | Cover the twinned runtime proof-of-work guard, the backlog forwarding + dedupe, and the Minor-only verdict |
 
 ## Tasks
 
@@ -39,6 +42,7 @@ Convert every adversarial review leg from open-ended generation ("find problems"
 ### Task 2: Add the PROPERTY schema and thread it through the leg schemas
 - **files:** `.claude/workflows/dual-adversarial.js`
 - **action:** Define `const PROPERTY = { type: 'object', required: ['property','verdict'], properties: { property: {type:'string'}, verdict: {type:'string', enum:['HOLDS','VIOLATED']}, evidence: {type:'string'} } }` after `FINDING`. Add a required `propertiesChecked: { type: 'array', items: PROPERTY }` to `REVIEW_SCHEMA`, `CODEX_SCHEMA` and `LENS_SCHEMA`.
+- **DEVIATION AS BUILT (recorded, not silently taken):** `CODEX_SCHEMA` requires `evidence`, NOT `propertiesChecked` — `propertiesChecked` stays declared-but-optional there. A `source: 'codex'` leg only maps codex-companion free text, so requiring properties would force either a fabricated proof-of-work list or an INCOMPLETE gate on every genuinely clean Codex run (execute-pipeline.js throws on `gateStatus !== 'COMPLETE'`). Task 7b's proof-of-work rule enforces the split at runtime instead. `REVIEW_SCHEMA` and `LENS_SCHEMA` require `propertiesChecked` as written.
 - **verify:** `grep -c "propertiesChecked" .claude/workflows/dual-adversarial.js`
 - **expected:** at least `3` — one line per schema (REVIEW/CODEX/LENS). The `PROPERTY` const does not contain the string, and `grep -c` counts LINES, so the original "4 or more" was arithmetically unreachable. Do NOT pad code to hit a count.
 
