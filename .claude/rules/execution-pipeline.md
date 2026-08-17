@@ -20,10 +20,15 @@ Workflow({ scriptPath: "<IAGO_ROOT>/.claude/workflows/execute-pipeline.js",
 2. BUILD GATE — `npx tsc --noEmit` + `npx vite build`, ≤2 fix attempts.
 2b. COMMIT — feature branch (PR mode) or current branch (noPr). Commit happens BEFORE review: the Codex leg reviews committed `base..HEAD` only — uncommitted changes are invisible to it.
 3+4. DUAL ADVERSARIAL (parallel) — Opus 3-pass reviewer (check modules from `scripts/review-checks/`, severity floors enforced) ∥ Codex GPT-5.5 cross-model (falls back to a second Claude pass if Codex unavailable).
-5. FIX — ≤2 rounds, Critical→Important→Minor, commits fixes, re-runs build gate + review. Critical/Important persisting after 2 rounds → workflow throws.
+5. FIX — ≤2 rounds, Critical→Important, commits fixes, re-runs build gate + review. Critical/Important persisting after 2 rounds → workflow throws.
 6. PR via gh (plan embedded) → 6b. TAG @claude (unless noTag) → 7. SUMMARY — `.iago/summaries/{plan}.md` + append `.iago/state/pipeline-runs.ndjson`.
 
-Reviews never dismiss findings as "acceptable"/"carry-over" — report with severity; the fix loop prioritizes.
+## Verification contract (what a review leg owes)
+
+- Every leg returns `propertiesChecked` — the properties it verified, each `HOLDS`/`VIOLATED` with file:line evidence. A property that HOLDS is a real result; a clean leg is proof-of-work, not silence. Every finding carries a `failureScenario` (concrete inputs/state → wrong output); without one it is a worry, not a finding.
+- A core leg returning empty `findings` AND no proof of work is INCOMPLETE, never clean (`opus-review:no-proof` / `codex:no-proof`) — a re-run condition, not a `/iago-prfix` finding. The `source: "codex"` leg maps codex-companion free text, so its required `evidence` string stands in for `propertiesChecked`; `claude-fallback` must enumerate properties like any Claude leg.
+- **Minor findings route to the gate's `backlog` and never enter a fix round.** They are still fully reported — surfaced in the gate result, in the pipeline return (`backlog`, `minorRemaining`) and forwarded to the async loop. Reviews still never dismiss findings as "acceptable"/"carry-over": a defect this diff did not introduce is reported at its true severity and routed to `backlog`, never softened or dropped at emission time. Only the ROUTING changed — Critical/Important go to the fix loop, everything else to the backlog.
+- The contract is TWINNED: `.claude/workflows/dual-adversarial.js` (Tier 2/3 gate) and `.claude/workflows/execute-pipeline.js` (inline Tier 0/1 legs) each carry their own `FINDING`/`PROPERTY`/`REVIEW_SCHEMA`/`CODEX_SCHEMA` and Minor-backlog routing. Change both, always — a one-sided edit leaves the most-used path on the old behavior (the `classifyTier` twin-drift failure, PR #96).
 
 ## Fix-session contract
 

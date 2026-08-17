@@ -123,8 +123,11 @@ Workflow({
 
 The Workflow runs in the background as tracked subagents and notifies you on
 completion; its return value carries `{ branch, prUrl, prNumber, reviewVerdict,
-codexSource, fixRounds, minorRemaining, verificationSameFamily, verificationDegraded,
+codexSource, fixRounds, minorRemaining, backlog, verificationSameFamily, verificationDegraded,
 crossModelDegraded, filtered }`.
+`backlog` holds every Minor finding the gate reported — Minors never enter a fix round, so
+`minorRemaining` is the backlog count, NOT unfixed work the loop failed at. Surface the list
+alongside the honesty signals below: routed-out-of-the-fix-loop is not the same as resolved.
 **At the merge decision, surface ALL THREE honesty signals to Santiago — never declare a
 PR safe to merge without them:**
 - `verificationDegraded === true` — the skeptic verification did not fully run (a real

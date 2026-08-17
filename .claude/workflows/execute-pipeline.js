@@ -65,13 +65,36 @@ if (!plan || !projectDir || !iagoRoot) {
 const planName = (plan.split(/[\\/]/).pop() || 'plan').replace(/\.md$/i, '')
 
 // ─── Schemas (validated at the tool-call layer; the model retries on mismatch) ─
+// ─── VERIFICATION CONTRACT — TWIN OF dual-adversarial.js ──────────────
+// FINDING / REVIEW_SCHEMA / CODEX_SCHEMA below are DUPLICATED in
+// `.claude/workflows/dual-adversarial.js`. This file carries the INLINE Tier-0/1 review path
+// (the 2-leg `review:`/`codex:` pair most plans actually run); dual-adversarial.js carries the
+// delegated Tier-2/3 team gate. A contract change applied to only one of them silently leaves the
+// most-used path on the old behavior — the exact twin-drift failure that bit `classifyTier` in
+// PR #96. EDIT BOTH, ALWAYS: severity floors, failureScenario, propertiesChecked, the codex
+// `evidence` carve-out, and the Minor→backlog routing must stay identical across the two files.
+//
+// failureScenario is REQUIRED: a finding without concrete inputs/state → wrong output or crash is
+// a worry, not a finding, and the fix loop cannot act on it.
 const FINDING = {
   type: 'object',
-  required: ['severity', 'summary'],
+  required: ['severity', 'summary', 'failureScenario'],
   properties: {
     severity: { type: 'string', enum: ['Critical', 'Important', 'Minor'] },
     summary: { type: 'string' },
+    failureScenario: { type: 'string' },
     file: { type: 'string' },
+  },
+}
+// PROOF-OF-WORK unit — twin of dual-adversarial.js's PROPERTY. A leg reports what it VERIFIED,
+// not only what it found, so a clean review is auditable instead of merely silent.
+const PROPERTY = {
+  type: 'object',
+  required: ['property', 'verdict'],
+  properties: {
+    property: { type: 'string' },
+    verdict: { type: 'string', enum: ['HOLDS', 'VIOLATED'] },
+    evidence: { type: 'string' },
   },
 }
 
@@ -153,22 +176,32 @@ const COMMIT_SCHEMA = {
   },
 }
 
+// TWIN of dual-adversarial.js REVIEW_SCHEMA — keep in sync (see the note above FINDING).
+// Also used by the plan-compliance leg, which is likewise Claude-authored and can enumerate the
+// plan criteria it verified.
 const REVIEW_SCHEMA = {
   type: 'object',
-  required: ['verdict', 'findings'],
+  required: ['verdict', 'findings', 'propertiesChecked'],
   properties: {
     verdict: { type: 'string', enum: ['PASS', 'PASS_WITH_CONCERNS', 'FAIL'] },
     domainsSelected: { type: 'array', items: { type: 'string' } },
     findings: { type: 'array', items: FINDING },
+    propertiesChecked: { type: 'array', items: PROPERTY },
   },
 }
 
+// TWIN of dual-adversarial.js CODEX_SCHEMA, including its carve-out: when source='codex' this leg
+// only MAPS codex-companion's free-text [P0]/[P1]/[P2] output, so it cannot honestly enumerate
+// properties — `evidence` (what was run + what it reported) is the required proof-of-work instead.
+// A source='claude-fallback' run IS a Claude review and fills propertiesChecked.
 const CODEX_SCHEMA = {
   type: 'object',
-  required: ['source', 'findings'],
+  required: ['source', 'findings', 'evidence'],
   properties: {
     source: { type: 'string', enum: ['codex', 'claude-fallback'] },
     findings: { type: 'array', items: FINDING },
+    evidence: { type: 'string' },
+    propertiesChecked: { type: 'array', items: PROPERTY },
   },
 }
 
@@ -373,6 +406,13 @@ PASS 3 — ADVERSARIAL: Read each changed source file in FULL for context — no
 
 ${head}
 
+BOUNDED VERIFICATION — organize the adversarial pass along exactly THREE axes and report EVERY property you evaluate in propertiesChecked with its HOLDS/VIOLATED verdict and file:line evidence:
+- INTENT — each acceptance criterion in the plan (${plan}), verified PASS/FAIL by name, PLUS any change the diff makes that the plan never asked for.
+- SECURITY — the threat list BOUNDED BY THE CHANGED PATHS: only threats reachable from what this diff actually touches.
+- EFFICIENCY — unreachable, duplicated, or superseded code this diff introduced or left behind.
+
+REQUIREMENT — the three axes are ADDITIVE STRUCTURE over the checks below, never a replacement. The domain modules, the always-on cross-cutting set, and the severity floors all still apply in full; the axes organize the proof-of-work, they do not bound what counts as a finding.
+
 Always check these cross-cutting concerns regardless of domain:
 - Auth bypass: missing authorization checks, exposed endpoints, token handling gaps
 - Data loss: unconditional writes, missing existence guards, silent overwrites
@@ -387,7 +427,11 @@ Assemble your context (in ${projectDir}). The implementation is already COMMITTE
 3. Read EVERY review-checks module: all .md files under ${iagoRoot}/scripts/review-checks/
 4. Read each changed source file IN FULL.
 
-Categorize findings as Critical, Important, or Minor. Verdict: PASS = no findings; PASS_WITH_CONCERNS = only Minor; FAIL = any Critical or Important.`
+Categorize findings as Critical, Important, or Minor, each with a concrete failureScenario (inputs/state → the wrong output or crash). A finding with no failureScenario is a worry, not a finding — do not emit it as one.
+
+PROOF OF WORK (required): return propertiesChecked listing EVERY property you evaluated with its HOLDS/VIOLATED verdict and evidence. A property that HOLDS is a real, welcome result. An empty findings array is a VALID result ONLY alongside a non-empty propertiesChecked — a leg that reports neither did not review anything.
+
+Verdict: PASS = no findings; PASS_WITH_CONCERNS = only Minor; FAIL = any Critical or Important.`
 }
 
 function codexPrompt(preImplSha) {
@@ -404,7 +448,12 @@ You are the CROSS-MODEL adversarial leg of a dual review. The implementation is 
    GUARD: only treat Codex as misfired if it reports "no changed files" / "no branch diff" WHILE  git diff --name-only ${preImplSha}..HEAD  is non-empty. (After our commit stage the committed diff is non-empty, so a healthy Codex run will see it.) On a genuine misfire, fall through to step 3.
 3. FALLBACK (companion/node missing, Codex errored, or a genuine misfire): perform the adversarial review yourself. Read the plan (${plan}) and the diff (git diff ${preImplSha}..HEAD) and each changed file in full. Check: auth bypass, data loss, race conditions, rollback safety, business-logic errors. Set source="claude-fallback".
 
-Return the structured findings array (empty if clean) and source. NOTE: a Codex verdict of "approve" / "no material findings" is a SUCCESSFUL codex run with an empty findings array — set source="codex", do NOT fall back.`
+PROOF OF WORK (required — a leg that reports nothing and proves nothing reads as a FAILED leg, not a clean one; PR #78's codex leg was logged "context-read only, no structured findings written" and the gate still reported fine):
+- ALWAYS return \`evidence\`: a non-empty string naming what you actually ran and what it returned — resolved companion path + exact command + Codex's verdict line, or (on the fallback) the changed files you read in full.
+- source="claude-fallback" is a CLAUDE-authored review, so it must ALSO return \`propertiesChecked\`: every property evaluated with its HOLDS/VIOLATED verdict and file:line evidence. source="codex" does not need propertiesChecked — \`evidence\` stands in for it.
+- Every finding needs a concrete failureScenario (inputs/state → the wrong output or crash).
+
+Return the structured findings array (empty if clean), source, evidence, and propertiesChecked when applicable. NOTE: a Codex verdict of "approve" / "no material findings" is a SUCCESSFUL codex run with an empty findings array — set source="codex", record the verdict line in evidence, do NOT fall back.`
 }
 
 const STRESS_PROMPT = `${PREAMBLE}
@@ -606,7 +655,9 @@ In ${projectDir}:
 3. For EACH task in the plan, verify the committed changes implement it correctly and completely. Flag every missing, incomplete, or incorrect implementation as a finding — severity Important, or Critical when the omission is security/data-integrity relevant. Do NOT review code quality, style, or anything the diff-side legs cover; plan compliance only. An empty findings array asserts every plan task is verifiably implemented.
 
 READ-ONLY: do NOT edit any file, do NOT stage, do NOT commit, do NOT run any build or test command. Your ONLY permitted operations are: reading files (cat, git show, git diff), reading git history (git log, git diff --name-only). Any write operation here corrupts the pipeline tree.
-Return verdict (PASS / PASS_WITH_CONCERNS / FAIL) and findings (file, severity, summary).`
+PROOF OF WORK (required): return propertiesChecked with ONE entry PER PLAN TASK — property = the task/acceptance criterion, verdict = HOLDS (implemented and verified) or VIOLATED (missing/incomplete/incorrect), evidence = the file:line that implements it or the reason it is absent. This is what makes "every plan task is implemented" auditable instead of merely asserted; an empty findings array is valid ONLY alongside a non-empty propertiesChecked.
+
+Return verdict (PASS / PASS_WITH_CONCERNS / FAIL), findings (file, severity, summary, failureScenario) and propertiesChecked.`
 }
 
 // Read-only HEAD + porcelain snapshot prompt bracketing the plan-compliance leg (plan 03
@@ -750,6 +801,16 @@ async function runDualAdversarial(label, isReReview, stressBlock, preImplSha, op
     const mergedBlocking = merged.filter(
       (f) => f.severity === 'Critical' || f.severity === 'Important',
     ).length
+    // MINOR → BACKLOG, applied IDENTICALLY on both review paths (stress note 14). The team gate
+    // already partitioned its own Minors into da.backlog; the plan-compliance leg runs here and
+    // has not been partitioned, so do it now. Without this the two paths would run two different
+    // Minor policies in the same repo — team-gate plans dropping Minors from the fix loop while
+    // inline plans still fix them — and `minorRemaining` would log 0 while a backlog held entries.
+    const mergedBacklog = [
+      ...(Array.isArray(da.backlog) ? da.backlog : []),
+      ...merged.filter((f) => f.severity === 'Minor'),
+    ]
+    const mergedGateFindings = merged.filter((f) => f.severity !== 'Minor')
     log(
       `team gate (${label}): ${da.blocking} blocking from the gate + ${compliance.findings.length} plan-compliance (${mergedBlocking} blocking total), codex=${da.codexSource}` +
         `${da.crossModelDegraded ? ' [cross-model DEGRADED]' : ''}` +
@@ -758,7 +819,9 @@ async function runDualAdversarial(label, isReReview, stressBlock, preImplSha, op
         `${Array.isArray(da.filtered) && da.filtered.length ? ` [${da.filtered.length} skeptic-filtered — propagated]` : ''}`,
     )
     return {
-      findings: merged,
+      // Critical/Important only — Minors moved to `backlog` (reported, never fix-looped).
+      findings: mergedGateFindings,
+      backlog: mergedBacklog,
       verdict:
         mergedBlocking > 0
           ? 'FAIL'
@@ -826,12 +889,18 @@ async function runDualAdversarial(label, isReReview, stressBlock, preImplSha, op
   const codexSource = codex.source
   for (const f of review.findings || []) findings.push({ ...f, by: 'opus' })
   for (const f of codex.findings || []) findings.push({ ...f, by: codex.source })
+  // MINOR → BACKLOG on the INLINE path too (stress note 14) — same policy as the team-gate branch
+  // above and as dual-adversarial.js. Minors are reported (surfaced in the return, forwarded to
+  // the @claude tag comment) but never consume a fix round.
+  const backlog = findings.filter((f) => f.severity === 'Minor')
+  const gateFindings = findings.filter((f) => f.severity !== 'Minor')
   // Inline 2-leg has no separate skeptic-verification pass, so neither flag applies.
   // crossModelDegraded mirrors the team gate's semantics: true when the cross-model
   // leg ran as a same-family fallback rather than real Codex. No skeptic panel here,
   // so there is nothing to filter.
   return {
-    findings,
+    findings: gateFindings,
+    backlog,
     verdict,
     codexSource,
     verificationSameFamily: false,
@@ -1067,7 +1136,12 @@ log(`committed on ${branch} @ ${commit.headSha || '?'}`)
 // review DELEGATES to the dual-adversarial.js team gate (diverse personas + skeptic panel).
 phase('Review')
 const reviewOpts = { mode: reviewMode, lenses: reviewLenses, skepticCap: 8, tier }
-let { findings, verdict, codexSource, verificationSameFamily, verificationDegraded, crossModelDegraded, filtered, domainsSelected } = await runDualAdversarial('r0', false, stressBlock, preImplSha, reviewOpts)
+let { findings, backlog, verdict, codexSource, verificationSameFamily, verificationDegraded, crossModelDegraded, filtered, domainsSelected } = await runDualAdversarial('r0', false, stressBlock, preImplSha, reviewOpts)
+// Minor findings NEVER enter a fix round (verification contract, plan 01 Task 7) — they are
+// accumulated here and reported. Cumulative across rounds like allFiltered: each round's
+// runDualAdversarial returns only THAT round's backlog, so without this the run would report only
+// the last round's Minors and silently lose round 0's.
+const allBacklog = [...(backlog || [])]
 // Accumulate the skeptic-FILTERED (double-refute-dropped) findings across EVERY fix round —
 // each round's runDualAdversarial returns only THAT round's filtered set, so without this the
 // pipeline return would carry only the last round's audit trail and silently lose round 0's
@@ -1077,10 +1151,12 @@ let rounds = 0
 // maxFixRounds is the per-plan local from the tier classifier (Tier 3 → 3, else 2) — a
 // per-plan local, NOT a module const, so a stacked multi-plan run cannot bleed one plan's
 // raised cap into the next.
-// Loop while there is work AND it is either round 0 (always do ONE fix pass for any
-// findings — the fix agent addresses every severity, including Minor) or blocking
-// findings remain. This avoids burning a second fix+rebuild+re-review round on a
-// Minor-only result while still fixing Minors once.
+// Loop while there is work AND it is either round 0 or blocking findings remain.
+// `findings` now contains ONLY Critical/Important — Minors were partitioned into the backlog by
+// runDualAdversarial (verification contract, plan 01 Task 7), so a Minor-only result no longer
+// spends a fix round at all. The round-0 condition is kept as-is: it is now equivalent to
+// hasBlocking(findings), and keeping the shape means a future severity added between Minor and
+// Important still gets its one pass.
 while (
   actionable(findings).length > 0 &&
   rounds < maxFixRounds &&
@@ -1119,10 +1195,11 @@ while (
     ...reviewOpts,
     domainsSelected,
   })
-  ;({ findings, verdict, codexSource, verificationSameFamily, verificationDegraded, crossModelDegraded, filtered } = reReview)
+  ;({ findings, backlog, verdict, codexSource, verificationSameFamily, verificationDegraded, crossModelDegraded, filtered } = reReview)
   // push (mutate) rather than reassign — keeps `allFiltered` a const and immune to the
   // formatter's let→const flip; same cumulative effect.
   allFiltered.push(...(filtered || []))
+  allBacklog.push(...(backlog || []))
   if (reReview.domainsSelected && reReview.domainsSelected.length > 0) {
     domainsSelected = reReview.domainsSelected
   }
@@ -1134,8 +1211,11 @@ if (hasBlocking(findings)) {
       .join('\n')}`,
   )
 }
-const minorRemaining = actionable(findings).length
-if (minorRemaining) log(`Proceeding with ${minorRemaining} Minor finding(s) documented`)
+// `findings` is now Critical/Important ONLY (Minors partitioned into the backlog before this
+// point), and the hasBlocking throw above guarantees none survive — so counting `findings` here
+// would always report 0 while real Minors sat in the backlog (stress note 14). Count the backlog.
+const minorRemaining = allBacklog.length
+if (minorRemaining) log(`Proceeding with ${minorRemaining} Minor finding(s) in the backlog (reported, not fixed in-loop)`)
 
 // Stage 5 — PR (or stay stacked) + tag
 phase('PR')
@@ -1232,6 +1312,9 @@ return {
   codexSource,
   fixRounds: rounds,
   minorRemaining,
+  // Minor findings, reported but never fix-looped. Cumulative across rounds. Plan 02 forwards
+  // these into the @claude tag comment so the async loop can see what the gate left open.
+  backlog: allBacklog,
   verificationSameFamily,
   verificationDegraded,
   // #89 re-gate — degradation + audit honesty at the merge decision: the orchestrator

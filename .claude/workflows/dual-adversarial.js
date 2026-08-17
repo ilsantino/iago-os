@@ -82,36 +82,71 @@ if (!projectDir || !iagoRoot) {
   throw new Error('dual-adversarial requires args.projectDir and args.iagoRoot (absolute paths)')
 }
 
+// VERIFICATION CONTRACT (plan 01) — failureScenario is REQUIRED: a finding without concrete
+// inputs/state → wrong output or crash is a worry, not a finding. It is also what the TEAM
+// skeptic needs in order to refute the finding from the actual code (see skepticPrompt).
 const FINDING = {
   type: 'object',
-  required: ['severity', 'summary'],
+  required: ['severity', 'summary', 'failureScenario'],
   properties: {
     severity: { type: 'string', enum: ['Critical', 'Important', 'Minor'] },
     summary: { type: 'string' },
+    // Concrete inputs/state → the wrong output/crash. No hand-wave ("could be unsafe").
+    failureScenario: { type: 'string' },
     file: { type: 'string' },
+  },
+}
+// PROPERTY — one unit of PROOF-OF-WORK. A leg reports what it VERIFIED, not only what it found:
+// a property that HOLDS is a real result (checked against the code, with evidence), and every
+// VIOLATED verdict must be paired with a finding carrying the failureScenario. This is what makes
+// a clean leg auditable and distinguishable from a lazy or failed one.
+const PROPERTY = {
+  type: 'object',
+  required: ['property', 'verdict'],
+  properties: {
+    property: { type: 'string' },
+    verdict: { type: 'string', enum: ['HOLDS', 'VIOLATED'] },
+    evidence: { type: 'string' },
   },
 }
 const REVIEW_SCHEMA = {
   type: 'object',
-  required: ['verdict', 'findings'],
+  required: ['verdict', 'findings', 'propertiesChecked'],
   properties: {
     verdict: { type: 'string', enum: ['PASS', 'PASS_WITH_CONCERNS', 'FAIL'] },
     domainsSelected: { type: 'array', items: { type: 'string' } },
     findings: { type: 'array', items: FINDING },
+    propertiesChecked: { type: 'array', items: PROPERTY },
   },
 }
+// CODEX carve-out (stress note 6). When source==='codex' this leg does NOT review directly — it
+// runs codex-companion and MAPS its free-text [P0]/[P1]/[P2] output, so it has no natural way to
+// enumerate the properties GPT-5.5 verified. Requiring propertiesChecked there would force one of
+// two bad outcomes: a fabricated proof-of-work list (which defeats the contract) or a genuinely
+// clean Codex run turning the gate INCOMPLETE on every pass (execute-pipeline.js fails closed and
+// throws on gateStatus!=='COMPLETE'). So `evidence` — the command actually run and what it
+// reported — is REQUIRED and stands in for propertiesChecked on the codex path; propertiesChecked
+// stays available (and is what the CLAUDE-authored `claude-fallback` path must fill). The
+// proof-of-work rule below enforces exactly that split.
 const CODEX_SCHEMA = {
   type: 'object',
-  required: ['source', 'findings'],
+  required: ['source', 'findings', 'evidence'],
   properties: {
     source: { type: 'string', enum: ['codex', 'claude-fallback'] },
     findings: { type: 'array', items: FINDING },
+    // What was actually run and what it returned (companion path + command + verdict line, or
+    // the changed-file list read in the fallback). Non-empty = this leg did real work.
+    evidence: { type: 'string' },
+    propertiesChecked: { type: 'array', items: PROPERTY },
   },
 }
 const LENS_SCHEMA = {
   type: 'object',
-  required: ['findings'],
-  properties: { findings: { type: 'array', items: FINDING } },
+  required: ['findings', 'propertiesChecked'],
+  properties: {
+    findings: { type: 'array', items: FINDING },
+    propertiesChecked: { type: 'array', items: PROPERTY },
+  },
 }
 // TEAM verification: a skeptic is dispatched PER blocking finding to REFUTE it from the
 // actual committed code. `real:true` = the skeptic could not refute it (the bug stands);
@@ -143,13 +178,23 @@ const CHANGED_FILES_SCHEMA = {
   },
 }
 
+// OPERATING STANCE — the emission-pressure clause ("give NO credit for good intent…") was
+// removed on purpose: it rewards VOLUME (a leg that reports nothing looks lazy, so it invents
+// something) instead of COVERAGE. The replacement is a verification stance — report what you
+// CHECKED and its verdict, so a clean leg is proof-of-work rather than silence.
+// Scope clause (stress note 9): `.claude/rules/execution-pipeline.md` states reviews never dismiss
+// findings as "acceptable"/"carry-over", and this gate exists to catch integration effects the
+// diff-only view hides. So a pre-existing defect is NEVER suppressed at emission time — it is
+// reported with its true severity and ROUTED to the backlog instead of this diff's fix loop.
 const PREAMBLE = `You are a read-only adversarial reviewer (pre-merge gate, pass #2). Work in ${projectDir}. Do NOT edit files, commit, push, or merge — only review and report.
 
-OPERATING STANCE — aggressive and independent:
+OPERATING STANCE — bounded verification, aggressive and independent:
 - Default to skepticism. Assume the change can fail in subtle, high-cost, or user-visible ways until the evidence says otherwise.
-- Give NO credit for good intent, partial fixes, or likely follow-up work. Happy-path-only behavior is a real weakness — report it.
+- VERIFY each property you are assigned against the actual code and report its verdict in propertiesChecked. A property that HOLDS is a real result — report it as HOLDS with the evidence (file:line) that proves it. Reporting nothing at all is not a result; it is a leg that did not run.
+- Every VIOLATED verdict must ship a matching finding whose failureScenario names concrete inputs/state → the wrong output or crash. Happy-path-only behavior IS a violated property — state the input that breaks it. A finding with no failureScenario is a worry, not a finding: do not emit it as one.
+- SCOPE, NEVER SUPPRESSION: a real defect this diff did not introduce is still REPORTED at its true severity, prefixed "pre-existing:" in the summary. It is routed to the BACKLOG instead of this diff's fix loop — it is never softened, downgraded, or dropped at emission time.
 - You are ONE independent leg of a multi-model gate. Review from the diff and source ALONE; do not assume another leg will catch what you skip, and do not soften a finding because "someone else probably saw it."
-- Stay grounded: every finding must be defensible from the actual code. Do not invent files, lines, code paths, or attack chains.`
+- Stay grounded: every finding must be defensible from the actual code. Do not invent files, lines, code paths, or attack chains — and never pad propertiesChecked with properties you did not actually check.`
 
 // THREE-dot diff invariant: when execute-pipeline.js delegates here with base=preImplSha,
 // preImplSha is always a direct ancestor of HEAD (captured at PREP before implementation), so
@@ -166,17 +211,36 @@ const reReviewBlock = isReReview
   ? `\n\nRE-REVIEW INTEGRITY CHECK: this is a re-review after a fix round. Verify EVERY previous finding (Critical, Important, Minor) is actually resolved, and hunt for regressions the fixes introduced. If a prior fix claimed "no test infrastructure" to skip a regression test for a Critical/Important finding, verify by probing conventions — sibling *.test.ts/*.test.tsx, vitest.config.ts, package.json test scripts, test-{name}.{mjs,bats,sh} beside bash scripts, e2e/, amplify/functions/*/handler.test.ts. If infra exists that was missed, raise a NEW Important finding.`
   : ''
 
+// INTENT-axis source (stress note 8). The INTENT axis asks "was each acceptance criterion met?"
+// — but a STANDALONE pre-merge run has NO plan in context (stressBlock is '' unless
+// execute-pipeline delegated here), so "each plan acceptance criterion" is unverifiable and the
+// leg would either fabricate criteria or emit nothing and trip the proof-of-work rule below.
+// Define the degradation explicitly instead: with no plan, intent comes from the PR description
+// and the commit messages, and the leg records that substitution as a property.
+const intentSource = stressBlock
+  ? `Source of intent: the plan acceptance criteria forwarded in the stress block at the end of this prompt — verify EACH one PASS/FAIL by name.`
+  : `Source of intent (DEGRADED — no plan is in context for this standalone run): use the PR description${prNumber ? ` (\`gh pr view ${prNumber} --json title,body\`)` : ''} and the commit messages (\`git log ${base}..HEAD --format=%s%n%b\`) as the statement of intent, and verify each stated intent PASS/FAIL. Do NOT invent plan criteria that were never written. Record the substitution itself as one propertiesChecked entry (property: "intent derived from PR/commit description, no plan in context").`
+
 const reviewPrompt = `${PREAMBLE}
 
 Final adversarial review of PR${prNumber ? ` #${prNumber}` : ''} before a human merges it. Two passes:
 
 PASS 1 — DOMAIN ROUTING: read every review-checks module under ${iagoRoot}/scripts/review-checks/. From the diff (${diffExpr}), pick the RELEVANT domains and report them in domainsSelected. Skip the rest.
 
-PASS 2 — ADVERSARIAL: read each changed source file IN FULL (not the diff alone). Apply the selected domains' checks plus the always-on cross-cutting set: auth bypass, data loss, race conditions, rollback safety. Honor module severity floors (ALWAYS Critical / ALWAYS Important — never downgrade).
+PASS 2 — BOUNDED VERIFICATION: read each changed source file IN FULL (not the diff alone). Enumerate the properties you will verify along exactly THREE axes, check each against the code, and report EVERY one in propertiesChecked with its HOLDS/VIOLATED verdict and evidence:
+- INTENT — each acceptance criterion of this change, verified PASS/FAIL, PLUS any change the diff makes that was never asked for. ${intentSource}
+- SECURITY — the threat list BOUNDED BY THE CHANGED PATHS: only threats reachable from what this diff actually touches (do not enumerate the whole app's threat model).
+- EFFICIENCY — unreachable, duplicated, or superseded code this diff introduced or left behind.
+
+REQUIREMENT — the three axes are ADDITIVE STRUCTURE over the existing checks, never a replacement for them. All of the following still apply verbatim and none of it may shrink:
+- Apply the selected domains' checks from PASS 1.
+- Apply the always-on cross-cutting set on every run regardless of domain: auth bypass, data loss, race conditions, rollback safety.
+- Honor module severity floors (ALWAYS Critical / ALWAYS Important — never downgrade).
+Anything those checks surface is reported even when it does not fit one of the three axes; the axes organize the proof-of-work, they do not bound what counts as a finding.
 
 This is the LAST gate before merge — the async GitHub loop already ran, so focus on what an automated loop misses: integration effects across modules, subtle data-correctness, concurrency, and anything the diff-only view hid.
 
-Categorize findings Critical / Important / Minor. Verdict: PASS = none; PASS_WITH_CONCERNS = only Minor; FAIL = any Critical/Important.${reReviewBlock}${stressBlock}`
+Categorize findings Critical / Important / Minor, each with a concrete failureScenario. Verdict: PASS = none; PASS_WITH_CONCERNS = only Minor; FAIL = any Critical/Important. An empty findings array is a valid, welcome result — but ONLY alongside a non-empty propertiesChecked that shows what you verified.${reReviewBlock}${stressBlock}`
 
 const codexPrompt = `${PREAMBLE}
 
@@ -186,7 +250,12 @@ You are the CROSS-MODEL leg — prefer Codex (GPT-5.5) so the second opinion is 
    Map [P0]/[high]→Critical, [P1]/[medium]→Important, [P2]/[low]→Minor. source="codex".
    GUARD: if it reports "no changed files" but ${diffExpr} --name-only is non-empty, treat as misfire and fall through.
 3. FALLBACK: review it yourself — read the diff (${diffExpr}) and each changed file in full; check auth bypass, data loss, races, rollback safety, business logic. source="claude-fallback".
-Return findings (empty if clean) and source.`
+
+PROOF OF WORK (required — a leg that reports nothing and proves nothing is treated as a FAILED leg, not a clean one):
+- ALWAYS return \`evidence\`: a non-empty string naming what you actually ran and what it returned — the resolved companion path + the exact command + Codex's verdict line, or (on the fallback) the changed files you read in full. "approve / no material findings" from a real Codex run is a legitimate, welcome evidence string.
+- source="claude-fallback" is a CLAUDE-authored review, so it must ALSO return \`propertiesChecked\`: every property you evaluated with its HOLDS/VIOLATED verdict and file:line evidence. source="codex" does not need propertiesChecked — \`evidence\` stands in for it, because that leg maps GPT-5.5's free text rather than verifying properties itself.
+- Every finding needs a concrete failureScenario (inputs/state → wrong output). Map [P0]/[high]→Critical, [P1]/[medium]→Important, [P2]/[low]→Minor.
+Return findings (empty if clean), source, evidence, and propertiesChecked when applicable.`
 
 // Optional extra independent lenses. Each runs as its own fresh parallel subagent
 // (no cross-priming) and is pinned to Opus. A lens leg failure is NON-blocking
@@ -210,7 +279,15 @@ const LENS_DEFS = {
   completeness: {
     phase: 'Completeness',
     title: 'completeness critic',
-    focus: `COMPLETENESS-CRITIC meta-lens. Assume the other legs missed something. Ask: which changed file did no one read in full? which cross-module integration effect is unverified? which claim in the PR/plan is asserted but not proven by code or a test? which failure mode (timeout, partial write, retry, concurrent actor, empty/null state) is unhandled? Surface each gap as a finding at the severity the underlying risk warrants.`,
+    // The old opening line told this lens to PRESUPPOSE that the other legs had overlooked
+    // something — which guarantees it manufactures a gap whether or not one exists. Replaced with
+    // a falsifiable coverage question whose honest answer can be "coverage is complete", proven by
+    // HOLDS properties. (The literal removed here is asserted absent by the plan's verification.)
+    focus: `COMPLETENESS-CRITIC meta-lens. This is a FALSIFIABLE COVERAGE QUESTION, not a presupposition that something was missed — "coverage is complete" is a legitimate answer when the evidence supports it. Answer each of these against the code and record EACH as a propertiesChecked entry with its verdict and evidence:
+1. COVERAGE — list the changed files (\`${diffExpr} --name-only\`). Which of them was read IN FULL by no leg of this gate? Name them, or record HOLDS: every changed file was read in full.
+2. PROOF — which claim in the PR description or plan is ASSERTED but backed by no code and no test? Name the claim and the missing proof, or record HOLDS: every claim is backed by code or a test.
+3. INTEGRATION / FAILURE MODES — which cross-module effect is unverified, and which failure mode (timeout, partial write, retry, concurrent actor, empty/null state) is unhandled on a changed path? Name it, or record HOLDS with the guard that handles it.
+Raise a finding ONLY for a gap you can name concretely, at the severity the underlying risk warrants, each with a failureScenario. Return an EMPTY findings array when coverage is complete — the HOLDS properties are the result.`,
   },
   frontend: {
     phase: 'Frontend',
@@ -421,6 +498,12 @@ if (lensesDropped.length) {
   )
 }
 
+// Shared proof-of-work tail for the lens and team legs. Replaces the old "Return an empty
+// findings array if this lens/leg surfaces nothing." — that sentence made SILENCE the reportable
+// clean result, which is indistinguishable from a leg that never ran (PR #78). Now the clean
+// result is a non-empty propertiesChecked list.
+const PROOF_OF_WORK_TAIL = `PROOF OF WORK (required): return \`propertiesChecked\` listing EVERY property you evaluated, each with its verdict (HOLDS or VIOLATED) and the evidence (file:line) behind it. A property that HOLDS is a real, welcome result — report it. An empty \`findings\` array is a VALID result ONLY when \`propertiesChecked\` is non-empty; a leg that returns neither findings nor properties did not review anything and is treated as a failed leg, not a clean one.`
+
 function lensPrompt(def) {
   return `${PREAMBLE}
 
@@ -428,7 +511,9 @@ You are an INDEPENDENT extra lens on PR${prNumber ? ` #${prNumber}` : ''}. Read 
 
 ${def.focus}
 
-Honor module severity floors (ALWAYS Critical / ALWAYS Important — never downgrade). Report findings as Critical / Important / Minor, each with file + line. Return an empty findings array if this lens surfaces nothing.`
+Honor module severity floors (ALWAYS Critical / ALWAYS Important — never downgrade). Report findings as Critical / Important / Minor, each with file + line AND a concrete failureScenario (inputs/state → the wrong output or crash).
+
+${PROOF_OF_WORK_TAIL}`
 }
 
 // TEAM mode — two extra independent reviewer legs. Same PREAMBLE + read-each-changed-
@@ -453,7 +538,9 @@ You are an INDEPENDENT TEAM reviewer on PR${prNumber ? ` #${prNumber}` : ''}. Re
 
 ${def.focus}
 
-Honor module severity floors (ALWAYS Critical / ALWAYS Important — never downgrade). Report findings as Critical / Important / Minor, each with file + line. Return an empty findings array if this leg surfaces nothing.`
+Honor module severity floors (ALWAYS Critical / ALWAYS Important — never downgrade). Report findings as Critical / Important / Minor, each with file + line AND a concrete failureScenario (inputs/state → the wrong output or crash).
+
+${PROOF_OF_WORK_TAIL}`
 }
 
 // TEAM verification — an adversarial skeptic dispatched to REFUTE one finding from the
@@ -468,11 +555,11 @@ function skepticPrompt(finding, angle) {
 You are an adversarial SKEPTIC verifying ONE finding from a multi-leg review of PR${prNumber ? ` #${prNumber}` : ''}. Your job is to REFUTE it — prove it is NOT a real defect in the CURRENT committed code.
 
 Finding under test (severity ${finding.severity}, raised by ${finding.by || 'a reviewer'}):
-${finding.summary}${finding.file ? `\nReported file: ${finding.file}` : ''}
+${finding.summary}${finding.file ? `\nReported file: ${finding.file}` : ''}${finding.failureScenario ? `\nClaimed failure scenario (the concrete inputs/state → wrong output the reviewer says triggers this): ${finding.failureScenario}` : '\nNo failure scenario was supplied with this finding — the verification contract requires one, so treat its ABSENCE as part of what you are testing: if you cannot construct a concrete triggering scenario from the code either, that is grounds for real=false.'}
 
 ANGLE: ${angle}
 
-Method: read the ACTUAL diff (${diffExpr}) and the relevant source files IN FULL. Determine whether the committed code actually exhibits the defect.
+Method: read the ACTUAL diff (${diffExpr}) and the relevant source files IN FULL. Determine whether the committed code actually exhibits the defect — walk the claimed failure scenario above through the real code path and see whether it can happen.
 - Return real=false (NOT a real defect) ONLY if you can point to concrete code — a specific file:line or code path — that makes the finding wrong (the attack is impossible, the value is already guarded, the path is unreachable). Put that evidence in reason.
 - Return real=true if the code confirms the defect, OR if you CANNOT confirm from the current committed code that it is wrong. DEFAULT TO real=false ONLY when the code disproves it; a finding you merely "doubt" but cannot disprove is real=true.
 - A bare "I don't think this is exploitable" with no code citation is NOT a refutation — in that case return real=true.
@@ -549,6 +636,46 @@ let codexSource = 'unavailable'
 // it must never be mis-routed to /iago-prfix. `incompleteLegs` enumerates the failed
 // core legs so the orchestrator can act on a field, not parse a free-text summary.
 const incompleteLegs = []
+// PROOF-OF-WORK RULE — a CORE leg that returned an empty findings array AND no proof of work
+// did not review anything; it must NOT be read as "clean". PR #78's Codex leg is logged verbatim
+// as "partial — context-read only, no structured findings written": zero output, no alarm, gate
+// reported fine. That is the failure this rule closes. Such a leg is an INCOMPLETE gate (a re-run
+// condition), never a fixable finding — same routing as a leg that failed to run at all.
+// Scope, deliberately narrow (stress note 6): applies ONLY to the two CORE legs, and the shape of
+// "proof" differs by author.
+//   - CLAUDE-authored legs (the Opus review leg; the codex leg when it fell back to
+//     source='claude-fallback') must enumerate `propertiesChecked` — they verified properties
+//     themselves, so they can list them.
+//   - The real codex leg (source='codex') only MAPS codex-companion's free text, so a non-empty
+//     `evidence` string (command run + what it reported) counts instead. Demanding
+//     propertiesChecked there would make every genuinely clean Codex run INCOMPLETE — and
+//     execute-pipeline.js throws on gateStatus!=='COMPLETE', so the pipeline would never ship.
+//   - Lens/team legs are excluded: a lens is already non-blocking by design, and the team legs
+//     have their own null-leg INCOMPLETE rule below. Widening this rule to them would turn every
+//     honestly-quiet lens into a re-run.
+const hasProperties = (r) => Array.isArray(r && r.propertiesChecked) && r.propertiesChecked.length > 0
+const foundNothing = (r) => !r || !Array.isArray(r.findings) || r.findings.length === 0
+if (review && foundNothing(review) && !hasProperties(review)) {
+  log(
+    'WARNING: Opus review leg returned NO findings and NO propertiesChecked — no proof of work, so this is an unreviewed leg, not a clean one; gate INCOMPLETE (re-run)',
+  )
+  incompleteLegs.push('opus-review:no-proof')
+}
+if (codex && foundNothing(codex)) {
+  const codexEvidence = typeof codex.evidence === 'string' && codex.evidence.trim().length > 0
+  // source='codex' → evidence OR properties; anything else (claude-fallback, or a missing/unknown
+  // source) is treated as Claude-authored and must enumerate properties.
+  const proved = codex.source === 'codex' ? codexEvidence || hasProperties(codex) : hasProperties(codex)
+  if (!proved) {
+    log(
+      `WARNING: Codex leg (source=${codex.source || 'unknown'}) returned NO findings and no proof of work (${
+        codex.source === 'codex' ? 'no evidence string' : 'no propertiesChecked'
+      }) — the PR #78 silent no-op; gate INCOMPLETE (re-run)`,
+    )
+    incompleteLegs.push('codex:no-proof')
+  }
+}
+const proofMissing = incompleteLegs.some((k) => k.endsWith(':no-proof'))
 if (review) {
   verdict = review.verdict
   for (const f of review.findings || []) findings.push({ ...f, by: 'opus' })
@@ -661,6 +788,18 @@ if (mode === 'team') {
 }
 
 const blocking = findings.filter((f) => f.severity === 'Critical' || f.severity === 'Important')
+// MINOR → BACKLOG. Minor findings are still fully REPORTED — they move to a `backlog` array the
+// SKILL's Report step surfaces and the pipeline forwards into the @claude tag comment — but they
+// never enter a fix round. `blocking` above is computed from the FULL findings array first, and
+// `clean` below is unchanged, so the merge signal is byte-for-byte identical to before.
+// EVIDENCE HONESTY (stress note 17): this routing is a DESIGN CHOICE, not an audit conclusion.
+// `.iago/research/2026-08-16-iago-os-full-audit.md` SA3 attributes the fix-round tail to fix
+// INCOMPLETENESS ("Round 1 fixed 2 findings and left 8 OPEN"), not review volume, and SA4 says
+// pass-structure changes have "no evidence behind it either way". Do not cite the audit for it.
+// The paired doc line lives in `.claude/rules/execution-pipeline.md` (Stages + Fix contract) —
+// they must land together, or the code and the standing rule contradict each other.
+const backlog = findings.filter((f) => f.severity === 'Minor')
+const gateFindings = findings.filter((f) => f.severity !== 'Minor')
 // A core leg (Opus review / Codex) that failed to run makes the gate INCOMPLETE — this is
 // a RE-RUN condition, distinct from `blocking` (fixable code findings). Track it as a
 // structured status so the orchestrator routes "re-run the gate" vs "fix findings"
@@ -685,7 +824,9 @@ const LOAD_BEARING_LENSES = ['security', 'amplify', 'frontend']
 // load-bearing lens is never silently shipped.
 const lensIncomplete =
   lensSource === 'auto' && lenses.some((key, i) => LOAD_BEARING_LENSES.includes(key) && !lensResults[i])
-const coreIncomplete = !review || !codex || teamIncomplete || lensIncomplete
+// proofMissing (the PR #78 pattern above) is a core-leg failure exactly like a null leg: the leg
+// technically returned, but returned nothing it can be held to. Same routing — INCOMPLETE, re-run.
+const coreIncomplete = !review || !codex || teamIncomplete || lensIncomplete || proofMissing
 const gateStatus = coreIncomplete ? 'INCOMPLETE' : 'COMPLETE'
 // `clean` requires the core legs to have actually run AND no blocking findings — a
 // half-completed review must never report clean. A failed team leg (team mode) or a failed
@@ -696,7 +837,7 @@ const clean = gateStatus === 'COMPLETE' && blocking.length === 0
 // silently degraded to two same-family passes. Surface it so the human gate can re-run.
 const crossModelDegraded = codexSource === 'claude-fallback'
 log(
-  `dual-adversarial #2: ${clean ? 'CLEAN' : gateStatus === 'INCOMPLETE' ? `INCOMPLETE (re-run; failed legs: ${incompleteLegs.join(', ')})` : `${blocking.length} blocking`} (opus verdict ${verdict}, codex ${codexSource}${crossModelDegraded ? ' [DEGRADED — no GPT-5.5 cross-model]' : ''}, legs: opus=${!!review} codex=${!!codex}, lenses=[${lenses.join(',')}])`,
+  `dual-adversarial #2: ${clean ? 'CLEAN' : gateStatus === 'INCOMPLETE' ? `INCOMPLETE (re-run; failed legs: ${incompleteLegs.join(', ')})` : `${blocking.length} blocking`}${backlog.length ? ` + ${backlog.length} Minor in backlog (reported, not fixed in-loop)` : ''} (opus verdict ${verdict}, codex ${codexSource}${crossModelDegraded ? ' [DEGRADED — no GPT-5.5 cross-model]' : ''}, legs: opus=${!!review} codex=${!!codex}, lenses=[${lenses.join(',')}])`,
 )
 
 // SIDE-EFFECT GUARD (I1) — re-snapshot the worktree and assert NOTHING moved since the
@@ -732,7 +873,12 @@ return {
   verificationSameFamily,
   verificationDegraded,
   filtered,
-  findings,
+  // Critical/Important only — Minor findings moved to `backlog` (see the partition above).
+  findings: gateFindings,
+  // Minor findings: REPORTED, never fixed in-loop. The consumer SKILL's Report step must surface
+  // this list (otherwise Task 7 would silently delete Minors from the human's view), and
+  // execute-pipeline forwards it into the @claude tag comment.
+  backlog,
   blocking: blocking.length,
   lenses,
   lensSource,
