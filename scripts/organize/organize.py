@@ -243,8 +243,13 @@ def truncate_descriptor(descriptor):
     return cut.strip("-") or "file"
 
 
-def derive_name(filename, mtime, path_parts):
-    """Derive the target filename. Pure function over metadata — no I/O."""
+def derive_name(filename, mtime, path_parts, entity_override=None):
+    """Derive the target filename. Pure function over metadata — no I/O.
+
+    `entity_override` comes from a hints file: the AI pass supplies judgment for
+    files whose owner cannot be derived mechanically, and this deterministic
+    function still does the work. That split is the 60/30/10 rule in one call.
+    """
     stem, ext = os.path.splitext(filename)
     ext = ext.lower()
     flags = []
@@ -262,7 +267,10 @@ def derive_name(filename, mtime, path_parts):
         date_source = "mtime"
 
     version, stem = extract_version(stem)
-    entity, entity_source = extract_entity(stem, path_parts)
+    if entity_override:
+        entity, entity_source = entity_override, "hint"
+    else:
+        entity, entity_source = extract_entity(stem, path_parts)
 
     descriptor_tokens = [
         t for t in slugify(stem).split("-")
@@ -278,7 +286,7 @@ def derive_name(filename, mtime, path_parts):
     if entity == ENTITY_SENTINEL:
         flags.append("no-entity")
 
-    if entity_source == "filename" and date_source == "filename":
+    if entity_source in ("filename", "hint") and date_source == "filename":
         confidence = "high"
     elif "empty-descriptor" in flags or "degenerate-stem" in flags:
         confidence = "low"
@@ -395,7 +403,18 @@ def find_git_root(path):
 # scan
 # --------------------------------------------------------------------------
 
-def scan(root, bucket=False, limit=None):
+def scan(root, bucket=False, limit=None, hints=None):
+    """Walk `root` and propose a rename per file.
+
+    `hints` maps a root-relative path (forward slashes) to an entity token, so an
+    AI classification pass can resolve the ambiguous tail without the derivation
+    itself ever stopping being deterministic.
+    """
+    hints = hints or {}
+    unknown_hints = {e for e in hints.values() if e not in ENTITIES and e != ENTITY_SENTINEL}
+    if unknown_hints:
+        raise SystemExit(f"hints use entities outside the vocabulary: {', '.join(sorted(unknown_hints))}. "
+                         "Add them to the standard's §4 vocabulary first, deliberately.")
     root = Path(root).resolve()
     ops, skipped = [], []
     git_cache = {}
@@ -456,7 +475,9 @@ def scan(root, bucket=False, limit=None):
                 continue
 
             rel_parts = Path(current).relative_to(root).parts
-            proposal = derive_name(entry.name, info.st_mtime, list(rel_parts))
+            rel_path = "/".join([*rel_parts, entry.name])
+            proposal = derive_name(entry.name, info.st_mtime, list(rel_parts),
+                                   entity_override=hints.get(rel_path))
 
             legal, why = name_is_legal(proposal["name"])
             if not legal:
@@ -557,7 +578,14 @@ def _guard(path):
         raise SystemExit(f"REFUSED: {path} is under the rename-frozen code zone.")
 
 
-def apply_plan(plan, do_apply, journal_path=None):
+def apply_plan(plan, do_apply, journal_path=None, confidence=None):
+    """Execute a plan. `confidence` filters to a subset, e.g. {'high','medium'},
+    so a large plan can go out in batches with a journal per batch."""
+    ops = plan["ops"]
+    if confidence:
+        ops = [o for o in ops if o["confidence"] in confidence]
+    plan = dict(plan, ops=ops)
+
     for op in plan["ops"]:
         _guard(op["src"])
         _guard(op["dst"])
@@ -701,7 +729,10 @@ def cmd_scan(args):
     root = resolve_root(args)
     if not Path(root).is_dir():
         raise SystemExit(f"not a directory: {root}")
-    plan = scan(root, bucket=args.bucket, limit=args.limit)
+    hints = {}
+    if args.hints:
+        hints = json.loads(Path(args.hints).read_text(encoding="utf-8"))
+    plan = scan(root, bucket=args.bucket, limit=args.limit, hints=hints)
 
     out = Path(args.out) if args.out else Path(".local/organize") / (
         f"plan-{args.zone or Path(root).name}-{datetime.now().strftime('%Y%m%d-%H%M%S')}.json")
@@ -726,7 +757,15 @@ def cmd_scan(args):
 
 def cmd_apply(args):
     plan = json.loads(Path(args.plan).read_text(encoding="utf-8"))
-    results, journal_path = apply_plan(plan, args.apply, args.journal)
+    confidence = set(args.confidence.split(",")) if args.confidence else None
+    if confidence:
+        unknown = confidence - {"high", "medium", "low"}
+        if unknown:
+            raise SystemExit(f"unknown confidence level(s): {', '.join(sorted(unknown))}")
+        print(f"batch     confidence in {sorted(confidence)} "
+              f"({sum(1 for o in plan['ops'] if o['confidence'] in confidence):,} "
+              f"of {len(plan['ops']):,} ops)")
+    results, journal_path = apply_plan(plan, args.apply, args.journal, confidence)
     mode = "APPLIED" if args.apply else "DRY-RUN (nothing changed; pass --apply)"
     print(f"{mode}  ok={results['ok']:,} stale={results['stale']:,} "
           f"missing={results['missing']:,} failed={results['failed']:,}")
@@ -770,12 +809,15 @@ def main():
     scan_parser.add_argument("--out")
     scan_parser.add_argument("--bucket", action="store_true", help="also file into type buckets")
     scan_parser.add_argument("--limit", type=int)
+    scan_parser.add_argument("--hints", help="JSON map of root-relative path -> entity token")
     scan_parser.set_defaults(func=cmd_scan)
 
     apply_parser = subparsers.add_parser("apply", help="execute a plan (dry-run by default)")
     apply_parser.add_argument("plan")
     apply_parser.add_argument("--apply", action="store_true")
     apply_parser.add_argument("--journal")
+    apply_parser.add_argument("--confidence",
+                              help="comma-separated subset to execute, e.g. high,medium")
     apply_parser.set_defaults(func=cmd_apply)
 
     undo_parser = subparsers.add_parser("undo", help="reverse a journal (dry-run by default)")

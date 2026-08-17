@@ -323,6 +323,56 @@ def test_round_trip():
               f"{sorted(restored_dirs ^ before_dirs)}")
 
 
+def test_hints():
+    print("\nhints (the AI 10%)")
+    with tempfile.TemporaryDirectory() as tmp:
+        write_file(tmp, "20250301 Unsolicited Order Portfolio 8.pdf")
+        write_file(tmp, "sub/nota.txt")
+
+        plan = org.scan(tmp)
+        by_name = {Path(o["src"]).name: o for o in plan["ops"]}
+        check(by_name["20250301 Unsolicited Order Portfolio 8.pdf"]["entity"] == "misc",
+              "unhintable file falls back to the misc sentinel")
+
+        hints = {"20250301 Unsolicited Order Portfolio 8.pdf": "palazuelos",
+                 "sub/nota.txt": "familia"}
+        plan = org.scan(tmp, hints=hints)
+        by_name = {Path(o["src"]).name: o for o in plan["ops"]}
+        hinted = by_name["20250301 Unsolicited Order Portfolio 8.pdf"]
+        check(hinted["entity"] == "palazuelos", "hint overrides the sentinel")
+        check(hinted["entity_source"] == "hint", "hint recorded as the source")
+        check(hinted["confidence"] == "high", "hinted entity + filename date -> high confidence")
+        check("no-entity" not in hinted["flags"], "hinted file is no longer flagged no-entity")
+        check(by_name["nota.txt"]["entity"] == "familia", "hint keyed by root-relative path")
+
+        try:
+            org.scan(tmp, hints={"sub/nota.txt": "acme-corp"})
+            check(False, "a hint outside the vocabulary is refused")
+        except SystemExit as exc:
+            check("outside the vocabulary" in str(exc), "a hint outside the vocabulary is refused")
+
+
+def test_confidence_batching():
+    print("\nconfidence batching")
+    with tempfile.TemporaryDirectory() as tmp:
+        write_file(tmp, "20250301-rsf-Informe.pdf", b"high")       # date+entity in name
+        write_file(tmp, "IMG_1234.jpg", b"low")                    # degenerate stem
+        plan = org.scan(tmp)
+        levels = {o["confidence"] for o in plan["ops"]}
+        check(levels == {"high", "low"}, f"fixture spans two confidence levels: {levels}")
+
+        results, _ = org.apply_plan(plan, True, journal_path=Path(tmp) / "j1.ndjson",
+                                    confidence={"high"})
+        check(results["ok"] == 1, "only the high-confidence op executed")
+        check((Path(tmp) / "IMG_1234.jpg").exists(), "the low-confidence file was left alone")
+
+        results, _ = org.apply_plan(plan, True, journal_path=Path(tmp) / "j2.ndjson",
+                                    confidence={"low"})
+        check(results["ok"] == 1, "the second batch executed the remainder")
+        check(not (Path(tmp) / "IMG_1234.jpg").exists(), "low-confidence file renamed in batch 2")
+        check(org.undo(Path(tmp) / "j2.ndjson", True)["ok"] == 1, "a batch journal undoes on its own")
+
+
 def test_journal_is_source_of_truth():
     print("\njournal")
     with tempfile.TemporaryDirectory() as tmp:
@@ -360,7 +410,8 @@ def main():
                  test_derive_name, test_is_conforming, test_guards, test_scan_skips,
                  test_scan_refuses_frozen_and_repo, test_collision, test_case_only_rename,
                  test_path_ceiling, test_dry_run_changes_nothing, test_stale_file_skipped,
-                 test_round_trip, test_journal_is_source_of_truth, test_undo_refuses_when_occupied):
+                 test_round_trip, test_hints, test_confidence_batching, test_journal_is_source_of_truth,
+                 test_undo_refuses_when_occupied):
         test()
 
     print()
