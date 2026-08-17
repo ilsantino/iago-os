@@ -196,6 +196,44 @@ def test_scan_skips():
         check("Propuesta RSF.pdf" in proposed, "non-conforming file is proposed")
 
 
+def test_machine_managed_files_protected():
+    print("\nmachine-managed paths")
+    check(org.is_protected_file("desktop.ini") == "protected-name",
+          "desktop.ini protected — it drives Windows folder customisation")
+    check(org.is_protected_file("Microsoft.AnalysisServices.dll") == "protected-extension",
+          "a DLL is loaded by literal name; renaming breaks its import table")
+    check(org.is_protected_file(".Rhistory") == "dotfile", "dotfiles are tool-managed")
+    check(org.is_protected_file("Propuesta RSF.pdf") is None, "an ordinary document is not protected")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        write_file(tmp, "desktop.ini", b"[.ShellClassInfo]")
+        write_file(tmp, "Propuesta RSF.pdf", b"doc")
+        write_file(tmp, "sqlsetup/setup.exe", b"bin")
+        write_file(tmp, "sqlsetup/DefaultSetup.ini", b"cfg")
+        for n in range(4):
+            write_file(tmp, f"sqlsetup/Microsoft.SQL.Chainer.Part{n}.dll", b"bin")
+        write_file(tmp, "WindowsPowerShell/Modules/SqlServer/mod.psd1", b"mod")
+        # A download folder holds a few installers among many documents. That is
+        # NOT an app payload, and pruning it would silently skip the whole zone.
+        write_file(tmp, "descargas/instalador.exe", b"bin")
+        for n in range(6):
+            write_file(tmp, f"descargas/Reporte {n}.pdf", b"doc")
+
+        plan = org.scan(tmp)
+        proposed = {Path(o["src"]).name for o in plan["ops"]}
+        reasons = {s["reason"] for s in plan["skipped"]}
+
+        check("desktop.ini" not in proposed, "desktop.ini never renamed")
+        check(not any(p.endswith(".dll") for p in proposed), "no DLL proposed for rename")
+        check("application-payload-dir" in reasons, "the unpacked installer subtree is pruned")
+        check(not any("SqlServer" in Path(o["src"]).parts for o in plan["ops"]),
+              "the live PSModulePath is never touched")
+        check("Propuesta RSF.pdf" in proposed, "the real document is still proposed")
+        check(sum(1 for p in proposed if p.startswith("Reporte")) == 6,
+              "a folder with a few installers among documents is NOT pruned")
+        check("instalador.exe" in proposed, "a loose installer is still just a file to rename")
+
+
 def test_scan_refuses_frozen_and_repo():
     print("\nscan — refusals")
     with tempfile.TemporaryDirectory() as tmp:
@@ -408,7 +446,7 @@ def test_undo_refuses_when_occupied():
 def main():
     for test in (test_slugify, test_extract_date, test_extract_version, test_extract_entity,
                  test_derive_name, test_is_conforming, test_guards, test_scan_skips,
-                 test_scan_refuses_frozen_and_repo, test_collision, test_case_only_rename,
+                 test_machine_managed_files_protected, test_scan_refuses_frozen_and_repo, test_collision, test_case_only_rename,
                  test_path_ceiling, test_dry_run_changes_nothing, test_stale_file_skipped,
                  test_round_trip, test_hints, test_confidence_batching, test_journal_is_source_of_truth,
                  test_undo_refuses_when_occupied):

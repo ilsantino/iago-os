@@ -58,6 +58,22 @@ SKIP_DIRS = {
     ".git", "node_modules", "appdata", "$recycle.bin", "__pycache__",
     ".venv", "venv", ".next", "dist", "build", ".cache", ".pytest_cache",
     "system volume information", ".claude", ".worktrees", "_trash",
+    # Application-managed folders resolved by literal name. `WindowsPowerShell`
+    # is the live user-scope PSModulePath — renaming it breaks Import-Module the
+    # same way renaming dev\ breaks Claude Code's project directories.
+    "windowspowershell", "onenote notebooks", "custom office templates",
+    "plantillas personalizadas de office", "microsoft copilot chat files",
+    "my music", "my pictures", "my videos",
+}
+
+# Files whose NAME is an interface. Renaming these breaks something silently:
+# desktop.ini drives Windows folder customisation; a dotfile is tool-managed by
+# convention; a binary is loaded by literal name from a manifest or an import
+# table that no rename updates.
+PROTECTED_NAMES = {"desktop.ini", "thumbs.db", ".ds_store", "icon\r", "ntuser.dat"}
+PROTECTED_EXTS = {
+    ".dll", ".sys", ".ocx", ".drv", ".winmd", ".mui", ".rll", ".tlb", ".pdb",
+    ".cat", ".manifest", ".config", ".ini", ".lnk", ".url", ".msix", ".cab",
 }
 
 # Separate school tenant — not Santiago's to reorganise.
@@ -358,6 +374,46 @@ def in_git_tree(directory, stop_at, cache):
     return result
 
 
+def is_protected_file(name):
+    """A file whose name is load-bearing rather than descriptive."""
+    lowered = name.lower()
+    if lowered in PROTECTED_NAMES:
+        return "protected-name"
+    if os.path.splitext(lowered)[1] in PROTECTED_EXTS:
+        return "protected-extension"
+    if name.startswith("."):
+        return "dotfile"
+    return None
+
+
+BINARY_EXTS = {".dll", ".sys", ".ocx", ".drv", ".winmd", ".pdb", ".rll", ".tlb"}
+
+
+def looks_like_app_payload(entries):
+    """True if this directory IS an unpacked application rather than documents.
+
+    Generalises past a hardcoded list: an extracted installer, a portable app and
+    a vendored runtime all look alike — binaries referencing each other by literal
+    name from an import table or a manifest. Renaming any one breaks the tree, so
+    the whole subtree is pruned.
+
+    Deliberately a MAJORITY test, not a presence test. Downloads holds a dozen
+    loose installers among hundreds of documents; that makes it a download folder,
+    not an application. Requiring binaries to dominate is what separates the two.
+    """
+    files, binaries = 0, 0
+    for entry in entries:
+        try:
+            if entry.is_dir(follow_symlinks=False):
+                continue
+        except OSError:
+            continue
+        files += 1
+        if os.path.splitext(entry.name.lower())[1] in BINARY_EXTS:
+            binaries += 1
+    return binaries >= 3 and binaries * 2 >= files
+
+
 def name_is_legal(name):
     stem = os.path.splitext(name)[0].lower()
     if stem in RESERVED_STEMS:
@@ -437,6 +493,12 @@ def scan(root, bucket=False, limit=None, hints=None):
             skipped.append({"path": current, "reason": f"unreadable: {exc.__class__.__name__}"})
             continue
 
+        # Prune the whole subtree: an unpacked application is not documents, and
+        # its parts reference each other by literal name.
+        if looks_like_app_payload(entries):
+            skipped.append({"path": current, "reason": "application-payload-dir"})
+            continue
+
         for entry in entries:
             try:
                 if entry.is_dir(follow_symlinks=False):
@@ -455,6 +517,10 @@ def scan(root, bucket=False, limit=None, hints=None):
                 skipped.append({"path": entry.path, "reason": f"stat-failed: {exc.__class__.__name__}"})
                 continue
 
+            protected = is_protected_file(entry.name)
+            if protected:
+                skipped.append({"path": entry.path, "reason": protected})
+                continue
             if is_placeholder(info):
                 skipped.append({"path": entry.path, "reason": "cloud-placeholder"})
                 continue
