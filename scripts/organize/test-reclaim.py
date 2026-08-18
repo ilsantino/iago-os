@@ -237,6 +237,31 @@ def test_purge_refusals():
             rec.TRASH_ROOT = original_trash
 
 
+def test_manifest_survives_batch_reuse():
+    print("\nmanifest — batch stamp reused")
+    with tempfile.TemporaryDirectory() as tmp:
+        zone = Path(tmp) / "zone"
+        original_trash = rec.TRASH_ROOT
+        rec.TRASH_ROOT = Path(tmp) / "_trash"
+        try:
+            write_file(zone, "a.txt", b"dup"); write_file(zone, "sub/a.txt", b"dup")
+            _, batch = rec.quarantine(rec.scan([zone]), True, batch_stamp="shared")
+
+            write_file(zone, "b.txt", b"other"); write_file(zone, "sub/b.txt", b"other")
+            rec.quarantine(rec.scan([zone]), True, batch_stamp="shared")
+
+            manifest = json.loads((Path(batch) / "_manifest.json").read_text(encoding="utf-8"))
+            check(manifest["files"] == 2,
+                  f"manifest counts BOTH calls, not just the last: {manifest['files']}")
+            check(rec.list_batches()[0]["files"] == 2, "list agrees with what is actually held")
+            on_disk = sum(1 for p in Path(batch).rglob("*")
+                          if p.is_file() and p.name not in ("_manifest.json", "journal.ndjson"))
+            check(on_disk == manifest["files"],
+                  f"manifest matches files on disk: {manifest['files']} vs {on_disk}")
+        finally:
+            rec.TRASH_ROOT = original_trash
+
+
 def test_list_batches():
     print("\nlist")
     with tempfile.TemporaryDirectory() as tmp:
@@ -261,7 +286,7 @@ def test_list_batches():
 def main():
     for test in (test_categories, test_duplicate_name_judgment, test_virtualenv_detection,
                  test_protections, test_quarantine_round_trip,
-                 test_purge_refusals, test_list_batches):
+                 test_purge_refusals, test_manifest_survives_batch_reuse, test_list_batches):
         test()
     print()
     if FAILURES:

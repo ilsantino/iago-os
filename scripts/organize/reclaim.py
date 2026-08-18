@@ -328,16 +328,40 @@ def quarantine(plan, do_apply, batch_stamp=None):
             journal.close()
 
     if do_apply:
-        (batch / "_manifest.json").write_text(json.dumps({
-            "batch": str(batch), "created": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-            "hold_days": HOLD_DAYS, "files": len(moved),
-            "bytes": sum(m["size"] for m in moved),
-            "by_category": {c: sum(1 for m in moved if m["category"] == c)
-                            for c in sorted({m["category"] for m in moved})},
-            "ops": moved,
-        }, indent=2, ensure_ascii=False), encoding="utf-8")
+        write_manifest(batch)
 
     return results, (str(batch) if do_apply else None)
+
+
+def write_manifest(batch):
+    """Rebuild _manifest.json from the batch journal.
+
+    The journal is append-only and is the source of truth; the manifest is a
+    derived summary. Building it from the in-memory ops of the current call
+    silently truncated the manifest when a batch stamp was reused — 155
+    quarantined files were reported as 41, which `purge` would then have
+    understated while deleting all of them.
+    """
+    batch = Path(batch)
+    moved = []
+    with (batch / "journal.ndjson").open(encoding="utf-8") as handle:
+        for line in handle:
+            line = line.strip()
+            if not line:
+                continue
+            record = json.loads(line)
+            if record.get("type") == "op" and record.get("op") == "rename"                     and record.get("status") == "ok":
+                moved.append(record)
+
+    (batch / "_manifest.json").write_text(json.dumps({
+        "batch": str(batch), "created": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "hold_days": HOLD_DAYS, "files": len(moved),
+        "bytes": sum(m.get("size", 0) for m in moved),
+        "by_category": {c: sum(1 for m in moved if m.get("category") == c)
+                        for c in sorted({m.get("category", "uncategorised") for m in moved})},
+        "ops": moved,
+    }, indent=2, ensure_ascii=False), encoding="utf-8")
+    return len(moved)
 
 
 def list_batches():
