@@ -38,20 +38,18 @@ HOME = Path.home()
 MAX_PATH = 255          # under the 260 ceiling, with headroom for the temp name
 MAX_DESCRIPTOR = 60
 
+# Rewritten 2026-08-18 for the P3 taxonomy: OneDrive is now three named zones
+# plus the three Windows Known Folders, which are frozen and never renamed.
 ZONES = {
     "downloads": HOME / "Downloads",
     "desktop-local": HOME / "Desktop",
     "documents-local": HOME / "Documents",
-    "od-iagoagency": HOME / "OneDrive" / "iagoagency",
+    "od-personal": HOME / "OneDrive" / "personal",
+    "od-iago": HOME / "OneDrive" / "iago",
+    "od-din": HOME / "OneDrive" / "din",
     "od-documents": HOME / "OneDrive" / "Documents",
     "od-pictures": HOME / "OneDrive" / "Pictures",
     "od-desktop": HOME / "OneDrive" / "Desktop",
-    "od-santiago-dodas": HOME / "OneDrive" / "Santiago DoDas",
-    "od-cfa": HOME / "OneDrive" / "CFA",
-    "od-udemy": HOME / "OneDrive" / "UDEMY",
-    "od-din": HOME / "OneDrive" / "DIN",
-    "od-biblia": HOME / "OneDrive" / "Biblia",
-    "od-make": HOME / "OneDrive" / "Make.com",
 }
 
 SKIP_DIRS = {
@@ -86,6 +84,7 @@ FROZEN_ROOTS = {(HOME / "dev").resolve()}
 
 ENTITIES = {
     "rsf", "munet", "sentria", "din", "fulldata", "palazuelos", "allende",
+    "absara", "o11e", "privia",
     "iago", "iago-os", "iagoag", "iagoagency", "installflow",
     "personal", "familia", "cfa", "uc3m", "rennes",
 }
@@ -303,8 +302,17 @@ def derive_name(filename, mtime, path_parts, entity_override=None):
     ]
     descriptor = truncate_descriptor("-".join(descriptor_tokens))
     if not descriptor:
-        descriptor = "file"
         flags.append("empty-descriptor")
+        # The stem was nothing but the entity — `SENTRIA.jpg` under `sentria/`.
+        # The containing folder is real information from the tree, so use it
+        # rather than the word "file", which collides the moment there are two.
+        for part in reversed(path_parts):
+            candidate = re.sub(r"^\d+-", "", slugify(part))
+            if candidate and candidate != entity and candidate not in entity.split("-"):
+                descriptor = candidate
+                break
+        else:
+            descriptor = "file"
     if DEGENERATE.match(descriptor):
         flags.append("degenerate-stem")
 
@@ -563,7 +571,12 @@ def scan(root, bucket=False, limit=None, hints=None, upgrade_sentinel=False):
 
             rel_parts = Path(current).relative_to(root).parts
             rel_path = "/".join([*rel_parts, entry.name])
-            proposal = derive_name(entry.name, info.st_mtime, list(rel_parts),
+            # The zone root names the owner too: everything under `personal/` is
+            # personal unless a deeper folder says otherwise. Root goes FIRST so
+            # that both consumers — which read the list deepest-first — see the
+            # most specific folder before the most general one.
+            search_parts = [root.name, *rel_parts]
+            proposal = derive_name(entry.name, info.st_mtime, search_parts,
                                    entity_override=hints.get(rel_path))
 
             legal, why = name_is_legal(proposal["name"])

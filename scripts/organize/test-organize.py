@@ -240,6 +240,49 @@ def test_machine_managed_files_protected():
         check("instalador.exe" in proposed, "a loose installer is still just a file to rename")
 
 
+def test_zone_root_names_the_owner():
+    print("\nzone root as entity evidence")
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp) / "personal"
+        write_file(root, "01-identidad/DNI.pdf", b"id")
+        write_file(root, "05-formacion/cfa/lecture 3.pdf", b"c")
+
+        plan = org.scan(root)
+        by_src = {Path(o["src"]).name: Path(o["dst"]).name for o in plan["ops"]}
+        check(by_src["DNI.pdf"].split("-")[1] == "personal",
+              f"root folder supplies the entity: {by_src['DNI.pdf']}")
+        check(by_src["lecture 3.pdf"].split("-")[1] == "cfa",
+              f"a deeper folder still wins over the root: {by_src['lecture 3.pdf']}")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp) / "iago"
+        write_file(root, "01-clientes/absara/nota.pdf", b"a")
+        write_file(root, "02-empresa/kyc/santiago/INE.pdf", b"b")
+        plan = org.scan(root)
+        by_src = {Path(o["src"]).name: Path(o["dst"]).name for o in plan["ops"]}
+        check(by_src["nota.pdf"].split("-")[1] == "absara", "client folder wins")
+        check(by_src["INE.pdf"].split("-")[1] == "iago",
+              "a non-vocabulary folder falls through to the root, not to misc")
+
+
+def test_empty_descriptor_uses_the_folder():
+    print("\nempty descriptor falls back to the folder")
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp) / "iago"
+        write_file(root, "brand/SENTRIA/SENTRIA.jpg", b"one")
+        write_file(root, "brand/IMAGES/SENTRIA.jpg", b"two")
+
+        plan = org.scan(root)
+        names = sorted(Path(o["dst"]).name for o in plan["ops"])
+        check(len(names) == 2, "both proposed")
+        check(not any(n.endswith("-file.jpg") for n in names),
+              f"the word 'file' is not used when a folder name is available: {names}")
+        check(names[0] != names[1],
+              f"two identically-named files get distinct targets, not a collision: {names}")
+        check(any("brand" in n for n in names) and any("images" in n for n in names),
+              f"each takes its own containing folder: {names}")
+
+
 def test_scan_refuses_frozen_and_repo():
     print("\nscan — refusals")
     with tempfile.TemporaryDirectory() as tmp:
@@ -452,7 +495,8 @@ def test_undo_refuses_when_occupied():
 def main():
     for test in (test_slugify, test_extract_date, test_extract_version, test_extract_entity,
                  test_derive_name, test_is_conforming, test_guards, test_scan_skips,
-                 test_machine_managed_files_protected, test_scan_refuses_frozen_and_repo, test_collision, test_case_only_rename,
+                 test_machine_managed_files_protected, test_zone_root_names_the_owner,
+                 test_empty_descriptor_uses_the_folder, test_scan_refuses_frozen_and_repo, test_collision, test_case_only_rename,
                  test_path_ceiling, test_dry_run_changes_nothing, test_stale_file_skipped,
                  test_round_trip, test_hints, test_confidence_batching, test_journal_is_source_of_truth,
                  test_undo_refuses_when_occupied):
