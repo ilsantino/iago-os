@@ -79,6 +79,12 @@ propuesta final FINAL v2 (copia).pdf            → one file, one version number
 
 Folders carry **taxonomy**, never dates and never versions. Same casing rule. Depth ≤ 4 below a zone root — path length is a live constraint at 129k files (§6).
 
+**Never by file extension.** The extension is already the last four characters of the name, so a `docs/ sheets/ slides/ images/` split restates what the name says and hides what it does not — and it scatters one deliverable across four folders. Group by *what a file is to the work*: `01-contratos`, `02-propuestas`, `03-entregables`, `04-insumos`. A pricing spreadsheet and a pricing deck are both proposals.
+
+**Subdivide only past ~20 files** (`SUBDIVIDE_AT` in `route.py`). Below that, subfolders cost more than they explain. And only *client* folders take the deliverable shape — `personal/` is organised by life area, and bucketing it the same way produced `personal/03-entregables`, a folder describing nothing anyone owns.
+
+**Dissolving a folder can destroy information.** Fourteen Absara mockups were each named `20251030-absara-code.html` and told apart *only* by their folders (`login_page`, `system_settings`, …). Flattening them collapsed all fourteen onto one name; suffixing `-2 … -14` restored uniqueness but not meaning. Before dissolving, fold the folder name into the descriptor — `route.py disambiguate()` does this at plan stage for every member of a colliding group, not just the losers.
+
 ```
 iagoagency/
   clients/
@@ -99,7 +105,7 @@ iagoagency/
 
 ## 4. Entity vocabulary (controlled — extend deliberately, never ad hoc)
 
-**Clients / orgs:** `rsf` · `munet` · `sentria` · `din` · `fulldata` · `palazuelos` · `allende`
+**Clients / orgs:** `rsf` · `munet` · `sentria` · `din` · `fulldata` · `palazuelos` · `allende` · `absara` · `o11e` · `privia`
 **Own:** `iago` (the agency itself) · `iago-os` (the product) · `installflow`
 **Personal:** `personal` · `familia` · `cfa` · `uc3m` · `rennes`
 **Sentinel:** `misc` — an honest "no owner in the filename", not a failure. It sorts, it lints, and it is upgradable.
@@ -109,6 +115,8 @@ Adding an entity means adding it here first, and in `ENTITIES` in `organize.py` 
 **Extending §4 reaches backwards.** `organize.py scan --upgrade-sentinel` re-derives files already named `…-misc-…` and proposes the real owner where the new vocabulary now explains it. A file named under the sentinel is not finished — it is waiting. Added 2026-08-17 with `allende` and `installflow`, which upgraded 18 files in one pass.
 
 Two entities were added on 2026-08-17: **`allende`** (Cervecería Allende — proposals, pricing, churn analysis, contract) and **`installflow`** (the OneEleven contract and improvement structure).
+
+**An entity tag is a claim, not proof.** Three PDFs tagged `palazuelos` turned out to be Santiago's own Banco Santander portfolio instructions; they carried the tag only because of the folder they sat in when P2 derived it. Where reading a file contradicts its tag, correct it in `OVERRIDE` in `route.py` — one readable place that records *why*, rather than a silent rename.
 
 ---
 
@@ -140,6 +148,15 @@ This is a scheduled script (§7), not a habit. Habits do not survive 387 loose f
    | `*.dll` `*.sys` `*.ocx` `*.pdb` `*.manifest` `*.config` | import tables, manifests | the application that loads them |
    | `OneNote Notebooks`, `Custom Office Templates` | OneNote / Office | the app's own store |
    | dotfiles (`.RData`, `.Rhistory`) | their tool, by convention | that tool's state |
+
+7. **Secrets move by hand, never by tool.** `route.py` refuses to relocate anything matching `CREDENTIAL` so that moving a secret is always a decision somebody made on purpose. The pattern covers the non-obvious cases too: `recovery-code`, `backup-code`, `seed-phrase`, `mnemonic` — a GitHub 2FA recovery set was found in `Downloads` as a plain `.txt`, and nothing in its name said "secret". Word-bound the short tokens: unbounded `2fa` matches hex inside a GUID.
+
+8. **`(OI)(CI)` on a file yields an empty DACL.** `icacls <dir> /inheritance:r /grant:r "user:(OI)(CI)F" /T` reports success and silently locks the owner out of every *file* it touched — the flags are inheritance directives, and a file has nothing to inherit to. It cost read access to both FIEL bundles on 2026-08-18. Set permissions per item: `(OI)(CI)F` on directories, plain `F` on files. Verify, never assume:
+
+   ```powershell
+   Get-ChildItem ~\.secure -Recurse -Force |
+     Where-Object { (Get-Acl $_.FullName).Access.Count -eq 0 }
+   ```
 
    `organize.py` enforces this in code: protected names and extensions, application-managed folders in `SKIP_DIRS`, and `looks_like_app_payload()` — a **majority** test that prunes an unpacked-application subtree whole while leaving a download folder that merely contains some installers alone.
 
