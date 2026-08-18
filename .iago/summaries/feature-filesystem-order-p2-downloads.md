@@ -72,7 +72,17 @@ The Spanish `personal` case is the sharp one: *personal* means **staff**, and "L
 
 Because `is_conforming()` is checked **before** hints are consulted, an already-renamed file cannot be re-owned by a later scan. That is why batch 1 was rolled back and re-run rather than patched — and the rollback doubled as a live proof of the undo path.
 
-**Recommended fix (P1 follow-up, not done here):** prefer the client/project token over `iago`/`personal` when several match — e.g. score by specificity, or let a path/sibling signal break the tie.
+**Recommended fix — corrected 2026-08-18.** The line above originally said "prefer the client/project token when several match." **Measured against the 8 real cases, that fixes 1.** It is the right rule and it is nearly useless alone, because in 7 of 8 the second token is not in the vocabulary at all. Three distinct defects are in play:
+
+| # | defect | cases fixed |
+|---|---|---|
+| 1 | **no alias map** — real filenames use the brand, not the token: `fimunet`, `RedSunFarms`, `Absara`, `dinpro`, `OneEleven`, `Cerveceria` are all unrecognised | ~6 of 8 |
+| 2 | **`~$` prefix not stripped** before tokenising — `~$Sentria-Personal-...` tokenises to `~$sentria`, so the real entity is invisible and `personal` wins by default | 1 of 8 |
+| 3 | **first-match-wins with no specificity preference** — the originally-recommended fix | 1 of 8 |
+
+Build #1 first. Doing only #3 fixes one file and creates false confidence that the class is handled.
+
+**Not implemented here, deliberately.** An alias map is a taxonomy decision, not a mechanical fix — whether `absara` is an alias of `sentria` or an entity in its own right is Santiago's call, and the same question repeats for every brand above. `organize.py` is also under active concurrent development, so unilaterally rewriting entity resolution risks colliding with that work.
 
 ## Scope reduction — 143 files deliberately not renamed
 

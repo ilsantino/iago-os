@@ -65,6 +65,8 @@ The 621 low-confidence proposals are almost all `no-entity` — the file simply 
 
 **Downloads: 77,025 → 705 files (-99%), now 10.11 GB measured.** The three trees were 76,320 files but only ~2.25 GB — clutter and size are unrelated problems here. **6.5 GB of what remains is two client DB-discovery trees** (`lis-discovery` 4.5 GB, `CASA_discovery` 2.0 GB), whose cost is entirely a SQL Server ISO, a 2.4 GB `.bak` and a 2.0 GB Firebird `.GDB`. Real work product, never in scope for deletion, still excluded from renaming — and now the only prize left in this zone.
 
+**⚠ Escalated 2026-08-18 — those two trees hold client production data.** `CASA.GDB` (1.95 GB) and `tripdb_FULL_*.bak` (2.25 GB) are full production dumps; the engagement's own `pii_scan.json` counts ~12.8 M PII hits inside `CASA.GDB`, including 1,059,960 government IDs, 149,783 RFCs and 38,273 credentials. Disk encryption is unverified. The renaming and deletion passes both stopped short of them for unrelated technical reasons, not because anything recognised them as sensitive. The value in those trees is ~6 MB of analysis output; the dumps are 80% of the bytes and all of the risk. → `.iago/research/2026-08-18-downloads-client-data-exposure.md`. **Nothing moved or deleted — Santiago's call.**
+
 ### P3 — Top-level taxonomy *(folders only, dozens of renames)*
 
 Fix the top two levels of WORK and PERSONAL. Folder renames only — the files underneath keep their names until P4.
@@ -176,6 +178,7 @@ Same grammar, different mechanics — `workspace-mcp` against the Drive API, no 
 | P1 tooling | **DONE** 2026-08-17 — `scripts/organize/organize.py`, 62 assertions green, apply→undo byte-identical |
 | P2 Downloads | **DONE** 2026-08-17 — 406 renamed + bucketed (388 + 18 sentinel upgrades), root 387 → 2 loose, count delta 0; 143 excluded (load-bearing trees). Part B closed 08-18: 3 code trees deleted, 77,025 → 705 files |
 | P2b Reclaim | **DONE** 2026-08-17 — 3.30 GB reclaimed (2.40 GB deleted, 898 MB quarantined). Purge held until 2026-08-24. 21 items await judgment. |
+| ⚠ Client data | **OPEN** 2026-08-18 — 2 production DB dumps (4.2 GB, ~12.8 M PII hits) in Downloads; unclassified by any rule → `.iago/research/2026-08-18-downloads-client-data-exposure.md` |
 | P3 taxonomy | blocked on the two open decisions |
 | P3b Evict code | **DONE** 2026-08-17 — OneDrive 151,395 → 2,849 files, 3.03 GB reclaimed; an 8th project (`.venvTA`, 454 files) was missed by name-matching and swept after |
 | P4 | deleted by P0 |
