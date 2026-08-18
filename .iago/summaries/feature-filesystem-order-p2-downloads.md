@@ -145,3 +145,46 @@ Space, for context: `lis-discovery` 4.60 GB · `CrewAI-Studio-main` 2.14 GB · `
 ## Out of scope, unchanged
 
 Deletion, dedup (91 candidates) and the 236 files older than three years → **P2b**, quarantine-first. Cross-zone promotion → **P3**. Two empty directories (`Telegram Desktop\`, `iago_clip_whisper\`) were left behind by the moves and are P2b's to remove.
+
+---
+
+# Addendum — 2026-08-18: the three code trees
+
+Santiago approved deleting all three, overriding the tweetGPT recommendation above.
+
+## What was found
+
+**Two were already gone.** `tweetGPT` and `CrewAI-Studio-main` were deleted between the P2 run and this follow-up — not by this session. Neither is in the Recycle Bin (the only matching entry is the original `CrewAI-Studio-main.zip`, binned 2026-03-30), and neither was archived. They were hard-deleted.
+
+**Consequence, stated once:** tweetGPT's 37 uncommitted paths — the Threads port, `openai_client/`, and the three setup/testing docs — were never committed and never pushed. They are unrecoverable. That matches the decision that the work was dead; it is recorded here so the loss is not discovered later as a surprise.
+
+**`cortextos_probe` deleted by this session.** Re-verified clean immediately before removal: 0 dirty paths, 0 unpushed commits, 0 stashes. Fully reproducible:
+
+```bash
+git clone --depth 1 https://github.com/grandamenium/cortextos.git   # was at a89cee2, 2026-05-29
+```
+
+Also removed the empty `iago_clip_whisper\` left behind by P2's moves. `Telegram Desktop\` was left in place — it is a live application download target that the app expects to exist.
+
+## Downloads now
+
+| | after P2 (08-17) | now (08-18) |
+|---|---|---|
+| total files | 77,025 | **705** |
+| conforming | 388/531 (73.1%) | **390/502 (77.7%)** |
+| loose at root | 2 | 8 |
+| size (full tree, measured) | not measured | **10.11 GB** |
+
+**File count fell 99% — and the three trees were only ~2.25 GB of it.** 76,320 files removed for a fifth of the space: in this zone, clutter and size are unrelated problems. (Byte totals are deliberately not compared across the two dates: yesterday's 10.1 GB came from `inventory.py`, which prunes code trees, so it is not the same measurement as today's full-tree 10.11 GB. P2b independently deleted 2.40 GB and quarantined 898 MB to `C:\Users\sanal\_trash` in the same window.)
+
+The 8 loose root files are today's live CV build (`build_cv.py` and seven `SantiagoAlvarez_CV_*` outputs, written minutes before this run). **Deliberately not renamed** — they are actively in use, and the retention rule (§5) gives a Downloads file 7 days before it is swept. They account for most of the 112 remaining lint violations; the rest are the three excluded work trees.
+
+## What is left is the actual prize
+
+| tree | size | files | status |
+|---|---|---|---|
+| `lis-discovery` | **4.5 GB** | 230 | client DB discovery — a 1.16 GB SQL Server ISO and a 2.4 GB `.bak` |
+| `CASA_discovery` | **2.0 GB** | 48 | client DB discovery — a 2.0 GB Firebird `CASA.GDB` |
+| `_assets_build` | 232 KB | 19 | small; harmless |
+
+**6.5 GB of the remaining 10 GB is two client database-discovery engagements**, both still excluded from renaming because their scripts reference their own subdirectories. They are real work product, not clutter, and neither was in scope for deletion. They need their own call: keep in `dev\`, archive the reports and drop the multi-gigabyte database dumps, or leave as is. The dumps are the entire cost — the analysis outputs are a few hundred KB.

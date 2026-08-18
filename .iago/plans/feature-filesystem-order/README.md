@@ -61,7 +61,9 @@ The 621 low-confidence proposals are almost all `no-entity` — the file simply 
 
 ~~**Blocked on a vocabulary call:** `allende` (17 files) and `installflow` (4) have a clear owner outside §4.~~ **RESOLVED 2026-08-17** — both added to §4 and to `ENTITIES`. `allende` is Cervecería Allende (proposals, pricing, churn analysis, contract); `installflow` is the OneEleven contract. This surfaced a gap: a file already named `…-misc-…` *conforms*, so a plain re-scan would never revisit it — extending the vocabulary could not reach the files it explained. `scan --upgrade-sentinel` re-derives sentinel-named files; **18 upgraded, 0 residual, undo verified reversible.** It also surfaced a defect: without filtering the sentinel out of the descriptor, the upgrade produced `20251229-allende-misc-prompts-cerveceria` — the placeholder demoted into the description rather than replaced.
 
-**Part B, awaiting Santiago** — both checkouts profiled, nothing touched. `cortextos_probe`: shallow, clean, third-party remote, zero unique content → safe to delete. `tweetGPT`: **37 dirty paths, uncommitted and on no remote** — an unfinished Threads port of the extension → rescue to `dev\` before anything else. Bonus finding: `CrewAI-Studio-main` is 70,055 files / 2.14 GB (91% of the Downloads file count), a zip extraction whose bulk is a regenerable `venv/`, unprotected by the git guard.
+**Part B — RESOLVED 2026-08-18: all three code trees deleted**, on Santiago's call, overriding the tweetGPT recommendation. `tweetGPT` and `CrewAI-Studio-main` were already hard-deleted by the time this ran — not in the Recycle Bin, not archived — so tweetGPT's 37 uncommitted Threads-port paths are unrecoverable. `cortextos_probe` was removed here after re-verifying it clean (0 dirty, 0 unpushed, 0 stashes); it re-clones from `grandamenium/cortextos` at `a89cee2`. Also removed the empty `iago_clip_whisper\` left by P2's moves; `Telegram Desktop\` was left alone as a live app download target.
+
+**Downloads: 77,025 → 705 files (-99%), now 10.11 GB measured.** The three trees were 76,320 files but only ~2.25 GB — clutter and size are unrelated problems here. **6.5 GB of what remains is two client DB-discovery trees** (`lis-discovery` 4.5 GB, `CASA_discovery` 2.0 GB), whose cost is entirely a SQL Server ISO, a 2.4 GB `.bak` and a 2.0 GB Firebird `.GDB`. Real work product, never in scope for deletion, still excluded from renaming — and now the only prize left in this zone.
 
 ### P3 — Top-level taxonomy *(folders only, dozens of renames)*
 
@@ -172,7 +174,7 @@ Same grammar, different mechanics — `workspace-mcp` against the Drive API, no 
 | Standard | **locked** 2026-08-16 |
 | P0 inventory | **done** 2026-08-16 → `.iago/research/2026-08-16-filesystem-inventory.md` |
 | P1 tooling | **DONE** 2026-08-17 — `scripts/organize/organize.py`, 62 assertions green, apply→undo byte-identical |
-| P2 Downloads | **DONE** 2026-08-17 — 406 renamed + bucketed (388 + 18 sentinel upgrades), root 387 → 2 loose, count delta 0; 143 excluded (load-bearing trees) |
+| P2 Downloads | **DONE** 2026-08-17 — 406 renamed + bucketed (388 + 18 sentinel upgrades), root 387 → 2 loose, count delta 0; 143 excluded (load-bearing trees). Part B closed 08-18: 3 code trees deleted, 77,025 → 705 files |
 | P2b Reclaim | **DONE** 2026-08-17 — 3.30 GB reclaimed (2.40 GB deleted, 898 MB quarantined). Purge held until 2026-08-24. 21 items await judgment. |
 | P3 taxonomy | blocked on the two open decisions |
 | P3b Evict code | **DONE** 2026-08-17 — OneDrive 151,395 → 2,849 files, 3.03 GB reclaimed; an 8th project (`.venvTA`, 454 files) was missed by name-matching and swept after |
