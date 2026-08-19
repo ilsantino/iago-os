@@ -164,10 +164,12 @@ Same grammar, different mechanics — `workspace-mcp` against the Drive API, no 
 5. **Cloud-only files stay cloud-only.** Touching a placeholder forces a download; a naive walk over `iagoagency` could pull gigabytes.
 6. **Machine-managed paths are out of scope, like `dev\`.** `WindowsPowerShell` is the live `PSModulePath`; `desktop.ini` drives folder customisation; a DLL is loaded by literal name. See §6 of the standard. Detect machine-generated trees by **marker file**, never by folder name — that is how `.venvTA` survived a sweep and how 134 DLLs nearly got renamed.
 
-## Open decisions (block P3)
+## Open decisions — RESOLVED 2026-08-18
 
-- **`Santiago DoDas`** — the name breaks the standard, but is it referenced by an external share or sync link that would break on rename?
-- **`iagoagency` vs `iago`** — the zone root and the entity vocabulary currently disagree.
+Both were resolved by **reading the folders' contents instead of arbitrating their names**, which is the lesson: a folder name is a claim about ownership, not evidence of it. Sorting `Santiago DoDas` by its name would have filed the company's KYC records under `personal/`.
+
+- **`Santiago DoDas`** (= *datos & documentos*) held a mix; split by content into `personal/` and `iago/`. No external share referenced it.
+- **`iagoagency` vs `iago`** — resolved in favour of **`iago`** as both zone root and entity. `iagoag`/`iagoagency` remain aliases in `route.py`'s `DEST` so old names still route.
 
 ## Status
 
@@ -182,5 +184,7 @@ Same grammar, different mechanics — `workspace-mcp` against the Drive API, no 
 | P3 taxonomy | blocked on the two open decisions |
 | P3b Evict code | **DONE** 2026-08-17 — OneDrive 151,395 → 2,849 files, 3.03 GB reclaimed; an 8th project (`.venvTA`, 454 files) was missed by name-matching and swept after |
 | P4 | deleted by P0 |
-| P5 Documents | re-scoped: ~364 real docs (914 of 1,278 are the live PSModulePath); the 36% dup rate was DLLs |
-| P6 enforcement / P7 Drive | not scoped |
+| P5 Documents | **DONE** 2026-08-18 — `.iago/summaries/feature-filesystem-order-p5-route.md`. 483 files routed via the new `route.py`, 8.1 GB quarantined, `Downloads` 796 → 290 files, `Documents` 1,270 → 919 (all machine-managed), 100% conformance in all four zones. Ten credential files pulled out of synced folders into `~/.secure/`. |
+| P5 Pictures | **DEFERRED** — 1,074 files, 1,058 of them in `Screenshots/`. Wants date-based foldering, not per-file renaming. Windows Known Folder, so file-level work only. |
+| P6 enforcement | **NEXT — and now demonstrably needed.** 12 loose files (9 ChatGPT exports, 2 DIN decks, 1 PowerPoint autorecover artifact) landed in `Downloads` within 24 h of P5 closing. Without the scheduled sweep the whole project decays back. |
+| P7 Drive | not scoped |
