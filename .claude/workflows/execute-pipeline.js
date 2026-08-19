@@ -89,6 +89,13 @@ const FINDING = {
     // REQUIRED so the leg makes the call consciously; absent/false reads as newly-introduced,
     // which BLOCKS — the fail-safe direction is "block", never "silently bury".
     preExisting: { type: 'boolean' },
+    // The BASE-COMMIT PROOF for a `preExisting: true` claim: the git evidence that the defect
+    // predates this diff (`git show <base>:<path>` line, or the `git blame` commit). Scope is the
+    // only routing input a leg supplies about itself, and claiming `preExisting: true` DEMOTES an
+    // Important out of the fix loop — so an unevidenced claim is an assertion, exactly like an
+    // unevidenced property, and is ignored (the finding is then treated as newly introduced and
+    // blocks). Same evidence bar the contract already sets everywhere else.
+    preExistingEvidence: { type: 'string' },
   },
 }
 // PROOF-OF-WORK unit — twin of dual-adversarial.js's PROPERTY. A leg reports what it VERIFIED,
@@ -399,8 +406,10 @@ function legProved(r, kind) {
 const SCOPE_RULE = `
 SCOPE — every finding MUST set \`preExisting\` (true/false). This is a SEPARATE axis from severity:
 - \`preExisting: true\` — the defect is already present on the BASE commit; this diff did not
-  introduce it. Verify before you claim it: check the base version of the line (git show
-  <base>:<path>, or git blame). Do NOT guess.
+  introduce it. You MUST prove it in \`preExistingEvidence\`: the \`git show <base>:<path>\` line
+  that already contained the defect, or the \`git blame\` commit that introduced it. A
+  \`preExisting: true\` with no evidence is IGNORED — the finding is treated as newly introduced and
+  blocks. Do NOT guess.
 - \`preExisting: false\` — this diff introduced or reintroduced it. When you are UNSURE, use
   false: an unflagged finding blocks, and blocking wrongly is cheap next to burying a real defect.
 
@@ -409,8 +418,15 @@ never downgrade a pre-existing Critical to Important or Minor to get it out of t
 pipeline routes it for you: a pre-existing Critical BLOCKS exactly like a new one; pre-existing
 Important and Minor go to the backlog (reported, fixed later); everything newly introduced blocks
 per the normal floors.`
+// A scope claim counts ONLY when it carries base-commit evidence. Without this, `preExisting` is
+// unvalidated reviewer self-report that silently removes an Important from the fix loop: a leg that
+// merely GUESSES "this looks old" on a newly-introduced tenancy leak routes it to the backlog, the
+// fix loop never runs, and the PR opens with the leak in a list nobody must action. The safe-side
+// override in dedupeAcrossLegs cannot help — it needs a SECOND leg reporting the identical key, and
+// a single-leg finding has nothing to override it. Unevidenced => newly introduced => blocks.
 function isPreExisting(f) {
-  return !!f && f.preExisting === true
+  if (!f || f.preExisting !== true) return false
+  return typeof f.preExistingEvidence === 'string' && f.preExistingEvidence.trim().length > 0
 }
 function routesToBacklog(f) {
   if (!f) return false
@@ -420,10 +436,19 @@ function routesToBacklog(f) {
 function routesToGate(f) {
   return !!f && !routesToBacklog(f)
 }
+// Operators are CONTENT, not punctuation. Stripping every non-alphanumeric run made
+// 'cents conversion uses amount * 100' and '... amount / 100' normalise identically, so the
+// cross-leg deduper deleted the second — a DISTINCT Critical, gone with no trace. Same collapse
+// for 'count > 0' vs 'count >= 0' and 'i < len' vs 'i <= len'. The deduper for a contract whose
+// whole point is "never lose a finding" must not be able to lose one, so comparison-, arithmetic-
+// and negation-operator characters survive normalisation.
+// The leading `pre-existing:` prefix the PREAMBLE mandates IS stripped first: one leg prefixing
+// and another not would otherwise defeat the very dedupe this key feeds.
 function normSummary(str) {
   return String(str || '')
     .toLowerCase()
-    .replace(/[^a-z0-9]+/g, ' ')
+    .replace(/^\s*pre-existing\s*:\s*/, '')
+    .replace(/[^a-z0-9<>=!+*/%-]+/g, ' ')
     .trim()
 }
 function findingKey(f) {
@@ -475,27 +500,38 @@ function unpairedViolations(r) {
 }
 function unionFindings(a, b) {
   const out = []
-  const seen = new Set()
+  const idx = new Map()
   for (const f of [...(Array.isArray(a) ? a : []), ...(Array.isArray(b) ? b : [])]) {
     if (!f) continue
     const k = findingKey(f)
-    if (seen.has(k)) continue
-    seen.add(k)
-    out.push(f)
+    const at = idx.get(k)
+    if (at === undefined) {
+      idx.set(k, out.length)
+      out.push({ ...f })
+      continue
+    }
+    const prev = out[at]
+    // SAFE-SIDE SCOPE MERGE, identical to dedupeAcrossLegs. Keying on severity|file|summary alone
+    // kept the FIRST entry's `preExisting`, so a corrective re-dispatch that re-verified with git
+    // blame and correctly flipped preExisting true -> false was discarded: the newly-introduced
+    // Important stayed flagged pre-existing, routed to the backlog, and was never fixed. The two
+    // dedupers disagreeing inside one file is exactly the twin-drift shape, at function scope.
+    if (!isPreExisting(f) && prev && isPreExisting(prev)) prev.preExisting = false
   }
   return out
 }
 function unionProperties(a, b) {
-  const out = []
-  const seen = new Set()
+  // Keyed on the PROPERTY TEXT ALONE, and the later (re-dispatch) entry wins. Including `verdict`
+  // in the key kept BOTH sides when a corrective re-dispatch honestly re-verified and flipped
+  // VIOLATED -> HOLDS: the stale VIOLATED survived the merge, unpairedViolations still saw it with
+  // no matching finding, the merge was rejected, and the run threw INCOMPLETE *after* the commit
+  // stage — stranding a committed implementation with no PR, on a leg that had corrected itself.
+  const byProperty = new Map()
   for (const prop of [...(Array.isArray(a) ? a : []), ...(Array.isArray(b) ? b : [])]) {
     if (!prop) continue
-    const k = `${String(prop.property || '').toLowerCase().trim()}|${prop.verdict || ''}`
-    if (seen.has(k)) continue
-    seen.add(k)
-    out.push(prop)
+    byProperty.set(String(prop.property || '').toLowerCase().trim(), prop)
   }
-  return out
+  return [...byProperty.values()]
 }
 const VERDICT_RANK = { PASS: 0, PASS_WITH_CONCERNS: 1, FAIL: 2 }
 function worstVerdict(a, b, findings) {
@@ -577,8 +613,12 @@ function legDefect(r, kind) {
 }
 // The no-proof leg key routed to the abort message. Distinguishes an unreviewed leg from one that
 // found a violation and then failed to report it — different corrective actions for the operator.
+// Must use the SAME per-property rule as legDefect. It still gated on the whole-`findings`-empty
+// `foundNothing(r)`, so a leg that recorded an unpaired VIOLATED property AND reported some
+// unrelated finding was labelled `:no-proof` — telling the operator the leg reviewed nothing when
+// it had actually found a violation and failed to report it. Different defects, different fixes.
 function legNoProofKey(name, r, kind) {
-  return violatedProperties(r).length > 0 && foundNothing(r) && legProved(r, kind)
+  return unpairedViolations(r).length > 0 && legProved(r, kind)
     ? `${name}:violated-unreported`
     : `${name}:no-proof`
 }
@@ -742,7 +782,7 @@ function reviewPrompt(isReReview, stressBlock, preImplSha, domainsSelected) {
   const head = isReReview
     ? `Re-review after a fix round. Verify every previously-reported CRITICAL and IMPORTANT finding is resolved, and check for regressions the fixes may have introduced.${domainHint}
 
-MINOR FINDINGS ARE OUT OF THE FIX LOOP BY DESIGN (verification contract): they were routed to the backlog and the fix agent was never handed them, so an unfixed Minor is the EXPECTED state — do NOT treat it as an unaddressed finding and do NOT escalate it for being unfixed. If it still stands, simply re-report it at its original Minor severity.
+BACKLOG FINDINGS ARE OUT OF THE FIX LOOP BY DESIGN (verification contract): every Minor, AND every EVIDENCED pre-existing Important, was routed to the backlog and the fix agent was never handed it — so an unfixed backlog finding is the EXPECTED state. Do NOT treat one as an unaddressed finding and do NOT escalate it for being unfixed. If it still stands, re-report it at its ORIGINAL severity and scope (a pre-existing Important stays Important with its preExistingEvidence; do not promote it to force a fix round, and do not downgrade it to Minor to justify its absence).
 
 INTEGRITY CHECK: if the prior fix claimed "no test infrastructure" to skip a regression test for a Critical/Important finding, verify by probing conventions — sibling *.test.ts / *.test.tsx, vitest.config.ts, package.json test scripts, test-{name}.{mjs,bats,sh} beside bash scripts, e2e/, amplify/functions/*/handler.test.ts. If infra exists that was missed, raise a NEW Important finding.
 
@@ -1825,7 +1865,15 @@ if (hasBlocking(findings)) {
 // point), and the hasBlocking throw above guarantees none survive — so counting `findings` here
 // would always report 0 while real Minors sat in the backlog (stress note 14). Count the backlog.
 const minorRemaining = allBacklog.length
-if (minorRemaining) log(`Proceeding with ${minorRemaining} Minor finding(s) in the backlog (reported, not fixed in-loop)`)
+// `minorRemaining` keeps its name for the published pipeline-runs.ndjson schema, but the set it
+// counts is no longer Minor-only — evidenced pre-existing Importants live here too. Label the
+// human-facing surfaces by what is actually in the list, or a reader takes an Important for a nit.
+const backlogPreExisting = allBacklog.filter(isPreExisting).length
+if (minorRemaining) {
+  log(
+    `Proceeding with ${minorRemaining} backlog finding(s) — ${minorRemaining - backlogPreExisting} Minor + ${backlogPreExisting} evidenced pre-existing Important (reported, not fixed in-loop)`,
+  )
+}
 
 // Stage 5 — PR (or stay stacked) + tag
 phase('PR')

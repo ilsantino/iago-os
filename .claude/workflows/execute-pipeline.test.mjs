@@ -1128,7 +1128,9 @@ await test('the re-review no longer demands deferred Minors be resolved, and the
     !/Verify ALL previous findings \(Critical, Important, Minor\) are resolved/.test(reReview.prompt),
     're-review no longer orders Minors to be verified resolved',
   )
-  assert.ok(/MINOR FINDINGS ARE OUT OF THE FIX LOOP BY DESIGN/.test(reReview.prompt), 're-review states the Minor deferral explicitly')
+  assert.ok(/BACKLOG FINDINGS ARE OUT OF THE FIX LOOP BY DESIGN/.test(reReview.prompt), 're-review states the backlog deferral explicitly')
+  // Must name every class routed out of the loop, not Minors alone — see the twin test.
+  assert.ok(/EVIDENCED pre-existing Important/.test(reReview.prompt), 'and names pre-existing Importants too')
 })
 
 await test('twin sync: the proof-of-work RUNTIME guard exists in execute-pipeline.js, not just its schemas', async () => {
@@ -1328,7 +1330,7 @@ await test('the Minor backlog dedupes an EXACT restatement across rounds (same d
       : {
           clean: true, blocking: 0, gateStatus: 'COMPLETE', verdict: 'PASS', codexSource: 'codex', findings: [],
           // Same defect, same words modulo punctuation/case, attributed to a different leg.
-          backlog: [{ ...minor, summary: 'missing null check on user.id!', by: 'lens:codeQuality' }],
+          backlog: [{ ...minor, summary: 'Missing null check on user.id.', by: 'lens:codeQuality' }],
         }
   const h = makeHarness(stageRules(TIER2_PLAN), teamGate)
   const out = await buildWorkflow()(h.agent, h.parallel, null, h.log, h.phase, { ...baseArgs }, null, h.workflow)

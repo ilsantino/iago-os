@@ -1826,8 +1826,8 @@ await test('pre-existing Critical BLOCKS; pre-existing Important goes to the bac
       reply: {
         verdict: 'FAIL',
         findings: [
-          { severity: 'Critical', summary: 'old auth bypass', failureScenario: FS, preExisting: true },
-          { severity: 'Important', summary: 'old sloppy retry', failureScenario: FS, preExisting: true },
+          { severity: 'Critical', summary: 'old auth bypass', failureScenario: FS, preExisting: true, preExistingEvidence: 'git show 27c5f0e:src/x.ts:41 already had the unguarded call' },
+          { severity: 'Important', summary: 'old sloppy retry', failureScenario: FS, preExisting: true, preExistingEvidence: 'git show 27c5f0e:src/x.ts:41 already had the unguarded call' },
           { severity: 'Important', summary: 'new race introduced here', failureScenario: FS, preExisting: false },
         ],
         propertiesChecked: PROPS,
@@ -1866,6 +1866,41 @@ await test('an unflagged finding is treated as NEWLY INTRODUCED and blocks (fail
   assert.strictEqual(out.backlog.length, 0, 'and is NOT quietly backlogged')
 })
 
+await test('an UNEVIDENCED preExisting claim is ignored — the finding blocks instead of being demoted', async () => {
+  // The Critical the rewritten gate found in its own rewrite. `preExisting` is the one routing
+  // input a leg supplies about ITSELF, and claiming it demotes an Important out of the fix loop.
+  // Unvalidated, a leg that merely guesses "this looks old" about a newly-introduced tenancy leak
+  // sends it to the backlog: the fix loop never runs and the PR opens with the leak in a list
+  // nobody must action. dedupeAcrossLegs's safe-side override cannot save it — that needs a SECOND
+  // leg reporting the identical key, and a single-leg finding has nothing to override it.
+  const h = makeHarness([
+    {
+      match: (l) => l === 'review',
+      reply: {
+        verdict: 'FAIL',
+        findings: [
+          // Claimed old, but no base-commit proof -> claim ignored -> blocks.
+          { severity: 'Important', summary: 'missing tenant filter on the aggregate', failureScenario: FS, preExisting: true },
+          // Claimed old AND proved -> demotion honored.
+          { severity: 'Important', summary: 'unbounded scan in listUsers', failureScenario: FS, preExisting: true, preExistingEvidence: 'git show 27c5f0e:src/x.ts:41 already had the unguarded call' },
+          // Empty-string evidence is not evidence.
+          { severity: 'Important', summary: 'silent catch swallows the write error', failureScenario: FS, preExisting: true, preExistingEvidence: '   ' },
+        ],
+        propertiesChecked: PROPS,
+      },
+    },
+    { match: (l) => l === 'codex', reply: { source: 'codex', findings: [], evidence: CODEX_EVIDENCE } },
+  ])
+  const out = await buildWorkflow()(h.agent, h.parallel, null, h.log, h.phase, { ...baseArgs }, null, null)
+  const sums = (arr) => arr.map((f) => f.summary).sort()
+  assert.deepStrictEqual(
+    sums(out.findings),
+    ['missing tenant filter on the aggregate', 'silent catch swallows the write error'],
+    'unevidenced and blank-evidence scope claims are ignored, so those findings still block',
+  )
+  assert.deepStrictEqual(sums(out.backlog), ['unbounded scan in listUsers'], 'only the PROVEN pre-existing Important is demoted')
+})
+
 // ── Cross-leg dedupe (ruled 2026-08-19) ─────────────────────────────────────
 await test('the same defect from two legs collapses to ONE finding with merged attribution', async () => {
   const dup = { severity: 'Critical', summary: 'Race on the dispatch latch', failureScenario: FS, file: 'src/a.ts', preExisting: false }
@@ -1877,7 +1912,7 @@ await test('the same defect from two legs collapses to ONE finding with merged a
         source: 'codex',
         evidence: CODEX_EVIDENCE,
         // Same defect, same file, summary differing only in punctuation/case — normalises equal.
-        findings: [{ ...dup, summary: 'race on the dispatch latch!' }],
+        findings: [{ ...dup, summary: 'Race on the dispatch latch.' }],
       },
     },
   ])
@@ -1885,6 +1920,28 @@ await test('the same defect from two legs collapses to ONE finding with merged a
   assert.strictEqual(out.findings.length, 1, 'one defect, one finding')
   assert.strictEqual(out.blocking, 1, 'and it is counted once')
   assert.ok(/opus/.test(out.findings[0].by) && /codex/.test(out.findings[0].by), 'attribution names BOTH legs')
+})
+
+await test('cross-leg dedupe does NOT collapse findings that differ only by an OPERATOR', async () => {
+  // Found by the gate reviewing this very change: normSummary stripped every non-alphanumeric run,
+  // so 'amount * 100' and 'amount / 100' normalised identically and the second Critical was
+  // deleted with no trace. Operators are content, not punctuation.
+  const h = makeHarness([
+    {
+      match: (l) => l === 'review',
+      reply: {
+        verdict: 'FAIL',
+        findings: [
+          { severity: 'Critical', summary: 'cents conversion uses amount * 100', failureScenario: FS, file: 'src/pay.ts', preExisting: false },
+          { severity: 'Critical', summary: 'cents conversion uses amount / 100', failureScenario: FS, file: 'src/pay.ts', preExisting: false },
+        ],
+        propertiesChecked: PROPS,
+      },
+    },
+    { match: (l) => l === 'codex', reply: { source: 'codex', findings: [], evidence: CODEX_EVIDENCE } },
+  ])
+  const out = await buildWorkflow()(h.agent, h.parallel, null, h.log, h.phase, { ...baseArgs }, null, null)
+  assert.strictEqual(out.findings.length, 2, 'both operator variants survive as distinct findings')
 })
 
 await test('cross-leg dedupe does NOT collapse two DISTINCT findings in the same file', async () => {
@@ -1923,7 +1980,13 @@ await test('a delegated RE-REVIEW does not order deferred Minors to be resolved'
     !/Verify EVERY previous finding \(Critical, Important, Minor\) is actually resolved/.test(prompt),
     'no longer demands deferred Minors be resolved',
   )
-  assert.ok(/an unfixed Minor is the EXPECTED state/.test(prompt), 'states the Minor deferral explicitly')
+  assert.ok(/an unfixed backlog finding is the EXPECTED state/.test(prompt), 'states the backlog deferral explicitly')
+  // The carve-out has to name EVERYTHING routed out of the fix loop. Naming Minors only, after the
+  // scope split also sends evidenced pre-existing Importants to the backlog, leaves the re-reviewer
+  // demanding those be resolved — they were never handed to the fix agent, so it escalates a run
+  // whose only residue is deferred by design.
+  assert.ok(/EVIDENCED pre-existing Important/.test(prompt), 'and names pre-existing Importants, not Minors alone')
+  assert.ok(/do not promote it to force a fix round/.test(prompt), 'and forbids promoting a deferred finding to force a round')
 })
 
 console.log(`\n${passed} passed, ${failed} failed`)

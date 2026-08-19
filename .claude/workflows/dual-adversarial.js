@@ -107,6 +107,13 @@ const FINDING = {
     // REQUIRED so the leg makes the call consciously; absent/false reads as newly-introduced,
     // which BLOCKS — the fail-safe direction is "block", never "silently bury".
     preExisting: { type: 'boolean' },
+    // The BASE-COMMIT PROOF for a `preExisting: true` claim: the git evidence that the defect
+    // predates this diff (`git show <base>:<path>` line, or the `git blame` commit). Scope is the
+    // only routing input a leg supplies about itself, and claiming `preExisting: true` DEMOTES an
+    // Important out of the fix loop — so an unevidenced claim is an assertion, exactly like an
+    // unevidenced property, and is ignored (the finding is then treated as newly introduced and
+    // blocks). Same evidence bar the contract already sets everywhere else.
+    preExistingEvidence: { type: 'string' },
   },
 }
 // PROPERTY — one unit of PROOF-OF-WORK. A leg reports what it VERIFIED, not only what it found:
@@ -220,7 +227,7 @@ OPERATING STANCE — bounded verification, aggressive and independent:
 - Default to skepticism. Assume the change can fail in subtle, high-cost, or user-visible ways until the evidence says otherwise.
 - VERIFY each property you are assigned against the actual code and report its verdict in propertiesChecked. A property that HOLDS is a real result — report it as HOLDS with the evidence (file:line) that proves it. Reporting nothing at all is not a result; it is a leg that did not run.
 - Every VIOLATED verdict must ship a matching finding whose failureScenario names concrete inputs/state → the wrong output or crash. Happy-path-only behavior IS a violated property — state the input that breaks it. A finding with no failureScenario is a worry, not a finding: do not emit it as one.
-- SCOPE IS AN AXIS, NOT A VERDICT. Every finding sets \`preExisting\`: true when the defect is already present on the BASE commit (verify it — git show <base>:<path> or git blame — do not guess), false when this diff introduced or reintroduced it. When UNSURE use false: an unflagged finding blocks, and blocking wrongly is cheap next to burying a real defect.
+- SCOPE IS AN AXIS, NOT A VERDICT. Every finding sets \`preExisting\`: true when the defect is already present on the BASE commit, false when this diff introduced or reintroduced it. A \`preExisting: true\` claim MUST carry \`preExistingEvidence\` — the \`git show <base>:<path>\` line that already contained the defect, or the \`git blame\` commit that introduced it. An unevidenced scope claim is IGNORED and the finding is treated as newly introduced (it blocks), because claiming pre-existing DEMOTES an Important out of the fix loop and an unproven demotion is how a real defect goes unfixed. When UNSURE use false: an unflagged finding blocks, and blocking wrongly is cheap next to burying a real defect.
 - SCOPE, NEVER SUPPRESSION: scope decides ROUTING, never whether to report or how loudly. A real defect this diff did not introduce is still REPORTED at its TRUE severity, prefixed "pre-existing:" in the summary — never softened, downgraded, or dropped at emission time. Do NOT downgrade a pre-existing Critical to Important or Minor to move it out of the fix loop; that is the suppression this clause forbids. The pipeline does the routing for you: a pre-existing CRITICAL blocks exactly like a new one (git-blame age is not a licence to ship an auth bypass), pre-existing Important and Minor go to the backlog (reported, fixed later), and everything newly introduced blocks per the normal floors.
 - You are ONE independent leg of a multi-model gate. Review from the diff and source ALONE; do not assume another leg will catch what you skip, and do not soften a finding because "someone else probably saw it."
 - Stay grounded: every finding must be defensible from the actual code. Do not invent files, lines, code paths, or attack chains — and never pad propertiesChecked with properties you did not actually check.`
@@ -237,7 +244,7 @@ const diffExpr = `git diff ${base}...HEAD`
 // inline 2-leg's re-review head so a delegated Tier 2/3 re-review still verifies every prior
 // finding is resolved and that a "no test infra" excuse was not used to dodge a regression test.
 const reReviewBlock = isReReview
-  ? `\n\nRE-REVIEW INTEGRITY CHECK: this is a re-review after a fix round. Verify EVERY previous CRITICAL and IMPORTANT finding is actually resolved, and hunt for regressions the fixes introduced. Minor findings were routed to the backlog and never handed to the fix agent, so an unfixed Minor is the EXPECTED state — do not treat it as an unaddressed finding or escalate it for being unfixed; if it still stands, re-report it at its original Minor severity. If a prior fix claimed "no test infrastructure" to skip a regression test for a Critical/Important finding, verify by probing conventions — sibling *.test.ts/*.test.tsx, vitest.config.ts, package.json test scripts, test-{name}.{mjs,bats,sh} beside bash scripts, e2e/, amplify/functions/*/handler.test.ts. If infra exists that was missed, raise a NEW Important finding.`
+  ? `\n\nRE-REVIEW INTEGRITY CHECK: this is a re-review after a fix round. Verify EVERY previous CRITICAL and IMPORTANT finding is actually resolved, and hunt for regressions the fixes introduced. Every Minor, AND every EVIDENCED pre-existing Important, was routed to the backlog and never handed to the fix agent, so an unfixed backlog finding is the EXPECTED state — do not treat it as an unaddressed finding or escalate it for being unfixed; if it still stands, re-report it at its ORIGINAL severity and scope (a pre-existing Important stays Important with its preExistingEvidence — do not promote it to force a fix round, and do not downgrade it to Minor to justify its absence). If a prior fix claimed "no test infrastructure" to skip a regression test for a Critical/Important finding, verify by probing conventions — sibling *.test.ts/*.test.tsx, vitest.config.ts, package.json test scripts, test-{name}.{mjs,bats,sh} beside bash scripts, e2e/, amplify/functions/*/handler.test.ts. If infra exists that was missed, raise a NEW Important finding.`
   : ''
 
 // INTENT-axis source (stress note 8). The INTENT axis asks "was each acceptance criterion met?"
@@ -728,13 +735,27 @@ const legProved = (r, kind) =>
 //   pre-existing Critical           -> BLOCKS
 //   pre-existing Important / Minor  -> backlog, counted visibly in the gate log
 //   newly introduced, any severity  -> existing floors (Critical/Important block, Minor backlog)
-const isPreExisting = (f) => !!f && f.preExisting === true
+// A scope claim counts ONLY when it carries base-commit evidence — twin of execute-pipeline.js.
+// `preExisting` is the one routing input a leg supplies about itself, and claiming it DEMOTES an
+// Important out of the fix loop, so an unevidenced claim is an assertion (exactly like an
+// unevidenced property) and is ignored: unevidenced => newly introduced => blocks.
+const isPreExisting = (f) =>
+  !!f && f.preExisting === true && typeof f.preExistingEvidence === 'string' && f.preExistingEvidence.trim().length > 0
 const routesToBacklog = (f) => (!f ? false : f.severity === 'Minor' || (isPreExisting(f) && f.severity === 'Important'))
 const routesToGate = (f) => !!f && !routesToBacklog(f)
+// Operators are CONTENT, not punctuation. Stripping every non-alphanumeric run made
+// 'cents conversion uses amount * 100' and '... amount / 100' normalise identically, so the
+// cross-leg deduper deleted the second — a DISTINCT Critical, gone with no trace. Same collapse
+// for 'count > 0' vs 'count >= 0' and 'i < len' vs 'i <= len'. The deduper for a contract whose
+// whole point is "never lose a finding" must not be able to lose one, so comparison-, arithmetic-
+// and negation-operator characters survive normalisation.
+// The leading `pre-existing:` prefix the PREAMBLE mandates IS stripped first: one leg prefixing
+// and another not would otherwise defeat the very dedupe this key feeds.
 const normSummary = (str) =>
   String(str || '')
     .toLowerCase()
-    .replace(/[^a-z0-9]+/g, ' ')
+    .replace(/^\s*pre-existing\s*:\s*/, '')
+    .replace(/[^a-z0-9<>=!+*/%-]+/g, ' ')
     .trim()
 const findingKey = (f) => `${(f && f.severity) || ''}|${(f && f.file) || ''}|${normSummary(f && f.summary)}`
 // 3+ chars only: articles/prepositions would inflate any overlap score.
