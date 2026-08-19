@@ -149,6 +149,24 @@ What is left is one coursework tree and thirty loose files. This is a small job,
 
 Scheduled Downloads sweep per the retention rule; `lint-names` run on a schedule reporting drift. Without this, the whole project decays back within months and the work is wasted.
 
+### P8 — Home root & machine caches *(added 2026-08-19)*
+
+Everything P0–P7 treated as out of scope: `C:\Users\sanal` itself and `AppData`. This is where the
+mass actually was — `Downloads` at its worst was 10 GB, `AppData\Local` was 160 GB. Three kinds of
+target, in descending order of value:
+
+1. **Regenerable caches**, reclaimed by tree rather than by file — `reclaim.py tree`, one
+   `os.rename` per directory. Prefer the tool's own clean command where one exists
+   (`npm cache clean --force`, `uv cache clean`, `pip cache purge`): it keeps the tool's index
+   consistent and reclaims immediately, and the undo net is worthless when the undo is a
+   re-download.
+2. **Scratch at the home root** — session temp files, stale config backups, emptied stub folders.
+3. **Content stranded outside any repo** — rescued into `.iago/`, hash-verified, then quarantined.
+
+**Not in scope: installed applications.** `~\RStudio` is the installation, not its leftovers.
+Check the uninstall registry before treating an old folder as dead; an unused app is an uninstall
+decision for Santiago, never a delete.
+
 ### P7 — Drive workspace
 
 Same grammar, different mechanics — `workspace-mcp` against the Drive API, no local filesystem, different collision and permission semantics. Deliberately last: the convention should be proven locally before it is applied somewhere with sharing links that break.
@@ -188,4 +206,5 @@ Both were resolved by **reading the folders' contents instead of arbitrating the
 | P5 Pictures | **DONE** 2026-08-19 — folded into `Screenshots/{YYYY}/{YYYY-MM}/` via the new `route.py datefold`, then renamed: **1,061/1,061 conforming**. `TranscodedWallpaper` protected, Feedback Hub skipped, 3 DIN assets and a Munet map routed out. |
 | P6 enforcement | **DONE** 2026-08-19 — `scripts/organize/sweep.py` + `test-sweep.py`. Registered with Task Scheduler as "iaGO File Sweep", daily 09:00. Acts on high/medium-confidence renames and entity routing; reports low-confidence names, aged installers and per-zone drift. Never deletes. |
 | Quarantine | **PURGED** 2026-08-19 on Santiago's approval — 589 files / **9.49 GB** across four batches. One new batch (`20260819-duplicates`, 21 files / 18.6 MB) holds until 2026-08-26. |
+| P8 home root | **DONE** 2026-08-19 — `.iago/summaries/feature-filesystem-order-p8-home-root.md`. New `reclaim.py tree` subcommand. **19.6 GB hard-reclaimed**, **62.6 GB quarantined** (purge 2026-08-26); `AppData\Local` 160 GB → 78 GB once purged. Cost one 56 GB mistake — `shutil.move`'s copy fallback on a locked tree — now impossible by test. |
 | P7 Drive | not scoped — the last phase. Same grammar, `workspace-mcp` against the Drive API. |
