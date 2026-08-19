@@ -364,6 +364,165 @@ def write_manifest(batch):
     return len(moved)
 
 
+
+# ---------------------------------------------------------------------------
+# Tree quarantine
+#
+# `scan` classifies FILES by rules. Some of the biggest reclaimable things on a
+# developer machine are not file-shaped at all — they are whole trees whose
+# meaning lives in the directory, not in any one file inside it: a package
+# manager's cache, a browser the test runner downloaded, 57,000 telemetry logs.
+# Classifying those file-by-file is both slow and wrong; the decision is "this
+# cache is regenerable", made once, about the tree.
+#
+# A tree move is ONE os.rename on the same volume, so it is instant regardless
+# of size, and it journals as a single `rename` op — which `organize.py undo`
+# already reverses, because os.path.exists and os.rename do not care whether
+# their argument is a file or a directory.
+# ---------------------------------------------------------------------------
+
+# A tree this shallow is a home directory, a drive root, or a top-level profile
+# folder. Nothing at that depth is a disposable cache, and a typo resolving
+# there would move a life's work into the trash in a single rename.
+MIN_TREE_DEPTH = 4
+
+
+
+# The Cache Directory Tagging Standard: a tool that writes CACHEDIR.TAG at the
+# root of a directory is declaring, in its own voice, that the tree is
+# regenerable. uv, cargo, bazel and others all write it. That declaration is a
+# fact about the tree — not a guess — so it outranks the git heuristic below:
+# a checkout found inside a self-declared cache is a cached clone of somebody
+# else's repository, which is the one case where a .git carries no work.
+CACHEDIR_TAG = "CACHEDIR.TAG"
+CACHEDIR_SIGNATURE = b"Signature: 8a477f597d28d172789f06886806bc55"
+
+
+def declares_itself_a_cache(path):
+    tag = Path(path) / CACHEDIR_TAG
+    try:
+        return tag.is_file() and tag.read_bytes().startswith(CACHEDIR_SIGNATURE)
+    except OSError:
+        return False
+
+
+def tree_refusal(path):
+    """Why this directory must not be quarantined wholesale, or None."""
+    resolved = Path(path).resolve()
+
+    if not resolved.is_dir():
+        return "not a directory"
+    if org.under_frozen_zone(resolved):
+        return "under the dev frozen zone"
+    for never in NEVER_ZONES:
+        if never == resolved or never in resolved.parents:
+            return "under Pictures"
+    if resolved == Path.home().resolve() or str(resolved) == resolved.anchor:
+        return "is the home or drive root"
+    trash = TRASH_ROOT.resolve()
+    if resolved == trash or trash in resolved.parents:
+        return "is already inside the quarantine"
+    if len(resolved.parts) < MIN_TREE_DEPTH:
+        return "is only %d levels deep (min %d)" % (len(resolved.parts), MIN_TREE_DEPTH)
+    if declares_itself_a_cache(resolved):
+        return None
+    # Otherwise: a cache never contains a repository. If one does, it is not a
+    # cache — it is someone's work sitting in a badly chosen place, and moving
+    # the tree would swallow it with no per-file record of what went.
+    if (resolved / ".git").exists():
+        return "contains a git repository"
+    for _ in resolved.rglob(".git"):
+        return "contains a git repository"
+    return None
+
+
+def measure_tree(path):
+    files, total = 0, 0
+    for entry in Path(path).rglob("*"):
+        try:
+            if entry.is_file():
+                files += 1
+                total += entry.stat().st_size
+        except OSError:
+            continue
+    return files, total
+
+
+def quarantine_trees(paths, reason, do_apply, batch_stamp=None):
+    stamp = batch_stamp or datetime.now().strftime("%Y%m%d-%H%M%S")
+    batch = TRASH_ROOT / stamp
+    results = {"ok": 0, "refused": 0, "missing": 0, "failed": 0, "bytes": 0,
+               "files": 0, "locked": []}
+    refusals = []
+
+    planned = []
+    for raw in paths:
+        source = Path(raw)
+        if not source.exists():
+            results["missing"] += 1
+            continue
+        why = tree_refusal(source)
+        if why:
+            results["refused"] += 1
+            refusals.append((str(source), why))
+            continue
+        files, size = measure_tree(source)
+        planned.append((source.resolve(), files, size))
+
+    if not do_apply:
+        for _source, files, size in planned:
+            results["ok"] += 1
+            results["files"] += files
+            results["bytes"] += size
+        return results, None, planned, refusals
+
+    batch.mkdir(parents=True, exist_ok=True)
+    journal = org.Journal(batch / "journal.ndjson")
+    journal.write({"type": "header", "tool_version": 1, "kind": "quarantine-tree",
+                   "batch": str(batch), "roots": [str(s) for s, _f, _b in planned],
+                   "reason": reason,
+                   "started": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                   "ops_planned": len(planned)})
+    try:
+        for source, files, size in planned:
+            drive, tail = os.path.splitdrive(str(source))
+            destination = batch / drive.replace(":", "") / tail.lstrip("\\/")
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            # Rename only. shutil.move's copy-then-delete fallback is right
+            # for a single file and catastrophic for a tree: the usual reason a
+            # directory will not rename on Windows is that something holds a
+            # file inside it open (WinError 32), and that same lock then defeats
+            # the delete half. OneDrive's 56 GB log directory copied for eleven
+            # minutes, failed on a telemetry file it had open, and left a 56 GB
+            # orphan beside an untouched original — twice the disk, nothing
+            # reclaimed. A tree that will not rename is a tree whose owner is
+            # still running; say so and let a human stop it.
+            try:
+                org._safe_rename(str(source), str(destination))
+            except OSError as exc:
+                results["failed"] += 1
+                results["locked"].append((str(source), str(exc)))
+                journal.write({"type": "op", "op": "rename", "src": str(source),
+                               "dst": str(destination), "status": "failed",
+                               "error": str(exc)})
+                try:
+                    destination.rmdir()          # leave no empty shell behind
+                except OSError:
+                    pass
+                continue
+            results["ok"] += 1
+            results["files"] += files
+            results["bytes"] += size
+            journal.write({"type": "op", "op": "rename", "src": str(source),
+                           "dst": str(destination), "size": size, "tree_files": files,
+                           "category": reason, "status": "ok"})
+    finally:
+        journal.close()
+
+    write_manifest(batch)
+    return results, str(batch), planned, refusals
+
+
 def list_batches():
     if not TRASH_ROOT.is_dir():
         return []
@@ -492,6 +651,29 @@ def cmd_list(args):
     return 0
 
 
+
+def cmd_tree(args):
+    results, batch, planned, refusals = quarantine_trees(
+        args.path, args.reason, args.apply)
+    for source, files, size in planned:
+        print("  %9s  %7s files  %s" % (human(size), format(files, ","), source))
+    for source, why in refusals:
+        print("  REFUSED   %s\n              %s" % (source, why))
+    for source, error in results.get("locked", []):
+        print("  IN USE    %s\n              %s\n              nothing was copied; "
+              "stop the process holding it and re-run" % (source, error))
+    mode = "QUARANTINED" if args.apply else "DRY-RUN (nothing moved; pass --apply)"
+    print("%s  trees=%d files=%s (%s) refused=%d missing=%d failed=%d" % (
+        mode, results["ok"], format(results["files"], ","), human(results["bytes"]),
+        results["refused"], results["missing"], results["failed"]))
+    if batch:
+        print("batch     %s" % batch)
+        print('restore:  python organize.py undo "%s\\journal.ndjson" --apply' % batch)
+        print('purge:    python reclaim.py purge "%s" --confirm   (refused for %d days)'
+              % (batch, HOLD_DAYS))
+    return 1 if results["failed"] else 0
+
+
 def cmd_purge(args):
     return purge(args.batch, args.confirm, args.force)
 
@@ -510,6 +692,15 @@ def main():
     apply_parser.add_argument("plan")
     apply_parser.add_argument("--apply", action="store_true")
     apply_parser.set_defaults(func=cmd_apply)
+
+    tree_parser = subparsers.add_parser(
+        "tree", help="quarantine whole directory trees (regenerable caches)")
+    tree_parser.add_argument("--path", action="append", required=True,
+                             help="directory to quarantine; repeatable")
+    tree_parser.add_argument("--reason", required=True,
+                             help="category slug recorded in the journal")
+    tree_parser.add_argument("--apply", action="store_true")
+    tree_parser.set_defaults(func=cmd_tree)
 
     list_parser = subparsers.add_parser("list", help="show quarantine batches")
     list_parser.set_defaults(func=cmd_list)

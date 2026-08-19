@@ -132,6 +132,18 @@ This is a scheduled script (§7), not a habit. Habits do not survive 387 loose f
 
 ---
 
+**Machine-level caches** are a separate class from files in a zone: no name, no entity, no owner who will miss them. The rule is the same shape — regenerable means reclaimable — but the unit is the tree, not the file, and the criteria are ownership and provenance rather than age:
+
+| Tree | Reclaim by | Why it is safe |
+|---|---|---|
+| `AppData\Local\npm-cache`, `uv\cache`, `pip` | the tool's own clean command | the tool re-fetches on next use |
+| `.cache\puppeteer` | quarantine | a Chrome the test runner downloaded; re-downloads on demand |
+| `.cache\huggingface`, `.cache\whisper` | quarantine, **keep one tier** | model weights are big and slow to re-fetch; keep the tier actually used (medium for Spanish transcription), drop the redundant formats |
+| `.local\share\claude\versions\*`, `.local\bin\claude.exe.old.*` | quarantine all but the running version | `claude --version` names the one to keep |
+| `Microsoft\OneDrive\logs` | quarantine, OneDrive stopped | diagnostic telemetry nothing reads |
+
+An **installed but unused** application is not this category and must never be deleted as if it were: `C:\Users\sanal\RStudio` looks like leftover data and is in fact the installation, `Uninstall.exe` and all. Deleting the folder orphans the uninstaller and leaves the registry claiming the app is present. Check the uninstall registry first; if the app is genuinely unwanted, run its uninstaller.
+
 ## 6. Hard constraints — the things that break if ignored
 
 1. **`dev\` is rename-frozen.** Claude Code derives its project directories from the literal path (`C--Users-sanal-dev-iago-os`). Renaming a repo folder orphans every session transcript, the per-project memory directory, all git worktrees, and absolute paths written into `~/.claude/settings.json` (the Stop hooks now point at `dev\iago-os\scripts\hooks\`). Nothing under `dev\` gets renamed as part of this project.
@@ -159,6 +171,17 @@ This is a scheduled script (§7), not a habit. Habits do not survive 387 loose f
    ```
 
    `organize.py` enforces this in code: protected names and extensions, application-managed folders in `SKIP_DIRS`, and `looks_like_app_payload()` — a **majority** test that prunes an unpacked-application subtree whole while leaving a download folder that merely contains some installers alone.
+
+9. **A tree that will not rename is a tree whose owner is still running — never copy it instead.** `reclaim.py tree` quarantines a whole directory with one `os.rename`, which is instant at any size because it moves a directory entry, not bytes. On 2026-08-19 the fallback path did the opposite: `os.rename` on OneDrive's 56 GB `logs\ListSync` failed with `WinError 32` (OneDrive held `microsoftNucleusTelemetryCache.otc` open), `shutil.move` then spent eleven minutes **copying** all 57,000 files, hit the same lock on the delete half, and left a 56 GB orphan beside a completely untouched original. Free space fell 60 GB and the report said nothing had moved. The fallback is gone: a failed rename is now reported as `IN USE`, with the locking path, and nothing is copied. Stop the owning process and re-run — for OneDrive:
+
+   ```powershell
+   Stop-Process -Name OneDrive -Force        # it restarts itself, and recreates logs\
+   ```
+
+10. **Prefer a tool's own cache command over quarantine, when it has one.** `npm cache clean --force`, `uv cache clean`, `pip cache purge` keep the tool's index consistent and reclaim the disk immediately, where quarantine holds the bytes for the 7-day window. The undo net is the point of quarantine, and for a package cache that net is worth nothing — the undo is the tool re-downloading. Quarantine is for trees with no owner to ask: browser binaries a test runner fetched, model weights, superseded application versions, log directories.
+
+11. **`CACHEDIR.TAG` is a declaration, not a guess.** A directory carrying the Cache Directory Tagging Standard signature (`Signature: 8a477f597d28d172789f06886806bc55`) has been marked disposable by the tool that wrote it — uv, cargo and bazel all do this. `tree_refusal()` honours it, and it deliberately outranks the "contains a `.git`" refusal: uv's `sdists-v9` holds a stray `.git` file unpacked from someone's source tarball, and refusing 21 GB of self-declared cache over an artifact that is not even a valid repository is the heuristic failing, not working. The tag never unlocks the `dev\` frozen zone.
+
 
 ---
 

@@ -283,10 +283,186 @@ def test_list_batches():
             rec.TRASH_ROOT = original_trash
 
 
+
+def test_tree_round_trip():
+    print("\nTREE — quarantine a whole cache, then undo")
+    with tempfile.TemporaryDirectory() as tmp:
+        original_trash = rec.TRASH_ROOT
+        rec.TRASH_ROOT = Path(tmp) / "_trash"
+        try:
+            cache = Path(tmp) / "home" / "AppData" / "cache-thing"
+            write_file(cache, "a/one.bin", b"aaaa")
+            write_file(cache, "a/b/two.bin", b"bbbbbb")
+            write_file(cache, "three.bin", b"c")
+            keeper = Path(tmp) / "home" / "AppData" / "keep-me"
+            write_file(keeper, "important.txt", b"do not touch")
+            before = manifest(cache)
+
+            files, size = rec.measure_tree(cache)
+            check(files == 3 and size == 11, f"measure_tree counts the tree: {files} files {size} B")
+
+            results, batch, planned, refusals = rec.quarantine_trees([cache], "test-cache", False)
+            check(batch is None and cache.is_dir(), "dry run moves nothing")
+            check(results["files"] == 3 and results["bytes"] == 11,
+                  f"dry run still reports the size: {results}")
+
+            results, batch, planned, refusals = rec.quarantine_trees(
+                [cache], "test-cache", True, batch_stamp="treebatch")
+            check(results["ok"] == 1 and results["failed"] == 0, f"one tree moved: {results}")
+            check(not cache.exists(), "the cache left its home")
+            check((keeper / "important.txt").is_file(), "the sibling tree was never touched")
+
+            journal = Path(batch) / "journal.ndjson"
+            check(journal.is_file(), "batch journal written")
+            manifest_path = Path(batch) / "_manifest.json"
+            check(manifest_path.is_file(), "batch manifest written")
+            recorded = json.loads(manifest_path.read_text(encoding="utf-8"))
+            check(recorded["bytes"] == 11,
+                  f"manifest records the TREE bytes, not the directory entry: {recorded['bytes']}")
+
+            undo = org.undo(journal, True)
+            check(undo["ok"] == 1 and undo["failed"] == 0, f"organize.py undo restores a tree: {undo}")
+            check(cache.is_dir() and manifest(cache) == before,
+                  "tree byte-identical after undo")
+        finally:
+            rec.TRASH_ROOT = original_trash
+
+
+def test_tree_refusals():
+    """Every refusal here is a way to lose something irreplaceable in one rename."""
+    print("\nTREE — refusals")
+    with tempfile.TemporaryDirectory() as tmp:
+        original_trash = rec.TRASH_ROOT
+        original_frozen = set(org.FROZEN_ROOTS)
+        rec.TRASH_ROOT = Path(tmp) / "_trash"
+        try:
+            repo = Path(tmp) / "home" / "AppData" / "looks-like-cache"
+            write_file(repo, "src/app.ts", b"real work")
+            write_file(repo, ".git/HEAD", b"ref: refs/heads/main")
+            check(rec.tree_refusal(repo) == "contains a git repository",
+                  f"a tree holding a repo is not a cache: {rec.tree_refusal(repo)}")
+
+            nested = Path(tmp) / "home" / "AppData" / "cache-with-repo-inside"
+            write_file(nested, "blobs/x.bin", b"x")
+            write_file(nested, "vendor/thing/.git/HEAD", b"ref: refs/heads/main")
+            check(rec.tree_refusal(nested) == "contains a git repository",
+                  "a repo buried anywhere inside still refuses")
+
+            plain = Path(tmp) / "home" / "AppData" / "plain-cache"
+            write_file(plain, "blobs/x.bin", b"x")
+            check(rec.tree_refusal(plain) is None, "an ordinary cache is allowed")
+
+            missing = Path(tmp) / "home" / "AppData" / "not-here"
+            check(rec.tree_refusal(missing) == "not a directory", "a missing path refuses")
+            afile = write_file(Path(tmp) / "home", "loose.txt", b"x")
+            check(rec.tree_refusal(afile) == "not a directory", "a file refuses")
+
+            check("levels deep" in (rec.tree_refusal(Path.home().parent) or ""),
+                  f"a shallow path refuses: {rec.tree_refusal(Path.home().parent)}")
+            check(rec.tree_refusal(Path.home()) == "is the home or drive root",
+                  "the home directory itself refuses")
+
+            org.FROZEN_ROOTS.clear()
+            org.FROZEN_ROOTS.add((Path(tmp) / "home" / "dev").resolve())
+            frozen = Path(tmp) / "home" / "dev" / "iago-os" / "node_modules"
+            write_file(frozen, "pkg/index.js", b"x")
+            check(rec.tree_refusal(frozen) == "under the dev frozen zone",
+                  "the dev zone refuses even for node_modules")
+
+            rec.TRASH_ROOT.mkdir(parents=True, exist_ok=True)
+            inside = rec.TRASH_ROOT / "batch" / "C" / "some" / "tree"
+            inside.mkdir(parents=True, exist_ok=True)
+            check(rec.tree_refusal(inside) == "is already inside the quarantine",
+                  "quarantine cannot eat itself")
+
+            results, batch, planned, refusals = rec.quarantine_trees(
+                [repo, plain, missing], "mixed", False)
+            check(results["refused"] == 1 and results["missing"] == 1 and results["ok"] == 1,
+                  f"a refusal never blocks the rest of the batch: {results}")
+            check(repo.is_dir(), "the refused tree is still where it was")
+        finally:
+            rec.TRASH_ROOT = original_trash
+            org.FROZEN_ROOTS.clear()
+            org.FROZEN_ROOTS.update(original_frozen)
+
+
+def test_cachedir_tag_outranks_the_git_heuristic():
+    """uv's cache holds a stray .git from an unpacked sdist. The heuristic
+    refused 21 GB of declared-disposable cache over a file that was not even a
+    valid repository."""
+    print("\nTREE — CACHEDIR.TAG")
+    with tempfile.TemporaryDirectory() as tmp:
+        cache = Path(tmp) / "home" / "AppData" / "toolcache"
+        write_file(cache, "sdists/pkg/.git", b"not really a repo")
+        write_file(cache, "wheels/thing.whl", b"x")
+        check(rec.tree_refusal(cache) == "contains a git repository",
+              "without the tag, a stray .git still refuses")
+
+        write_file(cache, "CACHEDIR.TAG",
+                   b"Signature: 8a477f597d28d172789f06886806bc55\n# generated by a tool")
+        check(rec.tree_refusal(cache) is None,
+              f"a self-declared cache is allowed: {rec.tree_refusal(cache)}")
+
+        write_file(cache, "CACHEDIR.TAG", b"Signature: not-the-real-one")
+        check(rec.tree_refusal(cache) == "contains a git repository",
+              "a forged or truncated tag does not count")
+
+        original_frozen = set(org.FROZEN_ROOTS)
+        try:
+            org.FROZEN_ROOTS.clear()
+            org.FROZEN_ROOTS.add((Path(tmp) / "home" / "dev").resolve())
+            frozen = Path(tmp) / "home" / "dev" / "proj" / "target"
+            write_file(frozen, "CACHEDIR.TAG",
+                       b"Signature: 8a477f597d28d172789f06886806bc55")
+            check(rec.tree_refusal(frozen) == "under the dev frozen zone",
+                  "the tag does not unlock the frozen zone")
+        finally:
+            org.FROZEN_ROOTS.clear()
+            org.FROZEN_ROOTS.update(original_frozen)
+
+
+def test_a_locked_tree_is_never_copied():
+    """The 56 GB lesson: os.rename fails, shutil.move copies for eleven minutes,
+    its delete half hits the same lock, and the disk now holds two copies while
+    the report says nothing moved."""
+    print("\nTREE — a locked tree is refused, not copied")
+    with tempfile.TemporaryDirectory() as tmp:
+        original_trash = rec.TRASH_ROOT
+        original_rename = org._safe_rename
+        rec.TRASH_ROOT = Path(tmp) / "_trash"
+        try:
+            cache = Path(tmp) / "home" / "AppData" / "held-open"
+            write_file(cache, "big.bin", b"x" * 4096)
+            before = manifest(cache)
+
+            def refuse(_src, _dst):
+                raise OSError(32, "The process cannot access the file because "
+                                  "it is being used by another process")
+
+            org._safe_rename = refuse
+            results, batch, _planned, _refusals = rec.quarantine_trees(
+                [cache], "locked", True, batch_stamp="lockedbatch")
+
+            check(results["failed"] == 1 and results["ok"] == 0,
+                  f"the move is reported as failed: {results}")
+            check(cache.is_dir() and manifest(cache) == before,
+                  "the original is untouched")
+            copied = [p for p in Path(batch).rglob("*") if p.is_file()
+                      and p.name not in ("journal.ndjson", "_manifest.json")]
+            check(not copied, f"not one byte was copied into quarantine: {copied}")
+            check(results["locked"] and "used by another process" in results["locked"][0][1],
+                  "the reason reaches the caller")
+        finally:
+            org._safe_rename = original_rename
+            rec.TRASH_ROOT = original_trash
+
 def main():
     for test in (test_categories, test_duplicate_name_judgment, test_virtualenv_detection,
                  test_protections, test_quarantine_round_trip,
-                 test_purge_refusals, test_manifest_survives_batch_reuse, test_list_batches):
+                 test_purge_refusals, test_manifest_survives_batch_reuse, test_list_batches,
+                 test_tree_round_trip, test_tree_refusals,
+                 test_cachedir_tag_outranks_the_git_heuristic,
+                 test_a_locked_tree_is_never_copied):
         test()
     print()
     if FAILURES:
