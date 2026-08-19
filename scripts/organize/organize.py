@@ -400,10 +400,19 @@ def in_git_tree(directory, stop_at, cache):
 
 COPY_SUFFIX = re.compile(r"\s*\(\d+\)$")
 
+# Office writes a lock file beside every open document — `~$deck.pptx`, 165
+# bytes holding nothing but the editor's name. Renaming one STRIPS the marker
+# and leaves something that looks exactly like a real .pptx: four of them were
+# found masquerading as coursework and client proposals, two of them sitting
+# next to the genuine article. `~WRL####.tmp` is Word's crash-recovery twin.
+LOCK_PREFIXES = ("~$", "~wrl")
+
 
 def is_protected_file(name):
     """A file whose name is load-bearing rather than descriptive."""
     lowered = name.lower()
+    if lowered.startswith(LOCK_PREFIXES):
+        return "office-lock-file"
     if lowered in PROTECTED_NAMES:
         return "protected-name"
     # Windows appends " (1)", " (2)" when a protected name already exists.

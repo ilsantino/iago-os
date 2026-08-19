@@ -185,6 +185,7 @@ Both were resolved by **reading the folders' contents instead of arbitrating the
 | P3b Evict code | **DONE** 2026-08-17 — OneDrive 151,395 → 2,849 files, 3.03 GB reclaimed; an 8th project (`.venvTA`, 454 files) was missed by name-matching and swept after |
 | P4 | deleted by P0 |
 | P5 Documents | **DONE** 2026-08-18 — `.iago/summaries/feature-filesystem-order-p5-route.md`. 483 files routed via the new `route.py`, 8.1 GB quarantined, `Downloads` 796 → 290 files, `Documents` 1,270 → 919 (all machine-managed), 100% conformance in all four zones. Ten credential files pulled out of synced folders into `~/.secure/`. |
-| P5 Pictures | **DEFERRED** — 1,074 files, 1,058 of them in `Screenshots/`. Wants date-based foldering, not per-file renaming. Windows Known Folder, so file-level work only. |
-| P6 enforcement | **NEXT — and now demonstrably needed.** 12 loose files (9 ChatGPT exports, 2 DIN decks, 1 PowerPoint autorecover artifact) landed in `Downloads` within 24 h of P5 closing. Without the scheduled sweep the whole project decays back. |
-| P7 Drive | not scoped |
+| P5 Pictures | **DONE** 2026-08-19 — folded into `Screenshots/{YYYY}/{YYYY-MM}/` via the new `route.py datefold`, then renamed: **1,061/1,061 conforming**. `TranscodedWallpaper` protected, Feedback Hub skipped, 3 DIN assets and a Munet map routed out. |
+| P6 enforcement | **DONE** 2026-08-19 — `scripts/organize/sweep.py` + `test-sweep.py`. Registered with Task Scheduler as "iaGO File Sweep", daily 09:00. Acts on high/medium-confidence renames and entity routing; reports low-confidence names, aged installers and per-zone drift. Never deletes. |
+| Quarantine | **PURGED** 2026-08-19 on Santiago's approval — 589 files / **9.49 GB** across four batches. One new batch (`20260819-duplicates`, 21 files / 18.6 MB) holds until 2026-08-26. |
+| P7 Drive | not scoped — the last phase. Same grammar, `workspace-mcp` against the Drive API. |
