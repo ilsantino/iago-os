@@ -29,6 +29,7 @@ Usage:
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
@@ -131,16 +132,13 @@ def lint(root):
         capture_output=True, text=True, encoding="utf-8", errors="replace",
         env={**os.environ, "PYTHONIOENCODING": "utf-8"},
     )
-    total = conforming = 0
-    for line in (result.stdout or "").splitlines():
-        if "conforming" in line:
-            for token in line.split():
-                if "/" in token:
-                    try:
-                        conforming, total = (int(x) for x in token.split("/"))
-                    except ValueError:
-                        pass
-    return conforming, total
+    # `1,061/1,061` — organize.py prints thousands separators, so a bare int()
+    # raised and the old handler swallowed it, reporting a healthy zone as 0/0.
+    # A parse failure must be loud: it returns None, and the report says so.
+    match = re.search(r"conforming\s+([\d,]+)/([\d,]+)", result.stdout or "")
+    if not match:
+        return None, None
+    return int(match.group(1).replace(",", "")), int(match.group(2).replace(",", ""))
 
 
 def sweep(do_apply):
@@ -188,7 +186,8 @@ def sweep(do_apply):
         "routed": routed,
         "needs_review": len(review),
         "stale_installers": len(installers),
-        "conformance": {z: f"{c}/{t}" for z, (c, t) in conformance.items()},
+        "conformance": {z: (f"{c}/{t}" if c is not None else "unreadable")
+                        for z, (c, t) in conformance.items()},
     }
     with HISTORY.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(record, ensure_ascii=False) + "\n")
@@ -216,9 +215,12 @@ def write_report(record, review, installers, conformance):
         "|---|---|",
     ]
     for zone, (conforming, total) in conformance.items():
+        if conforming is None:
+            lines.append(f"| `{zone}` | **could not read lint output** ⚠ |")
+            continue
         pct = f"{100.0 * conforming / total:.1f}%" if total else "—"
         flag = "" if total and conforming == total else "  ⚠"
-        lines.append(f"| `{zone}` | {conforming}/{total} ({pct}){flag} |")
+        lines.append(f"| `{zone}` | {conforming:,}/{total:,} ({pct}){flag} |")
 
     lines += ["", "## Needs a human", ""]
     if review:

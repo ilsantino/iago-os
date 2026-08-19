@@ -903,6 +903,12 @@ def cmd_undo(args):
 
 def cmd_lint(args):
     root = resolve_root(args)
+    # A missing directory scanned to zero files and printed "0/0 (100.0%)
+    # violations 0" — a typo'd path read as a perfectly healthy zone, which is
+    # the worst possible answer for a check that runs unattended.
+    if not Path(root).is_dir():
+        raise SystemExit(f"REFUSED: {root} is not a directory. "
+                         "An unreadable zone is not a clean one.")
     plan = scan(root, bucket=False)
     violations = plan["counts"]["ops"]
     conforming = sum(1 for s in plan["skipped"] if s["reason"] == "already-conforming")

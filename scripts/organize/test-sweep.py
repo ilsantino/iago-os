@@ -144,6 +144,38 @@ def test_report_and_history_are_written():
               line["needs_review"] == len(review) == 1, line)
 
 
+def test_lint_parses_thousands_separators():
+    """organize.py prints `1,061/1,061`. A bare int() on that raises, and the
+    original handler swallowed it — reporting a fully conforming zone as 0/0."""
+    with Sandbox() as box:
+        for i in range(3):
+            box.write(f"2026081{i}-din-deck-{i}.pdf")
+        conforming, total = sw.lint(box.downloads)
+        check("lint returns real numbers", (conforming, total) == (3, 3),
+              (conforming, total))
+
+    class FakeResult:
+        stdout = "  conforming 1,061/1,061 (100.0%)  violations 0"
+
+    import re as _re
+    match = _re.search(r"conforming\s+([\d,]+)/([\d,]+)", FakeResult.stdout)
+    parsed = (int(match.group(1).replace(",", "")), int(match.group(2).replace(",", "")))
+    check("thousands separators parse", parsed == (1061, 1061), parsed)
+
+
+def test_unreadable_lint_is_loud_not_zero():
+    """A parse failure must not look like an empty zone."""
+    with Sandbox() as box:
+        conforming, total = sw.lint(box.tmp / "does-not-exist")
+        check("missing root reports unreadable, not 0/0",
+              conforming is None, (conforming, total))
+        sw.write_report({"ran": "2026-01-01T00:00:00", "mode": "dry-run",
+                         "renamed": 0, "routed": 0},
+                        [], [], {"ghost": (None, None)})
+        check("report says it could not read the lint",
+              "could not read lint output" in sw.REPORT.read_text(encoding="utf-8"))
+
+
 def test_history_accumulates():
     with Sandbox() as box:
         box.write("20260819-din-deck.pdf")
