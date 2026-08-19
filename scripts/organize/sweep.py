@@ -47,7 +47,7 @@ HISTORY = LOG_DIR / "sweep-history.ndjson"
 # only one that accumulates; the OneDrive zones are linted for drift but not
 # swept, because a rename there is a re-upload (§6.2 of the standard).
 ACT_ZONES = ["downloads"]
-LINT_ZONES = ["downloads", "od-personal", "od-iago", "od-din"]
+LINT_ZONES = ["downloads", "od-personal", "od-iago", "od-din", "od-pictures"]
 
 # §5 of the standard: installers and already-extracted archives go at 30 days.
 # Reported, never acted on — see the module docstring.

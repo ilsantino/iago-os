@@ -441,6 +441,57 @@ def apply_plan(plan, do_apply):
     return results, (str(journal_path) if do_apply else None)
 
 
+def datefold(root, do_apply):
+    """Group a folder into {YYYY}/{YYYY-MM}/ without renaming anything.
+
+    This is the Pictures rule, and it is deliberately not the Downloads rule.
+    `Screenshot 2025-10-23 131928.png` already carries its date in sortable
+    form, so renaming it to `20251023-misc-screenshot-131928.png` moves the
+    same information around for no gain — and in OneDrive every rename is a
+    re-upload (§6.2), so 1,058 of them cost real bandwidth to change nothing a
+    reader cares about. The folder supplies the grouping; the name already
+    supplies the moment.
+    """
+    moves = []
+    for path in sorted(root.rglob("*")):
+        if not path.is_file() or org.is_protected_file(path.name):
+            continue
+        if any(part.lower() in org.SKIP_DIRS for part in path.relative_to(root).parts):
+            continue
+        stamp, _, _ = org.extract_date(path.stem)
+        if not stamp:
+            stamp = datetime.fromtimestamp(path.stat().st_mtime).strftime("%Y%m%d")
+        year, month = stamp[:4], f"{stamp[:4]}-{stamp[4:6]}"
+        target = root / year / month / path.name
+        if target.resolve() == path.resolve():
+            continue
+        info = path.stat()
+        moves.append({"src": str(path), "dst": str(target), "size": info.st_size,
+                      "mtime_ns": info.st_mtime_ns, "reason": f"date {month}"})
+
+    plan = {"roots": [str(root)], "moves": moves,
+            "counts": {}, "totals": {"moves": len(moves), "skipped": 0,
+                                     "bytes": sum(m["size"] for m in moves)},
+            "skipped": []}
+    return apply_plan(plan, do_apply), plan
+
+
+def cmd_datefold(args):
+    root = Path(args.root).expanduser()
+    if not root.is_dir():
+        raise SystemExit(f"not a directory: {root}")
+    (results, journal), plan = datefold(root, args.apply)
+    buckets = defaultdict(int)
+    for move in plan["moves"]:
+        buckets[Path(move["dst"]).parent.name] += 1
+    mode = "APPLIED" if args.apply else "dry-run"
+    print(f"{mode}: " + "  ".join(f"{k}={v}" for k, v in results.items()))
+    for bucket in sorted(buckets):
+        print(f"  {buckets[bucket]:>5}  {bucket}")
+    if journal:
+        print(f"undo: python organize.py undo \"{journal}\" --apply")
+
+
 def cmd_plan(args):
     roots = [Path(r).expanduser() for r in args.root] if args.root else [DOWNLOADS]
     plan = build(roots, args.dissolve_all)
@@ -474,6 +525,11 @@ def main():
                    help="re-file inside every subdirectory, not just the "
                         "extension-keyed ones")
     p.set_defaults(func=cmd_plan)
+
+    d = sub.add_parser("datefold", help="group a folder into YYYY/YYYY-MM (no renaming)")
+    d.add_argument("--root", required=True)
+    d.add_argument("--apply", action="store_true", help="actually move (default: dry-run)")
+    d.set_defaults(func=cmd_datefold)
 
     a = sub.add_parser("apply", help="execute a plan")
     a.add_argument("plan")

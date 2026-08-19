@@ -60,6 +60,9 @@ SKIP_DIRS = {
     # is the live user-scope PSModulePath — renaming it breaks Import-Module the
     # same way renaming dev\ breaks Claude Code's project directories.
     "windowspowershell", "onenote notebooks", "custom office templates",
+    # Feedback Hub writes GUID-named capture folders under Pictures and owns
+    # their layout, same class as `onenote notebooks`.
+    "feedback",
     "plantillas personalizadas de office", "microsoft copilot chat files",
     "my music", "my pictures", "my videos",
     ".rproj.user",          # RStudio session state — same class as .venv
@@ -69,7 +72,11 @@ SKIP_DIRS = {
 # desktop.ini drives Windows folder customisation; a dotfile is tool-managed by
 # convention; a binary is loaded by literal name from a manifest or an import
 # table that no rename updates.
-PROTECTED_NAMES = {"desktop.ini", "thumbs.db", ".ds_store", "icon\r", "ntuser.dat"}
+PROTECTED_NAMES = {"desktop.ini", "thumbs.db", ".ds_store", "icon\r", "ntuser.dat",
+                   # Windows reads the current desktop wallpaper back by this
+                   # literal, extensionless name in Pictures. Renaming it blanks
+                   # the background — an interface, not a description (§6).
+                   "transcodedwallpaper"}
 PROTECTED_EXTS = {
     ".dll", ".sys", ".ocx", ".drv", ".winmd", ".mui", ".rll", ".tlb", ".pdb",
     ".cat", ".manifest", ".config", ".ini", ".lnk", ".url", ".msix", ".cab",
@@ -391,10 +398,19 @@ def in_git_tree(directory, stop_at, cache):
     return result
 
 
+COPY_SUFFIX = re.compile(r"\s*\(\d+\)$")
+
+
 def is_protected_file(name):
     """A file whose name is load-bearing rather than descriptive."""
     lowered = name.lower()
     if lowered in PROTECTED_NAMES:
+        return "protected-name"
+    # Windows appends " (1)", " (2)" when a protected name already exists.
+    # `TranscodedWallpaper (1)` is the same machine artifact as
+    # `TranscodedWallpaper` and dodged the guard on an exact-name match.
+    stem, extension = os.path.splitext(lowered)
+    if COPY_SUFFIX.sub("", stem) + extension in PROTECTED_NAMES:
         return "protected-name"
     if os.path.splitext(lowered)[1] in PROTECTED_EXTS:
         return "protected-extension"

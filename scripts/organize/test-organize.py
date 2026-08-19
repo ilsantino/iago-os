@@ -202,6 +202,16 @@ def test_scan_skips():
         check("Propuesta RSF.pdf" in proposed, "non-conforming file is proposed")
 
 
+def test_windows_copy_suffix_is_still_protected():
+    """`TranscodedWallpaper (1)` is the same machine artifact as
+    `TranscodedWallpaper`, and an exact-name match let two of them through."""
+    for name in ("TranscodedWallpaper", "TranscodedWallpaper (1)",
+                 "TranscodedWallpaper (2)", "desktop (1).ini", "Thumbs (3).db"):
+        check(org.is_protected_file(name) == "protected-name", f"protected: {name}")
+    check(org.is_protected_file("20260101-din-deck (1).pdf") is None,
+          "an ordinary copy is not protected")
+
+
 def test_machine_managed_files_protected():
     print("\nmachine-managed paths")
     check(org.is_protected_file("desktop.ini") == "protected-name",
@@ -495,7 +505,8 @@ def test_undo_refuses_when_occupied():
 def main():
     for test in (test_slugify, test_extract_date, test_extract_version, test_extract_entity,
                  test_derive_name, test_is_conforming, test_guards, test_scan_skips,
-                 test_machine_managed_files_protected, test_zone_root_names_the_owner,
+                 test_machine_managed_files_protected, test_windows_copy_suffix_is_still_protected,
+                 test_zone_root_names_the_owner,
                  test_empty_descriptor_uses_the_folder, test_scan_refuses_frozen_and_repo, test_collision, test_case_only_rename,
                  test_path_ceiling, test_dry_run_changes_nothing, test_stale_file_skipped,
                  test_round_trip, test_hints, test_confidence_batching, test_journal_is_source_of_truth,
