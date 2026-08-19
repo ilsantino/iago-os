@@ -30,12 +30,22 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: bash -n scripts/execute-pipeline.sh scripts/new-client.sh scripts/sync-skills.sh scripts/usage-report.sh scripts/validate-hooks.sh scripts/validate-skills.sh scripts/pipeline-wip-restore.sh scripts/test-pipeline-wip-restore.sh
+      - run: bash -n scripts/execute-pipeline.sh scripts/new-client.sh scripts/sync-skills.sh scripts/usage-report.sh scripts/validate-hooks.sh scripts/validate-skills.sh scripts/pipeline-wip-restore.sh scripts/test-pipeline-wip-restore.sh scripts/hooks/test-session-hooks.sh
       # pipeline-wip-restore.sh only ever runs on the failure path of a pipeline run, so a
       # regression in it would stay invisible until the run it was supposed to protect.
       # The harness drives real throwaway repos — git + bash only, no npm install needed.
       - name: pipeline-wip-restore behavioral tests
         run: bash scripts/test-pipeline-wip-restore.sh
+      # The Stop hooks are the capture layer the whole learning loop reads from, and
+      # both of their historic defects (mtime transcript selection, flat entry schema)
+      # failed SILENTLY — no error, just empty output for months. Only a behavioral
+      # test over a real captured transcript catches that class.
+      - name: session-hook behavioral tests
+        run: bash scripts/hooks/test-session-hooks.sh
+      - name: pattern-harvest aggregator tests
+        run: python3 scripts/hooks/test-pattern-harvest.py
+      - name: settings-hook repoint tests
+        run: python3 scripts/hooks/test-lib-settings-hooks.py
 
   validate-workflows:
     name: Validate Workflows
