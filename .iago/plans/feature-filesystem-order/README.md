@@ -178,7 +178,7 @@ Same grammar, different mechanics — `workspace-mcp` against the Drive API, no 
 | P1 tooling | **DONE** 2026-08-17 — `scripts/organize/organize.py`, 62 assertions green, apply→undo byte-identical |
 | P2 Downloads | **DONE** 2026-08-17 — 406 renamed + bucketed (388 + 18 sentinel upgrades), root 387 → 2 loose, count delta 0; 143 excluded (load-bearing trees). Part B closed 08-18: 3 code trees deleted, 77,025 → 705 files |
 | P2b Reclaim | **DONE** 2026-08-17 — 3.30 GB reclaimed (2.40 GB deleted, 898 MB quarantined). Purge held until 2026-08-24. 21 items await judgment. |
-| ⚠ Client data | **OPEN** 2026-08-18 — 2 Palazuelos production dumps (4.2 GB) in Downloads. Disk **is** BitLocker-encrypted. Dumps re-extract from archives, so ~5.3 GB is deletable — but version-control `clients/palazuelos` first (5 client folders are unversioned). → `clients/palazuelos/.iago/research/2026-08-18-erp-dumps-in-downloads.md` |
+| ⚠ Client data | **OPEN** 2026-08-18 — 2 Palazuelos production dumps (4.2 GB) in Downloads. Disk **is** BitLocker-encrypted. Dumps re-extract from archives, so ~5.3 GB is deletable — but version-control `clients/palazuelos/.iago` first (the one client subtree with no repo). → `clients/palazuelos/.iago/research/2026-08-18-erp-dumps-in-downloads.md` |
 | P3 taxonomy | blocked on the two open decisions |
 | P3b Evict code | **DONE** 2026-08-17 — OneDrive 151,395 → 2,849 files, 3.03 GB reclaimed; an 8th project (`.venvTA`, 454 files) was missed by name-matching and swept after |
 | P4 | deleted by P0 |
