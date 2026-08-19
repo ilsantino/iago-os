@@ -95,13 +95,18 @@ if (!projectDir || !iagoRoot) {
 // skeptic needs in order to refute the finding from the actual code (see skepticPrompt).
 const FINDING = {
   type: 'object',
-  required: ['severity', 'summary', 'failureScenario'],
+  required: ['severity', 'summary', 'failureScenario', 'preExisting'],
   properties: {
     severity: { type: 'string', enum: ['Critical', 'Important', 'Minor'] },
     summary: { type: 'string' },
     // Concrete inputs/state → the wrong output/crash. No hand-wave ("could be unsafe").
     failureScenario: { type: 'string' },
     file: { type: 'string' },
+    // SCOPE, a SEPARATE axis from severity: true when the defect already existed on the base
+    // commit and this diff did not introduce it. Routing reads it (see routesToBacklog).
+    // REQUIRED so the leg makes the call consciously; absent/false reads as newly-introduced,
+    // which BLOCKS — the fail-safe direction is "block", never "silently bury".
+    preExisting: { type: 'boolean' },
   },
 }
 // PROPERTY — one unit of PROOF-OF-WORK. A leg reports what it VERIFIED, not only what it found:
@@ -215,7 +220,8 @@ OPERATING STANCE — bounded verification, aggressive and independent:
 - Default to skepticism. Assume the change can fail in subtle, high-cost, or user-visible ways until the evidence says otherwise.
 - VERIFY each property you are assigned against the actual code and report its verdict in propertiesChecked. A property that HOLDS is a real result — report it as HOLDS with the evidence (file:line) that proves it. Reporting nothing at all is not a result; it is a leg that did not run.
 - Every VIOLATED verdict must ship a matching finding whose failureScenario names concrete inputs/state → the wrong output or crash. Happy-path-only behavior IS a violated property — state the input that breaks it. A finding with no failureScenario is a worry, not a finding: do not emit it as one.
-- SCOPE, NEVER SUPPRESSION: a real defect this diff did not introduce is still REPORTED at its true severity, prefixed "pre-existing:" in the summary — never softened, downgraded, or dropped at emission time. Routing is by SEVERITY, not by scope: Critical/Important go to the fix loop and Minor goes to the backlog, for pre-existing and newly-introduced defects alike. Do NOT downgrade a pre-existing Critical to Minor to "route it to the backlog" — that is the suppression this clause forbids.
+- SCOPE IS AN AXIS, NOT A VERDICT. Every finding sets \`preExisting\`: true when the defect is already present on the BASE commit (verify it — git show <base>:<path> or git blame — do not guess), false when this diff introduced or reintroduced it. When UNSURE use false: an unflagged finding blocks, and blocking wrongly is cheap next to burying a real defect.
+- SCOPE, NEVER SUPPRESSION: scope decides ROUTING, never whether to report or how loudly. A real defect this diff did not introduce is still REPORTED at its TRUE severity, prefixed "pre-existing:" in the summary — never softened, downgraded, or dropped at emission time. Do NOT downgrade a pre-existing Critical to Important or Minor to move it out of the fix loop; that is the suppression this clause forbids. The pipeline does the routing for you: a pre-existing CRITICAL blocks exactly like a new one (git-blame age is not a licence to ship an auth bypass), pre-existing Important and Minor go to the backlog (reported, fixed later), and everything newly introduced blocks per the normal floors.
 - You are ONE independent leg of a multi-model gate. Review from the diff and source ALONE; do not assume another leg will catch what you skip, and do not soften a finding because "someone else probably saw it."
 - Stay grounded: every finding must be defensible from the actual code. Do not invent files, lines, code paths, or attack chains — and never pad propertiesChecked with properties you did not actually check.`
 
@@ -714,6 +720,81 @@ const legProved = (r, kind) =>
   kind === 'codex' && r && r.source === 'codex'
     ? (typeof r.evidence === 'string' && r.evidence.trim().length > 0) || hasProperties(r)
     : hasProperties(r)
+// SCOPE vs SEVERITY — two axes, ruled 2026-08-19. TWIN of execute-pipeline.js; edit both.
+// Scope (pre-existing vs introduced here) is a ROUTING axis, severity is an URGENCY axis. The
+// plan's original fence ("not introduced by this diff -> backlog") and the round-1 inversion
+// ("route by severity alone") each collapsed the two in opposite directions: the first would let
+// a pre-existing auth bypass ship, the second made every run block on the repo's accumulated debt.
+//   pre-existing Critical           -> BLOCKS
+//   pre-existing Important / Minor  -> backlog, counted visibly in the gate log
+//   newly introduced, any severity  -> existing floors (Critical/Important block, Minor backlog)
+const isPreExisting = (f) => !!f && f.preExisting === true
+const routesToBacklog = (f) => (!f ? false : f.severity === 'Minor' || (isPreExisting(f) && f.severity === 'Important'))
+const routesToGate = (f) => !!f && !routesToBacklog(f)
+const normSummary = (str) =>
+  String(str || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim()
+const findingKey = (f) => `${(f && f.severity) || ''}|${(f && f.file) || ''}|${normSummary(f && f.summary)}`
+// 3+ chars only: articles/prepositions would inflate any overlap score.
+const contentWords = (str) => new Set(normSummary(str).split(' ').filter((w) => w.length > 2))
+// A VIOLATED property counts as REPORTED when some finding points at the same file (the property's
+// `evidence` is a required file:line) or restates it (>= 2 shared content words). Deliberately
+// generous toward the leg: a false "unpaired" verdict costs a whole re-run, and this exists to
+// catch the silent-discard shape — a violation recorded with nothing resembling it reported.
+// Stopwords: without this the fallback pairs on filler. A real collision seen in test: a property
+// about tenant isolation and an unrelated naming nit both contained "the" and "tenant" (the latter
+// via the finding's failureScenario), which cleared a 2-word bar and silently excused the breach.
+const PAIR_STOPWORDS = new Set([
+  'the', 'and', 'for', 'with', 'that', 'this', 'from', 'into', 'when', 'then', 'than', 'are', 'was',
+  'not', 'but', 'its', 'all', 'any', 'has', 'have', 'been', 'will', 'does', 'only', 'also', 'over',
+  'under', 'same', 'such', 'each', 'per', 'via', 'set', 'get', 'new', 'old', 'one', 'two', 'can',
+])
+const distinctiveWords = (str) => new Set([...contentWords(str)].filter((w) => !PAIR_STOPWORDS.has(w)))
+const violationHasFinding = (prop, findings) => {
+  const pWords = distinctiveWords(`${(prop && prop.property) || ''} ${(prop && prop.evidence) || ''}`)
+  const ev = String((prop && prop.evidence) || '').toLowerCase()
+  for (const f of Array.isArray(findings) ? findings : []) {
+    if (!f) continue
+    // Primary signal: the finding points at the file the property's evidence cites.
+    const base = String(f.file || '')
+      .toLowerCase()
+      .replace(/\\/g, '/')
+      .split('/')
+      .pop()
+    if (base && ev.includes(base)) return true
+    // Weak fallback for a finding with no `file`: 3+ DISTINCTIVE shared words.
+    let shared = 0
+    for (const w of distinctiveWords(`${f.summary || ''} ${f.failureScenario || ''}`)) if (pWords.has(w)) shared++
+    if (shared >= 3) return true
+  }
+  return false
+}
+const unpairedViolations = (r) => violatedProperties(r).filter((prop) => !violationHasFinding(prop, r && r.findings))
+// CROSS-LEG DEDUPE (ruled 2026-08-19). Independent legs describe one defect separately, so a
+// single issue arrives three or four times — the wave-1 gate reported 18 findings for ~10 real
+// defects. Collapse on the EXACT normalised key: on a BLOCKING set a false merge deletes a real
+// Critical, so this deliberately UNDER-collapses rather than risk loss. Attribution is unioned.
+const dedupeAcrossLegs = (items) => {
+  const out = []
+  const idx = new Map()
+  for (const f of Array.isArray(items) ? items : []) {
+    if (!f) continue
+    const k = findingKey(f)
+    const at = idx.get(k)
+    if (at === undefined) {
+      idx.set(k, out.length)
+      out.push({ ...f, by: f.by ? [f.by] : [] })
+      continue
+    }
+    const prev = out[at]
+    if (f.by && !prev.by.includes(f.by)) prev.by.push(f.by)
+    // Scope disagreement resolves to the SAFE side: any leg calling it new makes it new.
+    if (!isPreExisting(f)) prev.preExisting = false
+  }
+  return out.map((f) => (f.by.length ? { ...f, by: f.by.join('+') } : { ...f, by: undefined }))
+}
 // Returns '' when the leg honored the contract, otherwise `${suffix}|${message}` — the suffix
 // becomes the incompleteLegs key so the orchestrator can tell an UNREVIEWED leg from one that
 // found a violation and then failed to report it (different corrective actions).
@@ -724,8 +805,14 @@ const legDefect = (r, kind) => {
       ? 'no-proof|the `evidence` string is empty and propertiesChecked carries no evidenced entry'
       : 'no-proof|propertiesChecked is empty or every entry is missing its `property` text or its `evidence` (file:line)'
   }
-  if (violatedProperties(r).length > 0 && foundNothing(r)) {
-    return 'violated-unreported|a VIOLATED property was recorded while `findings` was EMPTY — every VIOLATED verdict must ship the matching finding (with a failureScenario), or the violation is silently discarded'
+  // PER-PROPERTY (ruled 2026-08-19). This used to read
+  // `violatedProperties(r).length > 0 && foundNothing(r)` — it fired only when `findings` was
+  // COMPLETELY empty, so one unrelated Minor bought the leg out of the guard entirely: the exact
+  // bypass the proof-of-work check above was hardened to remove, reproduced two lines below it.
+  const unpaired = unpairedViolations(r)
+  if (unpaired.length > 0) {
+    const first = String(unpaired[0].property || '').slice(0, 120)
+    return `violated-unreported|${unpaired.length} VIOLATED propert${unpaired.length === 1 ? 'y' : 'ies'} shipped no matching finding (first: "${first}") — every VIOLATED verdict must ship its OWN finding (with a failureScenario), or the violation is silently discarded`
   }
   return ''
 }
@@ -753,14 +840,37 @@ if (codex) {
   log('WARNING: Codex leg failed — cross-model check INCOMPLETE')
   incompleteLegs.push('codex')
 }
+const LOAD_BEARING_LENSES = ['security', 'amplify', 'frontend']
+// PROOF OF WORK IS UNIVERSAL — lens legs included (ruled 2026-08-19, against the reviewers'
+// exemption). Round 1 checked lens legs for a NULL return only, so a lens that RETURNED
+// `{findings: [], propertiesChecked: []}` was counted as a completed review. That is the PR #78
+// shape verbatim — a leg producing nothing while the gate reports fine — and it is the incident
+// this entire contract exists to kill; exempting the lenses guts the change.
+// What scope-of-consequence differs by, and only that: an unproven LOAD-BEARING auto-derived lens
+// (security/amplify/frontend, derived BECAUSE the diff touches that surface) makes the gate
+// INCOMPLETE, exactly like a null one. An unproven base/explicit lens (codeQuality/completeness,
+// or an operator-chosen list) is logged and enumerated but stays non-blocking — a cosmetic lens
+// should not force a re-run. That is the separation gateStatus already drew for FAILED lenses;
+// this extends it to lenses that returned without proving anything.
+const unprovenLenses = []
 lenses.forEach((key, i) => {
   const r = lensResults[i]
-  if (r) {
-    for (const f of r.findings || []) findings.push({ ...f, by: `lens:${key}` })
-  } else {
-    log(`WARNING: ${key} lens leg failed (non-blocking)`)
+  if (!r) {
+    log(`WARNING: ${key} lens leg failed (blocking only when load-bearing)`)
     incompleteLegs.push(`lens:${key}`)
+    return
   }
+  const defect = legDefect(r, 'review')
+  if (defect) {
+    const [suffix, message] = defect.split('|')
+    const loadBearing = lensSource === 'auto' && LOAD_BEARING_LENSES.includes(key)
+    log(
+      `WARNING: ${key} lens leg did not honor the verification contract — ${message}; ${loadBearing ? 'load-bearing lens, gate INCOMPLETE (re-run)' : 'non-blocking lens, reported only'}`,
+    )
+    incompleteLegs.push(`lens:${key}:${suffix}`)
+    if (loadBearing) unprovenLenses.push(key)
+  }
+  for (const f of r.findings || []) findings.push({ ...f, by: `lens:${key}` })
 })
 // TEAM breadth — collect the two extra reviewer legs. In team mode a FAILED team leg makes the
 // gate INCOMPLETE (a re-run condition — see teamIncomplete below), UNLIKE the non-blocking
@@ -792,6 +902,33 @@ teamDefs.forEach((def, i) => {
 // real=true (an evidence-backed refute is required to count against it — see refuteHasEvidence,
 // C1). A finding dropped by BOTH skeptics moves to `filtered`. Minor findings are kept
 // un-verified. False-negative bias is worse than dropping a real bug, so one confirm keeps it.
+// CROSS-LEG DEDUPE + SCOPE ROUTING (ruled 2026-08-19), BEFORE the skeptic panel and before
+// `blocking` is computed. Every leg above pushed into one `findings` array, so the same defect
+// seen by opus + codex + a lens arrives three times: the wave-1 gate reported 18 findings for
+// ~10 real defects. Deduping here (not after verification) means each real defect is verified
+// ONCE, counted once in `blocking`, and fixed once — deduping later would still pay the skeptic
+// fan-out three times and burn the cap on duplicates.
+// Collapse on the EXACT normalised key: on a BLOCKING set a false merge deletes a real Critical,
+// so this deliberately UNDER-collapses (a re-worded restatement survives as its own entry)
+// rather than risk loss. Attribution is unioned so a finding two legs raised shows both.
+const dedupedFindings = dedupeAcrossLegs(findings)
+if (dedupedFindings.length !== findings.length) {
+  log(`dual-adversarial #2: ${findings.length} raw findings -> ${dedupedFindings.length} after cross-leg dedupe`)
+}
+// SCOPE-AWARE ROUTING: Minor -> backlog always; pre-existing Important -> backlog; pre-existing
+// Critical and everything newly introduced -> the gate. Scope is ROUTING, severity is URGENCY.
+const backlog = dedupedFindings.filter(routesToBacklog)
+// `gateFindings` is the working set from here down: the skeptic panel verifies it, `blocking` is
+// computed from it, and the verification pass rebuilds it in place.
+const gateFindings = dedupedFindings.filter(routesToGate)
+const preExistingBacklogged = backlog.filter(isPreExisting).length
+const preExistingBlocking = gateFindings.filter(isPreExisting).length
+if (preExistingBacklogged > 0 || preExistingBlocking > 0) {
+  log(
+    `dual-adversarial #2: scope split — ${preExistingBacklogged} pre-existing Important/Minor routed to the backlog (reported, not fixed in-loop), ${preExistingBlocking} pre-existing Critical still BLOCKING`,
+  )
+}
+
 const filtered = []
 // verificationSameFamily (T06): a STRUCTURAL fact — when the skeptic pass runs, both
 // skeptics are Opus, so that verification is same-family (no cross-model diversity for it).
@@ -804,7 +941,7 @@ if (mode === 'team') {
   // highest-priority first (Critical before Important, then longest summary as a proxy for
   // the most-detailed/most-consequential). Findings BEYOND the cap are kept as un-verified
   // blocking (never dropped) — the cap reduces verification work, never hides a real bug.
-  const blockingFindings = findings.filter((f) => f.severity === 'Critical' || f.severity === 'Important')
+  const blockingFindings = gateFindings.filter((f) => f.severity === 'Critical' || f.severity === 'Important')
   const sevRank = (f) => (f.severity === 'Critical' ? 0 : 1)
   const ranked = [...blockingFindings].sort(
     (a, b) => sevRank(a) - sevRank(b) || (b.summary || '').length - (a.summary || '').length,
@@ -850,14 +987,14 @@ if (mode === 'team') {
       log(`team verification DROPPED [${f.severity}] ${f.summary} (both skeptics refuted with evidence)`)
     }
   }
-  // Reported findings = confirmed (verified Critical/Important) + overflow (un-verified
-  // blocking, kept by the cap) + all Minor (un-verified). Replace the findings array in
-  // place so the return value and `blocking` reflect verification.
-  const minor = findings.filter((f) => f.severity === 'Minor')
-  findings.length = 0
-  for (const f of kept) findings.push(f)
-  for (const f of overflow) findings.push(f)
-  for (const f of minor) findings.push(f)
+  // Reported gate findings = confirmed (verified Critical/Important) + overflow (un-verified
+  // blocking, kept by the cap). Rebuild in place so the return value and `blocking` reflect
+  // verification. No Minor re-add: Minors (and pre-existing Importants) routed to `backlog`
+  // above and were never part of `gateFindings`, so re-adding them here would resurrect
+  // backlog entries into the blocking set.
+  gateFindings.length = 0
+  for (const f of kept) gateFindings.push(f)
+  for (const f of overflow) gateFindings.push(f)
 }
 
 // Collect every leg's VIOLATED properties for the return's audit trail (see the return block).
@@ -872,7 +1009,7 @@ collectViolated(codex, codex ? codex.source || 'codex' : 'codex')
 lenses.forEach((key, i) => collectViolated(lensResults[i], `lens:${key}`))
 teamDefs.forEach((def, i) => collectViolated(teamResults[i], def.key))
 
-const blocking = findings.filter((f) => f.severity === 'Critical' || f.severity === 'Important')
+const blocking = gateFindings.filter((f) => f.severity === 'Critical' || f.severity === 'Important')
 // MINOR → BACKLOG. Minor findings are still fully REPORTED — they move to a `backlog` array the
 // SKILL's Report step surfaces and the pipeline forwards into the @claude tag comment — but they
 // never enter a fix round. `blocking` above is computed from the FULL findings array first, and
@@ -883,8 +1020,6 @@ const blocking = findings.filter((f) => f.severity === 'Critical' || f.severity 
 // pass-structure changes have "no evidence behind it either way". Do not cite the audit for it.
 // The paired doc line lives in `.claude/rules/execution-pipeline.md` (Stages + Fix contract) —
 // they must land together, or the code and the standing rule contradict each other.
-const backlog = findings.filter((f) => f.severity === 'Minor')
-const gateFindings = findings.filter((f) => f.severity !== 'Minor')
 // A core leg (Opus review / Codex) that failed to run makes the gate INCOMPLETE — this is
 // a RE-RUN condition, distinct from `blocking` (fixable code findings). Track it as a
 // structured status so the orchestrator routes "re-run the gate" vs "fix findings"
@@ -903,7 +1038,6 @@ const teamIncomplete =
 // auto-derived specialized lens ALSO makes the gate INCOMPLETE (re-run). The always-on base
 // lenses (codeQuality/completeness) and any EXPLICIT-path lenses stay non-blocking — a failed
 // cosmetic or operator-chosen lens should not force a re-run.
-const LOAD_BEARING_LENSES = ['security', 'amplify', 'frontend']
 // A failed auto-derived load-bearing lens ALWAYS makes the gate INCOMPLETE — even under a
 // DEGRADED probe where the lens ran speculatively. probeDegraded is only a non-blocking RETURN
 // caveat (the consumer SKILL routes on `clean` first and treats it as defensive breadth), so it
@@ -911,8 +1045,12 @@ const LOAD_BEARING_LENSES = ['security', 'amplify', 'frontend']
 // it FAILED, the security/amplify/frontend surface went unreviewed — the gate must fail closed,
 // not ship clean and rely on a caveat the consumer ignores. End-to-end invariant: a failed
 // load-bearing lens is never silently shipped.
+// BOTH failure shapes, matching the core and team legs: a load-bearing lens that failed to RETURN
+// (null) and one that returned but PROVED NOTHING (`unprovenLenses`, populated above). A
+// null-only test let the second shape — a schema-valid empty object — count as a completed review.
 const lensIncomplete =
-  lensSource === 'auto' && lenses.some((key, i) => LOAD_BEARING_LENSES.includes(key) && !lensResults[i])
+  (lensSource === 'auto' && lenses.some((key, i) => LOAD_BEARING_LENSES.includes(key) && !lensResults[i])) ||
+  unprovenLenses.length > 0
 // proofMissing (the PR #78 pattern above) is a core-leg failure exactly like a null leg: the leg
 // technically returned, but returned nothing it can be held to. Same routing — INCOMPLETE, re-run.
 const coreIncomplete = !review || !codex || teamIncomplete || lensIncomplete || proofMissing

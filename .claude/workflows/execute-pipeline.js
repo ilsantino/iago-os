@@ -78,12 +78,17 @@ const planName = (plan.split(/[\\/]/).pop() || 'plan').replace(/\.md$/i, '')
 // a worry, not a finding, and the fix loop cannot act on it.
 const FINDING = {
   type: 'object',
-  required: ['severity', 'summary', 'failureScenario'],
+  required: ['severity', 'summary', 'failureScenario', 'preExisting'],
   properties: {
     severity: { type: 'string', enum: ['Critical', 'Important', 'Minor'] },
     summary: { type: 'string' },
     failureScenario: { type: 'string' },
     file: { type: 'string' },
+    // SCOPE, a SEPARATE axis from severity: true when the defect already existed on the base
+    // commit and this diff did not introduce it. Routing reads it (see routesToBacklog).
+    // REQUIRED so the leg makes the call consciously; absent/false reads as newly-introduced,
+    // which BLOCKS — the fail-safe direction is "block", never "silently bury".
+    preExisting: { type: 'boolean' },
   },
 }
 // PROOF-OF-WORK unit — twin of dual-adversarial.js's PROPERTY. A leg reports what it VERIFIED,
@@ -378,6 +383,178 @@ function legProved(r, kind) {
   }
   return hasProperties(r)
 }
+// SCOPE vs SEVERITY — two axes, ruled 2026-08-19. Scope (pre-existing vs introduced here) is a
+// ROUTING axis; severity is an URGENCY axis. The plan's original fence ("not introduced by this
+// diff -> out of scope -> backlog") and the round-1 inversion ("route by severity alone, ignore
+// scope") each collapsed the two, in opposite directions: the first would have let a pre-existing
+// auth bypass ship, the second made every run block on the repo's whole accumulated debt.
+//   pre-existing Critical           -> BLOCKS (git-blame age is not a licence to ship)
+//   pre-existing Important / Minor  -> backlog, counted visibly in the gate log
+//   newly introduced, any severity  -> existing floors (Critical/Important block, Minor backlog)
+// EDIT BOTH FILES, ALWAYS (see the twin note above FINDING).
+
+// The prompt half of the scope axis. Every finding carries `preExisting`, and the routing above
+// reads it — so the legs have to be TOLD how to set it, or the field is decoration. Kept as one
+// const so the two core legs and the plan-compliance leg cannot drift apart on the wording.
+const SCOPE_RULE = `
+SCOPE — every finding MUST set \`preExisting\` (true/false). This is a SEPARATE axis from severity:
+- \`preExisting: true\` — the defect is already present on the BASE commit; this diff did not
+  introduce it. Verify before you claim it: check the base version of the line (git show
+  <base>:<path>, or git blame). Do NOT guess.
+- \`preExisting: false\` — this diff introduced or reintroduced it. When you are UNSURE, use
+  false: an unflagged finding blocks, and blocking wrongly is cheap next to burying a real defect.
+
+Scope is ROUTING, not permission to soften. Report every defect at its TRUE severity either way —
+never downgrade a pre-existing Critical to Important or Minor to get it out of the fix loop. The
+pipeline routes it for you: a pre-existing Critical BLOCKS exactly like a new one; pre-existing
+Important and Minor go to the backlog (reported, fixed later); everything newly introduced blocks
+per the normal floors.`
+function isPreExisting(f) {
+  return !!f && f.preExisting === true
+}
+function routesToBacklog(f) {
+  if (!f) return false
+  if (f.severity === 'Minor') return true
+  return isPreExisting(f) && f.severity === 'Important'
+}
+function routesToGate(f) {
+  return !!f && !routesToBacklog(f)
+}
+function normSummary(str) {
+  return String(str || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim()
+}
+function findingKey(f) {
+  return `${(f && f.severity) || ''}|${(f && f.file) || ''}|${normSummary(f && f.summary)}`
+}
+function contentWords(str) {
+  // 3+ chars only: articles/prepositions are noise that would inflate any overlap score.
+  return new Set(normSummary(str).split(' ').filter((w) => w.length > 2))
+}
+// A VIOLATED property counts as REPORTED when some finding points at the same file (the
+// property's `evidence` is a required file:line) or restates it (>= 2 shared content words).
+// Deliberately generous toward the leg: a false "unpaired" verdict costs a whole re-run, and the
+// check exists to catch the silent-discard shape — a leg that recorded a violation and reported
+// nothing resembling it — not to police wording.
+// Stopwords: without this the fallback pairs on filler. A real collision seen in test: a property
+// about tenant isolation and an unrelated naming nit both contained "the" and "tenant" (the latter
+// via the finding's failureScenario), which cleared a 2-word bar and silently excused the breach.
+const PAIR_STOPWORDS = new Set([
+  'the', 'and', 'for', 'with', 'that', 'this', 'from', 'into', 'when', 'then', 'than', 'are', 'was',
+  'not', 'but', 'its', 'all', 'any', 'has', 'have', 'been', 'will', 'does', 'only', 'also', 'over',
+  'under', 'same', 'such', 'each', 'per', 'via', 'set', 'get', 'new', 'old', 'one', 'two', 'can',
+])
+function distinctiveWords(str) {
+  return new Set([...contentWords(str)].filter((w) => !PAIR_STOPWORDS.has(w)))
+}
+function violationHasFinding(prop, findings) {
+  const pWords = distinctiveWords(`${(prop && prop.property) || ''} ${(prop && prop.evidence) || ''}`)
+  const ev = String((prop && prop.evidence) || '').toLowerCase()
+  for (const f of Array.isArray(findings) ? findings : []) {
+    if (!f) continue
+    // Primary signal: the finding points at the file the property's evidence cites.
+    const base = String(f.file || '')
+      .toLowerCase()
+      .replace(/\\/g, '/')
+      .split('/')
+      .pop()
+    if (base && ev.includes(base)) return true
+    // Weak fallback for a finding with no `file`: 3+ DISTINCTIVE shared words.
+    let shared = 0
+    for (const w of distinctiveWords(`${f.summary || ''} ${f.failureScenario || ''}`)) {
+      if (pWords.has(w)) shared++
+    }
+    if (shared >= 3) return true
+  }
+  return false
+}
+function unpairedViolations(r) {
+  return violatedProperties(r).filter((prop) => !violationHasFinding(prop, r && r.findings))
+}
+function unionFindings(a, b) {
+  const out = []
+  const seen = new Set()
+  for (const f of [...(Array.isArray(a) ? a : []), ...(Array.isArray(b) ? b : [])]) {
+    if (!f) continue
+    const k = findingKey(f)
+    if (seen.has(k)) continue
+    seen.add(k)
+    out.push(f)
+  }
+  return out
+}
+function unionProperties(a, b) {
+  const out = []
+  const seen = new Set()
+  for (const prop of [...(Array.isArray(a) ? a : []), ...(Array.isArray(b) ? b : [])]) {
+    if (!prop) continue
+    const k = `${String(prop.property || '').toLowerCase().trim()}|${prop.verdict || ''}`
+    if (seen.has(k)) continue
+    seen.add(k)
+    out.push(prop)
+  }
+  return out
+}
+const VERDICT_RANK = { PASS: 0, PASS_WITH_CONCERNS: 1, FAIL: 2 }
+function worstVerdict(a, b, findings) {
+  const list = Array.isArray(findings) ? findings : []
+  const fromFindings = list.some((f) => f && (f.severity === 'Critical' || f.severity === 'Important'))
+    ? 'FAIL'
+    : list.length > 0
+      ? 'PASS_WITH_CONCERNS'
+      : 'PASS'
+  let best = fromFindings
+  for (const v of [a, b]) {
+    if (typeof v === 'string' && v in VERDICT_RANK && VERDICT_RANK[v] > VERDICT_RANK[best]) best = v
+  }
+  return best
+}
+// MERGE, never REPLACE (ruled 2026-08-19). Round 1 did `review = redo`, so a leg that reported
+// three Criticals but omitted its proof-of-work list had all three DISCARDED the moment a
+// conformant-but-quiet re-dispatch returned — the pipeline then recorded PASS, skipped the fix
+// loop and opened the PR. A corrective re-dispatch exists to supply the MISSING PROOF; it is
+// never a licence to retract findings the first pass already earned. Union both sides, and let
+// the verdict follow the union so a retained Critical cannot ship under the redo's PASS.
+function mergeLegResults(origLeg, redo) {
+  if (!redo) return origLeg
+  if (!origLeg) return redo
+  const findings = unionFindings(origLeg.findings, redo.findings)
+  return {
+    ...redo,
+    findings,
+    propertiesChecked: unionProperties(origLeg.propertiesChecked, redo.propertiesChecked),
+    verdict: worstVerdict(origLeg.verdict, redo.verdict, findings),
+  }
+}
+// CROSS-LEG DEDUPE (ruled 2026-08-19). Independent legs describe one defect separately, so a
+// single issue arrives three or four times — the wave-1 gate reported 18 findings for ~10 real
+// defects, and that noise is the complaint that started this work. Collapse on the EXACT
+// normalised key, the same conservative standard as the backlog: on a BLOCKING set a false merge
+// deletes a real Critical, so this deliberately UNDER-collapses (a re-worded restatement of the
+// same defect survives as its own entry) rather than risk loss. Attribution is unioned, so a
+// finding both legs raised shows both.
+function dedupeAcrossLegs(items) {
+  const out = []
+  const idx = new Map()
+  for (const f of Array.isArray(items) ? items : []) {
+    if (!f) continue
+    const k = findingKey(f)
+    const at = idx.get(k)
+    if (at === undefined) {
+      idx.set(k, out.length)
+      out.push({ ...f, by: f.by ? [f.by] : [] })
+      continue
+    }
+    const prev = out[at]
+    if (f.by && !prev.by.includes(f.by)) prev.by.push(f.by)
+    // Scope disagreement resolves to the SAFE side: if any leg calls it newly-introduced, the
+    // merged finding is newly-introduced, and therefore blocks.
+    if (!isPreExisting(f)) prev.preExisting = false
+  }
+  return out.map((f) => (f.by.length ? { ...f, by: f.by.join('+') } : { ...f, by: undefined }))
+}
 // '' when the leg honored the contract; otherwise the exact defect, used both as the corrective
 // re-dispatch instruction and as the abort reason.
 function legDefect(r, kind) {
@@ -386,8 +563,15 @@ function legDefect(r, kind) {
       ? 'no proof of work — the `evidence` string is empty and propertiesChecked carries no evidenced entry'
       : 'no proof of work — propertiesChecked is empty or every entry is missing its `property` text or its `evidence` (file:line)'
   }
-  if (violatedProperties(r).length > 0 && foundNothing(r)) {
-    return 'propertiesChecked reported a VIOLATED property while `findings` was EMPTY — every VIOLATED verdict must ship the matching finding (with a failureScenario), or the violation is silently discarded'
+  // PER-PROPERTY (ruled 2026-08-19). This used to read
+  // `violatedProperties(r).length > 0 && foundNothing(r)` — it fired only when `findings` was
+  // COMPLETELY empty, so one unrelated Minor bought the leg out of the guard entirely. That is
+  // the exact bypass hardening (a) above removed from the proof-of-work check, reproduced
+  // verbatim two lines below it. Each VIOLATED property now needs its OWN matching finding.
+  const unpaired = unpairedViolations(r)
+  if (unpaired.length > 0) {
+    const first = String(unpaired[0].property || '').slice(0, 120)
+    return `${unpaired.length} VIOLATED propert${unpaired.length === 1 ? 'y' : 'ies'} shipped no matching finding (first: "${first}") — every VIOLATED verdict must ship its OWN finding (with a failureScenario), or the violation is silently discarded`
   }
   return ''
 }
@@ -588,7 +772,8 @@ Always check these cross-cutting concerns regardless of domain:
 - Race conditions: non-atomic operations, TOCTOU, concurrent state mutations
 - Rollback safety: partial writes without cleanup
 
-SEVERITY FLOORS: Some checks in the modules are marked ALWAYS Critical or ALWAYS Important. You MUST NOT downgrade these below the stated floor.${stressBlock}
+SEVERITY FLOORS: Some checks in the modules are marked ALWAYS Critical or ALWAYS Important. You MUST NOT downgrade these below the stated floor.
+${SCOPE_RULE}${stressBlock}
 
 Assemble your context (in ${projectDir}). The implementation is already COMMITTED:
 1. Compute the diff to review: git diff ${preImplSha}..HEAD
@@ -622,6 +807,8 @@ PROOF OF WORK (required — a leg that reports nothing and proves nothing reads 
 - source="claude-fallback" is a CLAUDE-authored review, so it must ALSO return \`propertiesChecked\`: every property evaluated with its HOLDS/VIOLATED verdict and file:line evidence. source="codex" does not need propertiesChecked — \`evidence\` stands in for it.
 - Every finding needs a concrete failureScenario (inputs/state → the wrong output or crash).
 - NEVER DROP A CODEX-REPORTED DEFECT for lack of a failureScenario. codex-companion emits free text and often gives no reproduction steps; the failureScenario bar applies to YOUR OWN analysis, never as a license to suppress another model's finding. When Codex reports a defect without a scenario, DERIVE one from the diff and the file you can read yourself (you have both), and if the code genuinely does not let you construct one, say so in the failureScenario ("Codex reported X at <file>; no triggering input could be derived from the diff — verify manually") and still emit the finding at the mapped severity. Silently returning findings:[] because scenarios were missing is a suppression, not a clean review.
+
+${SCOPE_RULE}
 
 Return the structured findings array (empty if clean), source, evidence, and propertiesChecked when applicable. NOTE: a Codex verdict of "approve" / "no material findings" is a SUCCESSFUL codex run with an empty findings array — set source="codex", record the verdict line in evidence, do NOT fall back.`
 }
@@ -872,7 +1059,9 @@ In ${projectDir}:
 READ-ONLY: do NOT edit any file, do NOT stage, do NOT commit, do NOT run any build or test command. Your ONLY permitted operations are: reading files (cat, git show, git diff), reading git history (git log, git diff --name-only). Any write operation here corrupts the pipeline tree.
 PROOF OF WORK (required on EVERY return): return propertiesChecked with ONE entry PER PLAN TASK — property = the task/acceptance criterion, verdict = HOLDS (implemented and verified) or VIOLATED (missing/incomplete/incorrect), evidence = the file:line that implements it or the reason it is absent (NEVER empty). This is what makes "every plan task is implemented" auditable instead of merely asserted. Every VIOLATED task MUST also appear in findings with its failureScenario — a violation recorded but not reported is discarded and the pipeline fails closed on it.
 
-Return verdict (PASS / PASS_WITH_CONCERNS / FAIL), findings (file, severity, summary, failureScenario) and propertiesChecked.`
+SCOPE: a plan-compliance finding is by definition about what THIS diff did or failed to do, so set \`preExisting: false\` on every one of them. (The scope axis exists for the diff-side legs, which can hit defects that predate the base commit; this leg cannot.)
+
+Return verdict (PASS / PASS_WITH_CONCERNS / FAIL), findings (file, severity, summary, failureScenario, preExisting) and propertiesChecked.`
 }
 
 // Read-only HEAD + porcelain snapshot prompt bracketing the plan-compliance leg (plan 03
@@ -1009,7 +1198,10 @@ async function runDualAdversarial(label, isReReview, stressBlock, preImplSha, op
           }),
         `plan-compliance-reprove:${label}`,
       )
-      if (redo && Array.isArray(redo.findings) && !legDefect(redo, 'review')) compliance = redo
+      if (redo && Array.isArray(redo.findings)) {
+        const mergedCompliance = mergeLegResults(compliance, redo)
+        if (!legDefect(mergedCompliance, 'review')) compliance = mergedCompliance
+      }
     }
     const postComplianceSnap = await withRetry(
       () => agent(complianceSnapPrompt('after'), { label: 'compliance-post-snap', phase: 'Review', schema: SNAP_SCHEMA, model: 'haiku' }),
@@ -1057,7 +1249,7 @@ async function runDualAdversarial(label, isReReview, stressBlock, preImplSha, op
       ...da.findings,
       ...compliance.findings.map((f) => ({ ...f, by: f.by || 'plan-compliance' })),
     ]
-    const mergedBlocking = merged.filter(
+    const mergedBlocking = merged.filter(routesToGate).filter(
       (f) => f.severity === 'Critical' || f.severity === 'Important',
     ).length
     // MINOR → BACKLOG, applied IDENTICALLY on both review paths (stress note 14). The team gate
@@ -1065,11 +1257,13 @@ async function runDualAdversarial(label, isReReview, stressBlock, preImplSha, op
     // has not been partitioned, so do it now. Without this the two paths would run two different
     // Minor policies in the same repo — team-gate plans dropping Minors from the fix loop while
     // inline plans still fix them — and `minorRemaining` would log 0 while a backlog held entries.
+    // Same scope-aware routing as the inline path (ruled 2026-08-19). The team gate already
+    // partitioned its own findings, so only the plan-compliance leg's `merged` set is routed here.
     const mergedBacklog = [
       ...(Array.isArray(da.backlog) ? da.backlog : []),
-      ...merged.filter((f) => f.severity === 'Minor'),
+      ...merged.filter(routesToBacklog),
     ]
-    const mergedGateFindings = merged.filter((f) => f.severity !== 'Minor')
+    const mergedGateFindings = merged.filter(routesToGate)
     log(
       `team gate (${label}): ${da.blocking} blocking from the gate + ${compliance.findings.length} plan-compliance (${mergedBlocking} blocking total), codex=${da.codexSource}` +
         `${da.crossModelDegraded ? ' [cross-model DEGRADED]' : ''}` +
@@ -1187,9 +1381,12 @@ async function runDualAdversarial(label, isReReview, stressBlock, preImplSha, op
         }),
       `review-reprove:${label}`,
     )
-    if (redo && Array.isArray(redo.findings) && !legDefect(redo, 'review')) {
-      review = redo
-      reviewDefect = ''
+    if (redo && Array.isArray(redo.findings)) {
+      const mergedReview = mergeLegResults(review, redo)
+      if (!legDefect(mergedReview, 'review')) {
+        review = mergedReview
+        reviewDefect = ''
+      }
     }
   }
   let codexDefect = legDefect(codex, 'codex')
@@ -1204,9 +1401,12 @@ async function runDualAdversarial(label, isReReview, stressBlock, preImplSha, op
         }),
       `codex-reprove:${label}`,
     )
-    if (redo && Array.isArray(redo.findings) && !legDefect(redo, 'codex')) {
-      codex = redo
-      codexDefect = ''
+    if (redo && Array.isArray(redo.findings)) {
+      const mergedCodex = mergeLegResults(codex, redo)
+      if (!legDefect(mergedCodex, 'codex')) {
+        codex = mergedCodex
+        codexDefect = ''
+      }
     }
   }
   const noProof = []
@@ -1225,8 +1425,22 @@ async function runDualAdversarial(label, isReReview, stressBlock, preImplSha, op
   // MINOR → BACKLOG on the INLINE path too (stress note 14) — same policy as the team-gate branch
   // above and as dual-adversarial.js. Minors are reported (surfaced in the return, forwarded to
   // the @claude tag comment) but never consume a fix round.
-  const backlog = findings.filter((f) => f.severity === 'Minor')
-  const gateFindings = findings.filter((f) => f.severity !== 'Minor')
+  // CROSS-LEG DEDUPE first (ruled 2026-08-19) — collapse the same defect reported by both legs
+  // before partitioning, so one issue is counted, logged and fixed once.
+  const deduped = dedupeAcrossLegs(findings)
+  if (deduped.length !== findings.length) {
+    log(`inline gate (${label}): ${findings.length} raw findings -> ${deduped.length} after cross-leg dedupe`)
+  }
+  // SCOPE-AWARE ROUTING (ruled 2026-08-19): Minor -> backlog always; pre-existing Important ->
+  // backlog; pre-existing Critical and everything newly introduced -> the fix loop.
+  const backlog = deduped.filter(routesToBacklog)
+  const gateFindings = deduped.filter(routesToGate)
+  const preExistingBacklogged = backlog.filter(isPreExisting).length
+  if (preExistingBacklogged > 0) {
+    log(
+      `inline gate (${label}): ${preExistingBacklogged} pre-existing Important/Minor finding(s) routed to the backlog (reported, not fixed in-loop); pre-existing Criticals still block`,
+    )
+  }
   // VERDICT over BOTH legs (round-2 fix) — it used to be `review.verdict`, i.e. the Opus leg
   // ALONE, so a Minor raised only by the Codex leg recorded a clean "PASS" in
   // .iago/summaries/{plan}.md and in the pipeline-runs.ndjson ledger while the defect sat open in
@@ -1236,7 +1450,7 @@ async function runDualAdversarial(label, isReReview, stressBlock, preImplSha, op
   const verdict =
     gateFindings.some((f) => f.severity === 'Critical' || f.severity === 'Important')
       ? 'FAIL'
-      : findings.length > 0 || review.verdict !== 'PASS'
+      : deduped.length > 0 || review.verdict !== 'PASS'
         ? 'PASS_WITH_CONCERNS'
         : 'PASS'
   // Inline 2-leg has no separate skeptic-verification pass, so neither flag applies.
@@ -1509,47 +1723,21 @@ let { findings, backlog, verdict, codexSource, verificationSameFamily, verificat
 // surface verbatim at the merge decision.
 const allBacklog = []
 const backlogSeen = new Set()
-// The dedupe key must survive RE-AUTHORING, not just byte-identical repetition. A fresh
-// re-review agent re-reports the same never-fixed Minor in its OWN words ("Missing null check on
-// user.id" → "Missing null guard for user.id") and may attribute it to a different leg — so
-// keying on the raw summary + `by` counted one defect once per round and inflated
-// `minorRemaining` to findings × rounds, which is exactly what the dedupe exists to prevent
-// (and it fills the @claude comment's 10-entry cap with duplicates, pushing distinct Minors into
-// "(+N more)"). Key on severity + file + NORMALIZED summary, and treat a re-worded summary on the
-// same severity+file as the same defect when the word sets substantially overlap.
-function normSummary(s) {
-  return String(s || '')
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, ' ')
-    .trim()
-}
-function summaryWords(s) {
-  // Words of 3+ chars only — articles/prepositions ("on", "of", "the") are noise that would
-  // inflate the overlap of two genuinely different summaries.
-  return new Set(normSummary(s).split(' ').filter((w) => w.length > 2))
-}
-function sameDefect(a, b) {
-  const A = summaryWords(a)
-  const B = summaryWords(b)
-  if (A.size === 0 || B.size === 0) return false
-  let inter = 0
-  for (const w of A) if (B.has(w)) inter++
-  // Jaccard ≥ 0.5 — a re-worded restatement of the same defect keeps most of its content words;
-  // two different defects on the same file share far fewer.
-  return inter / (A.size + B.size - inter) >= 0.5
-}
+// Key on severity + file + NORMALISED summary — EXACT match on that key, nothing fuzzier
+// (ruled 2026-08-19).
+//
+// The round-1 code ALSO ran a Jaccard >= 0.5 word-overlap pass on top of the key, which collapsed
+// two genuinely DISTINCT Minors that happened to share a file and severity: the second was
+// deleted outright from `backlog`, `minorRemaining`, the @claude comment, the durable summary and
+// the NDJSON ledger. A deduper serving a "we never lose a finding" contract must not itself be
+// able to lose a finding, so a re-worded restatement now survives as its own entry (a mild
+// over-count) instead of a distinct defect being erased (a silent loss). `normSummary` is the
+// shared primitive defined with the routing helpers above.
 function addBacklog(items) {
   for (const f of Array.isArray(items) ? items : []) {
     if (!f) continue
     const key = `${f.severity || ''}|${f.file || ''}|${normSummary(f.summary)}`
     if (backlogSeen.has(key)) continue
-    if (
-      allBacklog.some(
-        (e) => (e.severity || '') === (f.severity || '') && (e.file || '') === (f.file || '') && sameDefect(e.summary, f.summary),
-      )
-    ) {
-      continue
-    }
     backlogSeen.add(key)
     allBacklog.push(f)
   }

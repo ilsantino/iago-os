@@ -1313,27 +1313,97 @@ await test('INLINE verdict counts BOTH legs: a Codex-only Minor records PASS_WIT
   assert.ok(/"verdict":"PASS_WITH_CONCERNS"/.test(summaryCall.prompt), 'the NDJSON ledger stays queryable for genuinely clean runs')
 })
 
-await test('the Minor backlog dedupes a RE-WORDED restatement of the same never-fixed Minor', async () => {
-  // RED before the fix: the key embedded the LLM-authored summary and the reporting leg, so a
-  // fresh re-review agent phrasing the same defect differently created a new entry —
-  // minorRemaining inflating to findings × rounds and duplicates filling the @claude comment's
-  // 10-entry cap, pushing distinct Minors into "(+N more)".
+await test('the Minor backlog dedupes an EXACT restatement across rounds (same defect, one entry)', async () => {
+  // The dedupe that survives: a re-review re-reporting a never-fixed Minor with the same wording
+  // must not inflate minorRemaining to findings × rounds or fill the @claude comment's 10-entry
+  // cap with duplicates. Key = severity + file + NORMALISED summary, exact match on that key.
+  const minor = { severity: 'Minor', summary: 'Missing null check on user.id', file: 'a.ts', failureScenario: FS }
   const teamGate = (n) =>
     n === 1
       ? {
           clean: false, blocking: 1, gateStatus: 'COMPLETE', verdict: 'FAIL', codexSource: 'codex',
           findings: [{ severity: 'Critical', summary: 'real blocker', failureScenario: FS, by: 'opus' }],
-          backlog: [{ severity: 'Minor', summary: 'Missing null check on user.id', file: 'a.ts', failureScenario: FS, by: 'opus' }],
+          backlog: [{ ...minor, by: 'opus' }],
         }
       : {
           clean: true, blocking: 0, gateStatus: 'COMPLETE', verdict: 'PASS', codexSource: 'codex', findings: [],
-          // Same defect, re-authored by a fresh agent and attributed to a different leg.
-          backlog: [{ severity: 'Minor', summary: 'Missing null guard for user.id', file: 'a.ts', failureScenario: FS, by: 'lens:codeQuality' }],
+          // Same defect, same words modulo punctuation/case, attributed to a different leg.
+          backlog: [{ ...minor, summary: 'missing null check on user.id!', by: 'lens:codeQuality' }],
         }
   const h = makeHarness(stageRules(TIER2_PLAN), teamGate)
   const out = await buildWorkflow()(h.agent, h.parallel, null, h.log, h.phase, { ...baseArgs }, null, h.workflow)
   assert.strictEqual(out.fixRounds, 1, 'the Critical drove one fix round')
   assert.strictEqual(out.minorRemaining, 1, 'one DEFECT, not one entry per round')
+})
+
+await test('the Minor backlog NEVER collapses two DISTINCT Minors in the same file', async () => {
+  // RULING 4c, 2026-08-19. Round 1 ran a Jaccard >= 0.5 word-overlap pass on top of the key, so
+  // two genuinely different defects that shared a file and severity collapsed into one — the
+  // second erased from backlog, minorRemaining, the @claude comment, the durable summary and the
+  // NDJSON ledger, in round 0, with no fix round involved. A deduper serving a "we never lose a
+  // finding" contract must not itself be able to lose a finding. The accepted cost of the exact
+  // key is the opposite error (a re-worded restatement surviving as its own entry), which
+  // over-counts visibly instead of deleting silently.
+  const teamGate = () => ({
+    clean: true, blocking: 0, gateStatus: 'COMPLETE', verdict: 'PASS', codexSource: 'codex', findings: [],
+    backlog: [
+      { severity: 'Minor', summary: 'missing null guard on user id', file: 'a.ts', failureScenario: FS, by: 'opus' },
+      { severity: 'Minor', summary: 'missing null guard on tenant id', file: 'a.ts', failureScenario: FS, by: 'opus' },
+    ],
+  })
+  const h = makeHarness(stageRules(TIER2_PLAN), teamGate)
+  const out = await buildWorkflow()(h.agent, h.parallel, null, h.log, h.phase, { ...baseArgs }, null, h.workflow)
+  assert.strictEqual(out.minorRemaining, 2, 'two distinct Minors survive as two backlog entries')
+})
+
+
+// ── RULING 4a (2026-08-19): a corrective re-dispatch MERGES, it never replaces ──
+await test('a corrective re-dispatch KEEPS the findings the first dispatch reported', async () => {
+  // RED before the fix: `review = redo` replaced the leg wholesale. A leg that reported three
+  // Criticals but omitted its proof-of-work list tripped the no-proof defect, got re-dispatched,
+  // and if the redo came back conformant-but-quiet all three Criticals were DISCARDED — the
+  // pipeline then recorded PASS, skipped the fix loop and opened the PR. A re-dispatch exists to
+  // supply the missing PROOF, never to retract findings the first pass already earned.
+  const crit = { severity: 'Critical', summary: 'silent data loss on restart', failureScenario: FS, file: 'src/a.ts', preExisting: false }
+  const h = makeHarness(
+    inlineRules([
+      // First dispatch: real findings, but NO propertiesChecked -> no-proof defect.
+      { match: (l) => l === 'review:r0', reply: { verdict: 'FAIL', findings: [crit], propertiesChecked: [] } },
+      // The redo honors the contract but reports nothing.
+      { match: (l) => l === 'review-reprove:r0', reply: { verdict: 'PASS', findings: [], propertiesChecked: PROPS } },
+      { match: (l) => l === 'review:r1', reply: { verdict: 'PASS', findings: [], propertiesChecked: PROPS } },
+      { match: (l) => l === 'lock-heartbeat', reply: { status: 'DONE', notes: 'refreshed' } },
+      { match: (l) => /^fix:/.test(l), reply: { status: 'DONE' } },
+      { match: (l) => /^rebuild:/.test(l), reply: { passed: true } },
+    ]),
+  )
+  const out = await buildWorkflow()(h.agent, h.parallel, null, h.log, h.phase, { ...baseArgs, skipStress: true }, null, null)
+  assert.ok(h.calls.some((c) => c.label === 'review-reprove:r0'), 'the unproven leg WAS re-dispatched')
+  assert.strictEqual(out.fixRounds, 1, 'the retained Critical still drove a fix round (it was not silently dropped)')
+})
+
+await test('the retained Critical is HANDED TO THE FIX AGENT, not just kept in an array', async () => {
+  // The merge is only real if the finding reaches the fix loop. (The run's final verdict is PASS
+  // here and SHOULD be — the Critical was retained, fixed in round 1, and the re-review is clean;
+  // asserting on the end verdict would test the fix, not the merge.)
+  const crit = { severity: 'Critical', summary: 'auth bypass on the changed guard', failureScenario: FS, file: 'src/b.ts', preExisting: false }
+  const h = makeHarness(
+    inlineRules([
+      { match: (l) => l === 'review:r0', reply: { verdict: 'FAIL', findings: [crit], propertiesChecked: [] } },
+      { match: (l) => l === 'review-reprove:r0', reply: { verdict: 'PASS', findings: [], propertiesChecked: PROPS } },
+      { match: (l) => l === 'review:r1', reply: { verdict: 'PASS', findings: [], propertiesChecked: PROPS } },
+      { match: (l) => l === 'lock-heartbeat', reply: { status: 'DONE', notes: 'refreshed' } },
+      { match: (l) => /^fix:/.test(l), reply: { status: 'DONE' } },
+      { match: (l) => /^rebuild:/.test(l), reply: { passed: true } },
+    ]),
+  )
+  await buildWorkflow()(h.agent, h.parallel, null, h.log, h.phase, { ...baseArgs, skipStress: true }, null, null)
+  const fixCall = h.calls.find((c) => /^fix:/.test(c.label))
+  assert.ok(fixCall, 'a fix round ran')
+  assert.ok(
+    fixCall.prompt.includes('auth bypass on the changed guard'),
+    'the fix agent was handed the Critical the first dispatch reported',
+  )
 })
 
 await test('the pipeline lock carries an ownership token and no release ever deletes another run\'s lock', async () => {
@@ -1394,10 +1464,21 @@ await test('a lock the run no longer owns is left INTACT on abort (token mismatc
   )
 })
 
-await test('a long run refreshes the lock heartbeat at each fix round (a live Tier-3 run is not reclaimed as stale)', async () => {
-  // The 3h stale window is measured from ACQUIRE time and was never refreshed, so a healthy
-  // long-running pipeline was reclaimable while alive — the precondition for two pipelines on
-  // one worktree.
+await test('the FIX ROUND emits a token-guarded lock heartbeat (narrow: fix rounds only, see the gap below)', async () => {
+  // RENAMED + NARROWED, ruling 6 (2026-08-19). This test was called "a long run refreshes the
+  // lock heartbeat" and passed — while the heartbeat only ever fires at fix-round boundaries. It
+  // asserted the mechanism it exercised and then claimed the property it did NOT verify, which is
+  // the `mutation-verify every regression test` failure in .iago/learnings/patterns.md, on the
+  // commit that documents it. It now claims only what it checks: a fix round emits a
+  // token-guarded heartbeat that touches `acquired`.
+  //
+  // KNOWN GAP (backlogged, deliberately NOT fixed here): the longest un-heartbeated stretch of a
+  // run — plan read -> impl -> build -> commit -> the round-0 gate — is exactly the window the
+  // heartbeat was added to protect, and a run with ZERO fix rounds never heartbeats at all. So a
+  // healthy long run is still reclaimable as stale. That defect pre-dates this diff (the
+  // heartbeat and the stale window both do), so under the scope ruling it routes to the backlog
+  // as a pre-existing Important rather than blocking this branch. Fixing it means heartbeating on
+  // a timer or at every stage boundary, which is its own change with its own test.
   const h = makeHarness(
     inlineRules([
       {

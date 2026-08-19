@@ -1369,9 +1369,11 @@ await test('codex leg: source=claude-fallback is CLAUDE-authored — evidence al
   assert.strictEqual(out2.crossModelDegraded, true, 'and is still flagged as cross-model degraded')
 })
 
-await test('a lens/team leg with neither findings nor properties does NOT trip the rule (core legs only)', async () => {
-  // Scope guard: widening the proof-of-work rule to lenses would turn every honestly-quiet lens
-  // into a re-run. A base lens returning a bare {findings: []} must stay non-blocking.
+await test('a BASE lens that proves nothing is reported but stays NON-blocking', async () => {
+  // Ruling 1 (2026-08-19) made proof-of-work universal, but the CONSEQUENCE still differs by lens
+  // class: a base lens (codeQuality/completeness) that returns a bare {findings: []} is enumerated
+  // in incompleteLegs and logged, and must NOT force a re-run — a cosmetic lens is not worth one.
+  // The load-bearing counterpart is the next test.
   const h = makeHarness([
     { match: (l) => l === 'review', reply: { verdict: 'PASS', findings: [], propertiesChecked: PROPS } },
     { match: (l) => l === 'codex', reply: { source: 'codex', findings: [], evidence: CODEX_EVIDENCE } },
@@ -1380,8 +1382,90 @@ await test('a lens/team leg with neither findings nor properties does NOT trip t
   ])
   const wf = buildWorkflow()
   const out = await wf(h.agent, h.parallel, null, h.log, h.phase, { ...baseArgs }, null, null)
-  assert.strictEqual(out.gateStatus, 'COMPLETE', 'an unproven LENS leg does not make the gate INCOMPLETE')
+  assert.strictEqual(out.gateStatus, 'COMPLETE', 'an unproven BASE lens does not make the gate INCOMPLETE')
   assert.strictEqual(out.clean, true, 'gate stays clean')
+  assert.ok(
+    out.incompleteLegs.some((k) => /^lens:(codeQuality|completeness):no-proof$/.test(k)),
+    `but it IS enumerated — reported, not silently counted as a completed review (got ${JSON.stringify(out.incompleteLegs)})`,
+  )
+})
+
+await test('a LOAD-BEARING auto-derived lens that returns nothing makes the gate INCOMPLETE (PR #78 shape)', async () => {
+  // RULING 1, 2026-08-19 — against the reviewers' proposed exemption. Round 1 checked lens legs
+  // for a NULL return only, so a security/amplify/frontend lens that RETURNED
+  // {findings: [], propertiesChecked: []} counted as a completed review. That is the PR #78
+  // incident verbatim (a leg producing nothing while the gate reports fine) on the one lens class
+  // the diff itself calls load-bearing — exempting it guts the contract.
+  const h = makeHarness([
+    { match: (l) => l === 'review', reply: { verdict: 'PASS', findings: [], propertiesChecked: PROPS } },
+    { match: (l) => l === 'codex', reply: { source: 'codex', findings: [], evidence: CODEX_EVIDENCE } },
+    { match: (l) => l === 'changed-files', reply: { files: ['amplify/data/resource.ts'], eofSeen: true } },
+    // The amplify lens was derived BECAUSE the diff touches amplify/ — and it proves nothing.
+    { match: (l) => l === 'amplify bug-bounty', reply: { findings: [], propertiesChecked: [] } },
+    { match: (l) => l === 'code quality' || l === 'completeness critic', reply: { findings: [], propertiesChecked: PROPS } },
+  ])
+  const out = await buildWorkflow()(h.agent, h.parallel, null, h.log, h.phase, { ...baseArgs }, null, null)
+  assert.strictEqual(out.lensSource, 'auto', 'guard only arms on the auto-derived path')
+  assert.ok(out.lenses.includes('amplify'), 'the amplify lens was derived from the changed path')
+  assert.strictEqual(out.gateStatus, 'INCOMPLETE', 'an unproven load-bearing lens fails the gate closed')
+  assert.strictEqual(out.clean, false, 'and it can never report clean')
+  assert.ok(
+    out.incompleteLegs.some((k) => /^lens:amplify:no-proof$/.test(k)),
+    `incompleteLegs names the lens and the defect (got ${JSON.stringify(out.incompleteLegs)})`,
+  )
+})
+
+
+// ── RULING 4b (2026-08-19): the violated-unreported guard is PER PROPERTY ─────
+await test('ONE unrelated Minor no longer buys a leg out of the violated-unreported guard', async () => {
+  // RED before the fix: the guard read `violatedProperties(r).length > 0 && foundNothing(r)`, so
+  // it fired only when `findings` was COMPLETELY empty. A leg could record a code-evidenced
+  // VIOLATED property, never report it, ship one throwaway Minor, and pass — while both consumer
+  // SKILLs assert the pairing is enforced. It is the identical bypass the proof-of-work check two
+  // lines above had already been hardened to remove.
+  const h = makeHarness([
+    {
+      match: (l) => l === 'review',
+      reply: {
+        verdict: 'PASS',
+        findings: [{ severity: 'Minor', summary: 'unrelated nit about naming', failureScenario: FS, file: 'z.ts', preExisting: false }],
+        propertiesChecked: [
+          { property: 'tenant isolation holds on the changed query', verdict: 'VIOLATED', evidence: 'src/q.ts:88 filter dropped' },
+        ],
+      },
+    },
+    { match: (l) => l === 'codex', reply: { source: 'codex', findings: [], evidence: CODEX_EVIDENCE } },
+  ])
+  const out = await buildWorkflow()(h.agent, h.parallel, null, h.log, h.phase, { ...baseArgs }, null, null)
+  assert.strictEqual(out.gateStatus, 'INCOMPLETE', 'the unpaired violation fails the gate closed')
+  assert.strictEqual(out.clean, false, 'and it can never report clean')
+  assert.ok(
+    out.incompleteLegs.some((k) => /^opus-review:violated-unreported$/.test(k)),
+    `incompleteLegs names the breach (got ${JSON.stringify(out.incompleteLegs)})`,
+  )
+})
+
+await test('a VIOLATED property PAIRED with a finding on the same file is accepted', async () => {
+  // The guard must not fire on an honest leg: pairing is matched via the property evidence's file
+  // or a content-word restatement, deliberately generous because a false breach costs a re-run.
+  const h = makeHarness([
+    {
+      match: (l) => l === 'review',
+      reply: {
+        verdict: 'FAIL',
+        findings: [
+          { severity: 'Critical', summary: 'tenant filter dropped on the changed query', failureScenario: FS, file: 'src/q.ts', preExisting: false },
+        ],
+        propertiesChecked: [
+          { property: 'tenant isolation holds on the changed query', verdict: 'VIOLATED', evidence: 'src/q.ts:88 filter dropped' },
+        ],
+      },
+    },
+    { match: (l) => l === 'codex', reply: { source: 'codex', findings: [], evidence: CODEX_EVIDENCE } },
+  ])
+  const out = await buildWorkflow()(h.agent, h.parallel, null, h.log, h.phase, { ...baseArgs }, null, null)
+  assert.strictEqual(out.gateStatus, 'COMPLETE', 'a properly paired violation is not a contract breach')
+  assert.strictEqual(out.blocking, 1, 'and the finding still blocks')
 })
 
 // ── Minor → backlog (plan 01 Task 7) ────────────────────────────────────
@@ -1611,7 +1695,20 @@ await test('twin sync: execute-pipeline.js carries the same contract (PR #96 twi
   // in PR #96. Assert the twin declares the same keys.
   const twin = readFileSync(join(__dirname, 'execute-pipeline.js'), 'utf8')
   const finding = twin.slice(twin.indexOf('const FINDING = {'), twin.indexOf('const STRESS_SCHEMA'))
-  assert.ok(/required: \['severity', 'summary', 'failureScenario'\]/.test(finding), 'twin FINDING requires failureScenario')
+  assert.ok(
+    /required: \['severity', 'summary', 'failureScenario', 'preExisting'\]/.test(finding),
+    'twin FINDING requires failureScenario AND the preExisting scope axis',
+  )
+  // Ruled 2026-08-19: routing, merge and dedupe are contract, so they are TWINNED too. A
+  // one-sided edit leaves the most-used (inline Tier 0/1) path on the old behavior — the
+  // classifyTier twin-drift failure from PR #96, which is why this guard exists at all.
+  for (const sym of ['routesToBacklog', 'routesToGate', 'isPreExisting', 'dedupeAcrossLegs', 'mergeLegResults', 'unpairedViolations']) {
+    assert.ok(twin.includes(sym), `twin execute-pipeline.js carries ${sym}`)
+  }
+  // Assert on the IMPLEMENTATION, not the prose: the removal is documented in a comment that
+  // names Jaccard, so a bare word-search would fail on its own changelog.
+  assert.ok(!/function sameDefect|function summaryWords/.test(twin), 'the twin no longer fuzzy-matches findings (exact normalised key only)')
+  assert.ok(/SCOPE IS AN AXIS|SCOPE — every finding MUST set/.test(twin), 'the twin tells its legs how to set preExisting')
   assert.ok(/const PROPERTY = \{/.test(finding), 'twin declares PROPERTY')
   const review = twin.slice(twin.indexOf('const REVIEW_SCHEMA'), twin.indexOf('const PR_SCHEMA'))
   assert.ok(/required: \['verdict', 'findings', 'propertiesChecked'\]/.test(review), 'twin REVIEW_SCHEMA requires propertiesChecked')
@@ -1699,23 +1796,116 @@ await test('the review prompt treats the PR body / commit messages (and the plan
 })
 
 // ── Round-1 fix: scope routing + re-review expectations match the code ───────────────
-await test('the scope clause routes by SEVERITY (a pre-existing Critical is not "backlog-routed")', async () => {
-  // The backlog partition is severity-only, so telling legs a not-introduced-by-this-diff defect
-  // "is routed to the BACKLOG instead of this diff's fix loop" was false: a pre-existing Critical
-  // still blocks the gate and consumes fix rounds — and the claim invites downgrading to reach
-  // the backlog, which is the suppression the clause forbids.
+await test('the scope clause states TWO axes and tells the leg how to set preExisting', async () => {
+  // Ruled 2026-08-19. The plan's original fence (out of scope -> backlog) and the round-1
+  // inversion (route by severity ALONE, ignore scope) both conflated routing with urgency. The
+  // prompt must now ask for the scope FLAG and promise the pipeline does the routing, so a leg is
+  // never tempted to downgrade a pre-existing Critical to get it out of the fix loop.
   const h = makeHarness([
     { match: (l) => l === 'review', reply: { verdict: 'PASS', findings: [], propertiesChecked: PROPS } },
     { match: (l) => l === 'codex', reply: { source: 'codex', findings: [], evidence: CODEX_EVIDENCE } },
   ])
   await buildWorkflow()(h.agent, h.parallel, null, h.log, h.phase, { ...baseArgs }, null, null)
   const prompt = h.calls.find((c) => c.label === 'review').prompt
-  assert.ok(/Routing is by SEVERITY, not by scope/.test(prompt), 'the clause states severity-based routing')
-  assert.ok(/Do NOT downgrade a pre-existing Critical/.test(prompt), 'and forbids downgrading to reach the backlog')
+  assert.ok(/SCOPE IS AN AXIS, NOT A VERDICT/.test(prompt), 'scope is presented as an axis')
+  assert.ok(/preExisting/.test(prompt), 'the leg is told to set the scope flag')
+  assert.ok(/When UNSURE use false/.test(prompt), 'the unsure default is the fail-safe (blocks)')
+  assert.ok(/pre-existing CRITICAL blocks exactly like a new one/.test(prompt), 'pre-existing Criticals still block')
+  assert.ok(/Do NOT downgrade a pre-existing Critical/.test(prompt), 'and downgrading to reach the backlog is forbidden')
   assert.ok(
-    !/It is routed to the BACKLOG instead of this diff's fix loop/.test(prompt),
-    'the false scope-based routing claim is gone',
+    !/Routing is by SEVERITY, not by scope/.test(prompt),
+    'the round-1 severity-only inversion is gone',
   )
+})
+
+// ── Scope routing: the dial itself (ruled 2026-08-19) ───────────────────────
+await test('pre-existing Critical BLOCKS; pre-existing Important goes to the backlog; new Important blocks', async () => {
+  const h = makeHarness([
+    {
+      match: (l) => l === 'review',
+      reply: {
+        verdict: 'FAIL',
+        findings: [
+          { severity: 'Critical', summary: 'old auth bypass', failureScenario: FS, preExisting: true },
+          { severity: 'Important', summary: 'old sloppy retry', failureScenario: FS, preExisting: true },
+          { severity: 'Important', summary: 'new race introduced here', failureScenario: FS, preExisting: false },
+        ],
+        propertiesChecked: PROPS,
+      },
+    },
+    { match: (l) => l === 'codex', reply: { source: 'codex', findings: [], evidence: CODEX_EVIDENCE } },
+  ])
+  const out = await buildWorkflow()(h.agent, h.parallel, null, h.log, h.phase, { ...baseArgs }, null, null)
+  const sums = (arr) => arr.map((f) => f.summary).sort()
+  assert.deepStrictEqual(
+    sums(out.findings),
+    ['new race introduced here', 'old auth bypass'],
+    'age is not a licence to ship: the pre-existing Critical still blocks, the new Important still blocks',
+  )
+  assert.deepStrictEqual(sums(out.backlog), ['old sloppy retry'], 'the pre-existing Important is backlogged, not fixed in-loop')
+  assert.strictEqual(out.blocking, 2, 'blocking counts both')
+  assert.strictEqual(out.clean, false)
+})
+
+await test('an unflagged finding is treated as NEWLY INTRODUCED and blocks (fail-safe default)', async () => {
+  // Absent preExisting must never be read as "old, therefore backlog" — the safe direction is to
+  // block, because a wrongly-blocked finding costs a round and a wrongly-buried one ships.
+  const h = makeHarness([
+    {
+      match: (l) => l === 'review',
+      reply: {
+        verdict: 'FAIL',
+        findings: [{ severity: 'Important', summary: 'unflagged', failureScenario: FS }],
+        propertiesChecked: PROPS,
+      },
+    },
+    { match: (l) => l === 'codex', reply: { source: 'codex', findings: [], evidence: CODEX_EVIDENCE } },
+  ])
+  const out = await buildWorkflow()(h.agent, h.parallel, null, h.log, h.phase, { ...baseArgs }, null, null)
+  assert.strictEqual(out.blocking, 1, 'unflagged Important blocks')
+  assert.strictEqual(out.backlog.length, 0, 'and is NOT quietly backlogged')
+})
+
+// ── Cross-leg dedupe (ruled 2026-08-19) ─────────────────────────────────────
+await test('the same defect from two legs collapses to ONE finding with merged attribution', async () => {
+  const dup = { severity: 'Critical', summary: 'Race on the dispatch latch', failureScenario: FS, file: 'src/a.ts', preExisting: false }
+  const h = makeHarness([
+    { match: (l) => l === 'review', reply: { verdict: 'FAIL', findings: [dup], propertiesChecked: PROPS } },
+    {
+      match: (l) => l === 'codex',
+      reply: {
+        source: 'codex',
+        evidence: CODEX_EVIDENCE,
+        // Same defect, same file, summary differing only in punctuation/case — normalises equal.
+        findings: [{ ...dup, summary: 'race on the dispatch latch!' }],
+      },
+    },
+  ])
+  const out = await buildWorkflow()(h.agent, h.parallel, null, h.log, h.phase, { ...baseArgs }, null, null)
+  assert.strictEqual(out.findings.length, 1, 'one defect, one finding')
+  assert.strictEqual(out.blocking, 1, 'and it is counted once')
+  assert.ok(/opus/.test(out.findings[0].by) && /codex/.test(out.findings[0].by), 'attribution names BOTH legs')
+})
+
+await test('cross-leg dedupe does NOT collapse two DISTINCT findings in the same file', async () => {
+  // The failure mode this whole change exists to prevent, applied to the deduper itself: an
+  // over-eager match deletes a real Critical and nothing else records it.
+  const h = makeHarness([
+    {
+      match: (l) => l === 'review',
+      reply: {
+        verdict: 'FAIL',
+        findings: [
+          { severity: 'Critical', summary: 'missing null guard on user id', failureScenario: FS, file: 'src/a.ts', preExisting: false },
+          { severity: 'Critical', summary: 'missing null guard on tenant id', failureScenario: FS, file: 'src/a.ts', preExisting: false },
+        ],
+        propertiesChecked: PROPS,
+      },
+    },
+    { match: (l) => l === 'codex', reply: { source: 'codex', findings: [], evidence: CODEX_EVIDENCE } },
+  ])
+  const out = await buildWorkflow()(h.agent, h.parallel, null, h.log, h.phase, { ...baseArgs }, null, null)
+  assert.strictEqual(out.findings.length, 2, 'two distinct defects survive as two findings')
 })
 
 await test('a delegated RE-REVIEW does not order deferred Minors to be resolved', async () => {
