@@ -256,6 +256,25 @@ def write_report(record, review, installers, conformance):
     REPORT.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
+# `schtasks /Create` sets DisallowStartIfOnBatteries and StopIfGoingOnBatteries
+# to true and StartWhenAvailable to false. On a Surface that is normally on
+# battery this means the job effectively never runs: the first real unattended
+# run, on 2026-08-20, returned 0x800710E0 ("the operator or administrator has
+# refused the request") and wrote no history line at all. A scheduled task that
+# silently declines is worse than no task, because the report it never writes
+# reads exactly like a clean machine. These flags are not reachable through
+# schtasks, so the install corrects them afterwards and fails loudly if it
+# cannot.
+POWER_FIX = (
+    "$s = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries "
+    "-DontStopIfGoingOnBatteries -StartWhenAvailable "
+    "-ExecutionTimeLimit (New-TimeSpan -Hours 2); "
+    "Set-ScheduledTask -TaskName '{name}' -Settings $s | Out-Null; "
+    "$t = Get-ScheduledTask -TaskName '{name}'; "
+    "if ($t.Settings.DisallowStartIfOnBatteries) {{ exit 1 }}"
+)
+
+
 def install_task():
     """Register a daily run with Windows Task Scheduler.
 
@@ -269,11 +288,26 @@ def install_task():
     result = subprocess.run(argv, capture_output=True, text=True,
                             encoding="utf-8", errors="replace")
     print((result.stdout or "").strip() or (result.stderr or "").strip())
-    if result.returncode == 0:
-        print(f"\nregistered: {TASK_NAME} — daily 09:00")
-        print(f"report:     {REPORT}")
-        print(f"remove:     schtasks /Delete /TN \"{TASK_NAME}\" /F")
-    return result.returncode
+    if result.returncode != 0:
+        return result.returncode
+
+    fix = subprocess.run(
+        ["powershell", "-NoProfile", "-NonInteractive", "-Command",
+         POWER_FIX.format(name=TASK_NAME)],
+        capture_output=True, text=True, encoding="utf-8", errors="replace")
+    if fix.returncode != 0:
+        print("\nREFUSED TO CLAIM SUCCESS: the task was created but still declines "
+              "to start on battery, so it will not actually run.")
+        print((fix.stdout or "").strip() or (fix.stderr or "").strip())
+        print(f"fix by hand:  Set-ScheduledTask -TaskName \"{TASK_NAME}\" -Settings "
+              "(New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries "
+              "-DontStopIfGoingOnBatteries -StartWhenAvailable)")
+        return 1
+
+    print(f"\nregistered: {TASK_NAME} — daily 09:00, runs on battery")
+    print(f"report:     {REPORT}")
+    print(f"remove:     schtasks /Delete /TN \"{TASK_NAME}\" /F")
+    return 0
 
 
 def main():

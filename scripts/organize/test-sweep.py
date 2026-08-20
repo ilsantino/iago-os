@@ -199,6 +199,39 @@ def test_stale_installer_is_reported_not_touched():
               all(Path(e["path"]) != fresh for e in sw.stale_installers()))
 
 
+
+def test_install_refuses_to_claim_success_on_a_task_that_will_not_run():
+    """schtasks creates the task with DisallowStartIfOnBatteries set. The first
+    real unattended run returned 0x800710E0 and wrote no history line — and a
+    report that is never written reads exactly like a clean machine."""
+    import subprocess as sp
+    calls = []
+    original = sw.subprocess.run
+
+    class Result:
+        def __init__(self, code):
+            self.returncode, self.stdout, self.stderr = code, "", ""
+
+    def fake_run(argv, **kwargs):
+        calls.append(argv)
+        # schtasks succeeds; the power-settings fix reports the flag still set
+        return Result(0) if argv[0] == "schtasks" else Result(1)
+
+    try:
+        sw.subprocess.run = fake_run
+        code = sw.install_task()
+        check("a task that will not run is not a successful install",
+              code == 1, code)
+        check("the install corrects the battery flags schtasks cannot reach",
+              any(a[0] == "powershell" for a in calls))
+        joined = " ".join(calls[-1])
+        check("both battery flags are set",
+              "-AllowStartIfOnBatteries" in joined and "-StartWhenAvailable" in joined,
+              joined[:160])
+    finally:
+        sw.subprocess.run = original
+    assert sp is not None
+
 def main():
     for test in sorted(
         (v for k, v in globals().items() if k.startswith("test_")),

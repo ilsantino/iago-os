@@ -183,6 +183,14 @@ An **installed but unused** application is not this category and must never be d
 11. **`CACHEDIR.TAG` is a declaration, not a guess.** A directory carrying the Cache Directory Tagging Standard signature (`Signature: 8a477f597d28d172789f06886806bc55`) has been marked disposable by the tool that wrote it — uv, cargo and bazel all do this. `tree_refusal()` honours it, and it deliberately outranks the "contains a `.git`" refusal: uv's `sdists-v9` holds a stray `.git` file unpacked from someone's source tarball, and refusing 21 GB of self-declared cache over an artifact that is not even a valid repository is the heuristic failing, not working. The tag never unlocks the `dev\` frozen zone.
 
 
+12. **A scheduled task that silently declines is worse than no scheduled task.** `schtasks /Create` registers a job with `DisallowStartIfOnBatteries` and `StopIfGoingOnBatteries` set to true and `StartWhenAvailable` false. On a Surface that is normally on battery the sweep therefore never ran: its first real unattended run on 2026-08-20 returned `0x800710E0` — *the operator or administrator has refused the request* — and wrote **no history line at all**, which is indistinguishable from a clean machine. Those flags are not reachable through `schtasks`; `install_task()` now corrects them with `Set-ScheduledTask` afterwards and refuses to report success if the task still declines. Verify any scheduled job the same way — by its **written output**, never by its exit code:
+
+    ```powershell
+    Get-ScheduledTaskInfo -TaskName 'iaGO File Sweep' | Select LastRunTime, LastTaskResult
+    Get-Content ~\.local\organize\sweep-history.ndjson -Tail 1
+    ```
+
+
 ---
 
 ## 7. Enforcement — 60 / 30 / 10
