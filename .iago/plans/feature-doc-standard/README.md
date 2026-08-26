@@ -99,6 +99,20 @@ The two `C:Users…` dirs and `clients/.baseline-sentria` deleted; sentria workt
 4. **D** `.gitignore` in every planning repo: `state/`.
 **Acceptance:** `for c in clients/*/.iago; do git -C $c remote get-url origin; done` prints 7 URLs; `git -C dev/obsidian-brain status --porcelain | wc -l` = 0.
 
+### P1b — Deliverables have no remote either *(found during P4, 1 session)*
+
+P1 backed up every `.iago/`. It did **not** cover the sibling trees in the wrapper-style clients, which no git repo touches at all:
+
+| Client | Unversioned | Size |
+|---|---|---|
+| din | `marketing/` (88 files — deck sources, builds, dated exports), `branding/` (8) | 128 MB |
+| rsf | `discovery/` (58), `catalog/` (24), `deep-research/` (6), plus `entregables/`, `proposals/`, `source-materials/` | 17 MB+ |
+| fulldata | `reports/` (6 — incl. the client-facing remediation deliverable), `_pentest/` (15) | 4 MB |
+
+These are **client-facing deliverables**: executive reports, decks that were actually sent, the RSF catalogue. A dead SSD loses them exactly as it would have lost the planning docs.
+
+Not a straight `git add` — din's 128 MB is mostly regenerable render output. Per client: gitignore the build dirs (`marketing/deck/out/`, `png/`), commit sources and the dated `exports/`, then push to the existing `{client}-planning` remote. **A judgment call per tree, so it gets its own pass rather than being improvised mid-cleanse.** `_pentest/` is excluded — it holds session tokens pending the revoke-or-dead call.
+
 ### P2 — The grammar *(1–2 sessions, iago-os PR)*
 1. **A** `.claude/rules/iago-workspace.md`; rewrite `.iago/CONTEXT.md` to pure L1 with the 7-row client registry (inner-repo column, the May plan 01); delete `.iago/README.md`; fix `execution-pipeline.md` (`.iago/config` → `config.json`); add a CODE-zone line to `file-naming-standard.md` §2 pointing here.
 2. **D** Templates rewritten to §2.
@@ -151,7 +165,8 @@ Vault ↔ `clients/` alignment (`allende`, `drb`, `installflow`, `tenet` have va
 | P1 safety net | **DONE** 2026-08-26 — 9 trees now have remotes, all clean. 6 client planning repos under `bas-labs/{din,fulldata,sentria,munet,iago-web,rsf}-planning`; `ilsantino/{obsidian-brain,iago-workspaces}`; palazuelos already had one. Dead AWS keys quarantined. **Deferred to P4:** untracking the 5 stale `.iago/` files still tracked by the sentria (1) and munet (4) app repos — batched with those repos' other cleanup so it costs one PR each, not two |
 | P2 grammar | **IN FLIGHT** — `/iago-plan --feature` → `/iago-execute` |
 | P3 root cleanse | after P2 |
-| P4 clients | ready — palazuelos first |
+| P1b deliverables | **NEW** — found during P4; din/rsf/fulldata sibling trees have no remote |
+| P4 clients | **2 of 7 done** — palazuelos + din adopted the schema and pushed. Next: fulldata, iago, rsf, munet-web, sentria |
 | P5 enforcement | after P3 |
 | P6 dev root | **blocked on one action:** remove `dev` from the Drive backup set (decision 2) |
 | P7 | not scoped |
