@@ -75,21 +75,35 @@ jobs:
               'all changes look correct', 'everything is addressed',
               'all items addressed', 'no remaining findings',
               'no remaining issues',
+              // Español — el repo pide reseñas en este idioma.
+              'sin hallazgos', 'ningún hallazgo', 'ningun hallazgo',
+              'no hay hallazgos', 'sin observaciones', 'listo para merge',
             ];
             // Removed 'lgtm', 'looks good', 'approved', 'clean' — too broad.
             // "LGTM with minor notes" falsely triggered clean detection.
             // Also gate on no active findings (severity labels with numbers/dashes).
-            const hasActiveFinding = /\b(critical|important|minor)\s*[\-—:#\d(]/i.test(latestReview);
+            // BILINGÜE A PROPÓSITO. Este repo pide reseñas en ESPAÑOL, y hasta
+            // 2026-08-13 esta línea sólo buscaba severidades en inglés: una reseña
+            // con hallazgos en español caía en `allChecked` y el bucle la declaraba
+            // limpia. Los hallazgos no se ignoraban por criterio — eran invisibles.
+            // Se detecta la severidad en las dos formas (`Critical:` inglés,
+            // `(Moderado)` español) y además el encabezado de la sección.
+            const SEVERIDAD = /\b(critical|important|minor)\s*[-—:#\d(]|\((cr[ií]tico|importante|moderado|menor|trivial)/i;
+            const SECCION_HALLAZGOS = /^#{1,6}\s*(hallazgos|findings)\b/im;
+            const hasActiveFinding = SEVERIDAD.test(latestReview) || SECCION_HALLAZGOS.test(latestReview);
             const hasCleanSignal = cleanSignals.some(s => latestReview.includes(s))
               && !hasActiveFinding;
             const hasPassVerdict = /verdict[:\s]*\*{0,2}\s*pass\b/i.test(latestReview)
               && !/\*{0,2}critical\*{0,2}\s*:/i.test(latestReview)
               && !/\*{0,2}important\*{0,2}\s*:/i.test(latestReview);
             // Catch-all: all checked items with no unchecked items suggests clean
+            // El catch-all usa la MISMA detección bilingüe. Antes miraba sólo
+            // `critical`/`important` en inglés, así que una reseña en español con
+            // su lista de verificación completa se declaraba limpia por aquí
+            // aunque trajera hallazgos — el agujero real del bucle.
             const allChecked = latestReview.includes('- [x]')
               && !latestReview.includes('- [ ]')
-              && !(/\*{0,2}critical\*{0,2}/i.test(latestReview))
-              && !(/\*{0,2}important\*{0,2}/i.test(latestReview));
+              && !hasActiveFinding;
             const isClean = hasCleanSignal || hasPassVerdict || allChecked;
 
             // Loop guard: if a summary was already posted, don't post another.
@@ -239,7 +253,13 @@ jobs:
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          claude_args: '--max-turns 10 --allowedTools "Read,Bash(gh:*),Glob,Grep"'
+          # 25, not 10. This step reads the PR, ALL its comments and the touched
+          # files before writing anything: on a PR with several review rounds,
+          # 10 turns are spent reading and the step dies with "Reached maximum
+          # number of turns". The loop had already reported CLEAN, so the run
+          # goes red for a summary that never posted — it reads as a failed
+          # review. Observed on rsf-flow-tool PR #3.
+          claude_args: '--max-turns 25 --allowedTools "Read,Bash(gh:*),Glob,Grep"'
           prompt: |
             The review-fix loop has completed — all findings are resolved.
 
