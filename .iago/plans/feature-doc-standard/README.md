@@ -43,7 +43,11 @@ MWP's contribution is the layer model and the L3/L4 discipline, not numbered sta
 
 **Banned at `.iago/` root** (each has one home): `specs/` → `plans/feature-x/SPEC.md` (per-feature) or `_config/context/` (stable framing) · `audits/` → `research/` · `reviews/`, `logs/`, `runs/`, `pipeline-runs/` → `state/` · `context/`, `runbooks/`, `decisions/`, `learnings/`, `prompts/`, `hooks/` → under `_config/` · `assets/`, `workflows/`, `handoff/` → `_config/context/` · a second `ROADMAP-*.md` → merge · `README.md` → delete (CONTEXT.md is the entry).
 
-**Banned anywhere under `.iago/` except `state/`:** `_*`, `tmp*`, `*.log`, `*.txt`, `*.bak`, zero-byte files, empty dirs (no `.gitkeep` except `state/`), nested `.iago/` inside an app repo (only `state/` may exist there, for locks).
+**Banned anywhere under `.iago/` except `state/`** — scratch **files** only: `_*`, `tmp*`, `*.log`, `*.txt`, `*.bak`, zero-byte files, empty dirs, nested `.iago/` inside an app repo (only `state/` may exist there, for locks).
+
+> **Named directory exceptions to the `_*` rule:** `_config/`, `_archive/` and `plans/*/_archive/` are *required* by the tree above. The underscore prefix marks them as not-per-run; the ban targets underscore-prefixed **files** (`_scratch-pr368-body.md`, `_prev-review.txt`), never these three directories. A linter that does not carve them out will move the entire `_config/` tree into a gitignored directory.
+
+> **Empty dirs vs. scaffolding:** because git cannot track an empty directory and `.gitkeep` is itself a zero-byte file, the templates ship a **real seed file** in each directory that must exist (e.g. `_config/learnings/patterns.md`) rather than a `.gitkeep`. `.gitkeep` is a reportable finding with **no auto-fix** — deleting one silently removes a directory the scaffolder depends on.
 
 ### 3. `docs/` in app repos = human-facing only
 
@@ -66,17 +70,17 @@ ISO-dashed dates inside `dev\` (`YYYY-MM-DD-{slug}.md`), lowercase kebab, Englis
 | plan `feature-x/` | `/iago-plan` | summary exists for every `NN` | → `plans/_archive/YYYY-MM-x/` 60 days after last summary |
 | `quick-*.md` | `/iago-quick` | summary exists | delete after 60 days (summary is the record) |
 | research | any session | — | superseded → delete; decision-bearing → `_archive/` |
-| STATE.md | — | — | lint fails if `Updated:` is > 14 days older than the newest file under `.iago/` |
+| STATE.md | — | — | lint reports if `Updated:` is > 14 days older than the newest file under `.iago/` **excluding `state/`, `_archive/`, `__pycache__/` and untracked files** — `state/` is written by every pipeline run, so counting it makes STATE.md permanently stale |
 | ROADMAP/PROJECT | init | — | rewritten, never archived |
 | session digests | Stop hook → vault | — | in-repo copy only as `research/YYYY-MM-DD-session-{slug}.md` and only if decision-bearing |
 | worktrees | pipeline | PR merged | pruned in the same post-merge routine as branches |
 
 ### 7. Where the standard lives and how it is enforced
 
-- **Rule:** `.claude/rules/iago-workspace.md` (~40 lines: §2 tree + banned list + lifecycle), path-scoped to `**/.iago/**`, `**/docs/**`, `**/CLAUDE.md`. The routing table stays in `CLAUDE.md` (council decision 2026-05-04: routing must auto-load; schema rules fire on edit, which path-scoping handles).
-- **Templates:** `templates/{client,internal}-project/` rewritten to §2 so `/iago-init` scaffolds it.
-- **Linter:** `scripts/organize/iago-lint.py` — walks `iago-os/.iago` + `clients/*/.iago` (+ `docs/`), reports every §2/§3/§6 violation with the fix; `--fix` applies only the safe ones (delete empty dirs / zero-byte files, move scratch to `state/`). Plan → report → apply → undo, same grammar as `organize.py`. Tests first (`test-iago-lint.py`).
-- **Where it runs:** daily "iaGO File Sweep" (report), `validate.yml` on iago-os PRs (root only, fails on violations), and `/iago-init`.
+- **The linter is the enforcement, not a rule file.** Path-scoping in `.claude/rules/` uses `globs:` (not `paths:`) and **`globs:` is inert in this build** — no loader reads it, so every rule file loads unconditionally in every session of every project. A 45-line schema rule would therefore cost ~900 always-on tokens everywhere to express a constraint that is fully computable, which is exactly what `.claude/rules/layer-triage.md` rule 1 forbids ("one computable right answer → script"). So: `.claude/rules/iago-workspace.md` is **≤ 10 lines** — it says the `.iago/` schema is machine-enforced, names `scripts/organize/iago-lint.py check`, and points at this README. The schema itself lives here and in `templates/`. The routing table stays in `CLAUDE.md` (council decision 2026-05-04).
+- **Templates + scaffolders:** `templates/{client,internal}-project/` rewritten to §2 — and `scripts/new-client.sh`, `scripts/new-client.ps1` and `.claude/skills/iago-init/SKILL.md` with them. Those three `mkdir` the banned dirs (`context/`, `reviews/`, top-level `learnings/`) at run time, so editing the template tree alone leaves `/iago-init` emitting non-conforming workspaces.
+- **Linter:** `scripts/organize/iago-lint.py`. `check --root PATH` scans exactly one workspace (default `.`); `--all` adds `clients/*/.iago`. Reports every §2/§3/§6 violation with its fix and exits 1 when any are found. **P2 ships `check` only** — `fix --apply`/`undo` are deferred to P5, once the report has been read against real trees and the safe-fix set is known to be safe. Tests first (`test-iago-lint.py`), imported via `importlib.util.spec_from_file_location` exactly as `test-organize.py` does (Python cannot `import iago-lint`). Journals land in the nearest `.iago/state/`.
+- **Where it runs:** daily "iaGO File Sweep" (report), and `validate.yml`'s `validate-scripts` job on iago-os PRs — **advisory (`continue-on-error: true`) for its first week**, then blocking once a full week of PRs is clean. W006 (STATE staleness) is excluded in CI: `actions/checkout` gives every file the same mtime, so "newest file under `.iago/`" is always *now* and the rule would fire on every PR forever. The job uses `python`, not `python3` — `python3` is the MS Store stub on this machine.
 - **Pipeline fixes** so rot stops at the source (audit §6): worktree placement rule in reviewer prompts; all stage temp paths → `.iago/state/`; worktree prune in post-merge; delete the deprecated bash pipeline.
 
 ---
