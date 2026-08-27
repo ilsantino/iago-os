@@ -1,0 +1,3 @@
+# Per-run artefacts — locks, logs, review dumps, session scratch.
+# The planning repo tracks decisions, not the pipeline's exhaust.
+state/

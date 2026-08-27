@@ -47,4 +47,4 @@ During execution: only what the plan specifies; auto-fix bugs/imports/blockers; 
 ## Agents & Models
 Agent defs in `.claude/agents/`. Hub-and-spoke: only the orchestrator dispatches. Model routing: orchestrator = session model (Fable); workflow legs — impl/review/fix/debug → Opus (keep existing pins), PR/commit/tag/mechanical → Sonnet; cross-model adversarial review → Codex GPT-5.5 (pinned in `~/.codex/config.toml`). Never blanket-inherit the session model for every leg.
 
-Path-scoped rules in `.claude/rules/` (tdd, react-vite, aws-amplify, e2e-testing, mcp-server-patterns, layer-triage, skill-authoring) auto-load on matching paths; the rest auto-load every session.
+Path-scoped rules in `.claude/rules/` (tdd, react-vite, aws-amplify, e2e-testing, mcp-server-patterns, layer-triage, skill-authoring, iago-workspace) auto-load on matching paths; the rest auto-load every session.

@@ -1,8 +1,36 @@
-# Context — {{PROJECT_NAME}}
+# `.iago/` — {{PROJECT_NAME}} workspace (MWP L1)
 
-Discussion artifacts are produced by `/iago-discuss` and stored in `.iago/context/`.
+**Client:** {{CLIENT_NAME}} · **Project:** {{PROJECT_NAME}} · **Created:** {{CREATED_DATE}}
 
-Each context file follows the naming convention `{NN}-{slug}.md` where NN is the
-two-digit phase number and slug is the kebab-case phase name.
+**Layer:** L1 routing. Read after `CLAUDE.md` (L0), before anything under `.iago/`.
+Budget ≤ 300 tokens — routing only, no content. The "where does X go" table lives
+in `CLAUDE.md`; the `.iago/` schema itself is machine-enforced, not restated here.
 
-See `.iago/context/` for phase-specific discussion artifacts.
+## What is where
+
+| Path | Layer | Holds |
+|---|---|---|
+| `PROJECT.md` | L3 | what and why, architecture, constraints |
+| `ROADMAP.md` | L3 | the one roadmap — phase tables, not prose |
+| `STATE.md` | L4 | the digest: ≤ 80 lines, `Updated:` mandatory |
+| `_config/` | L3 | `runbooks/ context/ decisions/ learnings/ prompts/ hooks/` |
+| `plans/` | L4 | `feature-{slug}/NN-{slug}.md`, `quick-{YYMMDD}-{slug}.md`, `_archive/` |
+| `research/` | L4 | `YYYY-MM-DD-{slug}.md` |
+| `summaries/` | L4 | `{plan-slug}.md`, written by the pipeline |
+| `state/` | L4 | gitignored — locks, logs, per-run scratch |
+
+Each directory carries a seed file explaining what belongs in it. Read that before
+adding the first artefact of a new kind.
+
+## Sub-workspaces
+
+None yet. An inner app repo earns a row here — path, app repo, planning repo — the
+day it is added. Its own nested `.iago/` may hold `state/` and nothing else; the
+planning tree stays here, and the app repo gitignores `.iago/`.
+
+## Conformance
+
+From the iaGO-OS checkout: `python scripts/organize/iago-lint.py check --root
+{{CLIENT_ID}}`. Non-zero exit is the worklist; each finding prints its own fix.
+The schema, the banned list and the lifecycle table are in
+`.iago/plans/feature-doc-standard/README.md` §2 and §6.

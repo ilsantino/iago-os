@@ -91,10 +91,18 @@ mkdir -p "$TARGET_PATH"
 cp -r "$TEMPLATE_DIR"/. "$TARGET_PATH"/
 
 # --- Step 2: Copy hooks from iaGO-OS ---
+# Destination is `_config/hooks/`, per the workspace schema (§2): `hooks/` at
+# `.iago/` root is a banned directory. `.claude/settings.json.template` points
+# at the same path. The source moves under `_config/` in P3; both are accepted
+# so this script keeps working either side of that move.
 echo "[2/5] Copying hooks..."
-if [[ -d "$IAGO_ROOT/.iago/hooks" ]]; then
-  mkdir -p "$TARGET_PATH/.iago/hooks"
-  cp -r "$IAGO_ROOT/.iago/hooks"/. "$TARGET_PATH/.iago/hooks"/
+HOOKS_SOURCE=""
+for candidate in "$IAGO_ROOT/.iago/_config/hooks" "$IAGO_ROOT/.iago/hooks"; do
+  if [[ -d "$candidate" ]]; then HOOKS_SOURCE="$candidate"; break; fi
+done
+if [[ -n "$HOOKS_SOURCE" ]]; then
+  mkdir -p "$TARGET_PATH/.iago/_config/hooks"
+  cp -r "$HOOKS_SOURCE"/. "$TARGET_PATH/.iago/_config/hooks"/
 fi
 
 # --- Step 3: Replace variables and strip .template extension ---
@@ -116,14 +124,31 @@ find "$TARGET_PATH" -name "*.template" -type f | while read -r tpl; do
   rm "$tpl"
 done
 
-# --- Step 4: Create .iago subdirectories ---
-echo "[4/5] Creating .iago subdirectories..."
-mkdir -p "$TARGET_PATH/.iago/context"
-mkdir -p "$TARGET_PATH/.iago/plans"
-mkdir -p "$TARGET_PATH/.iago/summaries"
-mkdir -p "$TARGET_PATH/.iago/reviews"
-mkdir -p "$TARGET_PATH/.iago/state"
-mkdir -p "$TARGET_PATH/.iago/state/sessions"
+# --- Step 4: Verify the emitted .iago/ against the schema ---
+# This step used to `mkdir` the tree, and created three directories the schema
+# bans (`context/`, `reviews/`, top-level `learnings/`). The template is now the
+# single source of the tree — every directory below ships a real seed file, never
+# a `.gitkeep` (a zero-byte file the linter reports). So this step asserts instead
+# of creating: a missing directory means the template regressed, and scaffolding
+# a non-conforming workspace silently is worse than failing here.
+echo "[4/5] Verifying .iago/ schema..."
+SCHEMA_DIRS=(
+  "_config/runbooks" "_config/context" "_config/decisions"
+  "_config/learnings" "_config/prompts"
+  "plans" "research" "summaries" "state"
+)
+MISSING=()
+for dir in "${SCHEMA_DIRS[@]}"; do
+  if [[ ! -d "$TARGET_PATH/.iago/$dir" ]]; then MISSING+=("$dir"); fi
+done
+if [[ ${#MISSING[@]} -gt 0 ]]; then
+  echo "Error: template emitted a non-conforming .iago/ — missing: ${MISSING[*]}"
+  echo "Fix templates/$TEMPLATE_TYPE/.iago/ (each directory needs a real seed file)."
+  exit 1
+fi
+# A `.gitkeep` copied in from the hooks source is a zero-byte file the linter
+# reports (W004); the seed files make it redundant.
+find "$TARGET_PATH/.iago" -name ".gitkeep" -type f -delete
 
 # --- Step 5: Init git ---
 echo "[5/5] Initializing git..."

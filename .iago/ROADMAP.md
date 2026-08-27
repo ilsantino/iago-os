@@ -170,6 +170,19 @@ Three non-negotiable gates before Stage D (OpenClaw cutover):
 
 ---
 
+## Workspace hygiene (not a phase — a parallel maintenance workstream)
+
+`.iago/plans/feature-doc-standard/` — one `.iago/` grammar for the iago-os root and
+every client, enforced by `scripts/organize/iago-lint.py` rather than by a rule file.
+P0 (garbage) and P1 (backups: nine trees now on private remotes) are done; P2 (the
+grammar, the linter, the templates) is in flight; P3 root cleanse, P4 clients, P5 CI
+enforcement and P6 `dev\` follow. It touches no daemon phase below and blocks none of
+them. Supersedes `feature-mwp-restructure-{docs,clients,code}/`, archived at
+`.iago/plans/_archive/2026-05-mwp-restructure/` — of which only docs/01 and docs/02
+ever shipped (PRs #77, #79).
+
+---
+
 ## Odysseus cherry-pick backlog (not a phase — fold into relevant phases)
 
 Tier-1 security patterns fold into Phase 2/3 daemon-creds workstream. Other tiers are Phase 3+ features. See `.iago/research/2026-06-02-odysseus-clone-eval.md` for the full priority-ordered backlog. Language verdict: TypeScript through cutover; golang sidecar only if flip-triggers fire post-cutover. See `.iago/decisions/2026-06-02-model-independence-and-golang.md`.

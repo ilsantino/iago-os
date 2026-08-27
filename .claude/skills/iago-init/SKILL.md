@@ -21,22 +21,21 @@ ROADMAP.md, STATE.md, and config.json.
 ### 1. Scaffold directories
 
 Call the state engine `init()` function from `.iago/hooks/lib/state-manager.mjs`.
-This creates all `.iago/` subdirectories and default files. Skip any that already exist.
-Directories created include: `plans/`, `context/`, `summaries/`, `reviews/`, `state/`, `learnings/`.
+It emits the `.iago/` schema — `.iago/plans/feature-doc-standard/README.md` §2 — and
+skips anything that already exists. Directories created: `_config/{runbooks,context,decisions,learnings,prompts}/`,
+`plans/`, `research/`, `summaries/`, `state/`. Files: `CONTEXT.md`, `PROJECT.md`, `ROADMAP.md`,
+`STATE.md`, `config.json`, `.gitignore`.
 
-### 1b. Seed learnings directory
+Do **not** create `context/`, `reviews/`, `learnings/`, `runbooks/`, `decisions/`, `prompts/` or
+`hooks/` at `.iago/` root — each is banned there and has exactly one home under `_config/` or
+`state/`. Never create a directory with a `.gitkeep`: it is a zero-byte file the linter reports
+(W004) and it says nothing about what belongs in the directory. `init()` writes a real seed file
+in each directory instead.
 
-Create `.iago/learnings/` if it doesn't exist (the `init()` call above should handle this).
+### 1b. Capture conventions the user gave you
 
-Create `.iago/learnings/patterns.md` with the review patterns table header (no rows — patterns
-accumulate during execution):
-
-```
-| # | Pattern | Occurrences | Last Seen | Source |
-|---|---------|-------------|-----------|--------|
-```
-
-Create `.iago/learnings/project-conventions.md` with a starter template:
+`init()` already wrote `.iago/_config/learnings/patterns.md` (the review-patterns table header;
+rows accumulate during execution). Add `.iago/_config/learnings/project-conventions.md`:
 
 ```
 ## Project Conventions
@@ -93,7 +92,7 @@ Populate `.iago/STATE.md`:
 - Empty tables for Recent Decisions, Blockers, Quick Tasks
 - Must be under 80 lines
 
-The `.iago/learnings/` directory accumulates review patterns during execution
+The `.iago/_config/learnings/` directory accumulates review patterns during execution
 (via review profiles) and feeds them back into future agent dispatches.
 
 ### 7. Write active-client.json
@@ -117,6 +116,12 @@ After completion, display:
 1. Summary of what was created
 2. Phase list from ROADMAP.md
 3. Suggest: "Run `/iago-discuss {first-phase-slug}` to clarify the first phase."
+
+## Gate
+
+Before reporting success, run `python scripts/organize/iago-lint.py check --root {project-dir}`
+from the iaGO-OS checkout. A freshly initialized workspace has **zero** violations; any finding
+means the bootstrap emitted a non-conforming tree, and the finding names its own fix.
 
 ## Boundaries
 

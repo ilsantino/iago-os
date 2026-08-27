@@ -10,10 +10,42 @@ const STATE_PATH = join(IAGO_DIR, "STATE.md");
 const CONFIG_PATH = join(IAGO_DIR, "config.json");
 const PROJECT_PATH = join(IAGO_DIR, "PROJECT.md");
 const ROADMAP_PATH = join(IAGO_DIR, "ROADMAP.md");
+const CONTEXT_PATH = join(IAGO_DIR, "CONTEXT.md");
+const GITIGNORE_PATH = join(IAGO_DIR, ".gitignore");
 const PLANS_DIR = join(IAGO_DIR, "plans");
 const SESSION_LOG_PATH = join(IAGO_DIR, "state", "session-log.jsonl");
 
-const SUBDIRS = ["context", "plans", "summaries", "reviews", "learnings", "hooks", "state"];
+// The `.iago/` schema — .iago/plans/feature-doc-standard/README.md §2. Four of
+// the directories this used to create (`context/`, `reviews/`, top-level
+// `learnings/`, `hooks/`) are banned at `.iago/` root and have one home each
+// under `_config/` or `state/`.
+//
+// Every directory ships a REAL seed file. Git cannot track an empty directory,
+// and `.gitkeep` is itself a zero-byte file that `scripts/organize/iago-lint.py`
+// reports (W004) with no auto-fix — deleting one silently removes a directory
+// the workflow depends on. So the seed says what belongs in the directory, which
+// is the thing a `.gitkeep` never did.
+const SUBDIR_SEEDS = {
+  "_config/runbooks": ["README.md",
+    "# `_config/runbooks/`\n\nRepeatable operational how-tos, one per file: `{slug}.md`.\nWritten the second time a procedure is carried out by hand.\n"],
+  "_config/context": ["README.md",
+    "# `_config/context/`\n\nStable framing that is neither a decision nor a plan: voice, vocabulary,\nintegration briefs, handoff notes. Feature-scoped framing goes in that\nfeature's `plans/feature-{slug}/SPEC.md` instead.\n"],
+  "_config/decisions": ["README.md",
+    "# `_config/decisions/`\n\nArchitecture Decision Records: `YYYY-MM-DD-{slug}.md`, frontmatter `date`,\n`status`, `plan`. STATE.md keeps the 3-5 most recent inline; older ones move\nhere so STATE.md stays under its 80-line budget.\n"],
+  "_config/learnings": ["patterns.md",
+    "## Review Patterns\n\n| # | Pattern | Occurrences | Last Seen | Source |\n|---|---------|-------------|-----------|--------|\n"],
+  "_config/prompts": ["README.md",
+    "# `_config/prompts/`\n\nReusable prompt fragments: `{use-case}.md`. A fragment earns a file the moment\na second dispatch would otherwise copy it. Per-run substituted prompts are\nregenerable and belong in `state/`.\n"],
+  plans: ["naming.md",
+    "# Plan naming\n\n- Feature stack — `plans/feature-{slug}/`: `README.md` (the brief), then\n  `NN-{slug}.md` per plan.\n- One-off — `plans/quick-{YYMMDD}-{slug}.md`.\n- Superseded stack — `plans/_archive/{YYYY-MM}-{slug}/`, with a pointer README.\n\nThis directory carries no `README.md` of its own — that belongs to each\n`feature-{slug}/`, where it is the brief for that stack.\n"],
+  research: ["README.md",
+    "# `research/`\n\nOne dated artefact per question: `YYYY-MM-DD-{slug}.md`. Superseded research is\ndeleted; decision-bearing research moves to `_archive/` with a pointer.\n"],
+  summaries: ["README.md",
+    "# `summaries/`\n\n`{plan-slug}.md`, one per executed plan, written by the pipeline's summary\nstage. Dispatch logs, PR-body drafts and review dumps belong in `state/`.\n"],
+};
+
+// Gitignored, skipped by the linter, written on every pipeline run — no seed.
+const STATE_SUBDIRS = ["state", "state/sessions"];
 
 const DEFAULT_CONFIG = {
   project: { name: "", client: "internal", type: "saas" },
@@ -38,6 +70,40 @@ const DEFAULT_STATE = `# State
 ## Session Log
 
 (none yet)
+`;
+
+// L1 routing — a required file (§2). Without it `iago-lint.py` reports W001 on
+// every workspace `/iago-init` bootstraps.
+const DEFAULT_CONTEXT = `# \`.iago/\` — workspace (MWP L1)
+
+L1 routing. Read after \`CLAUDE.md\` (L0), before anything under \`.iago/\`.
+Budget <= 300 tokens — routing only, no content.
+
+| Path | Layer | Holds |
+|---|---|---|
+| \`PROJECT.md\` | L3 | what and why, architecture, constraints |
+| \`ROADMAP.md\` | L3 | the one roadmap — phase tables, not prose |
+| \`STATE.md\` | L4 | the digest: <= 80 lines, \`Updated:\` mandatory |
+| \`_config/\` | L3 | runbooks/ context/ decisions/ learnings/ prompts/ hooks/ |
+| \`plans/\` | L4 | feature-{slug}/NN-{slug}.md, quick-{YYMMDD}-{slug}.md, _archive/ |
+| \`research/\` | L4 | YYYY-MM-DD-{slug}.md |
+| \`summaries/\` | L4 | {plan-slug}.md, written by the pipeline |
+| \`state/\` | L4 | gitignored — locks, logs, per-run scratch |
+
+Each directory carries a seed file saying what belongs in it.
+
+## Sub-workspaces
+
+None yet. An inner app repo earns a row here the day it is added.
+
+## Conformance
+
+\`python scripts/organize/iago-lint.py check\` from the iaGO-OS checkout.
+Schema: \`.iago/plans/feature-doc-standard/README.md\` §2.
+`;
+
+const DEFAULT_GITIGNORE = `# Per-run artefacts — locks, logs, review dumps, session scratch.
+state/
 `;
 
 const DEFAULT_PROJECT = `# Project
@@ -82,8 +148,8 @@ export function init() {
     created.push(".iago/");
   }
 
-  // Ensure subdirectories
-  for (const sub of SUBDIRS) {
+  // Ensure subdirectories, each with its seed file
+  for (const [sub, [seedName, seedBody]] of Object.entries(SUBDIR_SEEDS)) {
     const dir = join(IAGO_DIR, sub);
     if (!existsSync(dir)) {
       mkdirSync(dir, { recursive: true });
@@ -91,13 +157,22 @@ export function init() {
     } else {
       skipped.push(`.iago/${sub}/`);
     }
+    const seed = join(dir, seedName);
+    if (!existsSync(seed)) {
+      writeFileSync(seed, seedBody);
+      created.push(`.iago/${sub}/${seedName}`);
+    } else {
+      skipped.push(`.iago/${sub}/${seedName}`);
+    }
   }
 
-  // Ensure state/sessions/
-  const sessionsDir = join(IAGO_DIR, "state", "sessions");
-  if (!existsSync(sessionsDir)) {
-    mkdirSync(sessionsDir, { recursive: true });
-    created.push(".iago/state/sessions/");
+  // Ensure state/ and state/sessions/ — gitignored, no seed
+  for (const sub of STATE_SUBDIRS) {
+    const dir = join(IAGO_DIR, sub);
+    if (!existsSync(dir)) {
+      mkdirSync(dir, { recursive: true });
+      created.push(`.iago/${sub}/`);
+    }
   }
 
   // config.json
@@ -130,6 +205,22 @@ export function init() {
     created.push(".iago/ROADMAP.md");
   } else {
     skipped.push(".iago/ROADMAP.md");
+  }
+
+  // CONTEXT.md — the fifth required file
+  if (!existsSync(CONTEXT_PATH)) {
+    writeFileSync(CONTEXT_PATH, DEFAULT_CONTEXT);
+    created.push(".iago/CONTEXT.md");
+  } else {
+    skipped.push(".iago/CONTEXT.md");
+  }
+
+  // .gitignore — state/ is per-run, never committed
+  if (!existsSync(GITIGNORE_PATH)) {
+    writeFileSync(GITIGNORE_PATH, DEFAULT_GITIGNORE);
+    created.push(".iago/.gitignore");
+  } else {
+    skipped.push(".iago/.gitignore");
   }
 
   return { created, skipped };

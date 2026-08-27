@@ -31,7 +31,7 @@ The mistake to avoid is one convention over the whole disk. Four zones, four rul
 
 | Zone | Path | Rule |
 |---|---|---|
-| **CODE** | `dev\` | **Frozen.** Git + existing repo conventions. No renaming, ever — see §6. |
+| **CODE** | `dev\` | **Frozen** for *this* grammar — git + existing repo conventions, no renaming, ever (§6). Naming and layout inside `dev\` are governed instead by the workspace standard, `.iago/plans/feature-doc-standard/README.md` (ISO-dashed dates, the `.iago/` schema, machine-checked by `scripts/organize/iago-lint.py`). |
 | **WORK** | `OneDrive\iagoagency` | Full standard. Client-first taxonomy. The main event. |
 | **PERSONAL** | `OneDrive\{Santiago DoDas, CFA, UDEMY, Biblia, Pictures}` | Full standard, lighter taxonomy. |
 | **TRANSIENT** | `Downloads`, `Desktop`, `C:\Users\sanal` loose files | Staging only. Nothing lives here. Retention rule, not a taxonomy. |

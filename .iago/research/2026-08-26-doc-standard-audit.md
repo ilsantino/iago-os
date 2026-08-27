@@ -61,7 +61,7 @@ Source: *Interpretable Context Methodology: Folder Structure as Agent Architectu
 | R8 | `.worktrees/`: **7 worktrees for merged branches** (`caja-exec`, `pr100-fix`, `pr368-learnings`, `review-bilingual`, `review-contract`, `vps-cutover`, `pr100-gate`); `.claude/worktrees/agent-a814c32f/` since 05-16 | `git worktree list` |
 | R9 | Loose: `.inbox-domains.tsv` (root, 06-29, unreferenced); 2 untracked research docs (08-19 gta6, 08-24 onepager) | `git status` |
 | R10 | `scripts/execute-pipeline.sh` (deprecated per rules) still present with its libs `scripts/lib/{adversarial-verdict,build-gate,env-validation,pipeline-telemetry}.sh` and 5 test scripts; referenced in `execution-pipeline.md`, two SKILL.md files and `execute-pipeline.js` (as "replaced") | grep |
-| R11 | Routing-table destinations that exist but are dead: `.iago/context/` (1 file, 05-04), `.iago/learnings/patterns.md` (660 B, one entry). Referenced but wrong: `.iago/config` (file is `config.json`) | |
+| R11 | Routing-table destinations that exist but are dead: `.iago/context/` (1 file, 05-04), `.iago/learnings/patterns.md` (660 B, one entry). Referenced but wrong: the old `.iago/README.md` pointed hooks at a bare `config` path under `.iago/` — the file is `config.json` (reference retired with that README, P2) | |
 
 ---
 
