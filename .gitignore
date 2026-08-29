@@ -19,6 +19,9 @@ Thumbs.db
 # Node
 node_modules/
 
+# Python bytecode from the organize scripts
+scripts/organize/__pycache__/
+
 # Local client projects (not part of iaGO-OS distribution)
 clients/
 
