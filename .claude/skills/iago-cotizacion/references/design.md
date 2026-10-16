@@ -34,10 +34,14 @@ the site; for a PDF it is fine.
 
 ## The mark
 
-Lockup 02 (`assets/iago-lockup-02-light.svg`: wordmark with AGENCY GROUP under GO), 46 mm wide in the
-header's left; the brand reserves lockup 02 for proposals, contracts and signatures. Clear space = the ring
-radius. The DOCX rasterises it at 600 dpi and trims to the ink (MuPDF lays the SVG on its own page).
-No client logo on the quote.
+The final iaGO logo lives in `C:\development\iago-web\workspace\deliverables6-09-logo-final\` (Santiago,
+16-oct-2026: the only source for the iaGO logo, in every project). The quote uses the **horizontal** variant,
+`png-transparent/iago-logo-horizontal-light.png`: the IAGO wordmark with «ΛGENCY GROUP» letter-spaced across
+the full width of the mark. A copy trimmed to its ink is `assets/iago-logo-horizontal-light.png`; `build.py`
+embeds it as a data URI, 46 mm wide in the header's left; the DOCX takes the same PNG. The earlier
+`iago-lockup-02-light.svg` from `iago-web` `feat/rebrand` (AGENCY GROUP under GO only, off-centre) was wrong
+and was removed on 16-oct-2026: never rebuild it from the site's `public/brand/`. Clear space = the ring
+radius. No client logo on the quote.
 
 ## Layout
 

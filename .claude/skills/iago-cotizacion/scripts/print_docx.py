@@ -8,10 +8,11 @@ Self-contained: python-docx + beautifulsoup4 + lxml + PyMuPDF + Pillow. Reads th
 assembled (six blocks: header, sections with p / table.done / table.scope / table.amounts / table.kv /
 ul.bul / div.accept) and writes Letter pages with the same type and palette as the PDF. Jost 500 is
 embedded as the Regular cut of «Jost» and IBM Plex Sans 500 as the Bold cut of «IBM Plex Sans», so
-<strong> renders at weight 500, never bold (docs/BRAND.md §3). The lockup is rasterised from the
-header SVG at 600 dpi and trimmed to its ink. Verify through Word: scripts/word2pdf.py + rasterize.py.
+<strong> renders at weight 500, never bold (docs/BRAND.md §3). The mark is the final horizontal logo PNG
+that build.py embedded, trimmed to its ink. Verify through Word: scripts/word2pdf.py + rasterize.py.
 """
 import argparse
+import base64
 import io
 import os
 import re
@@ -169,9 +170,13 @@ def body_cell(c, node, mono=False, size=8.8):
 
 # ------------------------------------------------------------------ blocks
 def header(doc, hdr, logo_path):
-    svg = str(hdr.find("svg"))
-    pix = fitz.open("svg", svg.encode("utf-8"))[0].get_pixmap(dpi=600, alpha=True)
-    im = Image.open(io.BytesIO(pix.tobytes("png")))
+    img = hdr.find("img", class_="lockup")
+    if img is not None and img.get("src", "").startswith("data:image/png;base64,"):
+        im = Image.open(io.BytesIO(base64.b64decode(img["src"].split(",", 1)[1]))).convert("RGBA")
+    else:  # fragments older than 16-oct-2026 inline the SVG lockup
+        svg = str(hdr.find("svg"))
+        pix = fitz.open("svg", svg.encode("utf-8"))[0].get_pixmap(dpi=600, alpha=True)
+        im = Image.open(io.BytesIO(pix.tobytes("png")))
     box, pad = im.getchannel("A").getbbox(), 12
     im = im.crop((max(0, box[0] - pad), max(0, box[1] - pad), min(im.width, box[2] + pad), min(im.height, box[3] + pad)))
     im.save(str(logo_path), dpi=(600, 600))

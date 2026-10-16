@@ -4,7 +4,7 @@
     python scripts/build.py --src {fuente}/cotizacion --out {fuente}/cotizacion.html --title "Cotización COT-X-001-2026 · tema"
 
 Fragments are `NN-*.html` in --src, concatenated in name order. `<!--LOCKUP-->` in the header is replaced
-by the lockup SVG of `../assets/`. Guards (exit 1, every finding printed):
+by the final horizontal logo of `../assets/` (PNG, data URI). Guards (exit 1, every finding printed):
   - a `{{placeholder}}` or `[corchete]` left in the text (brackets are allowed only inside `<mark>`: the
     fields the client fills in, printed highlighted)
   - no folio `COT-{CLIENTE}-{NNN}-{YYYY}` in the header meta
@@ -17,6 +17,7 @@ by the lockup SVG of `../assets/`. Guards (exit 1, every finding printed):
 Deterministic: no network, no LLM. Then `node scripts/pdf.mjs` and `python scripts/print_docx.py`.
 """
 import argparse
+import base64
 import re
 import sys
 from pathlib import Path
@@ -119,9 +120,10 @@ def main() -> int:
     frags = sorted(p for p in src.glob("*.html"))
     if not frags:
         print(f"no fragments in {src}", file=sys.stderr); return 1
-    lockup = (ASSETS / "iago-lockup-02-light.svg").read_text(encoding="utf-8")
-    lockup = re.sub(r"<\?xml[^>]*\?>\s*", "", lockup).replace("<svg ", '<svg class="lockup" ', 1)
-    lockup = re.sub(r'\s(width|height)="\d+"', "", lockup)
+    # The mark is the final horizontal logo (iago-web/workspace/deliverables/2026-09-logo-final,
+    # «ΛGENCY GROUP» spanning the full width of IAGO), trimmed to its ink, embedded as a data URI.
+    png = base64.b64encode((ASSETS / "iago-logo-horizontal-light.png").read_bytes()).decode("ascii")
+    lockup = f'<img class="lockup" alt="iaGO Agency Group" src="data:image/png;base64,{png}">'
     body = "".join(p.read_text(encoding="utf-8").rstrip() + "\n" for p in frags)
     body = body.replace("<!--LOCKUP-->", lockup)
     doc = ('<!doctype html>\n<html lang="es" data-theme="light">\n<head>\n<meta charset="utf-8">\n'
