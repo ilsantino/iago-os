@@ -1,0 +1,9 @@
+{
+  "name": "iago-cotizacion-scripts",
+  "private": true,
+  "type": "module",
+  "description": "Playwright for pdf.mjs. Run `npm i` once here; `npx playwright install chromium` if the browser is missing.",
+  "dependencies": {
+    "playwright": "1.62.1"
+  }
+}
