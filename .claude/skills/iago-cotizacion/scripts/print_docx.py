@@ -24,7 +24,7 @@ import fitz
 from bs4 import BeautifulSoup
 from docx import Document
 from docx.enum.table import WD_ALIGN_VERTICAL, WD_TABLE_ALIGNMENT
-from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_TAB_ALIGNMENT
+from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_COLOR_INDEX, WD_TAB_ALIGNMENT
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from docx.shared import Inches, Pt, RGBColor
@@ -115,6 +115,8 @@ def inline(par, node, size=10, color=OBS, font=BODY):
             R(par, re.sub(r"\s+", " ", ch.get_text()), font=font, size=size, color=OBS, bold=True)
         elif ch.name == "br":
             par.add_run().add_break()
+        elif ch.name == "mark":  # a field the client fills in: yellow highlight, as in the PDF
+            R(par, re.sub(r"\s+", " ", ch.get_text()), font=font, size=size, color=OBS).font.highlight_color = WD_COLOR_INDEX.YELLOW
         else:
             inline(par, ch, size, color, font)
 
@@ -250,7 +252,7 @@ def accept(doc, div):
     for c, d in zip(t.rows[0].cells, cols):
         cell_borders(c, OBS_HEX, 6, ("top",)); eyebrow(c, text(d.find("span")), before=0, after=0, first=True)
         for line in d.find_all("p"):
-            p = P(c, space_before=12, space_after=0, line=1.2); R(p, text(line), size=8.8, color=PIEDRA); par_border_bottom(p, HAIR, 4)
+            p = P(c, space_before=12, space_after=0, line=1.2); inline(p, line, size=8.8, color=PIEDRA); par_border_bottom(p, HAIR, 4)
 
 
 # ------------------------------------------------------------ font embedding

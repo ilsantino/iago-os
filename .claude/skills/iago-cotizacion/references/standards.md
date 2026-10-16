@@ -28,7 +28,7 @@ was a defect that reached a sent-ready document.
 | 7 | Our legal entity, RFC, fiscal address | objeto (name), bank block | the invoice is issued by the entity named here |
 | 8 | Payment terms with dates | terms | each payment: amount, what it pays for, due date, «contra factura, por transferencia a la cuenta de la sección 06» |
 | 9 | Bank block | last section | razón social, RFC, domicilio fiscal, banco, cuenta, CLABE, SWIFT, contacto; verify the CLABE before the first quote to a new client |
-| 10 | Acceptance lines | after the bank block | «Por {razón social del cliente}» and «Por iaGO»: nombre y cargo, firma y fecha |
+| 10 | Acceptance lines | after the bank block | «Por {razón social del cliente}» and «Por iaGO». The client's side names who authorises: `[Nombre completo]`, `[Cargo]`, `[Firma y fecha]`, each in `<mark>` so it prints yellow in the PDF and the DOCX; the client sees exactly what to fill. Our side is printed (Santiago Álvarez Chamlati · CEO). If the cargo is unknown, leave `[Cargo]`: never invent a title |
 
 ## 3 · The six sections
 
@@ -54,7 +54,8 @@ client must give us goes in the mail, not in the quote.
   says «MXN, sin IVA». Never a figure the table does not carry.
 - One rate per unit of work across the document: if a week on site is 30,000 in the delivered part, it is
   30,000 in the pending part. Price per deliverable, never per hour, unless the type says otherwise.
-- No brackets, no placeholders, no internal codes (E-nn, NS-nn, PV-nn, Hnn), no savings claims.
+- No brackets, no placeholders, no internal codes (E-nn, NS-nn, PV-nn, Hnn), no savings claims. The one
+  exception: the fill-in fields of the acceptance block, `[…]` inside `<mark>` (highlighted).
 - Three pages. If it does not fit, cut words; never shrink the print sheet.
 
 ## 5 · Standard wording (paste, then adapt names and dates)

@@ -5,7 +5,8 @@
 
 Fragments are `NN-*.html` in --src, concatenated in name order. `<!--LOCKUP-->` in the header is replaced
 by the lockup SVG of `../assets/`. Guards (exit 1, every finding printed):
-  - a `{{placeholder}}` or `[corchete]` left in the text
+  - a `{{placeholder}}` or `[corchete]` left in the text (brackets are allowed only inside `<mark>`: the
+    fields the client fills in, printed highlighted)
   - no folio `COT-{CLIENTE}-{NNN}-{YYYY}` in the header meta
   - no full issue date «D de mes de AAAA» and no «Vigencia: hasta el D de mes de AAAA»
   - the eyebrow does not name a legal entity (S.A., S. de R.L., S.C., S.A.P.I., LLC, Inc.)
@@ -85,6 +86,7 @@ table.kv td.mono{white-space:normal; color:var(--obsidiana); font-size:13.5px}
 .accept > div{flex:1; border-top:1px solid var(--obsidiana); padding-top:12px}
 .accept p{margin:30px 0 0; padding-top:6px; border-top:1px solid var(--border); font-size:13px; color:var(--piedra)}
 .accept .eb{margin-bottom:0}
+mark{background:#FFF176; color:inherit; padding:0 .15em; -webkit-print-color-adjust:exact; print-color-adjust:exact}
 @media print{ body{font-size:10.4pt} }
 """
 
@@ -104,6 +106,7 @@ AMOUNT = re.compile(r"\$([\d,]+)")
 
 def strip(html: str) -> str:
     html = re.sub(r"<svg.*?</svg>", " ", html, flags=re.S)
+    html = re.sub(r"<mark>.*?</mark>", " ", html, flags=re.S)  # fill-in fields: [brackets] allowed only inside a highlight
     return re.sub(r"<[^>]+>", " ", html)
 
 
