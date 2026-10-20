@@ -231,7 +231,7 @@ def amounts_table(doc, tbl):
             if total: cell_shade(c, SURFACE2); cell_borders(c, OBS_HEX, 8, ("top", "bottom"))
             elif "sub" in cls: cell_shade(c, SURFACE); cell_borders(c, HAIR, 4)
             else: cell_borders(c, HAIR, 4)
-    spacer(doc)
+    spacer(doc)  # no keep-with-next on rows: Word then refuses to start the table near a page foot
 
 
 def kv_table(doc, tbl):
@@ -337,16 +337,19 @@ def main():
     header(doc, soup.select_one("header.top"), out.with_name("lockup.png"))
     for i, s in enumerate(soup.select("section")):
         section_head(doc, s, first=(i == 0))
-        for p_ in s.select(".col > p"):
-            inline(P(doc, space_before=0, space_after=5, line=1.3), p_)
-        for tbl in s.select("table"):
-            cls = tbl.get("class") or []
-            if "amounts" in cls: amounts_table(doc, tbl)
-            elif "kv" in cls: kv_table(doc, tbl)
-            elif "scope" in cls: simple_table(doc, tbl, [1.45, 3.65, 1.5])
-            else: simple_table(doc, tbl, [1.05, 5.55])
-        for ul in s.select("ul.bul"): bullets(doc, ul)
-        if s.select_one(".accept"): accept(doc, s.select_one(".accept"))
+        # blocks in document order: prose paragraph, table, bullet list, acceptance block
+        for el in s.find_all(["p", "table", "ul", "div"]):
+            if el.name == "p":
+                if el.find_parent(["td", "li", "h2"]) is None and el.find_parent("div", class_="accept") is None:
+                    inline(P(doc, space_before=0, space_after=5, line=1.3), el)
+            elif el.name == "table":
+                cls = el.get("class") or []
+                if "amounts" in cls: amounts_table(doc, el)
+                elif "kv" in cls: kv_table(doc, el)
+                elif "scope" in cls: simple_table(doc, el, [1.45, 3.65, 1.5])
+                else: simple_table(doc, el, [1.05, 5.55])
+            elif el.name == "ul" and "bul" in (el.get("class") or []): bullets(doc, el)
+            elif el.name == "div" and "accept" in (el.get("class") or []): accept(doc, el)
     doc.save(str(out)); n = embed_fonts(str(out))
     print("ok  %s  %d fonts embedded  %.2f MB" % (out.name, n, out.stat().st_size / 1048576))
 

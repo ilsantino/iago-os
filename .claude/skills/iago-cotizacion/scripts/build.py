@@ -12,7 +12,8 @@ by the final horizontal logo of `../assets/` (PNG, data URI). Guards (exit 1, ev
   - the eyebrow does not name a legal entity (S.A., S. de R.L., S.C., S.A.P.I., LLC, Inc.)
   - an internal code (E-nn, NS-nn, PV-nn, Hnn, Pnn, Tnn, Qnn, Onn)
   - amounts that do not add up: each `tr.sub` = the `tr.line` rows above it since the previous group;
-    `tr.total` = the sum of the subs; every «$N MXN» in prose is the total or a subtotal
+    `tr.total` = the sum of the subs (or of the lines when there are no groups); every «$N MXN» in prose
+    is the total, a subtotal or a line
   - a savings claim («ahorr»)
 Deterministic: no network, no LLM. Then `node scripts/pdf.mjs` and `python scripts/print_docx.py`.
 """
@@ -155,7 +156,7 @@ def main() -> int:
 
     # amounts: lines → subs → total → prose
     rows = re.findall(r'<tr class="(group|line|sub|total)">(.*?)</tr>', body, flags=re.S)
-    run, subs, total = 0, [], None
+    run, subs, lines, total = 0, [], [], None
     for cls, inner in rows:
         amt = AMOUNT.findall(inner)
         val = int(amt[-1].replace(",", "")) if amt else None
@@ -163,7 +164,7 @@ def main() -> int:
             run = 0
         elif cls == "line":
             if val is None: bad.append(f"amounts: a line row without a $ figure: {strip(inner).strip()[:60]}")
-            else: run += val
+            else: run += val; lines.append(val)
         elif cls == "sub":
             if val != run: bad.append(f"amounts: subtotal ${val:,} but its lines add to ${run:,}")
             subs.append(val); run = 0
@@ -172,18 +173,18 @@ def main() -> int:
     if rows:
         if total is None:
             bad.append("amounts: no tr.total row")
-        elif total != sum(s for s in subs if s is not None) and subs:
-            bad.append(f"amounts: total ${total:,} but subtotals add to ${sum(subs):,}")
+        elif total != (sum(s for s in subs if s is not None) if subs else sum(lines)):
+            bad.append(f"amounts: total ${total:,} but the rows add to ${(sum(subs) if subs else sum(lines)):,}")
         prose = {int(v.replace(",", "")) for v in re.findall(r"\$([\d,]+)\s*MXN", text)}
-        allowed = {total, *subs}
+        allowed = {total, *subs, *lines}  # a payment schedule may quote a line
         if total not in prose:
             bad.append("amounts: the total never appears in prose as «$N MXN más IVA»")
         for v in prose - allowed:
-            bad.append(f"amounts: ${v:,} MXN in prose is neither the total nor a subtotal")
+            bad.append(f"amounts: ${v:,} MXN in prose is neither the total, a subtotal nor a line")
 
     Path(a.out).write_text(doc, encoding="utf-8")
     print(f"{a.out}  {len(doc):,} bytes  {len(frags)} fragments  sections {opens}  "
-          + (f"total ${total:,} = " + " + ".join(f"{s:,}" for s in subs) if total else "no amounts table"))
+          + (f"total ${total:,} = " + " + ".join(f"{s:,}" for s in (subs or lines)) if total else "no amounts table"))
     for b in bad:
         print("  FAIL " + b, file=sys.stderr)
     return 1 if bad else 0
