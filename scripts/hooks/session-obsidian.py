@@ -111,7 +111,7 @@ def extract_session_data(transcript_path, max_lines=MAX_LINES):
 def normalize_path(fp):
     """Normalize file path to relative project path."""
     fp = fp.replace("\\", "/")
-    for prefix in ["C:/Users/sanal/dev/", "/c/Users/sanal/dev/"]:
+    for prefix in ["C:/Users/sanal/dev/", "/c/Users/sanal/dev/", str(Path.home() / "Developer") + "/"]:
         if fp.startswith(prefix):
             fp = fp[len(prefix):]
             break

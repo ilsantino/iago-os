@@ -168,7 +168,7 @@ def parse_project_name(transcript_path):
     from `iago-os--worktrees-foo` does not read as a second distinct client.
     """
     name = Path(transcript_path).parent.name
-    name = name.replace("C--Users-sanal-dev-", "").replace("C--Users-sanal-", "")
+    name = name.replace("-Users-alvarez-Developer-", "").replace("C--development-", "").replace("C--Users-sanal-dev-", "").replace("C--Users-sanal-", "")
     if "clients-" in name:
         name = name.split("clients-")[-1]
     if "--worktrees-" in name:

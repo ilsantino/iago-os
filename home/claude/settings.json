@@ -1,0 +1,83 @@
+{
+  "env": {
+    "IAGO_OS_ROOT": "/Users/alvarez/Developer/iago-os",
+    "OBSIDIAN_SESSIONS_DIR": "/Users/alvarez/Developer/obsidian-brain/sessions",
+    "CLAUDE_CODE_SUBAGENT_MODEL": "opus"
+  },
+  "model": "opus[1m]",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Glob|Grep|mcp__obsidian__search_notes",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "[ -f \"$HOME/Developer/obsidian-brain/graphify-out/graph.json\" ] && echo '{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"additionalContext\":\"graphify: Knowledge graph available for Obsidian vault. Before raw file search, check graphify MCP tools (query_graph, get_node, get_community) or read graphify-out/wiki/index.md for community navigation.\"}}' || true"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$HOME/Developer/iago-os/scripts/hooks/session-obsidian.py\"",
+            "timeout": 15000,
+            "async": true
+          },
+          {
+            "type": "command",
+            "command": "python3 \"$HOME/Developer/iago-os/scripts/hooks/session-pattern-signals.py\"",
+            "timeout": 10000,
+            "async": true
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "matcher": "compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo 'POST-COMPACT DIGEST: Context was just compacted. Immediately write an Obsidian session digest to sessions/YYYY-MM-DD-{project}.md via mcp__obsidian__write_note (What Was Done / Decisions Made / Files Changed / Open Questions, session template), then continue the interrupted task. Quality probes: (1) decision REASONS preserved, not just outcomes; (2) every file changed listed with purpose; (3) each blocker: what it blocks + unblock condition + re-check date; (4) open questions explicit with path-to-resolution; (5) next-commit intent spelled out for in-flight work; (6) deferred items listed separately with re-entry triggers.'"
+          }
+        ]
+      }
+    ]
+  },
+  "statusLine": { "type": "command", "command": "node \"$HOME/.claude/statusline.js\"" },
+  "enabledPlugins": {
+    "codex@openai-codex": true,
+    "vercel-plugin@vercel": true,
+    "claude-code-setup@claude-plugins-official": true,
+    "watch@claude-video": true,
+    "frontend-design@claude-plugins-official": true,
+    "superdesign@claude-plugins-official": true,
+    "modern-web-guidance@claude-plugins-official": true,
+    "playwright@claude-plugins-official": true,
+    "chrome-devtools-mcp@claude-plugins-official": true,
+    "netsuite-ai-companion@claude-plugins-official": true,
+    "netsuite-finance-analyst@claude-plugins-official": true,
+    "netsuite-suitecloud@claude-plugins-official": true
+  },
+  "extraKnownMarketplaces": {
+    "openai-codex": { "source": { "source": "github", "repo": "openai/codex-plugin-cc" } },
+    "claude-plugins-official": { "source": { "source": "github", "repo": "anthropics/claude-plugins-official" } },
+    "claude-video": { "source": { "source": "github", "repo": "bradautomates/claude-video" } }
+  },
+  "effortLevel": "high",
+  "modelSettings": {
+    "claude-fable-5-1": { "effortLevel": "high" },
+    "claude-sonnet-5": { "effortLevel": "medium" },
+    "claude-opus-5": { "effortLevel": "xhigh" },
+    "claude-opus-5-5": { "effortLevel": "xhigh" }
+  },
+  "autoUpdatesChannel": "latest",
+  "tui": "fullscreen",
+  "skipDangerousModePermissionPrompt": true,
+  "skipWorkflowUsageWarning": true,
+  "theme": "dark-daltonized",
+  "agentPushNotifEnabled": true
+}
