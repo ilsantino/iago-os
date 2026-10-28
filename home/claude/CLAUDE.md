@@ -5,7 +5,7 @@ CEO of iaGO (3-person AI consultancy; CTO Sebas, on Mac). Give opinionated verdi
 ## Where everything lives (Mac, since 2026-10-27)
 
 - **Code and development context:** `~/Developer/<repo>/` — one folder per GitHub repo, flat. The map (repo → project → Drive folder → branch rules) is `~/Developer/CLAUDE.md`; read it before touching a project you have not seen this session.
-- **Documents, deliverables, received files, media:** Google Drive `My Drive/iaGO/` → `Projects/<Project>/` (clients inside `clients/<Client>/`), `Company/`, `Content/`, `Reference/`, `Backups/`. Mounted at `~/Library/CloudStorage/GoogleDrive-santiago@iagoag.com/My Drive/iaGO/`. Also reachable through the Google Drive connector.
+- **Documents, deliverables, received files, media:** Google Drive `My Drive/IAGO/` → `Projects/<Project>/` (clients inside `clients/<Client>/`), `Company/`, `Content/`, `Reference/`, `Backups/`. Mounted at `~/Library/CloudStorage/GoogleDrive-santiago@iagoag.com/My Drive/IAGO/`. Also reachable through the Google Drive connector.
 - **Project state:** `<repo>/.iago/STATE.md` (≤ 80 lines) is the single status file per product; `.iago/plans`, `.iago/research`, `.iago/runbooks` hold the rest (taxonomy: `~/Developer/iago-os/.iago/README.md`). RSF is the exception: a documentation repo whose state is `~/Developer/rsf/STATE.md` (start at its `CONTEXT.md`).
 - **Claude memory:** per repo, keyed by path (`~/.claude/projects/-Users-alvarez-Developer-<repo>/memory/`). RSF's memory is versioned in the repo (`rsf/_memory/claude/`).
 - **Delivery system:** `~/Developer/iago-os` — skills `/iago-*`, agents `executor`/`analyst`/`operator`, rules, templates, hooks. This machine's Claude config is versioned in `iago-os/home/`; `bash ~/Developer/iago-os/home/install-mac.sh` re-wires a machine.
@@ -40,7 +40,7 @@ Measure with `python3 ~/.claude/scripts/usage-audit.py --detail` (zero tokens). 
 
 ## Brand (all projects)
 
-The only iaGO logo source is Drive `iaGO/Company/brand/2026-09-logo-final/` (wordmark · horizontal with «ΛGENCY GROUP» across the full width · stacked; light/dark; JPG + transparent PNG). Never take a logo from `iago-web` `public/brand/` or from an older deliverable: the `feat/rebrand` lockup-02 (AGENCY GROUP under GO, off-centre) is wrong. Quotes and proposals use the horizontal light PNG.
+The only iaGO logo source is Drive `IAGO/Company/brand/2026-09-logo-final/` (wordmark · horizontal with «ΛGENCY GROUP» across the full width · stacked; light/dark; JPG + transparent PNG). Never take a logo from `iago-web` `public/brand/` or from an older deliverable: the `feat/rebrand` lockup-02 (AGENCY GROUP under GO, off-centre) is wrong. Quotes and proposals use the horizontal light PNG.
 
 ## Knowledge Stores
 
