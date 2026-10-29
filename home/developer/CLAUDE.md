@@ -61,5 +61,10 @@ Sentria PRs target its integration branch `sentria-qc` (promoted to `main` by PR
 Sidebar Favorites, in order: **Developer** (this folder) · **Projects** (Drive `IAGO/Projects`) · **IAGO** (Drive `IAGO`, the
 whole company tree) · **Personal** (the sanalvcham@gmail.com My Drive) · **Downloads**, then Applications and Desktop. No
 per-project favorites: lowercase `rsf`, `munet-web` are repos here; Capitalized `RSF`, `Munet` are Drive project folders.
-Path bar is on (View → Show Path Bar) so any window says where it is. Full guide: Drive `IAGO/README.md` and
+Path bar is on (View → Show Path Bar) so any window says where it is.
+Colours (set 2026-10-28, by kind, never by project): **red** = the two engagements being worked right now (RSF, Munet);
+**blue** = client products; **purple** = iaGO's own (Company, Recibia, iago-*, obsidian-brain); **orange** = Content;
+**gray** = Reference, Backups, `_archive`, `_triage`, Google Meet, paused repos; **green** = personal. Drive folders carry
+the colour natively (Drive web + Finder); repos carry it as a Finder tag (`xattr com.apple.metadata:_kMDItemUserTags`).
+When focus changes, recolour the two red folders and tags, nothing else. Full guide: Drive `IAGO/README.md` and
 `iago-os/.iago/research/2026-10-28-filesystem-architecture.md`.
