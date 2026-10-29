@@ -9,22 +9,19 @@ Google Drive under `My Drive/IAGO/Projects/<Project>/`. Nothing is duplicated be
 | Repo (this folder) | GitHub | Project / product | Drive folder (`My Drive/IAGO/…`) |
 |---|---|---|---|
 | `sentria/` | bas-labs/sentria (PRs → `sentria-qc`) | Sentria — industrial incident bot. Clients: Absara, Vaqueras | `Projects/Sentria/` (+ `clients/Absara`, `clients/Vaqueras`) |
-| `sentria-predictive-maintenance/` | ilsantino | Sentria research spin-off | `Projects/Sentria/` |
 | `munet-web/` | bas-labs | MUNET — museum site, QR ticketing, POS | `Projects/Munet/` |
 | `rsf/` | ilsantino/ws-rsf | Red Sun Farms — Costos y rentabilidad engagement (documentation repo; its own `CONTEXT.md` → `STATE.md`) | `Projects/RSF/` (session material in `sessions/`, indexed in `rsf/FUENTES.md`) |
 | `rsf-flow-tool/` | bas-labs | RSF flow tool (paused since 2026-09-14) | `Projects/RSF/` |
 | `scientia-web/` | bas-labs | Scientia — law firm site rebuild | `Projects/Scientia/` |
 | `valorarrend-web/` | bas-labs | Valorarrend — site | `Projects/Valorarrend/` |
 | `vantek-web/` | bas-labs | Vantek — cancelería marketing site | `Projects/Vantek/` |
-| `dinpro-pricing/` | ilsantino | DIN Pro — pricing module | `Projects/DIN/` |
-| `fulldata-bot-asistente/` | ilsantino | FullData — assistant bot + TSM consulting | `Projects/Fulldata/` |
 | `palazuelos-erp-discovery/`, `palazuelos-web/` | ilsantino, bas-labs | Grupo Palazuelos — ERP discovery (text repo) + site | `Projects/Palazuelos/` |
-| `recibia/` | local git, no remote yet | Recibia — iaGO's own product (digital receipts) | `Projects/Recibia/` |
+| `recibia/` | ilsantino (private, pushed 2026-10-29) | Recibia — iaGO's own product (digital receipts) | `Projects/Recibia/` |
 | `iago-os/` | ilsantino (public) | The delivery system: skills, agents, rules, templates, hooks, `home/` (this machine's Claude config) | `Company/` |
 | `iago-web/` | bas-labs (PRs → `main`; the `iago-web-qc` model was retired 2026-09-06) | iaGO website | `Company/web/`, brand in `Company/brand/` |
-| `iago-leadgen/`, `iago-workspaces/` | ilsantino | Lead generation; content pipeline | `Company/` |
+| `iago-management/` | bas-labs | iaGO management dashboard (last commit 2026-08-27) | `Company/` |
+| `academics/` | bas-labs | Academics — ERP module for educational institutions (last commit 2026-08-07) | — |
 | `obsidian-brain/` | ilsantino | Claude's memory vault (sessions, decisions, people, concepts). Edit via the Obsidian MCP only | — |
-| `career-ops/` | santifer (personal) | Personal career ops | — |
 
 Drive folder ids (for the Drive connector; writes go by id, never through the mount — `search_files` with `parentId` lists any subfolder):
 `IAGO` 1R5OvQeAv-Mu-zUv-0ElSt3t3qVPBUeIm · `Projects` 11zpcpqQ7c-jrvZcuum6QBQExh0pDC2l6 · `Company` 1mO2SsG0tUBcE_TtFttL0kd0hquzLli4K ·
@@ -35,7 +32,7 @@ Drive folder ids (for the Drive connector; writes go by id, never through the mo
 `Recibia` 1kcDJrNyr9uLmq6HulW2YJLpXlpETSS_e · `_archive` 18qXBUIl_9mvpKCbrIIVJI2oZJjDiy7yj · `Google Meet` (inbox) 1H4DeHYHvD6dOydFWxPcZDCTRy3JUTyZu ·
 «Información fiscal» (shared by francisco@, authoritative, invisible on the mount) 1yg_i2e4nJxEwa8I_2pKYQFc0p4lurPs9.
 
-Dormant, not cloned: Dany, Crédito (Drive `Projects/_archive/`). Memory for each repo is keyed by its path:
+Dormant, not cloned (clones removed 2026-10-29; `gh repo clone <org>/<repo> ~/Developer/<repo>` brings one back with its memory): ilsantino `dinpro-pricing` (DIN), `fulldata-bot-asistente` (Fulldata), `sentria-predictive-maintenance`, `iago-leadgen`, `iago-workspaces`; santifer `career-ops` (personal). Never cloned: Dany, Crédito (Drive `Projects/_archive/`). Memory for each repo is keyed by its path:
 `~/.claude/projects/-Users-alvarez-Developer-<repo>/memory/` (rsf's is a symlink into `rsf/_memory/claude/`).
 
 ## Where a new file goes
