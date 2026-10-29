@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # iaGO home setup for a Mac: one clone of iago-os + this script = Claude Code wired.
-# Idempotent. Copies the global settings, links skills/agents/rules into ~/.claude,
+# Idempotent. Copies the global settings and the two CLAUDE.md maps, links skills/agents/rules into ~/.claude,
 # and prints what it did. Run:  bash ~/Developer/iago-os/home/install-mac.sh
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -17,6 +17,9 @@ echo "settings.json -> $CL/settings.json"
 
 # 2. Global CLAUDE.md (the map Claude reads in every session).
 [ -f "$HERE/claude/CLAUDE.md" ] && cp "$HERE/claude/CLAUDE.md" "$CL/CLAUDE.md" && echo "CLAUDE.md -> $CL/CLAUDE.md"
+
+# 2b. ~/Developer/CLAUDE.md (the repo -> project -> Drive map, with Drive folder ids). Same copy model.
+[ -f "$HERE/developer/CLAUDE.md" ] && cp "$HERE/developer/CLAUDE.md" "$HOME/Developer/CLAUDE.md" && echo "CLAUDE.md -> $HOME/Developer/CLAUDE.md"
 
 # 3. Skills: every iago-* skill is a symlink into the repo (one copy, no drift).
 for s in "$IAGO"/.claude/skills/iago-*/; do ln -sfn "${s%/}" "$CL/skills/$(basename "$s")"; done
