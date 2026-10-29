@@ -59,7 +59,7 @@ Sentria PRs target its integration branch `sentria-qc` (promoted to `main` by PR
 ## Finder (set 2026-10-28)
 
 Sidebar Favorites, in order: **Developer** (this folder) · **Projects** (Drive `IAGO/Projects`) · **IAGO** (Drive `IAGO`, the
-whole company tree) · **Personal** (the sanalvcham@gmail.com My Drive) · **Downloads**, then Applications and Desktop. No
+whole company tree) · **Personal** (`My Drive/Personal/` in the santiago@iagoag.com Drive, since 2026-10-28; the gmail Drive is a legacy archive) · **Downloads**, then Applications and Desktop. No
 per-project favorites: lowercase `rsf`, `munet-web` are repos here; Capitalized `RSF`, `Munet` are Drive project folders.
 Path bar is on (View → Show Path Bar) so any window says where it is.
 Colours (set 2026-10-28, by kind, never by project): **red** = the two engagements being worked right now (RSF, Munet);
