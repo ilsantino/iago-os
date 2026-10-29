@@ -143,6 +143,8 @@ Obsidian vault: `clients/` and `meetings/` frozen since 27 Oct; `sessions/` dige
 
 **Evening pass 2 (2026-10-28):** A7 done for what Claude may do (iago-web #123 retargeted to `main`, munet-web #201 closed; merges stay Santiago's). A9 placed: the CV and the book-club recap moved to `My Drive/Personal/` with real titles, the AI-logo-prompt sheet trashed; «Control Assets - Entorno Lab» (gsheet + xlsx) and the 29-May screen recording stay in `_triage` (project unknown). RSF: five of the seven Gemini duplicates in `RSF/meetings/` trashed (the indexed `sessions/NN/` copies stay); the two «Dudas Rentabilidad FG» copies were refused by the permission classifier and remain. A10 (share `IAGO/` with sebastian@iagoag.com and francisco@iagoag.com) refused by the classifier: Santiago shares, or allows `share_file`. A6 needs Drive web (Chrome extension not connected). Colour scheme applied: Drive folder colours by kind + Finder tags on the repos (see `~/Developer/CLAUDE.md`, Finder section).
 
+**Evening pass 3 (2026-10-28):** Finder sidebar Tags trimmed to the five colours actually on disk (Red, Blue, Purple, Gray, Green; Orange only exists in Drive) via `defaults write com.apple.finder FavoriteTagNames`, Recent Tags hidden, Finder relaunched. The unused built-in tag definitions (Yellow, Orange, Home, Work, Important) cannot be deleted from the shell: Finder keeps no tag list on disk here (it runs on defaults) and UI scripting has no Accessibility access. Santiago deletes them in Finder › Settings › Tags (right-click › Delete Tag); nothing is tagged with them.
+
 **Original list, kept for the record:**
 
 Executable by Claude through the Drive connector on a "yes" (moves keep ids and links):
