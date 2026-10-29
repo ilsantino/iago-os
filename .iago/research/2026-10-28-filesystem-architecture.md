@@ -145,6 +145,8 @@ Obsidian vault: `clients/` and `meetings/` frozen since 27 Oct; `sessions/` dige
 
 **Evening pass 3 (2026-10-28):** Finder sidebar Tags trimmed to the five colours actually on disk (Red, Blue, Purple, Gray, Green; Orange only exists in Drive) via `defaults write com.apple.finder FavoriteTagNames`, Recent Tags hidden, Finder relaunched. The unused built-in tag definitions (Yellow, Orange, Home, Work, Important) cannot be deleted from the shell: Finder keeps no tag list on disk here (it runs on defaults) and UI scripting has no Accessibility access. Santiago deletes them in Finder › Settings › Tags (right-click › Delete Tag); nothing is tagged with them.
 
+**Evening pass 4 (2026-10-28):** colour scheme reduced on Santiago's request (by-kind colours read as noise). Project folders, Company, Content, Reference, Backups, `_archive`, `_triage`, Google Meet and `IAGO` itself reset to default gray; all repo Finder tags removed and the sidebar Tags list emptied. Colour now marks documents only: 13 live `deliverables/` folders blue (nine projects, Absara, Vaqueras, `Company/web`) and four `received/` folders orange (Munet, DIN, Vantek, Absara); `My Drive/Personal/` stays green. The copies under `Backups/iaGO-backup/` and `_archive/Credito/` were left uncoloured on purpose.
+
 **Original list, kept for the record:**
 
 Executable by Claude through the Drive connector on a "yes" (moves keep ids and links):

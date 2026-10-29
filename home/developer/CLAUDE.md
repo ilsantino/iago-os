@@ -62,9 +62,5 @@ Sidebar Favorites, in order: **Developer** (this folder) · **Projects** (Drive 
 whole company tree) · **Personal** (`My Drive/Personal/` in the santiago@iagoag.com Drive, since 2026-10-28; the gmail Drive is a legacy archive) · **Downloads**, then Applications and Desktop. No
 per-project favorites: lowercase `rsf`, `munet-web` are repos here; Capitalized `RSF`, `Munet` are Drive project folders.
 Path bar is on (View → Show Path Bar) so any window says where it is.
-Colours (set 2026-10-28, by kind, never by project): **red** = the two engagements being worked right now (RSF, Munet);
-**blue** = client products; **purple** = iaGO's own (Company, Recibia, iago-*, obsidian-brain); **orange** = Content;
-**gray** = Reference, Backups, `_archive`, `_triage`, Google Meet, paused repos; **green** = personal. Drive folders carry
-the colour natively (Drive web + Finder); repos carry it as a Finder tag (`xattr com.apple.metadata:_kMDItemUserTags`).
-When focus changes, recolour the two red folders and tags, nothing else. Full guide: Drive `IAGO/README.md` and
+Colours (reset 2026-10-28 evening): folders are uncoloured by default. Only three carry a colour, all in Drive: **blue** = every `deliverables/` folder (what iaGO sent: decks, proposals, cotizaciones, guides), **orange** = every `received/` folder (what the client sent), **green** = `My Drive/Personal/`. No colour on projects, Company, Content, Reference or repos; no Finder tags (sidebar Tags list emptied). A new `deliverables/` or `received/` folder gets its colour when created (`update_file folderColorRgb` #4986e7 / #ff7537); nothing else is ever recoloured. Full guide: Drive `IAGO/README.md` and
 `iago-os/.iago/research/2026-10-28-filesystem-architecture.md`.
