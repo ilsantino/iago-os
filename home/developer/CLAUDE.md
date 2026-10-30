@@ -29,10 +29,10 @@ Drive folder ids (for the Drive connector; writes go by id, never through the mo
 `Sentria` 1mFaMHthRZ3Ez893swcQ51sktygiUAuTj · `Munet` 1r8BQIkbhZPgCbD99s0PBoY19tuvit7u9 · `RSF` 1zPcEqDb64pfx_KeOw1C1inhaLidGaLSD ·
 `Scientia` 1Xy75wolpkL0WOt6J3RKjSliPN6ydzNNo · `Valorarrend` 1_zsjcA9va5GEWI-ler0b9QsFNzm3-Oxt · `Vantek` 1ndHpYcSWeJC5M1cgctB-VuqLaAjAultm ·
 `DIN` 1BkfNHEBfkkK69LZOvaOtEYHFonPMhLE_ · `Fulldata` 1ODUPEdHn6SEzySgwRH_J88eJLdmptt7k · `Palazuelos` 1SCrHjXPnfh9DOsnJCWBQCk6vVVKTlosF ·
-`Recibia` 1kcDJrNyr9uLmq6HulW2YJLpXlpETSS_e · `_archive` 18qXBUIl_9mvpKCbrIIVJI2oZJjDiy7yj · `Google Meet` (inbox) 1H4DeHYHvD6dOydFWxPcZDCTRy3JUTyZu ·
+`Recibia` 1kcDJrNyr9uLmq6HulW2YJLpXlpETSS_e · `Credito` 1rrDqbtoLZolIY9fGUzhdcCQwmGjDs23t · `_archive` 18qXBUIl_9mvpKCbrIIVJI2oZJjDiy7yj · `Google Meet` (inbox) 1H4DeHYHvD6dOydFWxPcZDCTRy3JUTyZu ·
 «Información fiscal» (shared by francisco@, authoritative, invisible on the mount) 1yg_i2e4nJxEwa8I_2pKYQFc0p4lurPs9.
 
-Dormant, not cloned (clones removed 2026-10-29; `gh repo clone <org>/<repo> ~/Developer/<repo>` brings one back with its memory): ilsantino `dinpro-pricing` (DIN), `fulldata-bot-asistente` (Fulldata), `sentria-predictive-maintenance`, `iago-leadgen`, `iago-workspaces`; santifer `career-ops` (personal). Never cloned: Dany, Crédito (Drive `Projects/_archive/`). Memory for each repo is keyed by its path:
+Dormant, not cloned (clones removed 2026-10-29; `gh repo clone <org>/<repo> ~/Developer/<repo>` brings one back with its memory): ilsantino `dinpro-pricing` (DIN), `fulldata-bot-asistente` (Fulldata), `sentria-predictive-maintenance`, `iago-leadgen`, `iago-workspaces`; santifer `career-ops` (personal). Never cloned: Dany (Drive `Projects/_archive/`), Crédito (Drive `Projects/Credito/`, active since 2026-10-29; no repo yet, planning history in `Backups/iaGO-backup/credito/workspace.bundle`). Memory for each repo is keyed by its path:
 `~/.claude/projects/-Users-alvarez-Developer-<repo>/memory/` (rsf's is a symlink into `rsf/_memory/claude/`).
 
 ## Where a new file goes
