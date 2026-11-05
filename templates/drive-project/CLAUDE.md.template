@@ -1,0 +1,7 @@
+# {{Project}} (Drive project folder) — read README.md first
+
+This is the client-material folder for {{Project}}, not the code. Code, plans and STATE: `~/Developer/{{repo}}` (GitHub {{org}}/{{repo}}) → `.iago/STATE.md`.
+Rules: `~/Developer/CLAUDE.md` (repo ↔ project map) and Drive `IAGO/README.md` (where everything lives).
+Create, move or rename files here through the Drive connector by id (this folder: `{{drive_folder_id}}`), never through this mount: it lags and creates duplicates. Overwriting the content of an existing file through the mount is fine.
+Dated folders are `YYYY-MM-slug` or `YYYY-MM-DD-slug`. Deliverables are built in the repo; this folder keeps the copy the client received.
+English on disk; Spanish only in what the client receives.

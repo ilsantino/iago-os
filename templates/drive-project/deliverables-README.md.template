@@ -1,0 +1,7 @@
+# {{Project}} — deliverables index
+
+One row per send, newest first. The dated folder holds the copy the client received; the repo (`~/Developer/{{repo}}`) builds it.
+
+| Folder | What | Sent to | Notes |
+|---|---|---|---|
+| `{{YYYY-MM-slug}}/` | {{files}} | {{client / contact}} | {{channel, version, follow-ups}} |

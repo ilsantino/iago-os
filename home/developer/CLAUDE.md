@@ -10,7 +10,7 @@ Google Drive under `My Drive/IAGO/Projects/<Project>/`. Nothing is duplicated be
 |---|---|---|---|
 | `sentria/` | bas-labs/sentria (PRs → `sentria-qc`) | Sentria — industrial incident bot. Clients: Absara, Vaqueras | `Projects/Sentria/` (+ `clients/Absara`, `clients/Vaqueras`) |
 | `munet-web/` | bas-labs | MUNET — museum site, QR ticketing, POS | `Projects/Munet/` |
-| `rsf/` | ilsantino/ws-rsf | Red Sun Farms — Costos y rentabilidad engagement (documentation repo; its own `CONTEXT.md` → `STATE.md`) | `Projects/RSF/` (session material in `sessions/`, indexed in `rsf/FUENTES.md`) |
+| `rsf/` | local git, no remote since 3-nov-2026 (bundles in Drive `IAGO/Backups/`) | Red Sun Farms — Costos y rentabilidad engagement (documentation repo; its own `CONTEXT.md` → `STATE.md`) | `Projects/RSF/` (session material in `sessions/`, indexed in `rsf/FUENTES.md`) |
 | `rsf-flow-tool/` | bas-labs | RSF flow tool (paused since 2026-09-14) | `Projects/RSF/` |
 | `scientia-web/` | bas-labs | Scientia — law firm site rebuild | `Projects/Scientia/` |
 | `valorarrend-web/` | bas-labs | Valorarrend — site | `Projects/Valorarrend/` |
@@ -42,7 +42,7 @@ Dormant, not cloned (clones removed 2026-10-29; `gh repo clone <org>/<repo> ~/De
 | Code, tests, technical docs | the repo (`src/`, `docs/`) |
 | Plans, STATE, ROADMAP, runbooks, agent briefs, technical research, decisions | `<repo>/.iago/` (taxonomy: `iago-os/.iago/README.md`) |
 | Deliverable source (md, html, scripts) | `<repo>/.iago/` or `docs/`; the exported PDF/PPTX → Drive `Projects/<P>/deliverables/<YYYY-MM>-<slug>/` |
-| Received documents, contracts, proposals, meeting notes, business research, brand, media | Drive `Projects/<P>/` (`received/`, `deliverables/`, `meetings/`, `research/`, `brand/`, `media/`; `clients/<C>/…` when a product has several clients) |
+| Received documents, contracts, proposals, meeting notes, business research, brand, media | Drive `Projects/<P>/` (`received/`, `deliverables/` with an index README, `meetings/` as `YYYY-MM-DD-slug-notes-es`, `research/`, `internal/` for iaGO-only material, `brand/`, `media/{assets,captures,demos,_source}/`; `clients/<C>/…` when a product has several clients). Conventions and template: Drive `Projects/README.md`, `iago-os/templates/drive-project/` |
 | Company docs, decks, legal, brand | Drive `Company/`; marketing content → `Content/`; corpora and courses → `Reference/` |
 | Secrets | 1Password → gitignored `.env` in the repo. Never in Drive, never in git |
 | Session digests, cross-project decisions, people | `obsidian-brain/` via the Obsidian MCP |

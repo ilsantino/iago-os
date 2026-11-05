@@ -1,0 +1,43 @@
+# {{Project}} — {{one line: what it is, who the client is}}
+
+Code and status: `~/Developer/{{repo}}` (GitHub {{org}}/{{repo}}) → `.iago/STATE.md`.
+Drive folder id: `{{drive_folder_id}}`. Writes go through the Drive connector by id, never through the Finder mount.
+
+## I want to … → open
+
+| Need | Open |
+|---|---|
+| The last thing we sent the client | `deliverables/README.md` (index), then the dated folder |
+| What the client sent us | `received/` |
+| What was said in a meeting | `meetings/YYYY-MM-DD-slug-notes-es` |
+| Pre-sales / business research | `research/YYYY-MM-slug/` |
+| iaGO-only working notes | `internal/YYYY-MM-slug/` |
+| Logo, palette, fonts | `brand/` |
+| Paperwork we sent (CSF, alta de proveedor) | `admin/` (sensitive) |
+
+## Folders
+
+| Folder | What goes here |
+|---|---|
+| `deliverables/` | Index in `README.md`. {{dated folders}} |
+| `received/` | {{what the client sent, or "Not created yet"}} |
+| `meetings/` | {{files, or "Not created yet"}} |
+| `research/` | {{dated folders}} |
+| `internal/` | {{dated folders}} |
+| `media/` | `assets/` · `captures/` · `demos/` · `_source/` |
+| `brand/` | `logo/`, `palette/`, `typography.md` |
+| `admin/` | {{dated folders}}. Sensitive. |
+
+## Done looks like
+
+A deliverable is done when the exported PDF/PPTX/DOCX is in `deliverables/YYYY-MM-slug/`, the index README has the row (what, sent to, notes) and the repo STATE.md records the send.
+
+## What NOT to do
+
+- Do not edit deliverables here; rebuild in the repo and re-export.
+- Do not copy `received/` material into the repo.
+- Do not file plans, runbooks or technical research here: they belong in `<repo>/.iago/`.
+
+## Log
+
+- {{YYYY-MM-DD}} Folder created from `iago-os/templates/drive-project/`.
