@@ -22,10 +22,13 @@ English for everything written to disk or handed to an agent: code, comments, co
 
 Measure with `python3 ~/.claude/scripts/usage-audit.py --detail` (zero tokens). Playbook: `~/.claude/playbooks/claude-operating-playbook.md`.
 
-**Model by complexity** — Opus 5 high is the default:
-- Mechanical (move/rename, format, run-and-report, commit/PR) and read/extract (docs, frames, web, criteria-based triage) → `sonnet`.
-- Build and judge (coordinate, implement, review, debug, reconcile, draft) → `opus`; xhigh only for a bug that survived 2 fixes or a real architecture trade-off.
-- Plan and synthesize (phase or engagement plans, features with 4+ tasks, agent briefs, final synthesis, expensive-if-wrong decisions) → `fable`, in a fresh session fed curated inputs (≤150k). Never for reading, fan-out, coordination or status. NEVER as the model of a subagent, Workflow script, background task or scheduled routine: those are always `sonnet` or `opus`.
+**Model by complexity (principles set 2026-11-09)** — the least expensive model that reliably completes the task. Opus 5.5 is the upper-tier default; Fable is not a default for anything:
+- Simple operations, extraction, classification, repetitive or bulk execution → `haiku`.
+- Standard coding, integrations, documentation, mechanical work (move/rename, format, run-and-report, commit/PR/tag), read/extract and criteria-based triage → `sonnet`.
+- Complex development, debugging, analysis, implementation, review, coordination and most planning (phase plans, feature plans, agent briefs, drafts, syntheses) → `opus`; xhigh only for a bug that survived 2 fixes or a real architecture trade-off.
+- `fable` only for exceptional, bounded, high-complexity planning and problem-solving: advanced system architecture, a hard problem that resisted Opus, complex workflow design, a critical expensive-if-wrong technical decision. Fresh session, curated inputs (≤150k), one line stating why Fable first. Multiple steps, a 4+-task feature or "it is planning" do not by themselves justify it. Never for reading, fan-out, coordination, status or routine execution; NEVER as the model of a subagent, Workflow script, background task, scheduled routine or runtime agent: those are always `sonnet` or `opus`.
+
+**Execution principles:** keep planning and orchestration design apart from execution; prefer one capable model to a multi-agent architecture unless the agents' inputs are truly independent; escalate to a stronger model only when complexity, uncertainty or failure risk justifies it; optimize cost per successfully completed task, not token count alone; no model switching, delegation or layering the task does not need. Apply this without being told which model to use.
 
 **Agents — as many as the task needs, none beyond that:**
 - Every Agent call sets `model` explicitly; never inherit the session model.

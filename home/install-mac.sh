@@ -18,6 +18,9 @@ echo "settings.json -> $CL/settings.json"
 # 2. Global CLAUDE.md (the map Claude reads in every session).
 [ -f "$HERE/claude/CLAUDE.md" ] && cp "$HERE/claude/CLAUDE.md" "$CL/CLAUDE.md" && echo "CLAUDE.md -> $CL/CLAUDE.md"
 
+# 2a. The operating playbook (model table, cases, launch lines; referenced from CLAUDE.md, not auto-loaded).
+[ -f "$HERE/claude/playbooks/claude-operating-playbook.md" ] && cp "$HERE/claude/playbooks/claude-operating-playbook.md" "$CL/playbooks/claude-operating-playbook.md" && echo "playbook -> $CL/playbooks/"
+
 # 2b. ~/Developer/CLAUDE.md (the repo -> project -> Drive map, with Drive folder ids). Same copy model.
 [ -f "$HERE/developer/CLAUDE.md" ] && cp "$HERE/developer/CLAUDE.md" "$HOME/Developer/CLAUDE.md" && echo "CLAUDE.md -> $HOME/Developer/CLAUDE.md"
 
