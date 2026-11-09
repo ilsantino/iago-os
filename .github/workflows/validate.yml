@@ -80,6 +80,8 @@ jobs:
         run: node .claude/workflows/execute-pipeline.test.mjs
       - name: dual-adversarial behavioral tests
         run: node .claude/workflows/dual-adversarial.test.mjs
+      - name: dual-adversarial-fix behavioral tests
+        run: node .claude/workflows/dual-adversarial-fix.test.mjs
 
   runtime-checks:
     name: Runtime (typecheck + tests)
