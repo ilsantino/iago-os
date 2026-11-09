@@ -29,7 +29,8 @@ same five questions itself, reading the plan against the code.
 ```
 
 If the argument ends in `.md`, treat it as a single plan. Otherwise it names a plan
-folder: `.iago/plans/{arg}/` (e.g. `feature-mantenimiento-catalogo`, `01-auth`), then
+folder: the argument itself if it is a directory (e.g. `.iago/plans/feature-x/`), then
+`.iago/plans/{arg}/` (e.g. `feature-mantenimiento-catalogo`, `01-auth`), then
 `.iago/plans/feature-{arg}/`, then the legacy flat files `.iago/plans/{arg}-*.md`.
 
 `--deep` and `--force` are composable.
@@ -77,6 +78,10 @@ flag if clearly better, not just different.
 
 **5. MISSING ACCEPTANCE CRITERIA** — How would you verify the implementation
 works? If the plan doesn't specify, the implementer will guess. Flag gaps.
+
+Tag each finding **BLOCK** (implementation would be fundamentally wrong),
+**IMPORTANT** (fix before execution) or **NOTE** (worth knowing). The fold in
+step 4 works on these tags.
 
 Agent must end with exactly one verdict:
 

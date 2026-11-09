@@ -69,8 +69,12 @@ Keep under 150 words per peer review.
 One `analyst` agent with `model: "opus"` gets: plan, all 5 de-anonymized reviews,
 all 5 peer reviews. Produces:
 
+The heading stays `## Stress Test`, so the skill's own skip check and the
+`grep '^## Stress Test'` in `/iago-execute` and `/iago-quick` recognize it; the
+`Mode` line marks it as a council run.
+
 ```
-## Deep Stress Test
+## Stress Test
 
 **Verdict:** {PROCEED | PROCEED_WITH_NOTES | BLOCK}
 **Date:** {YYYY-MM-DD}
