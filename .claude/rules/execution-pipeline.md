@@ -58,10 +58,10 @@ After CI reports CLEAN, run the final pre-merge gate in-session:
 
 ```
 Workflow({ scriptPath: "<IAGO_ROOT>/.claude/workflows/dual-adversarial.js",
-           args: { projectDir, iagoRoot, base: "origin/<PR base branch>", prNumber, mode } })
+           args: { projectDir, iagoRoot, base: "origin/main", prNumber, mode } })
 ```
 
-`base` is the PR's own base (`gh pr view <n> --json baseRefName`): `origin/sentria-qc` for Sentria, `origin/main` only where PRs target `main`. A wrong base sweeps unpromoted commits into the three-dot diff. Pass `mode` explicitly — omitting it silently runs the thinner STANDARD gate (no team legs, no skeptic verification). Depth by risk: `mode: "team"` for diffs touching auth/payments/data-integrity/tenancy/infra; `mode: "standard"` for UI/visual/content-only diffs. Omit `lenses` (auto-derived). Read-only. `clean` → tell Santiago safe to merge; `blocking > 0` → surface findings, offer `/iago-prfix`. **Never merge** — Santiago merges.
+Pass `mode` explicitly — omitting it silently runs the thinner STANDARD gate (no team legs, no skeptic verification). Depth by risk: `mode: "team"` for diffs touching auth/payments/data-integrity/tenancy/infra; `mode: "standard"` for UI/visual/content-only diffs. Omit `lenses` (auto-derived). Read-only. `clean` → tell Santiago safe to merge; `blocking > 0` → surface findings, offer `/iago-prfix`. **Never merge** — Santiago merges.
 
 ## Plan archive convention
 

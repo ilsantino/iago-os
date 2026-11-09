@@ -3,35 +3,27 @@ name: iago-stress
 description: >-
   Adversarially stress-test a plan before execution. Finds precision gaps, edge
   cases, contradictions, simpler alternatives, and missing acceptance criteria.
-  Use on any plan file or all plans in a phase or feature folder, in the plan's
-  own conversation, before executing it. Not when the plan already has a
-  ## Stress Test section (unless --force).
+  Use on any plan file or all plans in a phase. Not when executing (pipeline
+  step 0 handles it) or when plan already has a ## Stress Test section.
 ---
 
 ## Purpose
 
 Run a 5-dimension adversarial review on a plan BEFORE execution. Catches flaws
 that would waste implementation time. Embeds findings as a `## Stress Test`
-section in the plan file, so the record travels with the plan (and `/iago-execute`'s
-step 0, where that pipeline is used, skips a plan that already has one).
-
-The skill is a convenience, not a dependency: the five dimensions below are the
-whole method. If the skill is unavailable, the session that owns the plan runs the
-same five questions itself, reading the plan against the code.
+section in the plan file, so the pipeline's step 0 auto-skips — no double work.
 
 ## Arguments
 
 ```
 /iago-stress {plan-path}           — stress-test a single plan
-/iago-stress {folder-or-slug}      — stress-test every plan in a feature or phase folder
+/iago-stress {phase-slug}          — stress-test all plans in a phase
 /iago-stress {plan-path} --force   — re-stress-test even if section exists
 /iago-stress {plan-path} --deep    — council-style multi-lens stress test (5 reviewers + peer review + synthesis)
 ```
 
-If the argument ends in `.md`, treat it as a single plan. Otherwise it names a plan
-folder: the argument itself if it is a directory (e.g. `.iago/plans/feature-x/`), then
-`.iago/plans/{arg}/` (e.g. `feature-mantenimiento-catalogo`, `01-auth`), then
-`.iago/plans/feature-{arg}/`, then the legacy flat files `.iago/plans/{arg}-*.md`.
+If argument looks like a file path (contains `/` or `.md`), treat as single plan.
+Otherwise, treat as phase slug and glob `.iago/plans/{slug}-*.md`.
 
 `--deep` and `--force` are composable.
 
@@ -40,21 +32,15 @@ folder: the argument itself if it is a directory (e.g. `.iago/plans/feature-x/`)
 ### 1. Resolve targets
 
 - **Single plan:** Verify the file exists. If not, STOP: "Plan not found: {path}"
-- **Folder or slug:** Glob `*.md` in the first folder above that exists, excluding
-  `README.md`; otherwise the legacy flat glob. If no matches, STOP: "No plans found for {arg}"
+- **Phase slug:** Glob `.iago/plans/{NN}-{slug}-*.md`. If no matches, STOP: "No plans found for phase {slug}"
 - For each plan, check if `## Stress Test` section already exists. Skip unless `--force`.
 
 ### 2. Stress-test each plan (standard mode — default)
 
 If `--deep` is NOT set, use the standard single-pass approach:
 
-For each plan file, dispatch an `analyst` agent with `model: "opus"` set on the
-call (the `analyst` definition defaults to sonnet) and read-only tools (`Read`,
-`Glob`, `Grep`). The agent reviews the PLAN, reading the code it names to check it.
-
-Review against the code the plan will actually land on: when the plan depends on
-other plans, run it after they have merged into the integration branch, from a
-checkout of that branch, not against an older base.
+For each plan file, dispatch an `analyst` agent (opus) with read-only tools
+(`Read`, `Glob`, `Grep`). The agent reviews the PLAN — not code.
 
 Prompt the agent with these 5 dimensions:
 
@@ -68,9 +54,7 @@ values, first-use vs returning-user, network failures.
 
 **3. CONTRADICTIONS** — Does the plan conflict with patterns in the codebase,
 rules in CLAUDE.md, or architectural decisions? Read relevant source files to
-verify. Check that every file, function, field and line the plan cites exists as
-described on the current base; a plan written before its dependencies were built
-names things that may have moved, been renamed or been built differently.
+verify.
 
 **4. SIMPLER ALTERNATIVES** — Is there a fundamentally different approach with
 less complexity, fewer files, or better alignment with existing patterns? Only
@@ -78,10 +62,6 @@ flag if clearly better, not just different.
 
 **5. MISSING ACCEPTANCE CRITERIA** — How would you verify the implementation
 works? If the plan doesn't specify, the implementer will guess. Flag gaps.
-
-Tag each finding **BLOCK** (implementation would be fundamentally wrong),
-**IMPORTANT** (fix before execution) or **NOTE** (worth knowing). The fold in
-step 4 works on these tags.
 
 Agent must end with exactly one verdict:
 
@@ -93,9 +73,95 @@ VERDICT: BLOCK — critical flaw that would make implementation fundamentally wr
 
 ### 2b. Council-style stress test (`--deep` flag)
 
-Only when the user passes `--deep`: five lens reviewers, anonymous peer review and a
-chairman synthesis, 11 agents over the same plan. Follow `references/deep.md`. Never
-choose it yourself; the standard pass is the default for every plan.
+If `--deep` IS set, run a council-style multi-lens stress test per plan.
+This is the heavy-duty path — 5 independent reviewers + anonymous peer review +
+chairman synthesis. Use for high-stakes plans where being wrong is expensive.
+
+**Phase A — Convene 5 reviewers (parallel)**
+
+Spawn 5 `analyst` agents simultaneously. Each gets the plan file, CLAUDE.md,
+and relevant source files. Each owns ONE lens:
+
+| # | Reviewer | Lens |
+|---|----------|------|
+| 1 | **Security/Auth** | Auth bypass, data exposure, injection, token handling, permission gaps. Assumes attacker perspective. |
+| 2 | **Failure Modes** | Edge cases, race conditions, rollback safety, error paths, cascading failures. What breaks under stress? |
+| 3 | **Simplicity** | YAGNI, over-engineering, unnecessary abstractions, simpler alternatives. Is the plan doing too much? |
+| 4 | **Consumer** | API ergonomics, DX, caller assumptions, unclear interfaces. How would someone consuming this code feel? |
+| 5 | **Feasibility** | Ambiguous instructions, missing details, contradictions with codebase. Can this be built exactly as written? |
+
+Each reviewer prompt:
+
+```
+You are the {Reviewer Name} on a plan stress-test council.
+
+Your lens: {reviewer description}
+
+Review this plan:
+---
+{plan content}
+---
+
+Project context:
+{CLAUDE.md relevant sections}
+
+Source files referenced by the plan:
+{read and include relevant source files}
+
+Analyze the plan ONLY through your assigned lens. Be direct and specific.
+Don't hedge. Quote specific lines from the plan when flagging issues.
+Other reviewers cover the angles you're not covering.
+
+For each finding, assign severity:
+- **BLOCK** — implementation would be fundamentally wrong
+- **IMPORTANT** — significant issue that should be fixed before execution
+- **NOTE** — worth knowing but won't derail implementation
+
+Keep your response between 200-400 words. Findings only, no filler.
+End with: FINDINGS: {count} (B:{blocks} I:{important} N:{notes})
+```
+
+**Phase B — Anonymous peer review (parallel)**
+
+Collect all 5 reviewer responses. Anonymize as Review A-E (randomize mapping).
+Spawn 5 new `analyst` agents. Each sees all 5 anonymized reviews and answers:
+
+1. Which review caught the most critical issue? Why?
+2. Which review has a blind spot — what did it miss within its own lens?
+3. What did ALL reviews miss that could bite the implementation?
+
+Keep under 150 words per peer review.
+
+**Phase C — Chairman synthesis**
+
+One `analyst` agent (opus) gets: plan, all 5 de-anonymized reviews, all 5 peer
+reviews. Produces:
+
+```
+## Deep Stress Test
+
+**Verdict:** {PROCEED | PROCEED_WITH_NOTES | BLOCK}
+**Date:** {YYYY-MM-DD}
+**Mode:** council (5 reviewers + peer review)
+
+### Consensus Findings
+{Issues multiple reviewers flagged independently — highest confidence}
+
+### Contested Findings
+{Disagreements between reviewers — present both sides}
+
+### Blind Spots Caught
+{Issues only surfaced through peer review}
+
+### Consolidated Findings
+{All unique findings, deduplicated, ordered by severity: BLOCK → IMPORTANT → NOTE}
+{For each: severity, source reviewer, description}
+```
+
+The chairman ends with the same verdict format:
+```
+VERDICT: PROCEED | PROCEED_WITH_NOTES | BLOCK
+```
 
 ### 3. Embed results in plan
 
@@ -112,7 +178,9 @@ section to the plan file (before `## Verification` if it exists, otherwise at en
 {Agent findings, grouped by dimension. Skip dimensions with no findings.}
 ```
 
-**Deep mode:** the chairman's full output, under the same `## Stress Test` heading.
+**Deep mode:**
+Use the chairman's full output (Consensus, Contested, Blind Spots, Consolidated).
+The pipeline's step 0 recognizes `## Stress Test` regardless of mode — no double work.
 
 ### 4. Report
 
@@ -125,25 +193,18 @@ Display a summary table:
 | {name} | PROCEED_WITH_NOTES | 3 |
 ```
 
-For BLOCK verdicts, quote the critical finding and say the plan needs revising
-before it is executed.
+For BLOCK verdicts, quote the critical finding and suggest: "Revise the plan
+before running `/iago-execute`."
 
-For BLOCK and PROCEED_WITH_NOTES, the findings are the reviewer's, not yet facts.
-Fold them before executing: verify each BLOCK and IMPORTANT finding against the
-code, rewrite the plan text wherever a finding is confirmed, add a dated
-`> **Amended YYYY-MM-DD (stress)**` note at the top of the plan, and put a
-`**Disposition (YYYY-MM-DD):**` line under the verdict saying what was folded and
-what was rejected and why. When several plans were stressed together, check the
-folded plans against each other.
+For PROCEED_WITH_NOTES, note: "Findings embedded in plan — implementation
+session will see them."
 
-For all PROCEED, say the plans are clean; with nothing to fold, add no Amended note
-or Disposition line. A `--force` re-run replaces the `## Stress Test` section;
-earlier `Amended` notes stay, and a new fold adds its own above them.
+For all PROCEED, suggest: "Plans are clean. Run `/iago-execute {slug}` when ready."
 
 ## Boundaries
 
 - Read-only analysis — never modify code, only the plan file (to embed findings)
 - BLOCK is advisory — the user decides whether to revise. The pipeline's step 0
   would hard-block, but standalone stress testing lets the user override.
-- Where `/iago-execute` is used, this pre-empts its step 0: if the section exists,
-  step 0 skips; if not, step 0 runs its own stress test.
+- Does not replace the pipeline's step 0 — it pre-empts it. If the section exists,
+  step 0 skips. If not, step 0 runs its own stress test.

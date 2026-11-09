@@ -1,6 +1,6 @@
 # iaGO-OS
 
-3-person AI consultancy (CEO Santiago and CTO Sebas, both on Mac). Stack fixed — `.claude/rules/stack.md`. Backend: AWS Amplify Gen 2 ONLY — never raw CloudFormation/CDK/SAM/Serverless (details: `.claude/rules/aws-amplify.md`).
+3-person AI consultancy (CEO Santiago/Windows, CTO Sebas/Mac). Stack fixed — `.claude/rules/stack.md`. Backend: AWS Amplify Gen 2 ONLY — never raw CloudFormation/CDK/SAM/Serverless (details: `.claude/rules/aws-amplify.md`).
 
 ## Doc routing — where new docs go
 Consult before any Write to a `.md` path. Heuristic: name the doc's primary reader (Claude in this repo / Claude in a client subtree / human via GitHub) — that names the location.
@@ -45,6 +45,6 @@ Every subagent ends with one status: **DONE** / **DONE_WITH_CONCERNS** (issues l
 During execution: only what the plan specifies; auto-fix bugs/imports/blockers; ASK before architectural changes. 3 failed fixes on the same issue → STOP, escalate; no 4th attempt without new information — consider `/codex:rescue` for a cross-model second opinion.
 
 ## Agents & Models
-Agent defs in `.claude/agents/`. Hub-and-spoke: only the orchestrator dispatches. Model routing (principles of 2026-11-09, `home/claude/CLAUDE.md`): orchestrator = session model, Opus 5.5 by default (Fable only for exceptional, bounded planning, never as a leg); every leg sets `model` explicitly; workflow legs — impl/review/fix/debug → Opus (keep existing pins), PR/commit/tag/mechanical → Sonnet; cross-model adversarial review → Codex GPT-5.5 (pinned in `~/.codex/config.toml`). Never blanket-inherit the session model for every leg.
+Agent defs in `.claude/agents/`. Hub-and-spoke: only the orchestrator dispatches. Model routing: orchestrator = session model (Fable); workflow legs — impl/review/fix/debug → Opus (keep existing pins), PR/commit/tag/mechanical → Sonnet; cross-model adversarial review → Codex GPT-5.5 (pinned in `~/.codex/config.toml`). Never blanket-inherit the session model for every leg.
 
 Path-scoped rules in `.claude/rules/` (tdd, react-vite, aws-amplify, e2e-testing, mcp-server-patterns, layer-triage, skill-authoring) auto-load on matching paths; the rest auto-load every session.
