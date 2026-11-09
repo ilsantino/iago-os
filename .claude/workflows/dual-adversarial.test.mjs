@@ -1167,5 +1167,40 @@ await test('auto-derive: empty/whitespace/comma-only lenses STRING is treated as
   }
 })
 
+// ── base is required: no silent origin/main fallback (PR #107 review) ──
+await test('missing or blank base throws before any agent runs (no silent origin/main fallback)', async () => {
+  // A defaulted base reviewed a Sentria PR (base sentria-qc) against origin/main, sweeping every
+  // unpromoted commit into the three-dot diff. The gate must refuse instead of guessing.
+  for (const bad of [undefined, null, '', '   ']) {
+    const h = makeHarness([])
+    const wf = buildWorkflow()
+    const { base: _omit, ...rest } = baseArgs
+    const args = bad === undefined ? rest : { ...rest, base: bad }
+    await assert.rejects(
+      () => wf(h.agent, h.parallel, null, h.log, h.phase, args, null, null),
+      /args\.base/,
+      `base ${JSON.stringify(bad)} must throw`,
+    )
+    assert.strictEqual(h.calls.length, 0, `base ${JSON.stringify(bad)}: no agent dispatched`)
+  }
+})
+
+await test('dual-adversarial-fix: missing or blank base throws before any agent runs', async () => {
+  const fixSrc = readFileSync(join(__dirname, 'dual-adversarial-fix.js'), 'utf8').replace(/export const meta/, 'const meta')
+  const build = () =>
+    new Function('agent', 'parallel', 'pipeline', 'log', 'phase', 'args', 'budget', 'workflow', `return (async () => {\n${fixSrc}\n})()`)
+  const findings = [{ severity: 'Important', summary: 's', file: 'f.js' }]
+  for (const bad of [undefined, null, '', '   ']) {
+    const h = makeHarness([])
+    const args = { projectDir: '/repo', iagoRoot: '/iago', findings, ...(bad === undefined ? {} : { base: bad }) }
+    await assert.rejects(
+      () => build()(h.agent, h.parallel, null, h.log, h.phase, args, null, null),
+      /args\.base/,
+      `base ${JSON.stringify(bad)} must throw`,
+    )
+    assert.strictEqual(h.calls.length, 0, `base ${JSON.stringify(bad)}: no agent dispatched`)
+  }
+})
+
 console.log(`\n${passed} passed, ${failed} failed`)
 process.exit(failed ? 1 : 0)

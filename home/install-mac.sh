@@ -27,6 +27,9 @@ echo "settings.json -> $CL/settings.json"
 # 3. Skills: every iago-* skill is a symlink into the repo (one copy, no drift).
 for s in "$IAGO"/.claude/skills/iago-*/; do ln -sfn "${s%/}" "$CL/skills/$(basename "$s")"; done
 echo "skills: $(ls -d "$CL"/skills/iago-* | wc -l | tr -d ' ') iago-* links"
+# Non-iago skills used from client repos (the pre-merge gate). Its workflows stay in iago-os;
+# the skill resolves them through $IAGO_OS_ROOT or ~/Developer/iago-os.
+for s in dual-adversarial; do ln -sfn "$IAGO/.claude/skills/$s" "$CL/skills/$s"; done
 
 # 4. Agents and rules.
 [ -L "$CL/agents" ] || { [ -e "$CL/agents" ] && mv "$CL/agents" "$CL/agents.pre-iago"; }

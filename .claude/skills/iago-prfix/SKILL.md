@@ -7,7 +7,8 @@ description: >-
 
 ## Purpose
 
-Fix every review comment on this branch's open PR to main. Tags @claude for a
+Fix every review comment on this branch's open PR, whatever its base (`main`,
+Sentria's `sentria-qc`, or a feature integration branch). Tags @claude for a
 REVIEW (not fix) — `claude.yml` reviews, then `claude-review-fix.yml` handles
 the automated fix → build → push → re-review loop (max 5 rounds).
 
@@ -24,7 +25,7 @@ Optional:
 
 - `gh` CLI must be authenticated.
 - If no PR numbers given and no `--all` flag: must be on a feature branch with
-  an open PR to main.
+  an open PR (any base).
 - The repo must have `.github/workflows/claude-review-fix.yml` installed.
 
 ## Steps
