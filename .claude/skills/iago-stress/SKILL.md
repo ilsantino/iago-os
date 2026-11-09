@@ -112,9 +112,7 @@ section to the plan file (before `## Verification` if it exists, otherwise at en
 {Agent findings, grouped by dimension. Skip dimensions with no findings.}
 ```
 
-**Deep mode:**
-Use the chairman's full output (Consensus, Contested, Blind Spots, Consolidated).
-The pipeline's step 0 recognizes `## Stress Test` regardless of mode — no double work.
+**Deep mode:** the chairman's full output, under the same `## Stress Test` heading.
 
 ### 4. Report
 
@@ -132,14 +130,15 @@ before it is executed.
 
 For BLOCK and PROCEED_WITH_NOTES, the findings are the reviewer's, not yet facts.
 Fold them before executing: verify each BLOCK and IMPORTANT finding against the
-code, rewrite the plan text where the finding holds, add a dated `> **Amended YYYY-MM-DD
-(stress)**` note at the top of the plan, and put a `**Disposition (YYYY-MM-DD):**`
-line under the verdict saying what was folded and what was rejected and why. When
-several plans were stressed together, check the folded plans against each other.
+code, rewrite the plan text wherever a finding is confirmed, add a dated
+`> **Amended YYYY-MM-DD (stress)**` note at the top of the plan, and put a
+`**Disposition (YYYY-MM-DD):**` line under the verdict saying what was folded and
+what was rejected and why. When several plans were stressed together, check the
+folded plans against each other.
 
-For all PROCEED, say the plans are clean and can be executed; the plan still gets a
-`**Disposition (YYYY-MM-DD):**` line stating no amendments. A `--force` re-run replaces
-the previous `Amended` note and Disposition line instead of stacking a second one.
+For all PROCEED, say the plans are clean; with nothing to fold, add no Amended note
+or Disposition line. A `--force` re-run replaces the `## Stress Test` section;
+earlier `Amended` notes stay, and a new fold adds its own above them.
 
 ## Boundaries
 

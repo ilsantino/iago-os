@@ -1167,18 +1167,22 @@ await test('auto-derive: empty/whitespace/comma-only lenses STRING is treated as
   }
 })
 
-await test('missing args.base throws — no silent origin/main default', async () => {
-  const h = makeHarness([])
-  const wf = buildWorkflow()
-  const { base: _omit, ...noBase } = baseArgs
-  let msg = ''
-  try {
-    await wf(h.agent, h.parallel, null, h.log, h.phase, { ...noBase }, null, null)
-  } catch (e) {
-    msg = e.message
+// ── base is required: no silent origin/main fallback (PR #107 review) ──
+await test('missing or blank base throws before any agent runs (no silent origin/main fallback)', async () => {
+  // A defaulted base reviewed a Sentria PR (base sentria-qc) against origin/main, sweeping every
+  // unpromoted commit into the three-dot diff. The gate must refuse instead of guessing.
+  for (const bad of [undefined, null, '', '   ']) {
+    const h = makeHarness([])
+    const wf = buildWorkflow()
+    const { base: _omit, ...rest } = baseArgs
+    const args = bad === undefined ? rest : { ...rest, base: bad }
+    await assert.rejects(
+      () => wf(h.agent, h.parallel, null, h.log, h.phase, args, null, null),
+      /args\.base/,
+      `base ${JSON.stringify(bad)} must throw`,
+    )
+    assert.strictEqual(h.calls.length, 0, `base ${JSON.stringify(bad)}: no agent dispatched`)
   }
-  assert.ok(/args\.base/.test(msg), 'throws naming args.base')
-  assert.strictEqual(h.calls.length, 0, 'no agent dispatched before the guard')
 })
 
 console.log(`\n${passed} passed, ${failed} failed`)

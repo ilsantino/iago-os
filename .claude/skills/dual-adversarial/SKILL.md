@@ -45,7 +45,7 @@ Santiago merges.**
    **DEFAULT (no flags).** Invoke the Workflow once, with `lenses` OMITTED so it
    auto-derives from the changed-file paths, `mode: "team"`, and report-only:
    ```
-   Workflow({ scriptPath: "<iagoRoot>/.claude/workflows/dual-adversarial.js",
+   Workflow({ scriptPath: "<iagoRoot>/.claude/workflows/dual-adversarial.js",  // iagoRoot as resolved in step 1, never the client repo
               args: { projectDir, iagoRoot, base, prNumber, mode: "team" } })
    ```
    With `lenses` absent (or the literal string `"auto"`), the Workflow derives the extra

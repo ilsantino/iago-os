@@ -36,7 +36,7 @@ async function withRetry(fn, label, tries = 2) {
   return null
 }
 
-// args = { projectDir (required), base (required, e.g. "origin/main" or PR base branch),
+// args = { projectDir (required), base (required, no default: the PR's base, e.g. "origin/sentria-qc"),
 //          iagoRoot (required), prNumber (optional, context only),
 //          lenses (optional — extra independent lenses: array | csv | {key:true} map.
 //            ABSENT/null/undefined or the literal string "auto" → the lenses AUTO-DERIVE
@@ -58,7 +58,9 @@ function parseArgs(a) {
 }
 const A = parseArgs(args)
 const projectDir = A.projectDir
-const base = A.base
+// No default: a guessed origin/main reviews a PR into sentria-qc (or any non-main base)
+// against the wrong branch and sweeps unpromoted commits into the diff. Fail loud below.
+const base = typeof A.base === 'string' ? A.base.trim() : ''
 const iagoRoot = A.iagoRoot // no personal-path default — fail loud (resolves review-checks)
 const prNumber = A.prNumber || ''
 // When the execution pipeline DELEGATES a Tier 2/3 review to this team gate (runDualAdversarial),
@@ -78,8 +80,11 @@ const mode = A.mode === 'team' ? 'team' : 'standard'
 // would otherwise spawn 2×N skeptics per round. Caller (execute-pipeline) passes skepticCap.
 const SKEPTIC_CAP_DEFAULT = 8
 const skepticCap = Number.isInteger(A.skepticCap) && A.skepticCap > 0 ? A.skepticCap : SKEPTIC_CAP_DEFAULT
-if (!projectDir || !iagoRoot || !base) {
-  throw new Error('dual-adversarial requires args.projectDir, args.iagoRoot (absolute paths) and args.base (e.g. "origin/main" or the PR base branch — no default)')
+if (!projectDir || !iagoRoot) {
+  throw new Error('dual-adversarial requires args.projectDir and args.iagoRoot (absolute paths)')
+}
+if (!base) {
+  throw new Error('dual-adversarial requires args.base: the branch the PR merges into (e.g. origin/main, origin/sentria-qc) — there is no default')
 }
 
 const FINDING = {
