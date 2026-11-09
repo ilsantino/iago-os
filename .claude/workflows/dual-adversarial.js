@@ -58,7 +58,7 @@ function parseArgs(a) {
 }
 const A = parseArgs(args)
 const projectDir = A.projectDir
-const base = A.base || 'origin/main'
+const base = A.base
 const iagoRoot = A.iagoRoot // no personal-path default — fail loud (resolves review-checks)
 const prNumber = A.prNumber || ''
 // When the execution pipeline DELEGATES a Tier 2/3 review to this team gate (runDualAdversarial),
@@ -78,8 +78,8 @@ const mode = A.mode === 'team' ? 'team' : 'standard'
 // would otherwise spawn 2×N skeptics per round. Caller (execute-pipeline) passes skepticCap.
 const SKEPTIC_CAP_DEFAULT = 8
 const skepticCap = Number.isInteger(A.skepticCap) && A.skepticCap > 0 ? A.skepticCap : SKEPTIC_CAP_DEFAULT
-if (!projectDir || !iagoRoot) {
-  throw new Error('dual-adversarial requires args.projectDir and args.iagoRoot (absolute paths)')
+if (!projectDir || !iagoRoot || !base) {
+  throw new Error('dual-adversarial requires args.projectDir, args.iagoRoot (absolute paths) and args.base (e.g. "origin/main" or the PR base branch — no default)')
 }
 
 const FINDING = {

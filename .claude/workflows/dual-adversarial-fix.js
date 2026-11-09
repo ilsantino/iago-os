@@ -7,7 +7,7 @@ export const meta = {
   phases: [{ title: 'Fix' }, { title: 'Build gate' }],
 }
 
-// args = { projectDir (required), iagoRoot (required), base (default "origin/main"),
+// args = { projectDir (required), iagoRoot (required), base (required, no default),
 //          findings (array of {severity,summary,file}), maxRounds (default 2) }
 // args may arrive parsed OR as a JSON string in this harness build — normalize both
 // (matches dual-adversarial.js / execute-pipeline.js: the runtime has delivered args
@@ -28,7 +28,7 @@ function parseArgs(a) {
 const A = parseArgs(args)
 const projectDir = A.projectDir
 const iagoRoot = A.iagoRoot // no personal-path default — fail loud (resolves review-checks)
-const base = A.base || 'origin/main'
+const base = A.base
 const findings = Array.isArray(A.findings) ? A.findings : []
 // maxRounds caps the fix→re-gate cycle. The SKILL re-runs the read-only gate between
 // invocations; this value is forwarded into the fix prompt for the agent's awareness
@@ -40,8 +40,8 @@ const maxRounds = Math.min(2, Math.max(1, Number(A.maxRounds) || 2))
 // machine). Empty findings is a programming error: this workflow only ever runs when
 // the gate produced confirmed blocking findings — a zero-finding invocation would
 // dispatch a write-capable agent with nothing to fix, so refuse it.
-if (!projectDir || !iagoRoot) {
-  throw new Error('dual-adversarial-fix requires args.projectDir and args.iagoRoot (absolute paths)')
+if (!projectDir || !iagoRoot || !base) {
+  throw new Error('dual-adversarial-fix requires args.projectDir, args.iagoRoot (absolute paths) and args.base (no default)')
 }
 if (findings.length === 0) {
   throw new Error(

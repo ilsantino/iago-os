@@ -45,7 +45,7 @@ Santiago merges.**
    **DEFAULT (no flags).** Invoke the Workflow once, with `lenses` OMITTED so it
    auto-derives from the changed-file paths, `mode: "team"`, and report-only:
    ```
-   Workflow({ scriptPath: "<IAGO_ROOT>/.claude/workflows/dual-adversarial.js",  // IAGO_ROOT = repo root, same value as the iagoRoot arg below
+   Workflow({ scriptPath: "<iagoRoot>/.claude/workflows/dual-adversarial.js",
               args: { projectDir, iagoRoot, base, prNumber, mode: "team" } })
    ```
    With `lenses` absent (or the literal string `"auto"`), the Workflow derives the extra
@@ -83,7 +83,7 @@ Santiago merges.**
 
    In the `--interactive` branch, run the Workflow with the collected answers:
    ```
-   Workflow({ scriptPath: "<IAGO_ROOT>/.claude/workflows/dual-adversarial.js",
+   Workflow({ scriptPath: "<iagoRoot>/.claude/workflows/dual-adversarial.js",
               args: { projectDir, iagoRoot, base, prNumber, mode: "<standard|team from Q3>", lenses: [<selected lens keys>] } })
    ```
    Lens keys: `"security"`, `"codeQuality"`, `"tests"`, `"completeness"`, `"frontend"`, `"amplify"`, `"perf"`. Merge the selected keys from Q1 and Q2 into one `lenses` array. Pass `lenses: []` if none selected (an explicit `[]` runs ZERO extra lenses — it does NOT auto-derive; only an ABSENT `lenses` or `"auto"` triggers derivation). Pass `mode: "standard"` if Q3 was not answered. Then go to step 4.
@@ -92,7 +92,7 @@ Santiago merges.**
 
 5. **Resolve** (only if `--fix` was passed OR `--interactive` Q4 = "Fix verified findings", AND `blocking > 0`). The default run is report-only — skip this step entirely unless `--fix`/Q4-fix applies. Forward ONLY the gate's Team-confirmed (KEPT) blocking findings — the `findings` array the gate returned, filtered to `severity` Critical/Important (Team mode already dropped both-refuted false positives into `filtered`; never pass `filtered` findings to the fixer, and never re-derive findings from the raw legs — only the verified-KEPT set goes forward). Invoke the fix Workflow on them:
    ```
-   Workflow({ scriptPath: "<IAGO_ROOT>/.claude/workflows/dual-adversarial-fix.js",
+   Workflow({ scriptPath: "<iagoRoot>/.claude/workflows/dual-adversarial-fix.js",
               args: { projectDir, iagoRoot, base, findings: <the gate's confirmed blocking findings from step 3> } })
    ```
    Then **RE-RUN the dual-adversarial gate ONCE** (re-invoke the step-3 Workflow with the SAME `mode`/`lenses` it ran with — for a default run that is `mode: "team"` and `lenses` omitted) to confirm the fixes resolved the findings without regression.

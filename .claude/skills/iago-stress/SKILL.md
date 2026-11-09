@@ -132,12 +132,14 @@ before it is executed.
 
 For BLOCK and PROCEED_WITH_NOTES, the findings are the reviewer's, not yet facts.
 Fold them before executing: verify each BLOCK and IMPORTANT finding against the
-code, rewrite the plan text where it holds, add a dated `> **Amended YYYY-MM-DD
+code, rewrite the plan text where the finding holds, add a dated `> **Amended YYYY-MM-DD
 (stress)**` note at the top of the plan, and put a `**Disposition (YYYY-MM-DD):**`
 line under the verdict saying what was folded and what was rejected and why. When
 several plans were stressed together, check the folded plans against each other.
 
-For all PROCEED, say the plans are clean and can be executed.
+For all PROCEED, say the plans are clean and can be executed; the plan still gets a
+`**Disposition (YYYY-MM-DD):**` line stating no amendments. A `--force` re-run replaces
+the previous `Amended` note and Disposition line instead of stacking a second one.
 
 ## Boundaries
 

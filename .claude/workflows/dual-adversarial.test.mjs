@@ -1167,5 +1167,19 @@ await test('auto-derive: empty/whitespace/comma-only lenses STRING is treated as
   }
 })
 
+await test('missing args.base throws — no silent origin/main default', async () => {
+  const h = makeHarness([])
+  const wf = buildWorkflow()
+  const { base: _omit, ...noBase } = baseArgs
+  let msg = ''
+  try {
+    await wf(h.agent, h.parallel, null, h.log, h.phase, { ...noBase }, null, null)
+  } catch (e) {
+    msg = e.message
+  }
+  assert.ok(/args\.base/.test(msg), 'throws naming args.base')
+  assert.strictEqual(h.calls.length, 0, 'no agent dispatched before the guard')
+})
+
 console.log(`\n${passed} passed, ${failed} failed`)
 process.exit(failed ? 1 : 0)
