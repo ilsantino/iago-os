@@ -1,7 +1,7 @@
 export const meta = {
   name: 'dual-adversarial',
   description:
-    'Dual-adversarial gate over a PR diff: Opus 4.8 reviewer ∥ Codex (GPT-5.5) adversarial, in parallel and fully independent. Optional extra independent lenses (security / code-quality / test-coverage / completeness). Read-only — reports verdict + findings, does not fix or merge. Used as post-async pass #2 before a human merge.',
+    'Dual-adversarial gate over a PR diff: Opus reviewer ∥ Codex (GPT-5.5) adversarial, in parallel and fully independent. Optional extra independent lenses (security / code-quality / test-coverage / completeness). Read-only — reports verdict + findings, does not fix or merge. Used as post-async pass #2 before a human merge.',
   whenToUse:
     'After the async GitHub review-fix loop reports clean on a PR, run this as the final pre-merge gate. Surfaces any remaining cross-model findings for the human to decide.',
   phases: [
@@ -36,7 +36,7 @@ async function withRetry(fn, label, tries = 2) {
   return null
 }
 
-// args = { projectDir (required), base (required, e.g. "origin/main" or PR base branch),
+// args = { projectDir (required), base (required, no default: the PR's base, e.g. "origin/sentria-qc"),
 //          iagoRoot (required), prNumber (optional, context only),
 //          lenses (optional — extra independent lenses: array | csv | {key:true} map.
 //            ABSENT/null/undefined or the literal string "auto" → the lenses AUTO-DERIVE
@@ -58,7 +58,9 @@ function parseArgs(a) {
 }
 const A = parseArgs(args)
 const projectDir = A.projectDir
-const base = A.base || 'origin/main'
+// No default: a guessed origin/main reviews a PR into sentria-qc (or any non-main base)
+// against the wrong branch and sweeps unpromoted commits into the diff. Fail loud below.
+const base = typeof A.base === 'string' ? A.base.trim() : ''
 const iagoRoot = A.iagoRoot // no personal-path default — fail loud (resolves review-checks)
 const prNumber = A.prNumber || ''
 // When the execution pipeline DELEGATES a Tier 2/3 review to this team gate (runDualAdversarial),
@@ -80,6 +82,9 @@ const SKEPTIC_CAP_DEFAULT = 8
 const skepticCap = Number.isInteger(A.skepticCap) && A.skepticCap > 0 ? A.skepticCap : SKEPTIC_CAP_DEFAULT
 if (!projectDir || !iagoRoot) {
   throw new Error('dual-adversarial requires args.projectDir and args.iagoRoot (absolute paths)')
+}
+if (!base) {
+  throw new Error('dual-adversarial requires args.base: the branch the PR merges into (e.g. origin/main, origin/sentria-qc) — there is no default')
 }
 
 const FINDING = {
@@ -304,7 +309,7 @@ async function treeSnapshot(when) {
     () =>
       agent(
         `${PREAMBLE}\n\nREAD-ONLY tree snapshot (${when}). In ${projectDir} run exactly:\n  git rev-parse HEAD\n  git status --porcelain\nReturn head (the rev-parse output, trimmed) and porcelain (the FULL git status --porcelain output, empty string if clean). Do NOT edit, stage, commit, or run anything else.`,
-        { label: `side-effect-snapshot:${when}`, phase: 'Review', schema: SNAPSHOT_SCHEMA, model: 'opus' },
+        { label: `side-effect-snapshot:${when}`, phase: 'Review', schema: SNAPSHOT_SCHEMA, model: 'sonnet' },
       ),
     `side-effect-snapshot:${when}`,
   )
@@ -357,7 +362,7 @@ if (Array.isArray(A.lenses) || (!lensesIsAuto && A.lenses != null)) {
     () =>
       agent(
         `${PREAMBLE}\n\nREAD-ONLY changed-files probe (for lens auto-config). In ${projectDir} run exactly:\n  git diff --name-only ${base}...HEAD && echo '===IAGO_FILES_EOF==='\nReturn files = the list of changed paths (one per line in the git output, EXCLUDING the ===IAGO_FILES_EOF=== sentinel line), as an array of strings (empty array if the diff is empty), AND eofSeen = true ONLY if the ===IAGO_FILES_EOF=== sentinel line actually appeared at the end of the output (it proves the command ran to completion and the path list is not truncated; set eofSeen false or omit it if the sentinel did not appear). Do NOT edit, stage, commit, or run anything else.`,
-        { label: 'changed-files', phase: 'Review', schema: CHANGED_FILES_SCHEMA, model: 'opus' },
+        { label: 'changed-files', phase: 'Review', schema: CHANGED_FILES_SCHEMA, model: 'sonnet' },
       ),
     'changed-files',
   )
@@ -511,7 +516,7 @@ function refuteHasEvidence(reason) {
 
 const legs = [
   () => withRetry(() => agent(reviewPrompt, { label: 'review', phase: 'Review', schema: REVIEW_SCHEMA, model: 'opus' }), 'review'),
-  () => withRetry(() => agent(codexPrompt, { label: 'codex', phase: 'Codex', schema: CODEX_SCHEMA }), 'codex'),
+  () => withRetry(() => agent(codexPrompt, { label: 'codex', phase: 'Codex', schema: CODEX_SCHEMA, model: 'opus' }), 'codex'),
 ]
 for (const key of lenses) {
   const def = LENS_DEFS[key]

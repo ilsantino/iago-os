@@ -7,7 +7,7 @@ export const meta = {
   phases: [{ title: 'Fix' }, { title: 'Build gate' }],
 }
 
-// args = { projectDir (required), iagoRoot (required), base (default "origin/main"),
+// args = { projectDir (required), iagoRoot (required), base (required, no default: the PR's base),
 //          findings (array of {severity,summary,file}), maxRounds (default 2) }
 // args may arrive parsed OR as a JSON string in this harness build — normalize both
 // (matches dual-adversarial.js / execute-pipeline.js: the runtime has delivered args
@@ -28,7 +28,7 @@ function parseArgs(a) {
 const A = parseArgs(args)
 const projectDir = A.projectDir
 const iagoRoot = A.iagoRoot // no personal-path default — fail loud (resolves review-checks)
-const base = A.base || 'origin/main'
+const base = typeof A.base === 'string' ? A.base.trim() : '' // no default — see the check below
 const findings = Array.isArray(A.findings) ? A.findings : []
 // maxRounds caps the fix→re-gate cycle. The SKILL re-runs the read-only gate between
 // invocations; this value is forwarded into the fix prompt for the agent's awareness
@@ -42,6 +42,9 @@ const maxRounds = Math.min(2, Math.max(1, Number(A.maxRounds) || 2))
 // dispatch a write-capable agent with nothing to fix, so refuse it.
 if (!projectDir || !iagoRoot) {
   throw new Error('dual-adversarial-fix requires args.projectDir and args.iagoRoot (absolute paths)')
+}
+if (!base) {
+  throw new Error('dual-adversarial-fix requires args.base: the branch the PR merges into (e.g. origin/main, origin/sentria-qc) — there is no default')
 }
 if (findings.length === 0) {
   throw new Error(
@@ -148,7 +151,7 @@ async function withRetryMutating(fn, label, restoreCmd, tries) {
       log(`${label}: rolling back partial changes before retry`)
       const rb = await agent(
         `${PREAMBLE}\n\nRoll back ALL partial changes from a FAILED attempt so the retry starts from the checkpoint. In ${projectDir} run exactly:\n  ${restoreCmd}\nThen VERIFY: git status --porcelain MUST be empty. Return status=DONE only if the tree is clean; otherwise status=BLOCKED with what remains.`,
-        { label: `${label}-rollback`, phase: 'Fix', schema: FIX_SCHEMA },
+        { label: `${label}-rollback`, phase: 'Fix', schema: FIX_SCHEMA, model: 'sonnet' },
       )
       if (!rb || rb.status !== 'DONE') {
         throw new Error(
@@ -246,7 +249,7 @@ log(
 // Capture the pre-fix checkpoint (C3 — read-only).
 phase('Fix')
 const pre = await withRetryMutating(
-  () => agent(preStatePrompt(), { label: 'pre-state', phase: 'Fix', schema: GIT_STATE_SCHEMA }),
+  () => agent(preStatePrompt(), { label: 'pre-state', phase: 'Fix', schema: GIT_STATE_SCHEMA, model: 'sonnet' }),
   'pre-state',
   // pre-state never writes; the restore is a no-op guard so a retry asserts cleanliness.
   'git status --porcelain',
@@ -290,7 +293,7 @@ if (fix.status !== 'DONE') {
 // read-only git check. A prompt is defense-in-depth; THIS is the enforcement boundary.
 phase('Build gate')
 const verify = await withRetryMutating(
-  () => agent(verifyPrompt(preFixSha, branch, upstreamSha), { label: 'safety-verify', phase: 'Build gate', schema: VERIFY_SCHEMA }),
+  () => agent(verifyPrompt(preFixSha, branch, upstreamSha), { label: 'safety-verify', phase: 'Build gate', schema: VERIFY_SCHEMA, model: 'sonnet' }),
   'safety-verify',
   'git status --porcelain', // verify never writes; restore is a no-op cleanliness guard
 )

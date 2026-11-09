@@ -6,7 +6,7 @@ description: Final pre-merge dual-adversarial gate over a PR/branch diff — Opu
 # /dual-adversarial
 
 Final cross-model adversarial gate before merge. Two **independent** legs run in
-parallel — an **Opus 4.8** reviewer and a **Codex (GPT-5.5)** reviewer — neither
+parallel — an **Opus** reviewer and a **Codex (GPT-5.5)** reviewer — neither
 sees the other's output; their findings are merged only after both finish.
 Optionally adds extra independent lenses, an optional **Team** depth (diverse-persona
 panel + adversarial verification that drops false-positive findings), and an optional
@@ -26,9 +26,13 @@ Santiago merges.**
 ## Steps (orchestrator)
 
 1. **Resolve the target.**
-   - If invoked with a PR number, set `prNumber` and `base` to that PR's base branch (default `origin/main`).
-   - Otherwise review the current branch: `base = origin/main`, `prNumber = ""`.
-   - `projectDir` = repo root; `iagoRoot` = repo root (resolves `scripts/review-checks/`).
+   - `base` is the branch the work merges into, as `origin/<branch>`:
+     - With a PR number, that PR's base (`gh pr view <n> --json baseRefName`).
+     - Without one, the current branch's open PR if it has one (`gh pr view --json number,baseRefName`; set `prNumber` from it).
+     - With no open PR, the integration branch the user names, else the repo's own: `origin/sentria-qc` for Sentria (or its feature integration branch, e.g. `mantenimiento-catalogo`), `origin/main` elsewhere (`~/Developer/CLAUDE.md` maps each repo's PR target).
+     - Never fall back to `origin/main` for a repo whose PRs target another branch: the three-dot diff would sweep in every commit not yet promoted to `main`.
+   - `projectDir` = repo root.
+   - `iagoRoot` = the iago-os checkout that holds the workflows and `scripts/review-checks/`: `$IAGO_OS_ROOT` if set; else the repo root when it contains `.claude/workflows/dual-adversarial.js` (a run inside iago-os); else `~/Developer/iago-os`. If `<iagoRoot>/.claude/workflows/dual-adversarial.js` does not exist, stop and say so.
 
 2. **Size the diff.** Run `git diff --shortstat <base>...HEAD`. If empty AND no PR number, tell the user there is nothing to review and stop.
 
@@ -41,7 +45,7 @@ Santiago merges.**
    **DEFAULT (no flags).** Invoke the Workflow once, with `lenses` OMITTED so it
    auto-derives from the changed-file paths, `mode: "team"`, and report-only:
    ```
-   Workflow({ scriptPath: "<IAGO_ROOT>/.claude/workflows/dual-adversarial.js",  // IAGO_ROOT = repo root, same value as the iagoRoot arg below
+   Workflow({ scriptPath: "<iagoRoot>/.claude/workflows/dual-adversarial.js",  // iagoRoot as resolved in step 1, never the client repo
               args: { projectDir, iagoRoot, base, prNumber, mode: "team" } })
    ```
    With `lenses` absent (or the literal string `"auto"`), the Workflow derives the extra
@@ -53,7 +57,7 @@ Santiago merges.**
 
    **`--interactive` branch.** Call `AskUserQuestion` ONCE with FOUR questions (the tool
    allows up to 4 questions, each with ≤4 options). Q1 and Q2 are `multiSelect: true`; Q3
-   and Q4 are single-select. The two adversarial core legs (Opus 4.8 ∥ Codex GPT-5.5)
+   and Q4 are single-select. The two adversarial core legs (Opus ∥ Codex GPT-5.5)
    ALWAYS run — Q1/Q2 only add extra **independent** lenses on top. Collect the selected
    keys from Q1 and Q2 into one `lenses` array, capture Q3 as `mode`, and capture Q4 as the
    post-findings action, all for step 4 / step 5.
@@ -79,7 +83,7 @@ Santiago merges.**
 
    In the `--interactive` branch, run the Workflow with the collected answers:
    ```
-   Workflow({ scriptPath: "<IAGO_ROOT>/.claude/workflows/dual-adversarial.js",
+   Workflow({ scriptPath: "<iagoRoot>/.claude/workflows/dual-adversarial.js",
               args: { projectDir, iagoRoot, base, prNumber, mode: "<standard|team from Q3>", lenses: [<selected lens keys>] } })
    ```
    Lens keys: `"security"`, `"codeQuality"`, `"tests"`, `"completeness"`, `"frontend"`, `"amplify"`, `"perf"`. Merge the selected keys from Q1 and Q2 into one `lenses` array. Pass `lenses: []` if none selected (an explicit `[]` runs ZERO extra lenses — it does NOT auto-derive; only an ABSENT `lenses` or `"auto"` triggers derivation). Pass `mode: "standard"` if Q3 was not answered. Then go to step 4.
@@ -88,7 +92,7 @@ Santiago merges.**
 
 5. **Resolve** (only if `--fix` was passed OR `--interactive` Q4 = "Fix verified findings", AND `blocking > 0`). The default run is report-only — skip this step entirely unless `--fix`/Q4-fix applies. Forward ONLY the gate's Team-confirmed (KEPT) blocking findings — the `findings` array the gate returned, filtered to `severity` Critical/Important (Team mode already dropped both-refuted false positives into `filtered`; never pass `filtered` findings to the fixer, and never re-derive findings from the raw legs — only the verified-KEPT set goes forward). Invoke the fix Workflow on them:
    ```
-   Workflow({ scriptPath: "<IAGO_ROOT>/.claude/workflows/dual-adversarial-fix.js",
+   Workflow({ scriptPath: "<iagoRoot>/.claude/workflows/dual-adversarial-fix.js",
               args: { projectDir, iagoRoot, base, findings: <the gate's confirmed blocking findings from step 3> } })
    ```
    Then **RE-RUN the dual-adversarial gate ONCE** (re-invoke the step-3 Workflow with the SAME `mode`/`lenses` it ran with — for a default run that is `mode: "team"` and `lenses` omitted) to confirm the fixes resolved the findings without regression.
@@ -118,7 +122,7 @@ Santiago merges.**
   GROW, never shrink, on a probe failure. Neither path ever throws.
 - **Independent.** The Opus and Codex legs (and every extra lens) run as separate fresh subagents inside one `parallel()` call — no leg is primed with another's findings; results are merged only after all legs finish.
 - **Aggressive.** Every leg defaults to skepticism, gives no credit for good intent or likely follow-up work, and treats happy-path-only behavior as a real weakness.
-- **Model-pinned.** The reviewer leg is pinned to Opus (`model: 'opus'` = Opus 4.8); the cross-model leg uses Codex GPT-5.5 via `codex-companion.mjs` (model pinned in `~/.codex/config.toml`). A core leg that fails forces `clean = false` AND `gateStatus = 'INCOMPLETE'` (a re-run condition, not a `/iago-prfix` finding — see the Report step); a failed extra lens is non-blocking (logged, not blocking).
+- **Model-pinned.** The reviewer leg is pinned to Opus (`model: 'opus'`, the current Opus); the cross-model leg uses Codex GPT-5.5 via `codex-companion.mjs` (model pinned in `~/.codex/config.toml`). A core leg that fails forces `clean = false` AND `gateStatus = 'INCOMPLETE'` (a re-run condition, not a `/iago-prfix` finding — see the Report step); a failed extra lens is non-blocking (logged, not blocking).
 - **Cross-model honesty.** If the Codex leg falls back to a same-family Claude pass, `codexSource` is `claude-fallback` and `crossModelDegraded` is `true` — the gate can still report `clean` but with no true GPT-5.5 coverage. The Report step requires surfacing this caveat to the human at the merge decision.
 - **Team mode filters false positives.** In `mode: "team"`, every Critical/Important finding is adversarially verified by 2 independent skeptics before it can block or be fixed; a finding is dropped as a false positive ONLY when BOTH skeptics refute it WITH a concrete code citation (a confident-but-uncited refute does not count — it is treated as a confirm, so the finding is kept). A single confirm keeps the finding (false-negative bias is worse than dropping a real bug). Dropped findings are recorded in `filtered` with their skeptic `reasons` and surfaced at the merge decision (Report step) — never silently discarded. Verification runs BEFORE anything blocks or is fixed — a dropped finding never reaches the fix flow.
 - **Verification honesty.** The Team skeptics are same-family Opus, not a true cross-model verification. Two DISTINCT signals surface this (T06 split the old single flag): when the verification pass RAN (Team mode, ≥1 blocking finding), `verificationSameFamily` is `true` — a STRUCTURAL fact, the verification analogue of `crossModelDegraded` (both skeptics are Opus, so there is no cross-model diversity for the verification). Separately, when a skeptic could NOT run (a null return left a blocking finding un-refuted), `verificationDegraded` is `true` — a REAL run gap (the finding was kept fail-safe but never actually verified), distinct from same-family. The Report step surfaces both to the human at the merge decision.
