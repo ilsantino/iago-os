@@ -41,8 +41,8 @@ Dormant, not cloned (clones removed 2026-10-29; `gh repo clone <org>/<repo> ~/De
 |---|---|
 | Code, tests, technical docs | the repo (`src/`, `docs/`) |
 | Plans, STATE, ROADMAP, runbooks, agent briefs, technical research, decisions | `<repo>/.iago/` (taxonomy: `iago-os/.iago/README.md`) |
-| Deliverable source (md, html, scripts) | `<repo>/.iago/` or `docs/`; the exported PDF/PPTX → Drive `Projects/<P>/deliverables/<YYYY-MM>-<slug>/` |
-| Received documents, contracts, proposals, meeting notes, business research, brand, media | Drive `Projects/<P>/` (`received/`, `deliverables/` with an index README, `meetings/` as `YYYY-MM-DD-slug-notes-es`, `research/`, `internal/` for iaGO-only material, `brand/`, `media/{assets,captures,demos,_source}/`; `clients/<C>/…` when a product has several clients). Conventions and template: Drive `Projects/README.md`, `iago-os/templates/drive-project/` |
+| Deliverable and its build sources (scripts, `_src/`, fonts, assets, QA renders) | Drive `Projects/<P>/deliverables/<YYYY-MM>-<slug>/`, sources next to the export. Never in a repo: repos hold only the product |
+| Received documents, contracts, proposals, meeting notes, business research, brand, media | Drive `Projects/<P>/` (`received/`, `deliverables/` with an index README, `meetings/` as `YYYY-MM-DD-slug-notes-es`, `research/`, `internal/` for iaGO-only material, `brand/`, `media/{assets,captures,demos,_source}/`; `clients/<C>/…` when a product has several clients). Conventions and template: Drive `Projects/README.md`, `Company/templates/drive-project/` |
 | Company docs, decks, legal, brand | Drive `Company/`; marketing content → `Content/`; corpora and courses → `Reference/` |
 | Secrets | 1Password → gitignored `.env` in the repo. Never in Drive, never in git |
 | Session digests, cross-project decisions, people | `obsidian-brain/` via the Obsidian MCP |
@@ -60,4 +60,4 @@ whole company tree) · **Personal** (`My Drive/Personal/` in the santiago@iagoag
 per-project favorites: lowercase `rsf`, `munet-web` are repos here; Capitalized `RSF`, `Munet` are Drive project folders.
 Path bar is on (View → Show Path Bar) so any window says where it is.
 Colours (reset 2026-10-28 evening): folders are uncoloured by default. Only three carry a colour, all in Drive: **blue** = every `deliverables/` folder (what iaGO sent: decks, proposals, cotizaciones, guides), **orange** = every `received/` folder (what the client sent), **green** = `My Drive/Personal/`. No colour on projects, Company, Content, Reference or repos; no Finder tags (sidebar Tags list emptied). A new `deliverables/` or `received/` folder gets its colour when created (`update_file folderColorRgb` #4986e7 / #ff7537); nothing else is ever recoloured. Full guide: Drive `IAGO/README.md` and
-`iago-os/.iago/research/2026-10-28-filesystem-architecture.md`.
+Drive `Company/internal/2026-10-filesystem/2026-10-28-filesystem-architecture.md`.
