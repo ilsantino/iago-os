@@ -148,7 +148,7 @@ async function withRetryMutating(fn, label, restoreCmd, tries) {
       log(`${label}: rolling back partial changes before retry`)
       const rb = await agent(
         `${PREAMBLE}\n\nRoll back ALL partial changes from a FAILED attempt so the retry starts from the checkpoint. In ${projectDir} run exactly:\n  ${restoreCmd}\nThen VERIFY: git status --porcelain MUST be empty. Return status=DONE only if the tree is clean; otherwise status=BLOCKED with what remains.`,
-        { label: `${label}-rollback`, phase: 'Fix', schema: FIX_SCHEMA },
+        { label: `${label}-rollback`, phase: 'Fix', schema: FIX_SCHEMA, model: 'sonnet' },
       )
       if (!rb || rb.status !== 'DONE') {
         throw new Error(
@@ -246,7 +246,7 @@ log(
 // Capture the pre-fix checkpoint (C3 — read-only).
 phase('Fix')
 const pre = await withRetryMutating(
-  () => agent(preStatePrompt(), { label: 'pre-state', phase: 'Fix', schema: GIT_STATE_SCHEMA }),
+  () => agent(preStatePrompt(), { label: 'pre-state', phase: 'Fix', schema: GIT_STATE_SCHEMA, model: 'sonnet' }),
   'pre-state',
   // pre-state never writes; the restore is a no-op guard so a retry asserts cleanliness.
   'git status --porcelain',
@@ -290,7 +290,7 @@ if (fix.status !== 'DONE') {
 // read-only git check. A prompt is defense-in-depth; THIS is the enforcement boundary.
 phase('Build gate')
 const verify = await withRetryMutating(
-  () => agent(verifyPrompt(preFixSha, branch, upstreamSha), { label: 'safety-verify', phase: 'Build gate', schema: VERIFY_SCHEMA }),
+  () => agent(verifyPrompt(preFixSha, branch, upstreamSha), { label: 'safety-verify', phase: 'Build gate', schema: VERIFY_SCHEMA, model: 'sonnet' }),
   'safety-verify',
   'git status --porcelain', // verify never writes; restore is a no-op cleanliness guard
 )
