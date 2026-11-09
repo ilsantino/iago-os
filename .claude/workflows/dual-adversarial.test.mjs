@@ -1185,5 +1185,22 @@ await test('missing or blank base throws before any agent runs (no silent origin
   }
 })
 
+await test('dual-adversarial-fix: missing or blank base throws before any agent runs', async () => {
+  const fixSrc = readFileSync(join(__dirname, 'dual-adversarial-fix.js'), 'utf8').replace(/export const meta/, 'const meta')
+  const build = () =>
+    new Function('agent', 'parallel', 'pipeline', 'log', 'phase', 'args', 'budget', 'workflow', `return (async () => {\n${fixSrc}\n})()`)
+  const findings = [{ severity: 'Important', summary: 's', file: 'f.js' }]
+  for (const bad of [undefined, null, '', '   ']) {
+    const h = makeHarness([])
+    const args = { projectDir: '/repo', iagoRoot: '/iago', findings, ...(bad === undefined ? {} : { base: bad }) }
+    await assert.rejects(
+      () => build()(h.agent, h.parallel, null, h.log, h.phase, args, null, null),
+      /args\.base/,
+      `base ${JSON.stringify(bad)} must throw`,
+    )
+    assert.strictEqual(h.calls.length, 0, `base ${JSON.stringify(bad)}: no agent dispatched`)
+  }
+})
+
 console.log(`\n${passed} passed, ${failed} failed`)
 process.exit(failed ? 1 : 0)
